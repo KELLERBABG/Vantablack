@@ -169,9 +169,10 @@ async fn main() {
                                     }
                                 }
                             } else {
-                                // Data message
+                                // Data message — decrypt using the packet counter as nonce
+                                let packet_counter = entry.3;
                                 combined.truncate(entry.2 + 16);
-                                if let Ok(dec) = decrypt_message(&key_recovered, &mut combined) {
+                                if let Ok(dec) = decrypt_message(&key_recovered, packet_counter, &mut combined) {
                                     println!("\rPartner: {}\n> ", String::from_utf8_lossy(dec));
                                     io::stdout().flush().unwrap();
                                 }
@@ -218,17 +219,17 @@ async fn main() {
             let mut data = msg.as_bytes().to_vec();
             let original_len = data.len();
 
-            encrypt_message(&mk, &mut data);
+            let mut c_guard = global_tx_counter.write().await;
+            *c_guard += 1;
+            let current_c = *c_guard;
+
+            encrypt_message(&mk, current_c, &mut data);
             let shards = rs_encode(&mut data);
             let shard_len = shards[0].len();
 
             let id = rand::thread_rng().gen_range(1u8..254);
             let mut mk_clone = mk;
             let mk_shares = shamir_split(&mut mk_clone);
-
-            let mut c_guard = global_tx_counter.write().await;
-            *c_guard += 1;
-            let current_c = *c_guard;
 
             send_data_packets(
                 id,
