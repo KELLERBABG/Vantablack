@@ -10,27 +10,40 @@ use pqcrypto_traits::kem::PublicKey as KyberTrait;
 pub const HANDSHAKE_BLOB_LEN: usize = 960;
 pub const HANDSHAKE_SHARD_LEN: usize = HANDSHAKE_BLOB_LEN / 2; // 480
 
+/// Derive a 12-byte ChaCha20-Poly1305 nonce from a 64-bit monotonic counter.
+///
+/// Layout: `[ counter (8 B, big-endian) | 0x00 0x00 0x00 0x00 (4 B) ]`
+///
+/// Because the counter is strictly monotonic and unique per message, the nonce
+/// is unique per (key, message) pair, satisfying the AEAD uniqueness requirement.
+pub fn nonce_from_counter(counter: u64) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[0..8].copy_from_slice(&counter.to_be_bytes());
+    nonce
+}
+
 /// Encrypt `data` in-place using ChaCha20-Poly1305 with the given 32-byte key.
-/// A static all-zero nonce is used (see security considerations in README).
-/// The 16-byte Poly1305 authentication tag is appended to `data`.
-pub fn encrypt_message(key: &[u8; 32], data: &mut Vec<u8>) {
+/// The nonce is derived from `counter`, which must be unique per message under
+/// this key. The 16-byte Poly1305 authentication tag is appended to `data`.
+pub fn encrypt_message(key: &[u8; 32], counter: u64, data: &mut Vec<u8>) {
     let enc_key = LessSafeKey::new(UnboundKey::new(&aead::CHACHA20_POLY1305, key).unwrap());
     enc_key
         .seal_in_place_append_tag(
-            aead::Nonce::assume_unique_for_key([0u8; 12]),
+            aead::Nonce::assume_unique_for_key(nonce_from_counter(counter)),
             aead::Aad::empty(),
             data,
         )
         .unwrap();
 }
 
-/// Decrypt and authenticate an in-place ciphertext slice using ChaCha20-Poly1305.
-/// Returns a slice of the plaintext on success, or an error if the tag is invalid.
-pub fn decrypt_message<'a>(key: &[u8], data: &'a mut Vec<u8>) -> Result<&'a [u8], ring::error::Unspecified> {
+/// Decrypt and authenticate an in-place ciphertext using ChaCha20-Poly1305.
+/// `counter` must match the value used during encryption. Returns a slice of
+/// the plaintext on success, or an error if the tag is invalid or nonce mismatches.
+pub fn decrypt_message<'a>(key: &[u8], counter: u64, data: &'a mut Vec<u8>) -> Result<&'a [u8], ring::error::Unspecified> {
     let unbound = UnboundKey::new(&aead::CHACHA20_POLY1305, key).unwrap();
     let dec_key = LessSafeKey::new(unbound);
     dec_key.open_in_place(
-        aead::Nonce::assume_unique_for_key([0u8; 12]),
+        aead::Nonce::assume_unique_for_key(nonce_from_counter(counter)),
         aead::Aad::empty(),
         data,
     )
