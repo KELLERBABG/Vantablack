@@ -172,7 +172,7 @@ Every transmission in VANTABLACK passes through seven ordered protocol layers. E
 │      │ Authenticates the origin of the handshake key        │
 │      │ material. Prevents key substitution attacks.         │
 ├──────┼──────────────────────────────────────────────────────┤
-│ L1   │ X25519 (ECC) + Kyber-512                            │
+│ L1   │ X25519 (ECC) + Kyber-512                             │
 │      │ Hybrid KEM: classical + post-quantum key exchange.   │
 │      │ Secure if either primitive remains unbroken.         │
 ├──────┼──────────────────────────────────────────────────────┤
@@ -211,7 +211,7 @@ Every UDP packet — whether handshake or data — uses the Ghost Transport Fram
 │ Offset       │ Field         │ Size     │ Purpose                         │ Notes        │
 ├──────────────┼───────────────┼──────────┼─────────────────────────────────┼──────────────┤
 │ 0 – 3        │ Session Hash  │ 4 B      │ Short ID linking this shard to  │ Truncated    │
-│              │               │          │ its handshake session.           │ hash         │
+│              │               │          │ its handshake session.          │ hash         │
 ├──────────────┼───────────────┼──────────┼─────────────────────────────────┼──────────────┤
 │ 4 – 7        │ Packet        │ 4 B      │ Monotonic counter for anti-     │ Big-endian   │
 │              │ Counter       │          │ replay. Every packet requires   │ u32/u64      │
@@ -246,26 +246,26 @@ The handshake is transmitted as a single 960-byte Protocol Data Unit, split acro
 ├─────────────────┼──────────┼────────────────────────────────────────────────┼────────┤
 │ Header (Intern) │ 16 B     │ Magic bytes ("GHOST_HANDSHAKE_"). Visible only │   —    │
 │                 │          │ after full shard reconstruction; not exposed   │        │
-│                 │          │ in any individual packet.                       │        │
+│                 │          │ in any individual packet.                      │        │
 ├─────────────────┼──────────┼────────────────────────────────────────────────┼────────┤
 │ X25519-Part     │ 32 B     │ Sender's X25519 (ECC) public key.              │  L1    │
-│                 │          │ Classical elliptic-curve component of the       │        │
-│                 │          │ hybrid KEM.                                     │        │
+│                 │          │ Classical elliptic-curve component of the      │        │
+│                 │          │ hybrid KEM.                                    │        │
 ├─────────────────┼──────────┼────────────────────────────────────────────────┼────────┤
 │ Kyber-Part      │ 800 B    │ Sender's Kyber-512 public key.                 │  L1    │
-│                 │          │ Post-quantum lattice-based KEM component.       │        │
-│                 │          │ Resistant to Shor's algorithm.                  │        │
+│                 │          │ Post-quantum lattice-based KEM component.      │        │
+│                 │          │ Resistant to Shor's algorithm.                 │        │
 ├─────────────────┼──────────┼────────────────────────────────────────────────┼────────┤
-│ Identity-Key    │ 32 B     │ Sender's Ed25519 verifying key (public).        │  L0    │
-│                 │          │ The persistent cryptographic identity of this   │        │
-│                 │          │ device for this session.                        │        │
+│ Identity-Key    │ 32 B     │ Sender's Ed25519 verifying key (public).       │  L0    │
+│                 │          │ The persistent cryptographic identity of this  │        │
+│                 │          │ device for this session.                       │        │
 ├─────────────────┼──────────┼────────────────────────────────────────────────┼────────┤
 │ Identity-Proof  │ 64 B     │ Ed25519 signature over the Kyber-Part.         │  L0    │
-│                 │          │ Cryptographically proves the sender controls    │        │
-│                 │          │ the identity key and authored the KEM key.      │        │
+│                 │          │ Cryptographically proves the sender controls   │        │
+│                 │          │ the identity key and authored the KEM key.     │        │
 ├─────────────────┼──────────┼────────────────────────────────────────────────┼────────┤
 │ Padding /       │ 16 B     │ Padding to reach the clean 960-byte total.     │   —    │
-│ Checksum        │          │ Used for integrity checking and alignment.      │        │
+│ Checksum        │          │ Used for integrity checking and alignment.     │        │
 └─────────────────┴──────────┴────────────────────────────────────────────────┴────────┘
 ```
 
@@ -416,7 +416,7 @@ This blob is split into two 480-byte shards with a Reed-Solomon parity shard, an
 ```
 Alice                                          Bob
   │                                              │
-  │──── Shard[0]: Kyber PK + Sig + X25519 ─────▶│
+  │──── Shard[0]: Kyber PK + Sig + X25519 ─────▶ │
   │──── Shard[1]: (continued) ──────────────────▶│
   │──── Shard[2]: RS parity ────────────────────▶│
   │                                              │
@@ -428,7 +428,7 @@ Alice                                          Bob
   │◀─── Shard[2]: RS parity ────────────────────│
   │                                              │
 [Alice reconstructs blob, verifies Ed25519 sig]  │
-[Alice derives master key, marks session open]    │
+[Alice derives master key, marks session open]   │
   │                                              │
   ╔══════════════════════════════════════════╗   │
   ║         ENCRYPTED CHAT SESSION           ║   │
