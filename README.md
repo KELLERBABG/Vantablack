@@ -576,7 +576,7 @@ vantablack/
 ### Build
 
 ```bash
-git clone https://github.com/KELLERBABG/vantablack.git
+git clone https://github.com/yourusername/vantablack.git
 cd vantablack
 cargo build --release
 ```
@@ -618,7 +618,7 @@ The application will display each peer's identity fingerprint. Verify these out-
 
 ## Security Considerations
 
-- **Nonce reuse**: The current implementation uses a static all-zero nonce for ChaCha20-Poly1305. For production use, each encryption should use a unique nonce (e.g., derived from the session counter). Nonce reuse under the same key is a known vulnerability in AEAD schemes.
+- **Nonce derivation**: Each message is encrypted with a nonce derived from the monotonic session counter (`counter (8 B) || 0x00 0x00 0x00 0x00`). Because the counter is strictly increasing and unique per session, the nonce is unique per (key, message) pair, satisfying ChaCha20-Poly1305's uniqueness requirement. The counter is already embedded in every GTF packet and validated by the replay guard, so the receiver always has the correct nonce available for decryption without additional transmission overhead.
 - **Key confirmation**: The handshake establishes key material but does not include an explicit key confirmation step. An active MITM who intercepts all three handshake shards could potentially delay or suppress delivery.
 - **Ephemeral identities**: Identity keys are generated fresh at startup and are not persisted. There is no persistent identity or public key infrastructure. Out-of-band fingerprint verification is recommended for high-assurance use.
 - **Counter overflow**: The 64-bit counter will not overflow in practical use, but long-lived sessions should consider key renegotiation after a defined message count.
