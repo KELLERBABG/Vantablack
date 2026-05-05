@@ -576,7 +576,7 @@ vantablack/
 ### Build
 
 ```bash
-git clone https://github.com/yourusername/vantablack.git
+git clone https://github.com/KELLERBABG/vantablack.git
 cd vantablack
 cargo build --release
 ```
