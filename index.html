@@ -247,20 +247,49 @@
       color: var(--text-muted);
       max-width: 740px;
       line-height: 1.62;
-      margin-bottom: 18px;
+    .mode-spec-box {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      max-width: 780px;
+      margin: 24px 0 32px;
     }
-    .lead-highlight {
-      font-size: 15.5px;
-      color: var(--text);
-      line-height: 1.6;
-      max-width: 740px;
-      padding-left: 16px;
-      border-left: 2px solid var(--accent);
-      margin: 24px 0 36px;
+    @media (max-width: 680px) { .mode-spec-box { grid-template-columns: 1fr; } }
+    .mode-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
     }
-    .lead-highlight strong {
+    .mode-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .mode-title {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
       color: var(--accent);
+      text-transform: uppercase;
     }
+    .mode-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text-dim);
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .mode-desc {
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--text-muted);
+    }
+    .mode-desc strong { color: var(--text); }
     .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
     .btn {
       display: inline-flex;
@@ -603,9 +632,29 @@
         A self-organizing Rust daemon establishing quantum-resistant LAN-over-WAN tunnels. 
         Zero centralized coordinators, zero telemetry, and zero single points of failure.
       </p>
-      <div class="lead-highlight">
-        By default, every node joins a <strong>worldwide public swarm</strong>: traffic is fragmented into Reed-Solomon RS(2,1) shards dispersed across global peers. <strong>The more participants join the network, the stronger the routing entropy becomes &mdash; rendering censorship and traffic blocking mathematically infeasible.</strong> Need complete physical isolation? Set a private 256-bit pre-shared key (<code>GHOST_PSK</code>) to constrain your mesh exclusively to your own nodes.
+
+      <div class="mode-spec-box">
+        <div class="mode-card">
+          <div class="mode-header">
+            <span class="mode-title">Global Public Swarm</span>
+            <span class="mode-badge">DEFAULT MODE</span>
+          </div>
+          <p class="mode-desc">
+            Traffic is fragmented into Reed-Solomon RS(2,1) shards dispersed across worldwide peers. <strong>Every participant increases routing entropy &mdash; rendering censorship and single-hop wiretapping mathematically impossible.</strong>
+          </p>
+        </div>
+
+        <div class="mode-card">
+          <div class="mode-header">
+            <span class="mode-title">Private Overlay Mesh</span>
+            <span class="mode-badge">GHOST_PSK</span>
+          </div>
+          <p class="mode-desc">
+            Enforces a 256-bit symmetric pre-shared key. <strong>Cryptographically isolates your mesh exclusively to your authorized nodes, dropping unauthorized packets before consuming CPU cycles.</strong>
+          </p>
+        </div>
       </div>
+
       <div class="cta-row">
         <a class="btn btn-primary" href="#deploy">Quickstart</a>
         <a class="btn btn-ghost" href="#why">Operational Profiles</a>
@@ -616,42 +665,42 @@
     <!-- WHO THIS IS FOR / USE CASES -->
     <section id="why">
       <div class="section-head">
-        <span class="section-tag">BUILT FOR SOVEREIGN OPERATIONS</span>
-        <h2>Why Engineers Choose Global Ghost Net</h2>
-        <p>Built for teams and individuals who refuse to route infrastructure secrets through third-party SaaS coordinators or tolerate central points of failure.</p>
+        <span class="section-tag">BUILT FOR MISSION-CRITICAL ENVIRONMENTS</span>
+        <h2>Operational Profiles &amp; Deployment Targets</h2>
+        <p>Engineered for distributed infrastructure, adversarial network environments, and teams that refuse third-party coordination planes.</p>
       </div>
 
       <div class="persona-grid">
         <div class="persona-card">
           <div>
-            <div class="persona-tag">HOMELAB &amp; REMOTE ENGINEERS</div>
-            <h3>Direct LAN-over-WAN Tunneling</h3>
-            <p>Access your internal home subnets, hypervisors, and storage pools from cellular or untrusted hotel Wi-Fi. No port forwarding on your router, no exposing SSH or Web UIs to the public internet, and zero corporate telemetry.</p>
+            <div class="persona-tag">MULTI-REGION INFRASTRUCTURE &amp; HYBRID CLOUD</div>
+            <h3>Sovereign WAN Interconnect</h3>
+            <p>Interconnect distributed VPS instances, bare-metal servers, and edge nodes into a resilient L2/L3 overlay. Nodes discover peers autonomously via signed UDP multicasts and decentralized DNS round-robins with zero reliance on vendor infrastructure.</p>
           </div>
           <div class="persona-takeaway">
-            Solution: <strong>Native SOCKS5 proxy or virtual TUN tunnel back to your home exit hub.</strong>
+            Profile: <strong>Zero third-party control plane. Network remains fully operational during upstream outages.</strong>
           </div>
         </div>
 
         <div class="persona-card">
           <div>
-            <div class="persona-tag">CLOUD &amp; BARE-METAL ARCHITECTS</div>
-            <h3>Zero-SaaS Node Interconnect</h3>
-            <p>Interconnect multi-region VPS instances and off-site edge servers into a unified peer-to-peer fabric. Nodes discover one another via decentralized signed UDP beacons or custom DNS seeds with automated failover.</p>
+            <div class="persona-tag">ADVERSARIAL &amp; RESTRICTED NETWORKS</div>
+            <h3>Stateful DPI &amp; Censorship Invariance</h3>
+            <p>Bypass deep packet inspection firewalls and state-sponsored Internet blockades. Payloads are divided into RS(2,1) shards dispatched concurrently across divergent IP paths; eavesdroppers at single transit taps observe only indecipherable random noise.</p>
           </div>
           <div class="persona-takeaway">
-            Solution: <strong>No third-party control plane. If our website goes down, your mesh never notices.</strong>
+            Profile: <strong>Normalized 512-byte frames with randomized jitter padding defeat statistical packet analysis.</strong>
           </div>
         </div>
 
         <div class="persona-card">
           <div>
-            <div class="persona-tag">SECURITY PRACTITIONERS &amp; PRIVACY ADVOCATES</div>
-            <h3>Deep Packet Inspection Invariance</h3>
-            <p>Adversaries intercepting internet links see only fixed-width 512-byte datagrams with random trailing jitter. Payloads are fragmented into RS(2,1) shards routed over divergent IP paths; single-path taps capture meaningless noise.</p>
+            <div class="persona-tag">DEFENSE, AIR-GAP &amp; SECURE WORKSTATIONS</div>
+            <h3>Post-Quantum Ephemeral Security</h3>
+            <p>Protect critical communications against "Harvest Now, Decrypt Later" adversaries with dual-layer ML-KEM-512 and X25519 key encapsulation. Master secrets are pinned into non-swappable physical RAM with volatile zeroization on drop.</p>
           </div>
           <div class="persona-takeaway">
-            Solution: <strong>Harvest-Now-Decrypt-Later defense via lattice ML-KEM-512 + RAM locking.</strong>
+            Profile: <strong>Zero swap leakage, constant-time replay defense, and non-extractable in-memory keys.</strong>
           </div>
         </div>
       </div>
@@ -667,39 +716,39 @@
 
       <div class="pillar-grid">
         <div class="pillar-card">
-          <div class="pillar-num">01 / CRYPTOGRAPHIC ENGINE</div>
-          <h3>Dual-Layer Post-Quantum KEM</h3>
-          <p>Handshakes simultaneously compute classical ECDH (X25519) and lattice-based ML-KEM-512. Session keys are derived through dual-phase HKDF-SHA256, rendering stored network traffic immune to future quantum decryption.</p>
+          <div class="pillar-num">01 / CRYPTOGRAPHIC SUITE</div>
+          <h3>Hybrid Post-Quantum KEM</h3>
+          <p>Handshakes compute classical ECDH (X25519) and lattice-based ML-KEM-512 (FIPS 203) in tandem. Dual-phase HKDF-SHA256 derivation renders transit streams completely immune to quantum cryptanalysis.</p>
         </div>
 
         <div class="pillar-card">
-          <div class="pillar-num">02 / PHYSICAL MEMORY ISOLATION</div>
-          <h3>Locking Secrets in Physical RAM</h3>
-          <p>Long-term private keys and ephemeral pre-shared keys are pinned into physical hardware memory via <code>VirtualLock</code> (Windows) and <code>mlock</code> (POSIX). Pages cannot leak to swap or crash dump files.</p>
+          <div class="pillar-num">02 / PHYSICAL MEMORY HARDENING</div>
+          <h3>Physical RAM Secret Pinning</h3>
+          <p>Long-term private keys and ephemeral pre-shared secrets are pinned into non-pageable memory via <code>VirtualLock</code> (Windows) and <code>mlock</code> (POSIX), preventing page eviction to swap or crash dump files.</p>
         </div>
 
         <div class="pillar-card">
-          <div class="pillar-num">03 / TRAFFIC INVARIANCE</div>
-          <h3>512-Byte Constant Sizing</h3>
-          <p>All Global Tunnel Frames (GTF) are padded to uniform 512-byte boundaries with ChaCha20-Poly1305 AEAD and trailing cryptographically random jitter. Packet sniffers observe no packet length signatures.</p>
+          <div class="pillar-num">03 / TRAFFIC NORMALIZATION</div>
+          <h3>512-Byte Frame Uniformity</h3>
+          <p>Ghost Transport Frames (GTF) maintain strict 512-byte boundaries with ChaCha20-Poly1305 AEAD and trailing cryptographic jitter padding (0&ndash;64 bytes), depriving passive observers of payload size fingerprints.</p>
         </div>
 
         <div class="pillar-card">
           <div class="pillar-num">04 / DISPATCH RESILIENCE</div>
-          <h3>Adaptive Multi-Path Sharding</h3>
-          <p>Payloads are encoded into Reed-Solomon RS(2,1) GF(256) shards and dynamically routed across disparate mesh paths. Dropped links recover without retransmission as long as two shards arrive.</p>
+          <h3>Multipath RS(2,1) Sharding</h3>
+          <p>Stream payloads are segmented into Reed-Solomon RS(2,1) GF(256) shards routed across distinct peer paths. As long as any 2 of the 3 shards arrive, packets reconstruct instantaneously with zero retransmission delay.</p>
         </div>
 
         <div class="pillar-card">
-          <div class="pillar-num">05 / BYZANTINE TOLERANCE</div>
-          <h3>Poisson Anomaly Isolation</h3>
-          <p>Mesh nodes model incoming peer timing against expected Poisson arrival distributions. Misbehaving nodes injecting malformed PDUs or replaying counters are quarantined in real-time.</p>
+          <div class="pillar-num">05 / BYZANTINE ISOLATION</div>
+          <h3>Poisson Anomaly Quarantine</h3>
+          <p>Nodes benchmark peer timing against expected Poisson inter-arrival models. Peers attempting out-of-order injection, replay window tampering, or malformed PDU floods are instantly isolated.</p>
         </div>
 
         <div class="pillar-card">
           <div class="pillar-num">06 / IDENTITY ANCHORING</div>
-          <h3>Ed25519 Cryptographic Trust</h3>
-          <p>Nodes have no IP-based identity. Every peer is anchored to an Ed25519 public key fingerprint with issuer-signed cryptographic revocation lists. IP roaming preserves authenticated sessions.</p>
+          <h3>Cryptographic Ed25519 Anchors</h3>
+          <p>Nodes possess no fixed IP addresses. Identity is permanently anchored to Ed25519 public key fingerprints with issuer-signed cryptographic revocation lists, maintaining authentication across dynamic IP roaming.</p>
         </div>
       </div>
     </section>
@@ -808,53 +857,54 @@
     <section id="deploy">
       <div class="section-head">
         <span class="section-tag">DEPLOYMENT &bull; GET STARTED</span>
-        <h2>Deploying Nodes &amp; Mobile Tunnels</h2>
-        <p>No account creation, no certificates from third-party CAs. Run directly as a daemon or system service.</p>
+        <h2>Zero-Dependency Daemon Deployment</h2>
+        <p>No central account creation, no external coordinator dependencies, and zero CA trusts. Run directly as a native system daemon.</p>
       </div>
 
       <div class="route">
 
         <div class="route-step">
-          <h3><span>01</span> Install the Daemon</h3>
-          <p>Compile from verified Rust source or download the signed static binary onto your exit hub and remote devices:</p>
+          <h3><span>01</span> Build or Download the Static Binary</h3>
+          <p>Global Ghost Net is self-contained with zero runtime dependencies. Install via Cargo or fetch the pre-compiled static binary:</p>
           <div class="term">
-            <span class="c"># Linux / macOS</span><br>
-            <span class="p">curl -sSf https://ggn.kellersystems.dev/install.sh | sh</span><br><br>
-            <span class="c"># Windows PowerShell</span><br>
-            <span class="p">irm https://ggn.kellersystems.dev/install.ps1 | iex</span>
+            <span class="c"># Install from source via Rust &amp; Cargo</span><br>
+            <span class="p">cargo install --git https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br><br>
+            <span class="c"># Or clone and compile native release target</span><br>
+            <span class="p">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br>
+            <span class="p">cd Global-Ghost-Net &amp;&amp; cargo build --release</span>
           </div>
         </div>
 
         <div class="route-step">
-          <h3><span>02</span> Configure Mutual Pre-Shared Key (Optional Hardening)</h3>
-          <p>Generate a 256-bit symmetric pre-shared key. When configured, handshakes will drop unauthorized peers before consuming handshake compute:</p>
+          <h3><span>02</span> Launch Public Swarm Node (Default Mode)</h3>
+          <p>Binds UDP mesh listener and automatically discovers global participants via decentralized DNS seeds and LAN multicast:</p>
           <div class="term">
-            <span class="c"># Generate 32-byte hex secret</span><br>
+            <span class="c"># Join worldwide swarm (RS(2,1) multi-hop dispersion)</span><br>
+            <span class="p">GHOST_BIND</span>=0.0.0.0:2271 vantablack
+          </div>
+          <p class="alt">Port 2271 handles encrypted GTF datagrams; port 2270 handles local Ed25519-signed multicast beacons.</p>
+        </div>
+
+        <div class="route-step">
+          <h3><span>03</span> Isolate as a Private Overlay Mesh (Optional)</h3>
+          <p>Generate a 256-bit symmetric pre-shared key. Packets without a valid cryptographic PSK tag are dropped prior to decapsulation:</p>
+          <div class="term">
+            <span class="c"># Generate 32-byte secret</span><br>
             openssl rand -hex 32<br><br>
-            <span class="c"># Set on all participating nodes</span><br>
-            <span class="p">export GHOST_PSK</span>=<span class="val">e7f9a204b18c...09df</span>
+            <span class="c"># Run private sovereign node</span><br>
+            <span class="p">export GHOST_PSK</span>=<span class="val">e7f9a204b18c5e032fa89b2c...09df</span><br>
+            <span class="p">GHOST_BIND</span>=0.0.0.0:2271 vantablack
           </div>
         </div>
 
         <div class="route-step">
-          <h3><span>03</span> Start Exit Hub (Home LAN)</h3>
-          <p>Run the node on your home network to bridge traffic to the local subnet:</p>
+          <h3><span>04</span> Route Client Traffic (SOCKS5 Proxy or Virtual TUN)</h3>
+          <p>Tunnel application traffic through the encrypted post-quantum mesh directly to designated exit nodes or peer subnets:</p>
           <div class="term">
-            <span class="p">GHOST_BIND</span>=0.0.0.0:2271 \<br>
-            <span class="p">GHOST_EXIT_ALLOWLIST</span>=&lt;remote_peer_fingerprint&gt; \<br>
-            vantablack
-          </div>
-          <p class="alt">Replace allowlist with <code>any</code> for open mesh routing among PSK holders. Port 2270 is reserved for UDP discovery beacons.</p>
-        </div>
-
-        <div class="route-step">
-          <h3><span>04</span> Connect Mobile Client / Laptop (LAN-over-WAN)</h3>
-          <p>Connect from cellular or public Wi-Fi directly to your exit hub. All machine traffic routes through the encrypted post-quantum tunnel:</p>
-          <div class="term">
-            <span class="c"># Connect via SOCKS5 local proxy</span><br>
-            <span class="p">GHOST_SOCKS5</span>=1 <span class="p">GHOST_SEEDS</span>=home.yourdomain.com:2271 vantablack<br><br>
-            <span class="c"># Or enable full TUN interface routing (requires elevated privileges)</span><br>
-            <span class="p">GHOST_ENABLE_TUN</span>=1 <span class="p">GHOST_SEEDS</span>=home.yourdomain.com:2271 vantablack
+            <span class="c"># Connect via local SOCKS5 proxy (127.0.0.1:1080)</span><br>
+            <span class="p">GHOST_SOCKS5</span>=1 <span class="p">GHOST_SEEDS</span>=node1.domain.com:2271 vantablack<br><br>
+            <span class="c"># Test proxy egress</span><br>
+            <span class="p">curl --socks5 127.0.0.1:1080 https://checkip.amazonaws.com</span>
           </div>
         </div>
 
