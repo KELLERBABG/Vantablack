@@ -1122,8 +1122,94 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(true);
 
     if metrics_enabled {
+        // VPN counters for `/metrics` and `/healthz`. Rendered by a helper so the
+        // endpoint stays readable; the base v0.4.0 metric set is untouched, and
+        // with the `vpn` feature off this contributes nothing.
+        #[cfg(feature = "vpn")]
+        fn vpn_export(mode: &Option<VpnMode>) -> (&'static str, String, serde_json::Value) {
+            match mode {
+                Some(VpnMode::Hub(h)) => {
+                    let m = h.metrics();
+                    let prom = format!(
+                        "# HELP ghost_vpn_active_leases VPN hub: active overlay leases\n\
+                         # TYPE ghost_vpn_active_leases gauge\nghost_vpn_active_leases {}\n\
+                         # HELP ghost_vpn_tunnel_frames_in_total VPN hub: tunnel frames received\n\
+                         # TYPE ghost_vpn_tunnel_frames_in_total counter\nghost_vpn_tunnel_frames_in_total {}\n\
+                         # HELP ghost_vpn_tunnel_frames_out_total VPN hub: tunnel frames sent\n\
+                         # TYPE ghost_vpn_tunnel_frames_out_total counter\nghost_vpn_tunnel_frames_out_total {}\n\
+                         # HELP ghost_vpn_frames_dropped_total VPN hub: tunnel frames dropped\n\
+                         # TYPE ghost_vpn_frames_dropped_total counter\nghost_vpn_frames_dropped_total {}\n\
+                         # HELP ghost_vpn_tcp_flows VPN hub: live netstack TCP flows\n\
+                         # TYPE ghost_vpn_tcp_flows gauge\nghost_vpn_tcp_flows {}\n\
+                         # HELP ghost_vpn_udp_flows VPN hub: live UDP flow bindings\n\
+                         # TYPE ghost_vpn_udp_flows gauge\nghost_vpn_udp_flows {}\n\
+                         # HELP ghost_vpn_counter_headroom_min VPN hub: smallest remaining per-epoch tunnel-counter headroom across leases\n\
+                         # TYPE ghost_vpn_counter_headroom_min gauge\nghost_vpn_counter_headroom_min {}\n",
+                        m.leases,
+                        m.frames_in,
+                        m.frames_out,
+                        m.frames_dropped,
+                        m.tcp_flows,
+                        m.udp_flows,
+                        m.counter_headroom_min,
+                    );
+                    (
+                        "hub",
+                        prom,
+                        serde_json::json!({
+                            "leases": m.leases,
+                            "tcp_flows": m.tcp_flows,
+                            "udp_flows": m.udp_flows,
+                            "tunnel_frames_in": m.frames_in,
+                            "tunnel_frames_out": m.frames_out,
+                            "frames_dropped": m.frames_dropped,
+                            "counter_headroom_min": m.counter_headroom_min,
+                        }),
+                    )
+                }
+                Some(VpnMode::Client(c, _)) => {
+                    let ctr = c.tx_counter();
+                    let headroom = u32::MAX.saturating_sub(ctr);
+                    let dead = c.watchdog.lock().is_dead();
+                    let prom = format!(
+                        "# HELP ghost_vpn_tx_counter VPN client: per-epoch tunnel TX counter\n\
+                         # TYPE ghost_vpn_tx_counter gauge\nghost_vpn_tx_counter {ctr}\n\
+                         # HELP ghost_vpn_counter_headroom VPN client: remaining tunnel-counter headroom\n\
+                         # TYPE ghost_vpn_counter_headroom gauge\nghost_vpn_counter_headroom {headroom}\n\
+                         # HELP ghost_vpn_epoch VPN client: current session epoch\n\
+                         # TYPE ghost_vpn_epoch gauge\nghost_vpn_epoch {}\n\
+                         # HELP ghost_vpn_watchdog_dead VPN client: 1 once the watchdog declares the tunnel dead\n\
+                         # TYPE ghost_vpn_watchdog_dead gauge\nghost_vpn_watchdog_dead {}\n",
+                        c.current_epoch(),
+                        u8::from(dead),
+                    );
+                    (
+                        "client",
+                        prom,
+                        serde_json::json!({
+                            "tx_counter": ctr,
+                            "counter_headroom": headroom,
+                            "epoch": c.current_epoch(),
+                            "watchdog_dead": dead,
+                        }),
+                    )
+                }
+                None => ("disabled", String::new(), serde_json::json!({})),
+            }
+        }
+        #[cfg(not(feature = "vpn"))]
+        fn vpn_export(_mode: &Option<VpnMode>) -> (&'static str, String, serde_json::Value) {
+            ("disabled", String::new(), serde_json::json!({}))
+        }
+
         let nc_m = Arc::clone(&nc);
         let addrs_m = Arc::clone(&addrs);
+        // Same cfg dance the receiver uses: `vpn_mode` only exists when the
+        // feature is on, so the non-vpn build needs its own binding.
+        #[cfg(feature = "vpn")]
+        let vpn_m: Option<VpnMode> = vpn_mode.clone();
+        #[cfg(not(feature = "vpn"))]
+        let vpn_m: Option<VpnMode> = None;
         let mp = metrics_port;
         tokio::spawn(async move {
             let bind_addr = format!("0.0.0.0:{}", mp);
@@ -1134,10 +1220,12 @@ async fn main() -> anyhow::Result<()> {
                         if let Ok((mut stream, _)) = listener.accept().await {
                             let nc_ref = Arc::clone(&nc_m);
                             let addrs_ref = Arc::clone(&addrs_m);
+                            let vpn_ref = vpn_m.clone();
                             tokio::spawn(async move {
                                 let mut buf = [0u8; 1024];
                                 if let Ok(n) = stream.read(&mut buf).await {
                                     let req = String::from_utf8_lossy(&buf[..n]);
+                                    let (vpn_role, vpn_prom, vpn_json) = vpn_export(&vpn_ref);
                                     let (status_line, body, content_type) = if req.starts_with("GET /healthz") || req.starts_with("GET / ") {
                                         let body = serde_json::json!({
                                             "status": "healthy",
@@ -1145,7 +1233,9 @@ async fn main() -> anyhow::Result<()> {
                                             "fingerprint": nc_ref.fingerprint(),
                                             "uptime_seconds": nc_ref.created_at.elapsed().as_secs(),
                                             "active_sessions": nc_ref.sessions.len(),
-                                            "known_peers": addrs_ref.len()
+                                            "known_peers": addrs_ref.len(),
+                                            "vpn": vpn_role,
+                                            "vpn_stats": vpn_json
                                         }).to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /metrics") {
@@ -1165,6 +1255,14 @@ async fn main() -> anyhow::Result<()> {
                                         ("HTTP/1.1 200 OK", body, "text/plain; version=0.0.4; charset=utf-8")
                                     } else {
                                         ("HTTP/1.1 404 Not Found", "Not Found".to_string(), "text/plain")
+                                    };
+                                    // VPN counters are appended rather than woven into
+                                    // the base body, so the v0.4.0 metric set stays
+                                    // byte-identical when the `vpn` feature is off.
+                                    let body = if req.starts_with("GET /metrics") {
+                                        format!("{body}{vpn_prom}")
+                                    } else {
+                                        body
                                     };
                                     let resp = format!(
                                         "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

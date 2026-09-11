@@ -445,6 +445,46 @@ impl VpnHub {
     pub fn leases_snapshot(&self) -> Vec<super::Lease> {
         self.leases.snapshot()
     }
+
+    /// Metrics snapshot for `/metrics` and `/healthz`.
+    ///
+    /// `counter_headroom_min` is the operationally important one: how close the
+    /// busiest lease is to exhausting its per-epoch tunnel counter — a state
+    /// that was unrecoverable before the re-key trigger existed (PROTOTYPE.md
+    /// flaw #1). Exporting it lets a dashboard alert *before* it bites.
+    pub fn metrics(&self) -> VpnHubMetrics {
+        let ns = self.netstack.stats();
+        let counter_headroom_min = self
+            .tx_counters
+            .lock()
+            .values()
+            .map(|c| u32::MAX.saturating_sub(*c))
+            .min()
+            .unwrap_or(u32::MAX);
+        VpnHubMetrics {
+            frames_in: self.stats_in.load(Ordering::Relaxed),
+            frames_out: self.stats_out.load(Ordering::Relaxed),
+            frames_dropped: self.stats_dropped.load(Ordering::Relaxed),
+            leases: self.leases.lease_count(),
+            tcp_flows: ns.tcp_flows as usize,
+            udp_flows: self.flows.len(),
+            counter_headroom_min,
+        }
+    }
+}
+
+/// Point-in-time VPN hub counters for the monitoring endpoints.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VpnHubMetrics {
+    pub frames_in: u32,
+    pub frames_out: u32,
+    pub frames_dropped: u32,
+    pub leases: usize,
+    pub tcp_flows: usize,
+    pub udp_flows: usize,
+    /// Smallest remaining tunnel-counter headroom across leases
+    /// (`u32::MAX` when no lease has spent a counter yet).
+    pub counter_headroom_min: u32,
 }
 
 // ── IP/UDP packet construction (LAN → client replies) ───────────────
