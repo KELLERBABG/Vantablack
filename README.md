@@ -49,7 +49,7 @@ Run the pre-compiled binary or build with cargo:
    cargo run --release
    # Or run target/release/vantablack
    ```
-   - Binds local mesh listener to port `2270`.
+   - Binds its mesh data socket per `GHOST_BIND` (default: an ephemeral port). Port `2270/UDP` is reserved for the discovery beacon.
    - Starts local SOCKS5 proxy on `127.0.0.1:1080`.
    - Automatically queries DNS seeds and connects to active mesh peers.
 
@@ -79,8 +79,6 @@ You do not need to rent a virtual private server. You can bootstrap your mesh wi
    GHOST_DNS_SEED=seeds.yourdomain.com:2270
    ```
 Connecting nodes automatically query this record, establish the post-quantum mesh, and persist verified nodes to `peers.cache` for offline-first reconnection.
-   ```
-Connecting nodes automatically query this record, establish the post-quantum mesh, and persist verified nodes to `peers.cache` for offline-first reconnection.
 
 ---
 
@@ -102,7 +100,7 @@ STATUS
 STATS
 
 # Send an end-to-end encrypted direct message across the mesh
-CHAT 9a4f7e2c "Direct post-quantum encrypted ping"
+CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 ```
 
 ---
@@ -154,7 +152,7 @@ For engineers, cryptographers, and contributors wishing to inspect the mathemati
 * [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) â€” In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
 * [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) â€” Formal analysis of ML-KEM-512, X25519 hybrid key exchange, directional nonces, and memory security.
 * [**Zero-Cost Peer Discovery Guide**](docs/PEER_DISCOVERY_GUIDE.md) â€” Step-by-step walkthrough for configuring free Cloudflare DNS seeds and local caching.
-* [**Configuration Reference**](config.env) â€” Parameter reference for network ports, transit rate limits, and egress allowlists.
+* [**Configuration Reference**](config.env.example) â€” Parameter reference for network ports, transit rate limits, and egress allowlists.
 
 ---
 

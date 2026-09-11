@@ -33,7 +33,7 @@ In your `config.env` file, uncomment and specify your DNS seed:
 GHOST_DNS_SEED=seeds.yourdomain.com:2270
 ```
 
-When you launch `run-client.bat` or `run-exit-node.bat`:
+When you start a node (the `.bat` launchers were removed in 19b1ef1 - run the binary directly):
 1. The node issues an asynchronous DNS query for `seeds.yourdomain.com`.
 2. It discovers the active peer IP addresses.
 3. It performs a post-quantum handshake and joins the mesh.

@@ -35,7 +35,7 @@ rollback point.
 **Windows gotcha that cost a debugging round.** Running
 `scripts/vpn_loopback_test.sh` from PowerShell returns silently with no output —
 PowerShell will not execute a `.sh` file. Use `bash scripts/vpn_loopback_test.sh`,
-or the new `run-vpn-test.bat`, which locates bash and reports the exit code.
+There is no launcher wrapper any more - the `.bat` files were removed in 19b1ef1.
 
 **Verification (most recent pass):** `cargo build` clean for **both** feature
 sets; `cargo test --locked --features vpn` → **174 passed, 0 failed**;
@@ -155,7 +155,7 @@ fp=ab12…  ip=10.66.0.10  endpoint=203.0.113.9:51000  epoch=7  last_seen=2s  fl
 | D1 | `tests/simulation.rs` still races on one `identity.key` (deletes the file before every node) | `tests/simulation.rs:37-51,124,453-456` | Now trivially fixed by §1: give each `SimNode` its own `GHOST_IDENTITY_FILE` instead of deleting the shared file. |
 | D2 | `tests/virtual_net.rs` encodes a **stale** frame layout — payload at offset **9**/max 487, vs production offset **10**/486 | `tests/virtual_net.rs:166-167` vs `net/mod.rs` | Align to `OFFSET_PAYLOAD_START`, or `#[path]`-redirect this duplicate to `tests/common/virtual_net.rs`. |
 | D3 | `docs/SPECIFICATIONS.md` says the GTF counter is `u32` **(LE)**; the code writes `.to_be_bytes()` (BE) | `docs/SPECIFICATIONS.md:33` vs `net/mod.rs` `build_privacy_frame` | Change the doc to BE. |
-| D4 | `index.html` still ships the phantom `./target/release/ggn-daemon --listen 0.0.0.0:2270 --socks 127.0.0.1:1080` copy-paste block, and its frame inspector draws a layout (`MAGIC[4] NONCE[8] POLY1305[16] …`) that matches neither the code nor SPECIFICATIONS | `index.html:876`, `:698-702` | Replace with `vantablack` + env vars; redraw the inspector from `net/mod.rs`. |
+| D4 | `index.html` still ships the phantom `./target/release/ggn-daemon --listen 0.0.0.0:2270 --socks 127.0.0.1:1080` copy-paste block, and its frame inspector draws a layout (`MAGIC[4] NONCE[8] POLY1305[16] …`) that matches neither the code nor SPECIFICATIONS | `website/index.html:876`, `:698-702` | Replace with `vantablack` + env vars; redraw the inspector from `net/mod.rs`. |
 | D5 | `README.md` still claims exit nodes "Rotate egress IPs" and NAT traversal is "Bypassed" via STUN hole-punching — neither is implemented | `README.md:57`, `README.md:115` | Delete the two claims; VPN now supersedes the NAT story anyway. |
 | D6 | `scripts/mesh_smoke_test.sh` and `scripts/pentest_ggn.sh` probe `C:/Users/Public/ggn-target/debug`, a path `.cargo/config.toml` documents as removed | `scripts/*.sh:19,23` | Drop the second candidate dir. |
 | D7 | `net/security/hsm.rs` gates code on `hardware-tpm` / `pkcs11`, but neither feature is declared in `Cargo.toml` → that code can never compile, and `--features hardware-tpm` is an "unknown feature" error | `Cargo.toml` features list vs `hsm.rs:142,157,190,240,256,276` | Declare both (as no-op stubs) **or** delete the gated blocks. Either is better than a claim that cannot be built. |
@@ -280,14 +280,14 @@ yours — not on more code.
 - [ ] Never invoke these scripts with the bare name `bash` in PowerShell — it
       resolves to `C:\Windows\System32\bash.exe` (the WSL shim) and fails with
       *"Windows-Subsystem für Linux verfügt über keine installierten
-      Distributionen"*. Use `run-vpn-test.bat`, or explicitly
+      Distributionen"*. Use `scripts/vpn_loopback_test.sh`, or explicitly
       `& "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe" scripts/vpn_loopback_test.sh`.
 
 ---
 
 ## 8. How to test what changed (copy-paste)
 
-From the repo root. On Windows use Git Bash or `run-vpn-test.bat` — never the
+From the repo root. On Windows use Git Bash or `scripts/vpn_loopback_test.sh` — never the
 bare name `bash` in PowerShell (§7.5). Replace `<bin>` with
 `target/debug/vantablack.exe` (Windows) or `target/release/vantablack`.
 
@@ -304,7 +304,7 @@ cargo test --locked --features vpn # expect: passed=174 failed=0
 ```bash
 bash scripts/vpn_loopback_test.sh   # expect: "6 passed, 0 failed"
 ```
-Windows: double-click `run-vpn-test.bat`. Expect `[+] VPN loopback self-test
+Windows: run it from Git Bash. Expect `[+] VPN loopback self-test
 PASSED`, and in the client log
 `FAKE-TUN self-test: PASS — ICMP echo reply returned through the mesh`.
 This is the gate PROTOTYPE.md called "nothing is wire-proven yet".
