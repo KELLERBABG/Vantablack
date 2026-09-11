@@ -352,6 +352,33 @@ impl TunnelWatchdog {
         }
     }
 
+    /// Drive the machine *and* honour the tunnel-counter headroom.
+    ///
+    /// PROTOTYPE.md flaw #1: the tunnel counter is per-epoch and the peer's
+    /// replay window is monotonic — once a counter wraps, every later frame is
+    /// rejected forever. A spent counter is therefore as fatal as a dead
+    /// tunnel, and the same recovery vehicle fixes it (fresh handshake → epoch
+    /// rotation → both counters reset). Checked *before* the liveness machine
+    /// so exhaustion takes precedence over a merely idle link.
+    pub fn poll_with_counter(&mut self, now: Instant, tx_counter: u32) -> Action {
+        // Re-key well before the wrap. The margin wants to exceed the worst-case
+        // RTT + handshake time at the client's peak frame rate.
+        const COUNTER_REKEY_AT: u32 = u32::MAX - 1_000_000;
+        if tx_counter < COUNTER_REKEY_AT {
+            return self.poll(now);
+        }
+        if self.attempts >= MAX_ATTEMPTS {
+            return Action::Nothing;
+        }
+        let due = self.last_attempt.map(|t| t + self.backoff()).unwrap_or(now);
+        if now < due {
+            return Action::Nothing;
+        }
+        self.attempts += 1;
+        self.last_attempt = Some(now);
+        Action::Rehandshake { attempt: self.attempts }
+    }
+
     fn backoff(&self) -> Duration {
         let exp = self.attempts.saturating_sub(1).min(5);
         BACKOFF_BASE
@@ -448,6 +475,38 @@ mod tests {
         // But one inbound datagram revives the machine fully.
         w.on_inbound(at(last + 3601));
         assert_eq!(w.poll(at(last + 3611)), Action::SendKeepalive);
+    }
+
+    #[test]
+    fn counter_exhaustion_triggers_rehandshake_before_wrap() {
+        // PROTOTYPE.md flaw #1: once the tunnel counter wraps, the peer's
+        // monotonic replay window rejects every later frame *forever*. The
+        // watchdog must therefore demand a fresh epoch before that point,
+        // reusing the same recovery vehicle as a dead link.
+        const BELOW: u32 = u32::MAX - 2_000_000; // under the re-key margin
+        const ABOVE: u32 = u32::MAX - 100_000;   // past the re-key margin
+
+        // Headroom: the counter must never override the liveness machine.
+        let t0 = at(0);
+        let mut w = TunnelWatchdog::new_at(t0);
+        assert_eq!(w.poll_with_counter(at(1), BELOW), Action::Nothing);
+        assert_eq!(
+            w.poll_with_counter(at(10), BELOW),
+            Action::SendKeepalive,
+            "counter headroom must not mask the normal idle probe"
+        );
+
+        // Past the margin: re-handshake at once, then honour the backoff gate.
+        let mut w = TunnelWatchdog::new_at(t0);
+        assert_eq!(w.poll_with_counter(at(1), ABOVE), Action::Rehandshake { attempt: 1 });
+        assert_eq!(w.poll_with_counter(at(2), ABOVE), Action::Nothing, "inside backoff");
+        assert_eq!(w.poll_with_counter(at(3), ABOVE), Action::Rehandshake { attempt: 2 });
+
+        // A healthy inbound datagram (post-rotation, low counter) resets it.
+        w.on_inbound(at(4));
+        assert_eq!(w.poll_with_counter(at(5), 7), Action::Nothing);
+        assert_eq!(w.attempts(), 0);
+        assert!(!w.is_dead());
     }
 
     #[test]

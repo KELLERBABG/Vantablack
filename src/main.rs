@@ -1616,7 +1616,13 @@ async fn main() -> anyhow::Result<()> {
                                 wd.on_inbound(std::time::Instant::now());
                                 seen = cur;
                             }
-                            wd.poll(std::time::Instant::now())
+                            // Counter headroom is a second liveness trigger: a
+                            // spent tunnel counter is unrecoverable without a
+                            // new epoch (PROTOTYPE.md flaw #1).
+                            wd.poll_with_counter(
+                                std::time::Instant::now(),
+                                w_client.tx_counter(),
+                            )
                         };
                         match action {
                             vpn::client::Action::Nothing => {}
@@ -1629,11 +1635,14 @@ async fn main() -> anyhow::Result<()> {
                             vpn::client::Action::Rehandshake { attempt } => {
                                 match w_addrs.get(&w_client.fingerprint).map(|v| *v.value()) {
                                     Some(tgt) => {
-                                        tracing::warn!(attempt, "VPN tunnel dead — re-handshaking to hub");
+                                        tracing::warn!(
+                                            attempt,
+                                            "VPN tunnel needs a fresh epoch (dead link or counter exhaustion) — re-handshaking to hub"
+                                        );
                                         initiate_handshake(&w_nc, &w_nc.socket, tgt, &w_phs).await;
                                     }
                                     None => {
-                                        tracing::debug!("VPN tunnel dead — hub address unknown, cannot re-handshake");
+                                        tracing::debug!("VPN tunnel needs a fresh epoch — hub address unknown, cannot re-handshake");
                                     }
                                 }
                             }
