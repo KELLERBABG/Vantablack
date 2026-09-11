@@ -1,0 +1,434 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Roadmap — Global Ghost Net</title>
+  <meta name="description" content="Planned engineering advances and hardware integration roadmap for Global Ghost Net, ordered by implementation feasibility.">
+  <meta name="theme-color" content="#05070a">
+  <link rel="icon" type="image/svg+xml" href="/assets/icon.svg">
+  <link rel="canonical" href="https://ggn.kellersystems.dev/roadmap">
+
+  <!-- OpenGraph / Social Embeds -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ggn.kellersystems.dev/roadmap">
+  <meta property="og:title" content="Global Ghost Net // Engineering Roadmap">
+  <meta property="og:description" content="Planned engineering advances and hardware integration roadmap for Global Ghost Net, ordered by implementation feasibility.">
+  <meta property="og:image" content="https://ggn.kellersystems.dev/assets/og-image.png?v=3">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #05070a;
+      --surface: #0b0f16;
+      --surface-raised: #111823;
+      --surface-card: #0d131d;
+      --border: #1b2534;
+      --border-glow: #2b3d55;
+      --border-subtle: #141d2a;
+
+      --accent: #22d3ee;
+      --accent-subtle: rgba(34, 211, 238, 0.08);
+      --accent-border: rgba(34, 211, 238, 0.28);
+
+      --text: #eef2f7;
+      --text-muted: #93a1b5;
+      --text-dim: #5b6b80;
+
+      --font-heading: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+      --radius: 8px;
+      --shell: 1040px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: radial-gradient(ellipse at 50% 0%, #0d1624 0%, var(--bg) 80%);
+      color: var(--text);
+      font-family: var(--font-heading);
+      line-height: 1.62;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+    }
+
+    a { color: inherit; }
+
+    /* Top Header */
+    .top-header {
+      border-bottom: 1px solid var(--border);
+      background: rgba(5, 7, 10, 0.88);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      width: 100%;
+    }
+    .header-inner {
+      max-width: var(--shell);
+      margin: 0 auto;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 66px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      text-decoration: none;
+    }
+    .brand-icon-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      object-fit: contain;
+    }
+    .brand-titles {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.18;
+    }
+    .brand-product {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: -0.02em;
+    }
+    .brand-product span.sub-accent { color: var(--accent); }
+    .brand-company {
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.86rem;
+      font-weight: 500;
+      transition: color 0.15s;
+    }
+    .nav-link:hover, .nav-link.active { color: var(--accent); }
+
+    .btn-repo {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.9rem;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.8rem;
+      font-family: var(--font-mono);
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .btn-repo:hover {
+      border-color: var(--accent);
+      box-shadow: 0 0 16px rgba(34, 211, 238, 0.25);
+    }
+    .btn-action {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.45rem 1rem;
+      background: var(--accent);
+      color: #04161a;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-family: var(--font-mono);
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .btn-action:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(34, 211, 238, 0.3);
+    }
+
+    /* Content Layout */
+    .shell {
+      max-width: var(--shell);
+      margin: 0 auto;
+      padding: 56px 28px 100px;
+      flex: 1;
+      width: 100%;
+    }
+
+    .page-header {
+      margin-bottom: 50px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 30px;
+    }
+    .page-pretitle {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--accent);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .page-title {
+      font-size: clamp(2rem, 4vw, 2.6rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      color: #ffffff;
+      margin-bottom: 14px;
+    }
+    .page-desc {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      max-width: 720px;
+      line-height: 1.6;
+    }
+
+    /* Roadmap List */
+    .roadmap-list {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .roadmap-item {
+      display: flex;
+      gap: 24px;
+      padding: 28px 30px;
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .roadmap-item:hover {
+      border-color: var(--border-glow);
+      background: var(--surface-raised);
+    }
+
+    .item-number {
+      font-family: var(--font-mono);
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1;
+      padding-top: 4px;
+      min-width: 32px;
+    }
+
+    .item-body {
+      flex: 1;
+    }
+
+    .item-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #ffffff;
+      margin-bottom: 8px;
+      letter-spacing: -0.01em;
+    }
+
+    .item-text {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      line-height: 1.58;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+      padding: 30px 0;
+      margin-top: auto;
+    }
+    .footer-inner {
+      max-width: var(--shell);
+      margin: 0 auto;
+      padding: 0 28px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .footer-inner a { color: var(--text-muted); text-decoration: none; transition: color 0.15s; }
+    .footer-inner a:hover { color: var(--accent); }
+
+    @media (max-width: 720px) {
+      .header-inner { padding: 0 20px; }
+      .shell { padding: 36px 20px 80px; }
+      .roadmap-item { flex-direction: column; gap: 12px; padding: 22px; }
+      .item-number { padding-top: 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header class="top-header">
+    <div class="header-inner">
+      <a href="/" class="brand">
+        <div class="brand-icon-wrap">
+          <img class="brand-icon" src="/assets/icon.svg" alt="Global Ghost Net Logo" width="36" height="36" />
+        </div>
+        <div class="brand-titles">
+          <div class="brand-product">Global Ghost <span class="sub-accent">Net</span></div>
+          <div class="brand-company">Keller Systems</div>
+        </div>
+      </a>
+      <div class="nav-links">
+        <a href="/docs" class="nav-link">Documentation</a>
+        <a href="/roadmap" class="nav-link active">Roadmap</a>
+        <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener" class="btn-repo">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          Repository
+        </a>
+        <a href="/#deploy" class="btn-action">Quickstart &rarr;</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div class="page-header">
+      <div class="page-pretitle">Engineering Development Order</div>
+      <h1 class="page-title">Roadmap</h1>
+      <p class="page-desc">
+        Planned features and architectural capabilities ordered chronologically by implementation feasibility, from immediate software extensions to advanced hardware-gated integrations.
+      </p>
+    </div>
+
+    <div class="roadmap-list">
+
+      <article class="roadmap-item">
+        <div class="item-number">1.</div>
+        <div class="item-body">
+          <h2 class="item-title">Fair-share transit enforcement</h2>
+          <p class="item-text">
+            A built-in reciprocity mechanism that measures how much relay bandwidth each peer contributes versus consumes, prioritizing nodes that actively help route traffic for the network.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">2.</div>
+        <div class="item-body">
+          <h2 class="item-title">Automated UDP hole punching</h2>
+          <p class="item-text">
+            Enhanced direct traversal through strict home and cellular NAT firewalls without requiring manual port forwards or public relay intermediaries.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">3.</div>
+        <div class="item-body">
+          <h2 class="item-title">Egress IP rotation</h2>
+          <p class="item-text">
+            Allowing exit nodes to distribute outbound traffic across multiple public IP addresses, preventing destination servers from correlating or rate-limiting traffic to a single address.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">4.</div>
+        <div class="item-body">
+          <h2 class="item-title">Zero-knowledge peer discovery</h2>
+          <p class="item-text">
+            Cryptographic proof exchanges during discovery that allow peers to verify authorization to join a private mesh without revealing their public identity keys over the wire.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">5.</div>
+        <div class="item-body">
+          <h2 class="item-title">Long-stream forward error correction</h2>
+          <p class="item-text">
+            Secondary LDPC error correction across sustained high-throughput streams, repairing packet bursts on severely unstable lossy networks beyond single-frame sharding.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">6.</div>
+        <div class="item-body">
+          <h2 class="item-title">Encrypted runtime memory</h2>
+          <p class="item-text">
+            Continuous in-memory encryption of volatile buffers to protect cryptographic session material against physical physical-memory dumping or cold-boot attacks.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">7.</div>
+        <div class="item-body">
+          <h2 class="item-title">Hardware security key storage</h2>
+          <p class="item-text">
+            Binding node identity keys directly into physical TPM 2.0 chips and YubiKey HSMs so master private keys can never be extracted from host storage.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">8.</div>
+        <div class="item-body">
+          <h2 class="item-title">Kernel-bypass packet acceleration</h2>
+          <p class="item-text">
+            Direct network card packet ingestion via eBPF and XDP drivers on Linux, allowing multi-gigabit mesh routing without operating system kernel overhead.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">9.</div>
+        <div class="item-body">
+          <h2 class="item-title">Satellite and orbital mesh tracking</h2>
+          <p class="item-text">
+            Predictive orbit trajectory modeling and Doppler frequency adjustment to route traffic across Low Earth Orbit satellite constellations and ground stations.
+          </p>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <div>Global Ghost Net &mdash; Keller Systems</div>
+      <div style="display: flex; gap: 18px;">
+        <a href="/">Home</a>
+        <a href="/docs">Documentation</a>
+        <a href="/roadmap">Roadmap</a>
+        <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
