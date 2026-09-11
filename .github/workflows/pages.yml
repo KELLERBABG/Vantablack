@@ -1,0 +1,67 @@
+name: Deploy website
+
+# The landing page lives in website/ and is published to GitHub Pages.
+# Requires Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+#
+# Why the staging step exists: the page advertises
+#   curl -sSf https://ggn.kellersystems.dev/install.sh | sh
+#   irm https://ggn.kellersystems.dev/install.ps1 | iex
+# so the installers must resolve at the SITE ROOT, and the custom domain must
+# travel inside the artifact. Copying them in at build time keeps scripts/ and
+# the repository-root CNAME as the single source of truth, instead of
+# duplicating them into website/ where they would drift.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "CNAME"
+      - "scripts/install.sh"
+      - "scripts/install.ps1"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy midway; queue at most one behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: stage + upload artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage the site payload
+        run: |
+          set -eu
+          test -f website/index.html
+          cp CNAME website/CNAME
+          cp scripts/install.sh scripts/install.ps1 website/
+          chmod +x website/install.sh
+          echo "--- site payload ---"
+          find website -type f | sort
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+  deploy:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
