@@ -22,3 +22,5 @@ __pycache__/
 .reasonix/
 *reasonix*
 *.bundle
+PROTOTYPE.md
+config.env

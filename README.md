@@ -6,7 +6,6 @@
 
 <br>
 
-[![Release](https://img.shields.io/badge/Release-v0.4.0-2563eb?style=flat-square)](https://github.com/KELLERBABG/Global-Ghost-Net/releases/latest)
 [![License](https://img.shields.io/badge/License-MIT-059669?style=flat-square)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-Rust%20(Pure)-orange?style=flat-square)](https://www.rust-lang.org/)
 [![Runtime](https://img.shields.io/badge/Runtime-Tokio%20Async-blue?style=flat-square)](https://tokio.rs/)
@@ -14,7 +13,7 @@
 
 <br>
 
-[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**Protocol Whitepaper**](docs/WHITEPAPER.md) &bull; [**Configuration Reference**](config.env) &bull; [**Download Release**](https://github.com/KELLERBABG/Global-Ghost-Net/releases/latest)
+[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**Protocol Whitepaper**](docs/WHITEPAPER.md) &bull; [**Configuration Reference**](config.env.example)
 
 </div>
 
@@ -41,18 +40,23 @@ Instead of sending your data through a central VPN provider where it can be moni
 
 ## Quick Start (Windows & Linux)
 
-### Option 1: One-Click Windows Launchers
+### Option 1: Running the Node
 
-Pre-configured scripts are included for instant zero-friction setup:
+Run the pre-compiled binary or build with cargo:
 
 1. **Client Node (Protected User):**
-   Double-click `run-client.bat`
+   ```bash
+   cargo run --release
+   # Or run target/release/vantablack
+   ```
    - Binds local mesh listener to port `2270`.
    - Starts local SOCKS5 proxy on `127.0.0.1:1080`.
    - Automatically queries DNS seeds and connects to active mesh peers.
 
 2. **Exit Node (Transit Provider):**
-   Double-click `run-exit-node.bat`
+   ```bash
+   GHOST_EXIT_ALLOWLIST=any cargo run --release
+   ```
    - Acts as an egress gateway that routes external internet traffic for mesh computers.
 
 3. **Browse Securely:**
@@ -70,9 +74,11 @@ You do not need to rent a virtual private server. You can bootstrap your mesh wi
 1. In your **Cloudflare Dashboard**, navigate to **DNS** &rarr; **Records**.
 2. Add an **A** record (e.g. `seeds.yourdomain.com`) pointing to the public IP of one of your stable nodes.
 3. Set proxy status to **DNS only (Grey Cloud)**.
-4. In `config.env`, set:
+4. Copy `config.env.example` to `config.env` and set:
    ```env
    GHOST_DNS_SEED=seeds.yourdomain.com:2270
+   ```
+Connecting nodes automatically query this record, establish the post-quantum mesh, and persist verified nodes to `peers.cache` for offline-first reconnection.
    ```
 Connecting nodes automatically query this record, establish the post-quantum mesh, and persist verified nodes to `peers.cache` for offline-first reconnection.
 
