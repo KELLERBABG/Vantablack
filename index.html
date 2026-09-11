@@ -69,7 +69,7 @@
     .vignette {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 50% 32%, transparent 28%, rgba(5, 7, 10, 0.74) 60%, var(--bg) 94%);
+      background: radial-gradient(ellipse at 50% 38%, transparent 30%, rgba(5, 7, 10, 0.72) 62%, var(--bg) 92%);
       pointer-events: none;
       z-index: 1;
     }
@@ -245,7 +245,7 @@
       font-size: 20px;
       font-weight: 300;
       color: var(--text-muted);
-      max-width: 740px;
+      max-width: 640px;
       line-height: 1.62;
       margin-bottom: 24px;
     }
@@ -253,12 +253,14 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 14px;
-      max-width: 780px;
+      max-width: 680px;
       margin: 24px 0 32px;
     }
     @media (max-width: 680px) { .mode-spec-box { grid-template-columns: 1fr; } }
     .mode-card {
-      background: var(--surface-card);
+      background: rgba(11, 15, 22, 0.7);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 16px 18px;
@@ -960,7 +962,7 @@
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
       var globe = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 1.7, vertexColors: true, transparent: true, opacity: 0.45,
+        size: 1.75, vertexColors: true, transparent: true, opacity: 0.55,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
       scene.add(globe);
@@ -980,18 +982,18 @@
       var lgeo = new THREE.BufferGeometry();
       lgeo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
       var lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
-        color: 0x22d3ee, transparent: true, opacity: 0.06,
+        color: 0x22d3ee, transparent: true, opacity: 0.08,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
       scene.add(lines);
 
-      scene.position.set(110, -36, 0);
+      scene.position.set(96, -34, 0);
 
       function resize() {
         var w = window.innerWidth, h = window.innerHeight;
         renderer.setSize(w, h, false);
         camera.aspect = w / h;
-        camera.position.z = w < 840 ? 420 : 300;
+        camera.position.z = w < 820 ? 400 : 300;
         camera.updateProjectionMatrix();
       }
       resize();
@@ -1001,8 +1003,8 @@
 
       (function frame() {
         requestAnimationFrame(frame);
-        globe.rotation.y += 0.0005;
-        globe.rotation.x = Math.sin(Date.now() * 0.0001) * 0.04;
+        globe.rotation.y += 0.0006;
+        globe.rotation.x = Math.sin(Date.now() * 0.0001) * 0.05;
         lines.rotation.copy(globe.rotation);
         renderer.render(scene, camera);
       })();
