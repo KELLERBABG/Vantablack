@@ -33,21 +33,21 @@ use common::virtual_net::{
 const TIMEOUT_MS: u64 = 2000;
 const _RESPONSE_BLOB_LEN: usize = 912;
 
-/// Delete the identity file so each test gets a fresh key.
+/// Counter for assigning unique identity files to simulation nodes.
+static SIM_NODE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Create a unique temporary identity file path and set GHOST_IDENTITY_FILE for the current thread/context.
+fn next_sim_identity_path() -> std::path::PathBuf {
+    let id = SIM_NODE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pid = std::process::id();
+    let temp_dir = std::env::temp_dir();
+    temp_dir.join(format!("ggn_sim_{}_{}.key", pid, id))
+}
+
 fn cleanup_identity() {
     let path = std::path::Path::new("identity.key");
     if path.exists() {
         let _ = std::fs::remove_file(path);
-    }
-    // Also clean up any per-test identity files from previous runs
-    if let Ok(entries) = std::fs::read_dir(".") {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let s = name.to_string_lossy();
-            if s.starts_with("identity_") && s.ends_with(".key") {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
     }
 }
 
@@ -121,12 +121,14 @@ struct SimNode {
 
 impl SimNode {
     async fn new(addr: &str, hub: &mut VirtualNetHub) -> Self {
-        cleanup_identity();
+        let id_path = next_sim_identity_path();
+        std::env::set_var("GHOST_IDENTITY_FILE", &id_path);
         let node = Arc::new(
             vantablack::ghost::GhostNode::new("127.0.0.1:0")
                 .await
                 .expect("GhostNode creation"),
         );
+        let _ = std::fs::remove_file(&id_path);
         let identity_pk = node.identity.public_key_bytes();
         let (ep, tx) = VirtualEndpoint::new(addr.to_string());
         hub.register(addr, tx);
@@ -525,14 +527,20 @@ async fn test_sim_byzantine_reputation() {
 
 #[tokio::test]
 async fn test_sim_unique_ids() {
-    cleanup_identity();
+    let id_a = next_sim_identity_path();
+    std::env::set_var("GHOST_IDENTITY_FILE", &id_a);
     let a = vantablack::ghost::GhostNode::new("127.0.0.1:0")
         .await
         .unwrap();
-    cleanup_identity();
+    let _ = std::fs::remove_file(&id_a);
+
+    let id_b = next_sim_identity_path();
+    std::env::set_var("GHOST_IDENTITY_FILE", &id_b);
     let b = vantablack::ghost::GhostNode::new("127.0.0.1:0")
         .await
         .unwrap();
+    let _ = std::fs::remove_file(&id_b);
+
     assert_ne!(a.fingerprint(), b.fingerprint());
 }
 

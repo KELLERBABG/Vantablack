@@ -27,9 +27,11 @@ use std::sync::Arc;
 
 // ── TUN over a VpnService fd ─────────────────────────────────────────
 
+use std::ffi::c_void;
+
 extern "C" {
-    fn read(fd: i32, buf: *mut u8, len: usize) -> isize;
-    fn write(fd: i32, buf: *const u8, len: usize) -> isize;
+    fn read(fd: i32, buf: *mut c_void, len: usize) -> isize;
+    fn write(fd: i32, buf: *const c_void, len: usize) -> isize;
 }
 
 /// TUN device backed by the fd returned by `VpnService.Builder.establish()`.
@@ -53,7 +55,7 @@ impl AndroidTun {
 
 impl TunDevice for AndroidTun {
     fn read_packet(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = unsafe { read(self.fd, buf.as_mut_ptr(), buf.len()) };
+        let n = unsafe { read(self.fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
         if n < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -61,7 +63,7 @@ impl TunDevice for AndroidTun {
     }
 
     fn write_packet(&self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = unsafe { write(self.fd, buf.as_ptr(), buf.len()) };
+        let n = unsafe { write(self.fd, buf.as_ptr() as *const c_void, buf.len()) };
         if n < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -257,7 +259,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
 /// `fun stats(ptr: Long): LongArray` — [rxPackets, txPackets, epoch, txCounter]
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_stats(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     ptr: jlong,
 ) -> jlongArray {
