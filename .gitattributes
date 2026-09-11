@@ -1,0 +1,15 @@
+# Store LF in the repository; the project is developed on Windows but built on
+# Linux/macOS in CI, and mixed endings show up as spurious diffs otherwise.
+* text=auto eol=lf
+
+# Windows launchers must keep CRLF to run correctly under cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# SVG is text; keep it normalised. Real binaries must never be touched.
+*.svg text
+*.dll binary
+*.exe binary
+*.ico binary
+*.png binary
+*.jpg binary

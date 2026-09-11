@@ -1,7 +1,7 @@
 # THINKTANK-BIN
 
 Scratchpad for additions, defects and designs discovered **while executing the
-[`PROTOTYPE.md`](PROTOTYPE.md) bucketlist**. Everything here is additive: the
+[`PROTOTYPE.md`](../PROTOTYPE.md) bucketlist**. Everything here is additive: the
 bucketlist itself stays the plan of record. Items are grouped by kind, and each
 carries enough detail to be picked up cold.
 
