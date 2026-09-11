@@ -158,26 +158,13 @@ fn test_l1_generate_x25519_keypair_is_random() {
 #[test]
 fn test_l1_compute_session_hash() {
     let key = [0x42u8; 32];
-    // compute_session_hash uses ring::hkdf::expand which may panic on
-    // some platforms with "Unspecified". We verify the test passes
-    // by constructing an equivalent manual HKDF using a different API.
-    // This test verifies that the function is callable and returns 4 bytes.
-    // If ring's HKDF expand panics, we skip gracefully.
-    let key_clone = key;
-    let hash_result = std::thread::spawn(move || {
-        l1_kem::compute_session_hash(&key_clone)
-    }).join();
+    let hash = l1_kem::compute_session_hash(&key);
+    assert_eq!(hash.len(), 4, "Session hash should be 4 bytes");
 
-    match hash_result {
-        Ok(h) => {
-            assert_eq!(h.len(), 4, "Session hash should be 4 bytes");
-        }
-        Err(_) => {
-            // ring's HKDF expand panicked — this is a known platform issue
-            // The function is still correct; the test verifies contract
-            eprintln!("Note: compute_session_hash panicked (ring HKDF platform issue)");
-        }
-    }
+    // Must be deterministic and match first 4 bytes of SHA-256(key)
+    use sha2::{Digest, Sha256};
+    let expected = &Sha256::digest(key)[..4];
+    assert_eq!(hash, expected, "Session hash must match SHA-256 digest prefix");
 }
 
 #[test]
@@ -641,38 +628,38 @@ fn test_l6_session_guard_out_of_order_within_window() {
 #[test]
 fn test_full_encrypt_shard_reconstruct_decrypt() {
     let key = [0x42u8; 32];
-    // Use even-length plaintext so encrypted data (plaintext + 16 byte tag) stays even
     let original = b"Even-length text for multi-layer test!";
 
     // Step 1: Encrypt (L2) - appends 16-byte Poly1305 tag
     let mut encrypted = original.to_vec();
     l2_aead::encrypt_in_place(&key, 1, &mut encrypted);
-    // encrypted = ciphertext || auth_tag (16 bytes)
 
-    // Step 2: Split into RS shards (L4) - original data split at midpoint, parity computed
-    let mid = encrypted.len() / 2;
-    let mut shard0 = encrypted[..mid].to_vec();
-    let mut shard1 = encrypted[mid..].to_vec();
-    let parity_len = shard0.len();
-    let mut parity = vec![0u8; parity_len];
+    // Step 2: Encode with real (2,1) Reed-Solomon erasure coding (L4)
+    let shards = l4_rs::encode(&mut encrypted);
+    assert_eq!(shards.len(), 3, "RS(2,1) produces 3 shards");
 
-    // Manual (2,1) RS: parity = shard0 XOR shard1
-    for i in 0..parity_len {
-        parity[i] = shard0[i] ^ shard1[i];
-    }
+    // Step 3: Simulate losing shard 0, reconstruct from shard 1 and parity shard 2
+    let mut received_shards: Vec<Option<Vec<u8>>> = vec![
+        None,                        // Lost data shard 0
+        Some(shards[1].clone()),     // Data shard 1
+        Some(shards[2].clone()),     // Parity shard 2
+    ];
+    l4_rs::reconstruct(&mut received_shards).expect("RS reconstruction from 2 of 3 shards should succeed");
 
-    // Step 3: Simulate losing the parity shard, reconstruct using shards 0+1
-    // (In a full (2,1) RS code, any 2 of 3 shards reconstructs the original)
-    let mut reconstructed_enc = [shard0.as_slice(), shard1.as_slice()].concat();
+    // Reassemble original ciphertext from reconstructed data shards
+    let mut reconstructed_enc = [
+        received_shards[0].as_ref().unwrap().as_slice(),
+        received_shards[1].as_ref().unwrap().as_slice(),
+    ].concat();
 
     // Step 4: Decrypt (L2)
     let decrypted = l2_aead::decrypt_in_place(&key, 1, &mut reconstructed_enc)
-        .expect("Decryption after shard reconstruction should succeed")
+        .expect("Decryption after RS reconstruction should succeed")
         .to_vec();
 
     assert_eq!(
         decrypted.as_slice(),
         original,
-        "Full encrypt→shard→reconstruct→decrypt should match original"
+        "Full encrypt→RS-shard→reconstruct→decrypt should match original"
     );
 }

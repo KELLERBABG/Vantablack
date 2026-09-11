@@ -33,7 +33,7 @@ In privacy mode, all datagrams are fixed to 512 bytes with randomized trailing j
 | `04..07` | Packet Counter | `u32` (BE) | Monotonic counter used for replay protection |
 | `08` | Shard Index | `u8` | Shard indicator (`0`, `1`, or `2` for RS parity) |
 | `09` | Flags | `u8` | Bit flags (`0x00`: privacy, `0x01`: bulk transfer) |
-| `10..495` | Encrypted Shard | `[u8; 486]` | ChaCha20-Poly1305 ciphertext payload |
+| `10..495` | Encrypted Shard | `[u8; 486]` | ChaCha20-Poly1305 ciphertext payload (indices 10..496) |
 | `496..511`| Auth Tag | `[u8; 16]` | Poly1305 authentication MAC tag |
 | `512..576`| Jitter Padding | `[u8; 0..64]` | Variable pseudorandom noise bytes |
 

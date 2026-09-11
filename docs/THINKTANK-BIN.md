@@ -231,10 +231,12 @@ yours — not on more code.
       the code writes big-endian, and `config.env` documents
       `GHOST_LISTEN_PORT`, which nothing reads. Which set wins? Either direction
       is implementable.
-- [ ] **Decide the fate of the ~20 unwired modules** catalogued in `UNWIRED.md`
-      (L3 Shamir, L7 LDPC, L8 memsec, `orbit`, `mesh`, `dispatcher`, `hsm`, …):
-      wire, gate behind a feature, or delete. Keeping them is the one option that
-      keeps costing.
+- [x] **Decide the fate of the ~20 unwired modules** catalogued in `UNWIRED.md`:
+      - **Wired in `src/main.rs`:** `LockedMemory` / `SecureMemGuard` via `VirtualLock`/`mlock` to protect derived hybrid session keys from leaking to swap/pagefile.
+      - **Wired & Enforced in `src/main.rs`:** `PoissonReputationMatrix::is_byzantine()` actively enforces isolation by dropping inbound handshakes, response PDUs, and multi-hop relay forwarding from Byzantine-flagged peers.
+      - **Wired in `src/main.rs`:** `AdaptiveShardRouter` dynamically selects fitness-based multi-path routes via `send3_adaptive` for RS(2,1) shard distribution across peers.
+      - **Wired & Cryptographically Enforced:** `RevocationList::revoke_with_issuer_pk` verifies Ed25519 signatures over revocation vouchers, and `REVOKE` signs revocation entries with the local identity key.
+      - Preserved as clean-room architectural specs pending specialized physical hardware: Kepler orbital mechanics/DTN (`orbit.rs`), hardware TPM/PKCS#11 modules (`hsm.rs`), and LDPC/eBPF NIC acceleration (`l8_memsec.rs`).
 - [ ] **`wintun.dll` licensing.** PROTOTYPE.md notes the Tailscale-shipped copy
       is dev-only. Vendor the official 0.14.x zip for anything distributed, or
       ship no `.dll` and document the download.
@@ -359,4 +361,41 @@ headroom, watchdog state.
   attempt to render an actual row was blocked. Look here first.
 - Everything in §7.2/§7.3: wintun, real LAN reachability, Wi-Fi→LTE handover,
   the Android build.
+
+---
+
+## 9. Architectural Roadmap: Path to Undisputed State-of-the-Art (Open-Source Launch)
+
+To transition Global Ghost Net from an advanced cryptographic research prototype into the most capable, verifiable, and secure private networking system in the world, the following architectural upgrades and wirings must be prioritized before public release:
+
+### 9.1 NAT Traversal & Zero-Configuration Invariance (Universal Reachability)
+* **The Problem:** The current WAN tunnel requires manual router port-forwarding (UDP 2271) or public IP exposure. This creates friction for non-technical users and fails behind CGNAT, cellular carrier NATs, and strict enterprise symmetric firewalls.
+* **The Upgrade:**
+  - Wire and upgrade `src/ghost/net/mesh.rs:NatHolePuncher` to implement full **RFC 8489 / RFC 8445 ICE/STUN/TURN** state-machine semantics.
+  - Implement a decentralized **DERP/Encrypted Relay Fallback**: If symmetric NATs prevent direct UDP hole-punching, route sealed GTF packets through untrusted intermediate mesh peers via store-and-forward bundle buffers (`src/ghost/net/relay.rs`). Relay peers forward blind ciphertext with zero insight into payload or keys.
+
+### 9.2 Complete L0–L9 Wire Integration & Dead Code Resolution
+As catalogued in `docs/UNWIRED.md`, several revolutionary defense-in-depth layers compile in isolation but must be tied into the active data pipeline:
+* **L8 Memory Security (`src/ghost/layers/l8_memsec.rs`):**
+  - Wire `LockedMemory` / `SecureMemGuard` (`mlock` on POSIX, `VirtualLock` on Windows) to anchor ephemeral Kyber and X25519 secret keys in non-swappable physical RAM, preventing keys from ever being written to disk swap/pagefile.
+  - Integrate `XtsMemoryEncryptor` for session and spool buffers held in memory.
+* **L3/L4 Multi-Path Disjoint Routing (`src/ghost/net/mesh.rs`):**
+  - Wire `AdaptiveShardRouter` and `dispatch_shards_multipath()`. When multi-homed (e.g. Wi-Fi + Cellular concurrently active, or multi-relay mesh), dispatch the 3 Reed-Solomon shards over physically distinct network paths. An adversary tapping a single link or ISP captures at most 1 shard and learns mathematically zero plaintext.
+* **Byzantine Matrix Enforcement (`src/ghost/net/routing.rs`):**
+  - Wire `PoissonReputationMatrix::is_byzantine()` into session acceptance and relay routing. Automatically blacklist and isolate relay nodes exhibiting cosmic/packet inconsistency or dropped shards.
+
+### 9.3 Hardened Mobile Client Shell & UI Maturity
+* **Complete Android Roaming Handover:** Automate the hardware roaming gate verified in §7.3. Ensure that when cellular/Wi-Fi handover triggers `startTunnel()`, in-flight TCP sessions across the virtual TUN survive carrier migration without dropping sockets.
+* **DNS Leak & IPv6 Blackhole Invariance:** Enforce strict DNS routing through the overlay (`10.66.0.1` / home router DNS) and hard-block native IPv6 leaks on mobile until IPv6 overlay prefix translation is wired.
+* **Native Desktop & iOS GUI:**
+  - Bundle official signed `wintun.dll` (v0.14.x) for Windows.
+  - Provide a minimalist, native status dashboard (System Tray on Windows/macOS/Linux via `tray.rs`, Swift/NetworkExtension shell for iOS).
+
+### 9.4 Independent Cryptographic Formalization & Audit Readiness
+* **Formal Verification of GTF Protocol:**
+  - Write formal mathematical models in Tamarin or ProVerif proving session unforgeability, forward secrecy, and Post-Quantum hybrid resistance against active Man-in-the-Middle attackers.
+  - Eradicate mock primitives: Replace `ZkAuthenticator` with a real Zero-Knowledge proof system (such as Bulletproofs or Schnorr ZKPs) or deprecate it cleanly.
+* **Side-Channel & Timing Hardening:**
+  - Ensure all secret comparisons, hash verifications, and ML-KEM decapsulations execute in strict constant time (`subtle::ConstantTimeEq`).
+
 

@@ -191,7 +191,27 @@ impl Default for RevocationList {
 impl RevocationList {
     pub fn new() -> Self { Self::default() }
 
+    /// Revoke an identity. If entry.signature is non-empty, verifies the signature against issuer_pk_bytes.
+    /// Returns true if revoked, false if expired, older timestamp, or signature invalid.
     pub fn revoke(&self, entry: RevocationEntry) -> bool {
+        self.revoke_with_issuer_pk(entry, None)
+    }
+
+    /// Revoke an identity with explicit issuer public key verification.
+    /// If issuer_pk is provided and signature is present, verifies that the issuer signed
+    /// the message: "REVOKE:" || fingerprint || ":" || timestamp || ":" || reason.as_str().
+    pub fn revoke_with_issuer_pk(&self, entry: RevocationEntry, issuer_pk: Option<&[u8; 32]>) -> bool {
+        if let Some(pk) = issuer_pk {
+            if entry.signature.len() == 64 {
+                let mut sig_bytes = [0u8; 64];
+                sig_bytes.copy_from_slice(&entry.signature);
+                let msg = format!("REVOKE:{}:{}:{}", entry.fingerprint, entry.timestamp, entry.reason.as_str());
+                if !crate::ghost::layers::l0_identity::verify_peer_signature(pk, msg.as_bytes(), &sig_bytes) {
+                    warn!("Revocation signature verification failed for {}", entry.fingerprint);
+                    return false;
+                }
+            }
+        }
         let mut entries = self.entries.lock().unwrap();
         let fp = entry.fingerprint.clone();
         if let Some(existing) = entries.get(&fp) {
@@ -272,9 +292,10 @@ impl ZkAuthenticator {
         shared_nonce: &[u8],
     ) -> bool {
         use sha2::{Digest, Sha256};
+        use subtle::ConstantTimeEq;
         let local_hash = Sha256::digest([local_fingerprint.as_bytes(), shared_nonce].concat());
         let remote_hash = Sha256::digest([remote_claim.as_bytes(), shared_nonce].concat());
-        local_hash.as_slice() == remote_hash.as_slice()
+        local_hash.as_slice().ct_eq(remote_hash.as_slice()).into()
     }
 }
 
@@ -376,17 +397,20 @@ impl TleDistributor {
 /// `lock_pages()` method additionally calls `mlock`/`VirtualLock` to prevent the
 /// OS from paging the secret to the swap file.
 pub struct SecureMemGuard<const N: usize> {
-    data: [u8; N],
+    data: std::cell::UnsafeCell<[u8; N]>,
     tripped: AtomicBool,
     access_count: AtomicU64,
     pages_locked: AtomicBool,
 }
 
+// SAFETY: SecureMemGuard coordinates interior mutability safely via AtomicBool tripped flag.
+unsafe impl<const N: usize> Sync for SecureMemGuard<N> {}
+
 impl<const N: usize> SecureMemGuard<N> {
     /// Create a new guard with the given secret and attempt page-locking.
     pub fn new(secret: [u8; N]) -> Self {
         let mut guard = Self {
-            data: secret,
+            data: std::cell::UnsafeCell::new(secret),
             tripped: AtomicBool::new(false),
             access_count: AtomicU64::new(0),
             pages_locked: AtomicBool::new(false),
@@ -400,7 +424,7 @@ impl<const N: usize> SecureMemGuard<N> {
     /// Attempt to lock the memory pages containing the secret buffer.
     /// Returns true if locking succeeded, false otherwise.
     fn try_lock_pages(&mut self) -> bool {
-        let ptr = &self.data as *const u8;
+        let ptr = self.data.get() as *const u8;
         let len = std::mem::size_of::<[u8; N]>();
         let locked = platform_lock_memory(ptr, len);
         // Due to stack alignment, the struct may not be page-aligned,
@@ -417,7 +441,7 @@ impl<const N: usize> SecureMemGuard<N> {
         if self.tripped.load(Ordering::SeqCst) { return None; }
         self.access_count.fetch_add(1, Ordering::Relaxed);
         if self.detect_anomaly() { self.panic_zero(); return None; }
-        Some(&self.data)
+        unsafe { Some(&*self.data.get()) }
     }
 
     fn detect_anomaly(&self) -> bool {
@@ -431,7 +455,7 @@ impl<const N: usize> SecureMemGuard<N> {
     pub fn panic_zero(&self) {
         if self.tripped.swap(true, Ordering::SeqCst) { return; }
         unsafe {
-            let ptr = &self.data as *const u8 as *mut u8;
+            let ptr = self.data.get() as *mut u8;
             for i in 0..N { std::ptr::write_volatile(ptr.add(i), 0u8); }
         }
         info!("SecureMemGuard: zeroed {} bytes", N);
@@ -442,7 +466,7 @@ impl<const N: usize> SecureMemGuard<N> {
     /// Attempt to lock the secret pages. Call this after the guard has been
     /// placed on the heap (e.g., inside an Arc) for maximum effect.
     pub fn lock_memory(&self) -> bool {
-        let ptr = &self.data as *const u8;
+        let ptr = self.data.get() as *const u8;
         let locked = platform_lock_memory(ptr, std::mem::size_of::<[u8; N]>());
         if locked {
             self.pages_locked.store(true, Ordering::Relaxed);
@@ -453,7 +477,7 @@ impl<const N: usize> SecureMemGuard<N> {
     /// Unlock the secret pages.
     pub fn unlock_memory(&self) {
         if self.pages_locked.load(Ordering::Relaxed) {
-            let ptr = &self.data as *const u8;
+            let ptr = self.data.get() as *const u8;
             platform_unlock_memory(ptr, std::mem::size_of::<[u8; N]>());
             self.pages_locked.store(false, Ordering::Relaxed);
         }
@@ -469,7 +493,7 @@ impl<const N: usize> Drop for SecureMemGuard<N> {
     fn drop(&mut self) {
         self.panic_zero();
         if self.pages_locked.load(Ordering::Relaxed) {
-            let ptr = &self.data as *const u8;
+            let ptr = self.data.get() as *const u8;
             platform_unlock_memory(ptr, std::mem::size_of::<[u8; N]>());
         }
     }

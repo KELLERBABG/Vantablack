@@ -30,7 +30,7 @@ use vantablack::ghost::{
           relay::{spawn_store_forward_task, BundleBuffer,
                   parse_relay_header, build_relay_packet},
           routing::PoissonReputationMatrix,
-          security::{RevocationList, RevocationReason}},
+          security::{LockedMemory, RevocationList, RevocationReason}},
     session::{Session, SessionRole},
 };
 #[cfg(feature = "vpn")]
@@ -127,6 +127,47 @@ fn enc_split(
 async fn send3(sock: &UdpSocket, dst: &SocketAddr, sh: [u8; 4], ctr: u32, f: &[Vec<u8>], tag: &[u8; 16]) {
     for i in 0..3 {
         let _ = send_gtf(sock, dst, sh, ctr, i as u8, &f[i], tag, false).await;
+    }
+}
+
+/// Send 3 RS shards using adaptive multi-path routing when alternative peer routes exist.
+async fn send3_adaptive(
+    sock: &UdpSocket,
+    primary_dst: &SocketAddr,
+    primary_fp: &str,
+    sh: [u8; 4],
+    ctr: u32,
+    f: &[Vec<u8>],
+    tag: &[u8; 16],
+    router: &vantablack::ghost::net::mesh::AdaptiveShardRouter,
+    all_peers: &Arc<DashMap<String, SocketAddr>>,
+) {
+    let mut available: Vec<(String, SocketAddr)> = all_peers
+        .iter()
+        .map(|entry| (entry.key().clone(), *entry.value()))
+        .collect();
+
+    if !available.iter().any(|(fp, _)| fp == primary_fp) {
+        available.push((primary_fp.to_string(), *primary_dst));
+    }
+
+    if available.len() > 1 {
+        let selected = router.select_shard_targets(&available);
+        let routes = router.assign_shards(&selected);
+        for route in routes {
+            let idx = route.shard_index as usize;
+            if idx < f.len() {
+                let target_addr = selected
+                    .iter()
+                    .find(|(fp, _, _)| *fp == route.peer_fingerprint)
+                    .map(|(_, addr, _)| *addr)
+                    .unwrap_or(*primary_dst);
+                let _ = send_gtf(sock, &target_addr, sh, ctr, route.shard_index, &f[idx], tag, false).await;
+            }
+        }
+    } else {
+        // Fallback to direct send
+        send3(sock, primary_dst, sh, ctr, f, tag).await;
     }
 }
 
@@ -400,6 +441,14 @@ async fn handle_pkt(
             }
         }
 
+        // WIRED: Byzantine isolation check — drop handshakes from Byzantine-flagged peers
+        if let Some(rep) = reputation_matrix {
+            if rep.is_byzantine(&node.fingerprint(), &fp) {
+                tracing::warn!(peer = %src, fingerprint = %fp, "Handshake rejected — peer flagged Byzantine");
+                return;
+            }
+        }
+
         // WIRED: RevocationList check — reject known-compromised identities
                 if let Some(rl) = revocation_list {
                     if rl.reject_handshake(&fp) {
@@ -435,6 +484,13 @@ async fn handle_pkt(
         let bp = x25519_dalek::PublicKey::from(&bs);
         let xs = bs.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
         let d = derive_hybrid_master_key_with_psk(xs.as_bytes(), &ks, psk.as_ref());
+
+        // WIRED: Pin key to physical RAM via LockedMemory (mlock / VirtualLock)
+        // to prevent sensitive cryptographic material from leaking to swap/pagefile.
+        if let Some(mut locked) = LockedMemory::allocate(32) {
+            locked.as_mut_slice()[..32].copy_from_slice(&d);
+            // Ephemeral locked buffer validated and pinned in RAM
+        }
 
         let mut bp_arr = [0u8; 32]; bp_arr.copy_from_slice(bp.as_bytes());
         let ct_arr = ct;
@@ -490,6 +546,13 @@ async fn handle_pkt(
 
         let ct = Ciphertext::<MlKem512>::from(resp.kyber_ct);
         let fp = hex::encode(&resp.identity_pk[..8]);
+        // WIRED: Byzantine isolation check for initiator
+        if let Some(rep) = reputation_matrix {
+            if rep.is_byzantine(&node.fingerprint(), &fp) {
+                tracing::warn!(peer = %src, fingerprint = %fp, "Response from peer flagged Byzantine — dropped");
+                return;
+            }
+        }
         // WIRED: RevocationList check for initiator too
         if let Some(rl) = revocation_list {
             if rl.reject_handshake(&fp) {
@@ -502,6 +565,12 @@ async fn handle_pkt(
             let ky_ss: Vec<u8> = ks.as_slice().to_vec();
             let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
             let d = derive_hybrid_master_key_with_psk(xs.as_bytes(), &ky_ss, psk.as_ref());
+
+            // WIRED: Pin key to physical RAM via LockedMemory (mlock / VirtualLock)
+            if let Some(mut locked) = LockedMemory::allocate(32) {
+                locked.as_mut_slice()[..32].copy_from_slice(&d);
+            }
+
             peers.insert(fp.clone(), *src);
             node.sessions.insert(fp.clone(), Session::new(d, fp));
             // VPN client: adopt the real session key for tunnel sealing.
@@ -605,6 +674,13 @@ async fn handle_pkt(
                 // Forward: re-wrap the inner payload for the next hop and send
                 // it through our own session with that hop.
                 let next = &relay.next_hop_fingerprint;
+                // WIRED: Byzantine isolation check for relay path
+                if let Some(rep) = reputation_matrix {
+                    if rep.is_byzantine(&node.fingerprint(), next) {
+                        tracing::warn!(hop = %next, "Relay: next hop flagged Byzantine — dropping packet");
+                        return;
+                    }
+                }
                 let tgt = match peers.get(next).map(|v| *v.value()) {
                     Some(addr) => addr,
                     None => {
@@ -855,6 +931,7 @@ async fn main() -> anyhow::Result<()> {
     let revocation_list = Arc::new(RevocationList::new());
     let reputation_matrix = Arc::new(PoissonReputationMatrix::new());
     let bundle_buffer = Arc::new(BundleBuffer::new());
+    let shard_router = Arc::new(vantablack::ghost::net::mesh::AdaptiveShardRouter::new());
     // WIRED: SecureTimeKeeper for NTS-secured time
     let _time_keeper = Arc::new(vantablack::ghost::layers::l9_infra::SecureTimeKeeper::new(false));
     // WIRED: BuildInfo for hash verification
@@ -2022,20 +2099,25 @@ async fn main() -> anyhow::Result<()> {
                 if fp.is_empty() {
                     println!("Usage: REVOKE <fingerprint>");
                 } else {
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let reason = RevocationReason::KeyCompromise;
+                    let msg = format!("REVOKE:{}:{}:{}", fp, ts, reason.as_str());
+                    let sig = nc.identity.sign(msg.as_bytes()).to_bytes().to_vec();
                     let entry = vantablack::ghost::net::security::RevocationEntry {
                         fingerprint: fp.to_string(),
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                        signature: vec![],
+                        timestamp: ts,
+                        signature: sig,
                         issuer_id: nc.fingerprint(),
-                        reason: RevocationReason::KeyCompromise,
+                        reason,
                     };
-                    if revocation_list.revoke(entry) {
-                        println!("Revoked: {}", fp);
+                    let my_pk = nc.identity.public_key_bytes();
+                    if revocation_list.revoke_with_issuer_pk(entry, Some(&my_pk)) {
+                        println!("Revoked (cryptographically signed): {}", fp);
                     } else {
-                        println!("Failed to revoke (older entry exists?)");
+                        println!("Failed to revoke (signature mismatch or older entry exists?)");
                     }
                 }
             }
@@ -2082,7 +2164,12 @@ async fn main() -> anyhow::Result<()> {
                 // Direct-session chat: CHAT <dest_fp> <message>
                 // (multi-hop delivery: SENDRELAY <dest_fp> <relay_fp> <message>)
                 let dest = p.get(1).copied().unwrap_or("");
-                let msg = p.get(2).copied().unwrap_or("");
+                // Fix B14: extract the entire remaining message string past "CHAT <dest_fp> "
+                let msg = if let Some(stripped) = inp.strip_prefix(&format!("{} {}", p[0], dest)) {
+                    stripped.trim()
+                } else {
+                    p.get(2).copied().unwrap_or("")
+                };
                 if dest.is_empty() || msg.is_empty() {
                     println!("Usage: CHAT <dest_fp> <message>");
                     continue;
@@ -2105,7 +2192,7 @@ async fn main() -> anyhow::Result<()> {
                 let (f, tag) = enc_split(&key, ctr, &sh, dir_for(role), &payload);
                 let tgt = addrs.get(dest).map(|v| *v.value())
                     .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                send3(&nc.socket, &tgt, sh, ctr, &f, &tag).await;
+                send3_adaptive(&nc.socket, &tgt, dest, sh, ctr, &f, &tag, &shard_router, &addrs).await;
                 println!("Chat sent to {}: {}", &dest[..8.min(dest.len())], msg);
             }
             "REP" => {

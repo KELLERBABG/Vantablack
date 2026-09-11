@@ -9,8 +9,11 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    // Try to parse as various handshake-like structures
-    // These are safe to call with arbitrary data and should never panic
+    // Fuzz the actual handshake and response parsers
+    let _ = vantablack::ghost::layers::l1_kem::parse_handshake_pdu(data);
+    let _ = vantablack::ghost::layers::l1_kem::parse_response_pdu(data);
+
+    // Try to parse as rekey handshake structure
     let _ = vantablack::ghost::session::parse_rekey_pdu(data);
 
     // Try unframe

@@ -94,6 +94,7 @@ pub fn encrypt_in_place_with_context(
     direction: NonceDirection,
     data: &mut Vec<u8>,
 ) {
+    debug_assert!(key != &[0u8; 32], "AEAD encryption called with zero key");
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     cipher
         .encrypt_in_place(

@@ -2836,6 +2836,7 @@ dependencies = [
  "sha2",
  "smoltcp",
  "socket2 0.5.10",
+ "subtle",
  "tao",
  "thiserror 2.0.18",
  "tokio",

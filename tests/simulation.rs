@@ -502,18 +502,25 @@ async fn test_sim_full_handshake() {
 async fn test_sim_packet_loss_recovery() {
     cleanup_identity();
     let mut hub = VirtualNetHub::new();
-    hub.drop_probability = 0.3;
+    hub.drop_probability = 0.2;
     let (mut a, mut b) = make_pair(&mut hub).await;
 
-    for _ in 0..5 {
+    let mut recovered = false;
+    for _ in 0..10 {
         a.send_handshake(&mut hub, "virt://bob:1").await;
         if let Some(r) = b.recv(&mut hub).await {
             if r.starts_with("ESTABLISHED:") {
-                let _ = a.recv(&mut hub).await;
-                break;
+                let r2 = a.recv(&mut hub).await;
+                if r2.as_ref().map(|s| s.starts_with("CONFIRMED:")).unwrap_or(false) {
+                    recovered = true;
+                    break;
+                }
             }
         }
     }
+    assert!(recovered, "Handshake should successfully recover and establish under 20% packet loss");
+    assert_eq!(a.node.sessions.len(), 1, "Alice should hold established session");
+    assert_eq!(b.node.sessions.len(), 1, "Bob should hold established session");
 }
 
 #[tokio::test]
