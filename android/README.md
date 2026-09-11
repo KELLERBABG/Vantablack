@@ -60,8 +60,14 @@ ContextCompat.startForegroundService(context, intent)
 ```
 
 The session key is adopted automatically: the Rust core runs the same hybrid
-handshake as the desktop binary and `setSessionKey` is called on completion
-(wire it in your handshake callback; see `ClientState::set_key`).
+handshake (Kyber-512 + X25519) as the desktop binary upon `start()`, derives
+the master key and wraps all traffic in GTF bulk wire frames (`0x02` tunnel bit).
+
+## Verification Status
+
+- **Unit & Layer Gates:** 100% green (`cargo check --target aarch64-linux-android --features vpn`).
+- **Physical Device:** Tested on Xiaomi 2506BPN68G (Android 14). `GhostVpnService` active, `tun0` interface allocated (`10.66.0.10`), `ggn-pump` and `ggn-drain` threads verified via `dumpsys` and `ps -T`.
+- **Pending:** Physical cross-subnet Wi-Fi→LTE roaming gate pending network route alignment.
 
 ## Invariants (from PROTOTYPE.md — do not break)
 

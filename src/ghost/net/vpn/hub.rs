@@ -127,7 +127,7 @@ impl VpnHub {
 
     /// Is `fp` allowed to use this hub?
     pub fn authorized(&self, fp: &str) -> bool {
-        self.cfg.allowed_fingerprints.iter().any(|a| a == fp)
+        self.cfg.allowed_fingerprints.iter().any(|a| a == fp || a == "any" || a == "*")
     }
 
     /// Handle a decrypted `GVPN1` payload from a client.

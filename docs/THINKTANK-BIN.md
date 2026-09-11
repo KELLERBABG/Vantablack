@@ -258,14 +258,13 @@ yours — not on more code.
 
 ### 7.3 Android (M3)
 
-- [ ] `cargo install cargo-ndk`
-- [ ] `rustup target add aarch64-linux-android`
-- [ ] `cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release --features vpn`
-- [ ] Wrap the two Kotlin files (`GhostCore.kt`, `GhostVpnService.kt`) in a Gradle
-      app per `android/README.md`, `minSdk = 26`.
-- [ ] Invariants that bite if skipped: `VpnService.protect(fd)` **before** the
-      socket sends anything; MTU 1280; on network change re-bind + re-protect
-      instead of tearing down the TUN.
+- [x] `cargo install cargo-ndk`
+- [x] `rustup target add aarch64-linux-android`
+- [x] `cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release --features vpn`
+- [x] Full native JNI bridge implemented with post-quantum hybrid KEM handshake (Kyber-512 + X25519) and GTF wire framing (`src/ghost/net/vpn/android_jni.rs`).
+- [x] Wrap Kotlin files (`GhostCore.kt`, `GhostVpnService.kt`, `MainActivity.kt`) in Gradle app, `minSdk = 26`.
+- [x] Tested & verified live on physical device (Xiaomi): `GhostVpnService` running, `tun0` interface active (`10.66.0.10`), pump/drain threads active.
+- [ ] Hardware Cross-Network Gate: Wi-Fi→LTE handover mid-session without state loss (paused; routing/firewall alignment pending).
 
 ### 7.4 GitHub (you said "later")
 

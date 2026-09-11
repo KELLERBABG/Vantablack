@@ -120,9 +120,9 @@ The Rust core is unmodified; the platform shell provides:
 - Adaptive keepalive: Wi-Fi 30 s, LTE 90 s (carrier NAT re-binding).
 - DNS search domain via `VpnService.Builder.addSearchDomain`.
 
-Build: `cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --release --features vpn` — one `.so`, Kotlin calls a thin JNI surface (`init`, `protect(fd)`, `feed_packet`, `drain_packet`, `set_session_key`, stats).
+Build: `cargo ndk -t arm64-v8a -o app/src/main/jniLibs build --release --features vpn` — one `.so`, Kotlin calls a thin JNI surface (`init`, `setSessionKey`, `start`, `stats`, `pump`, `drain`, `destroy`). The native JNI core handles the post-quantum Kyber-512 + X25519 hybrid handshake automatically upon tunnel start and wraps all packets in GTF bulk wire frames.
 
-The M3 hardware gate — hard Wi-Fi→LTE handover mid-SSH without session loss — requires physical devices and is pending.
+Verified live on physical hardware (Xiaomi 2506BPN68G, Android 14): TUN allocated (`tun0`), pump/drain threads active. The hardware roaming gate (Wi-Fi→LTE mid-SSH handover without session loss) is pending cross-network alignment.
 
 ---
 
