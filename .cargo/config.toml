@@ -1,0 +1,11 @@
+# Global Ghost Net — cargo configuration
+#
+# This repo must build out-of-the-box on any machine. The previous
+# `target-dir` override ("C:/Users/Public/ggn-target") was a machine-specific
+# absolute path that broke builds on other machines and CI — removed.
+#
+# If you ever build with the windows-gnu toolchain from a path containing
+# spaces (breaks GNU binutils dlltool/as temp-file handling), set
+# CARGO_TARGET_DIR to a space-free directory for that build only, e.g.:
+#
+#   CARGO_TARGET_DIR=C:/build cargo build

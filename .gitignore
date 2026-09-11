@@ -1,0 +1,23 @@
+target/
+node_modules/
+# Runtime-generated Ed25519 node identity (L0). Auto-created on first run;
+# never commit a private signing key.
+identity.key
+identity_*.key
+# Runtime state written into the working directory by a running node:
+# `peers.cache` every 60 s, plus revocation / topology dumps on demand.
+# Operational state, not source.
+peers.cache
+revocations.json
+ghost-topology.json
+.venv/
+__pycache__/
+.pytest_cache/
+*.tmp
+*.exe
+*.dll
+*.pdb
+*.rlib
+.freebuff/
+.reasonix/
+*reasonix*

@@ -1,0 +1,46 @@
+[package]
+name = "vantablack-fuzz"
+version = "0.4.0"
+edition = "2021"
+description = "Fuzzing targets for the GhostNet protocol stack"
+license = "MIT"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+vantablack = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "fuzz_handle_pkt"
+path = "fuzz_targets/fuzz_handle_pkt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_parse_handshake_pdu"
+path = "fuzz_targets/fuzz_parse_handshake_pdu.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_parse_relay_header"
+path = "fuzz_targets/fuzz_parse_relay_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_unframe"
+path = "fuzz_targets/fuzz_unframe.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_kyber_ciphertext"
+path = "fuzz_targets/fuzz_kyber_ciphertext.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_build_gtf_frame"
+path = "fuzz_targets/fuzz_build_gtf_frame.rs"
+test = false
+doc = false
