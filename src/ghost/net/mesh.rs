@@ -227,7 +227,7 @@ impl PathMetrics {
         if lost {
             self.loss_rate = self.loss_rate * (1.0 - beta) + beta;
         } else {
-            self.loss_rate *= (1.0 - beta);
+            self.loss_rate *= 1.0 - beta;
         }
 
         // RTT-based throughput estimate: TCP-style

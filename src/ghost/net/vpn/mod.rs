@@ -146,6 +146,7 @@ pub enum AnchorEvent {
 #[derive(Default)]
 pub struct LeaseTable {
     by_fp: Mutex<HashMap<String, Lease>>,
+    by_ip: Mutex<HashMap<Ipv4Addr, String>>,
     next_host: Mutex<u8>,
 }
 
@@ -153,6 +154,7 @@ impl LeaseTable {
     pub fn new() -> Self {
         Self {
             by_fp: Mutex::new(HashMap::new()),
+            by_ip: Mutex::new(HashMap::new()),
             next_host: Mutex::new(OVERLAY_FIRST_CLIENT_HOST),
         }
     }
@@ -175,6 +177,7 @@ impl LeaseTable {
             if !used.contains(&host) {
                 *next = host + 1;
                 let ip = Ipv4Addr::new(OVERLAY_PREFIX, OVERLAY_SECOND_OCTET, 0, host);
+                self.by_ip.lock().insert(ip, fingerprint.to_string());
                 fps.insert(
                     fingerprint.to_string(),
                     Lease {
@@ -220,6 +223,7 @@ impl LeaseTable {
                     .any(|l| l.overlay_ip == h && l.fingerprint != fingerprint);
                 if !claimed_by_other {
                     let mut next = self.next_host.lock();
+                    self.by_ip.lock().insert(h, fingerprint.to_string());
                     fps.insert(
                         fingerprint.to_string(),
                         Lease {
@@ -312,19 +316,21 @@ impl LeaseTable {
         )
     }
 
-    /// Where return traffic goes for an overlay IP.
+    /// Where return traffic goes for an overlay IP. O(1) lookup via secondary by_ip index.
     pub fn endpoint_for_ip(&self, overlay_ip: Ipv4Addr) -> Option<SocketAddr> {
+        let fp = self.by_ip.lock().get(&overlay_ip).cloned()?;
         let fps = self.by_fp.lock();
-        fps.values()
-            .find(|l| l.overlay_ip == overlay_ip && l.endpoint.port() != 0)
-            .map(|l| l.endpoint)
+        let l = fps.get(&fp)?;
+        if l.endpoint.port() != 0 {
+            Some(l.endpoint)
+        } else {
+            None
+        }
     }
 
+    /// Fingerprint owning an overlay IP. O(1) lookup via secondary by_ip index.
     pub fn fingerprint_for_ip(&self, overlay_ip: Ipv4Addr) -> Option<String> {
-        let fps = self.by_fp.lock();
-        fps.values()
-            .find(|l| l.overlay_ip == overlay_ip)
-            .map(|l| l.fingerprint.clone())
+        self.by_ip.lock().get(&overlay_ip).cloned()
     }
 
     pub fn lease_count(&self) -> usize {
