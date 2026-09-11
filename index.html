@@ -79,6 +79,15 @@
     }
 
     a { color: inherit; }
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.87em;
+      color: var(--accent);
+      background: var(--accent-subtle);
+      padding: 1px 5px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
 
     /* ── Nav ───────────────────────────────────────────────────────── */
     .nav {
@@ -96,9 +105,7 @@
       align-items: center;
       gap: 10px;
       text-decoration: none;
-      font-weight: 500;
       letter-spacing: 0.14em;
-      font-size: 12px;
     }
     .brand-dot {
       width: 7px; height: 7px;
@@ -106,40 +113,19 @@
       border-radius: 50%;
       box-shadow: 0 0 12px var(--accent);
     }
-    .nav-links { display: flex; align-items: center; gap: 22px; }
+    .nav-links { display: flex; align-items: center; gap: 24px; }
     .nav-links a { color: var(--text-muted); text-decoration: none; transition: color .15s; }
     .nav-links a:hover { color: var(--text); }
-    .nav-cta {
-      color: var(--text) !important;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 12px;
-      transition: border-color .15s;
-    }
-    .nav-cta:hover { border-color: var(--accent-border); }
-    @media (max-width: 720px) { .nav-links a:not(.nav-cta) { display: none; } }
+    @media (max-width: 780px) { .nav-links a:not(.nav-cta) { display: none; } }
 
     /* ── Hero ──────────────────────────────────────────────────────── */
-    .hero { padding: 108px 0 72px; max-width: 860px; }
-    .pill {
-      display: inline-block;
-      padding: 5px 12px;
-      margin-bottom: 26px;
-      border: 1px solid var(--accent-border);
-      background: var(--accent-subtle);
-      border-radius: 999px;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--accent);
-    }
+    .hero { padding: 122px 0 0; max-width: 830px; }
     h1 {
-      font-size: clamp(38px, 6vw, 72px);
+      font-size: clamp(38px, 6vw, 70px);
       font-weight: 600;
-      line-height: 1.05;
+      line-height: 1.06;
       letter-spacing: -0.03em;
-      margin-bottom: 26px;
+      margin-bottom: 24px;
     }
     h1 em {
       font-style: normal;
@@ -149,12 +135,12 @@
       -webkit-text-fill-color: transparent;
     }
     .lead {
-      font-size: 18px;
+      font-size: 19px;
       font-weight: 300;
       color: var(--text-muted);
-      max-width: 720px;
+      max-width: 600px;
     }
-    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 36px; }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
     .btn {
       display: inline-flex;
       align-items: center;
@@ -171,12 +157,12 @@
     .btn-ghost { border: 1px solid var(--border); color: var(--text); }
     .btn-ghost:hover { border-color: var(--border-glow); }
 
-    /* ── Facts strip ───────────────────────────────────────────────── */
+    /* ── Facts ─────────────────────────────────────────────────────── */
     .facts {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
       gap: 1px;
-      margin-top: 72px;
+      margin-top: 78px;
       background: var(--border);
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -185,61 +171,67 @@
     .fact { background: var(--surface); padding: 20px 22px; }
     .fact-value {
       font-family: var(--font-mono);
-      font-size: 15px;
+      font-size: 14.5px;
       color: var(--accent);
       margin-bottom: 4px;
     }
-    .fact-label { font-size: 12px; color: var(--text-dim); }
+    .fact-label { font-size: 12.5px; color: var(--text-dim); }
 
     /* ── Sections ──────────────────────────────────────────────────── */
-    section { padding-top: 104px; }
-    .section-head { max-width: 660px; margin-bottom: 40px; }
-    .eyebrow {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--text-dim);
-      display: block;
-      margin-bottom: 12px;
-    }
+    section { padding-top: 108px; }
+    .section-head { max-width: 620px; margin-bottom: 32px; }
     h2 {
-      font-size: clamp(26px, 3.4vw, 38px);
+      font-size: clamp(25px, 3.2vw, 36px);
       font-weight: 600;
       letter-spacing: -0.02em;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
-    .section-head p { color: var(--text-muted); font-size: 16px; }
+    .section-head p { color: var(--text-muted); font-size: 16.5px; }
 
-    /* ── Lifecycle (how a packet moves) ────────────────────────────── */
-    .steps { display: grid; gap: 12px; }
-    .step {
+    /* ── Joining a mesh ───────────────────────────────────────────── */
+    .route {
       display: grid;
-      grid-template-columns: 56px 1fr;
-      gap: 20px;
-      padding: 22px 24px;
-      background: var(--surface);
+      gap: 1px;
+      background: var(--border);
       border: 1px solid var(--border);
       border-radius: var(--radius);
+      overflow: hidden;
     }
-    .step-num {
+    .route-step { background: var(--surface); padding: 24px 26px; }
+    .route-step h3 {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .route-step h3 span {
       font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--accent);
-      padding-top: 3px;
+      font-size: 11.5px;
+      font-weight: 400;
+      color: var(--text-dim);
     }
-    .step h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.01em; }
-    .step p { font-size: 14.5px; color: var(--text-muted); }
-    .step code {
+    .route-step p { font-size: 15px; color: var(--text-muted); max-width: 730px; }
+    .route-step p + p { margin-top: 12px; }
+    .route-step .alt { color: var(--text-dim); }
+
+    .term {
+      margin: 14px 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 13px 15px;
       font-family: var(--font-mono);
       font-size: 12.5px;
-      color: var(--accent);
-      background: var(--accent-subtle);
-      padding: 1px 5px;
-      border-radius: 4px;
+      color: var(--text-muted);
+      overflow-x: auto;
+      line-height: 1.75;
     }
+    .term .c { color: var(--text-dim); }
+    .term .p { color: var(--accent); }
 
-    /* ── Frame inspector ──────────────────────────────────────────── */
+    /* ── Panel (frame + demo) ─────────────────────────────────────── */
     .panel {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -249,7 +241,7 @@
     .frame-bar {
       display: flex;
       height: 46px;
-      margin: 22px 0 16px;
+      margin-bottom: 16px;
       border: 1px solid var(--border);
       border-radius: 6px;
       overflow: hidden;
@@ -289,6 +281,7 @@
     }
     .seg-detail .field { color: var(--text); }
     .seg-detail .range { color: var(--text-dim); }
+    .seg-note { margin-top: 12px; font-size: 13.5px; color: var(--text-dim); }
 
     /* ── Sharding demo ────────────────────────────────────────────── */
     .demo-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
@@ -335,7 +328,7 @@
       justify-content: space-between;
       gap: 8px;
       font-family: var(--font-mono);
-      font-size: 11px;
+      font-size: 11.5px;
       color: var(--text-dim);
       margin-bottom: 10px;
     }
@@ -360,52 +353,17 @@
     }
     .demo-result .label {
       font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
+      font-size: 11.5px;
       color: var(--text-dim);
       display: block;
       margin-bottom: 8px;
     }
     .demo-result .value { font-family: var(--font-mono); font-size: 13.5px; color: var(--text); word-break: break-all; }
-    .demo-hint { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
-
-    /* ── Deploy ───────────────────────────────────────────────────── */
-    .install-row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 14px 16px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      margin-bottom: 10px;
-    }
-    .install-row .os { color: var(--text-dim); font-size: 11.5px; }
-    .install-row .cmd { color: var(--accent); word-break: break-all; }
-    .code {
-      margin-top: 20px;
-      padding: 18px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      color: var(--text-muted);
-      overflow-x: auto;
-      line-height: 1.7;
-    }
-    .code .cmt { color: var(--text-dim); }
-    .note { margin-top: 18px; font-size: 13.5px; color: var(--text-dim); }
 
     /* ── Footer ───────────────────────────────────────────────────── */
     footer {
-      margin-top: 104px;
-      padding-top: 28px;
+      margin-top: 108px;
+      padding-top: 26px;
       border-top: 1px solid var(--border);
       display: flex;
       flex-wrap: wrap;
@@ -437,36 +395,28 @@
         <span>GLOBAL GHOST NET</span>
       </a>
       <div class="nav-links">
-        <a href="#packet">Protocol</a>
-        <a href="#frame">Wire format</a>
+        <a href="#join">Join a mesh</a>
         <a href="#shards">Sharding</a>
-        <a href="#deploy">Deploy</a>
+        <a href="#frame">Wire format</a>
         <a class="nav-cta" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">GitHub v0.4.1 &nearr;</a>
       </div>
     </nav>
 
     <header class="hero">
-      <span class="pill">Rust &middot; Post-quantum &middot; Peer-to-peer</span>
       <h1>Route through a mesh, <em>not a company.</em></h1>
       <p class="lead">
-        Global Ghost Net links your machines into a private network with no centre to trust.
-        Traffic is encrypted with hybrid X25519&nbsp;+&nbsp;ML-KEM-512, split into Reed-Solomon
-        shards, and relayed between nodes &mdash; so no VPN provider, server operator, or
-        certificate authority sits in the middle.
+        A Rust daemon that links your machines into one private network, encrypted
+        end to end, with no server in the middle.
       </p>
       <div class="cta-row">
-        <a class="btn btn-primary" href="#deploy">Deploy a node</a>
+        <a class="btn btn-primary" href="#join">Join a mesh</a>
         <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">Read the source &nearr;</a>
       </div>
 
       <div class="facts">
         <div class="fact">
-          <div class="fact-value">ML-KEM-512</div>
-          <div class="fact-label">NIST FIPS 203 lattice KEM</div>
-        </div>
-        <div class="fact">
-          <div class="fact-value">X25519</div>
-          <div class="fact-label">Classical half of the handshake</div>
+          <div class="fact-value">X25519 + ML-KEM-512</div>
+          <div class="fact-label">Hybrid key exchange</div>
         </div>
         <div class="fact">
           <div class="fact-value">RS(2,1)</div>
@@ -476,92 +426,81 @@
           <div class="fact-value">512 bytes</div>
           <div class="fact-label">Every frame, same size</div>
         </div>
+        <div class="fact">
+          <div class="fact-value">Ed25519</div>
+          <div class="fact-label">Fingerprints, not addresses</div>
+        </div>
       </div>
     </header>
 
-    <section id="packet">
+    <section id="join">
       <div class="section-head">
-        <span class="eyebrow">Protocol</span>
-        <h2>How a packet moves</h2>
-        <p>Five steps, in order. Each one is implemented in the daemon and covered by the test suite.</p>
+        <h2>Joining a mesh</h2>
+        <p>Any node can seed any other. There is no registry to sign up to and no server to run.</p>
       </div>
 
-      <div class="steps">
-        <article class="step">
-          <div class="step-num">01</div>
-          <div>
-            <h3>Identity</h3>
-            <p>The node generates an Ed25519 keypair on first run. The first eight bytes of the public key are its fingerprint &mdash; that, not an IP address, is how peers know each other.</p>
+      <div class="route">
+
+        <div class="route-step">
+          <h3><span>01</span> Install it</h3>
+          <p>On the machine inside your home network &mdash; the one that will be your exit &mdash; and on every device that should reach it.</p>
+          <div class="term">
+            <span class="c"># Linux / macOS</span><br>
+            <span class="p">curl -sSf https://ggn.kellersystems.dev/install.sh | sh</span><br>
+            <br>
+            <span class="c"># Windows PowerShell</span><br>
+            <span class="p">irm https://ggn.kellersystems.dev/install.ps1 | iex</span>
           </div>
-        </article>
-
-        <article class="step">
-          <div class="step-num">02</div>
-          <div>
-            <h3>Handshake</h3>
-            <p>Two ephemeral keys are exchanged: an X25519 scalar and an ML-KEM-512 encapsulation key, signed by the long-term identity. Both shared secrets are mixed through <code>HKDF-SHA256</code> with an optional pre-shared key.</p>
-          </div>
-        </article>
-
-        <article class="step">
-          <div class="step-num">03</div>
-          <div>
-            <h3>Encrypt</h3>
-            <p>Payloads use <code>ChaCha20-Poly1305</code>. The nonce binds the session hash, the direction of travel, and a monotonic counter, so the two directions can never collide &mdash; even at the same counter value.</p>
-          </div>
-        </article>
-
-        <article class="step">
-          <div class="step-num">04</div>
-          <div>
-            <h3>Shard</h3>
-            <p>Ciphertext is split with <code>RS(2,1)</code> erasure coding into two data shards and one parity shard. Any two reconstruct the original; intercepting one yields nothing usable.</p>
-          </div>
-        </article>
-
-        <article class="step">
-          <div class="step-num">05</div>
-          <div>
-            <h3>Frame &amp; guard</h3>
-            <p>Each shard ships in a 512-byte Ghost Transport Frame with random trailing padding, so length analysis sees a constant. A sliding-window guard drops replayed counters.</p>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <section id="frame">
-      <div class="section-head">
-        <span class="eyebrow">Wire format</span>
-        <h2>The 512-byte frame</h2>
-        <p>Headers are fixed and the payload is padded, so an observer cannot infer message length. Select a field to see its bounds.</p>
-      </div>
-
-      <div class="panel">
-        <div class="frame-bar" id="frameBar">
-          <div class="seg seg-hash"    data-field="Session hash"      data-range="0 – 4"      data-note="Truncated session identifier; also mixed into the AEAD nonce so nonces never collide across sessions.">HASH</div>
-          <div class="seg seg-counter" data-field="Packet counter"    data-range="4 – 8"      data-note="32-bit big-endian monotonic counter. Checked against the replay window; repeats are dropped.">CTR</div>
-          <div class="seg seg-shard"   data-field="Shard index"       data-range="8 – 9"      data-note="Which Reed-Solomon shard this datagram carries: 0 or 1 for data, 2 for parity.">SHARD</div>
-          <div class="seg seg-flags"   data-field="Flags"             data-range="9 – 10"     data-note="Bit 0 marks a 1472-byte bulk frame; bit 1 marks an unordered tunnel datagram.">FLAGS</div>
-          <div class="seg seg-payload" data-field="Encrypted shard"   data-range="10 – 496"   data-note="486 bytes of ChaCha20-Poly1305 ciphertext, carrying one Reed-Solomon shard.">ENCRYPTED SHARD &mdash; 486 B</div>
-          <div class="seg seg-tag"     data-field="Poly1305 tag"      data-range="496 – 512"  data-note="16-byte authentication tag. A single flipped bit anywhere in the frame fails verification.">TAG 16 B</div>
-          <div class="seg seg-jitter"  data-field="Jitter padding"    data-range="512 +"      data-note="0 to 64 bytes of random trailing padding, generated per frame, to frustrate length analysis.">JITTER</div>
         </div>
-        <div class="seg-detail">
-          <span class="field" id="frameField">Session hash</span>
-          <span class="range" id="frameRange">bytes 0 – 4</span>
+
+        <div class="route-step">
+          <h3><span>02</span> Let the nodes find each other</h3>
+          <p>On one network there is nothing to configure: nodes broadcast a signed beacon every 30 seconds on <code>2270/UDP</code> and connect to whatever they hear.</p>
+          <p>Across the internet, give each node a rendezvous point &mdash; a DNS name you control that resolves to the machines you trust&hellip;</p>
+          <div class="term"><span class="p">GHOST_DNS_SEED</span>=seeds.example.com</div>
+          <p class="alt">&hellip; or the public address of any node already in the mesh:</p>
+          <div class="term"><span class="p">GHOST_SEEDS</span>=203.0.113.7:2271</div>
         </div>
-        <p class="note" id="frameNote">Truncated session identifier; also mixed into the AEAD nonce so nonces never collide across sessions.</p>
+
+        <div class="route-step">
+          <h3><span>03</span> Connect to someone</h3>
+          <p>Every node runs a console. Point one at another and the handshake runs:</p>
+          <div class="term">
+            <span class="c">&gt;</span> <span class="p">PEER</span> 203.0.113.7:2271<br>
+            <span class="c">[+] Session established</span><br>
+            <span class="c">&gt;</span> <span class="p">PEERS</span>    <span class="c"># who is known</span><br>
+            <span class="c">&gt;</span> <span class="p">STATUS</span>   <span class="c"># sessions, uptime, fingerprint</span>
+          </div>
+          <p>Peers that complete a handshake are written to <code>peers.cache</code> and retried next start, so the mesh rebuilds itself after a reboot.</p>
+        </div>
+
+        <div class="route-step">
+          <h3><span>04</span> Use it</h3>
+          <p>A client node opens a SOCKS5 proxy locally. Point a browser or a terminal at it and the traffic takes the mesh:</p>
+          <div class="term">
+            <span class="c"># client</span><br>
+            <span class="p">GHOST_SOCKS5</span>=1 ./target/release/vantablack<br><br>
+            curl --socks5 127.0.0.1:1080 https://example.com
+          </div>
+          <p>An exit node makes the real outbound connection, and serves nobody until you say who may ask:</p>
+          <div class="term"><span class="p">GHOST_EXIT_ALLOWLIST</span>=&lt;fingerprint&gt; GHOST_BIND=0.0.0.0:2271 ./target/release/vantablack</div>
+          <p class="alt">Use <code>any</code> instead of a fingerprint to open it to every node that completes a handshake. Bind <code>2271</code>, not <code>2270</code>: that port belongs to the discovery beacon.</p>
+        </div>
+
+        <div class="route-step">
+          <h3><span>05</span> Keep it yours</h3>
+          <p>Identities are self-signed, so anyone can make one. Set the same 32-byte secret on every node you own and a handshake can only complete between them:</p>
+          <div class="term"><span class="p">GHOST_PSK</span>=0123&hellip;ef   <span class="c"># 32 bytes, hex, identical everywhere</span></div>
+          <p class="alt">Addresses are never trusted. A node is its Ed25519 fingerprint, and a peer that reconnects from a new address is re-anchored to the same identity rather than treated as someone new.</p>
+        </div>
+
       </div>
     </section>
 
     <section id="shards">
       <div class="section-head">
-        <span class="eyebrow">Sharding</span>
-        <h2>Watch RS(2,1) actually run</h2>
-        <p>
-          This is the real erasure code, not an animation: your text is split into two data shards and
-          one GF(256) parity shard. Drop any single shard and the other two still rebuild it exactly.
-        </p>
+        <h2>Sharding, running for real</h2>
+        <p>RS(2,1) over GF(256). Click a shard to lose it &mdash; the other two still rebuild your text exactly.</p>
       </div>
 
       <div class="panel">
@@ -572,63 +511,54 @@
 
         <div class="shards" id="shardList">
           <div class="shard" data-idx="0">
-            <div class="shard-top"><span>SHARD 0 &middot; DATA</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-top"><span>shard 0 &middot; data</span><span class="shard-state ok">&mdash;</span></div>
             <div class="shard-hex"></div>
           </div>
           <div class="shard" data-idx="1">
-            <div class="shard-top"><span>SHARD 1 &middot; DATA</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-top"><span>shard 1 &middot; data</span><span class="shard-state ok">&mdash;</span></div>
             <div class="shard-hex"></div>
           </div>
           <div class="shard" data-idx="2">
-            <div class="shard-top"><span>SHARD 2 &middot; PARITY</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-top"><span>shard 2 &middot; parity</span><span class="shard-state ok">&mdash;</span></div>
             <div class="shard-hex"></div>
           </div>
         </div>
 
         <div class="demo-result">
-          <span class="label">Reconstructed from the surviving shards</span>
+          <span class="label">Rebuilt from the surviving shards</span>
           <div class="value" id="demoOut">&mdash;</div>
         </div>
-        <p class="demo-hint">Click a shard to lose it. With two gone, reconstruction is impossible &mdash; there is nothing left to solve with.</p>
       </div>
     </section>
 
-    <section id="deploy">
+    <section id="frame">
       <div class="section-head">
-        <span class="eyebrow">Deploy</span>
-        <h2>Run a node</h2>
-        <p>The daemon takes no command-line arguments. Everything is configured through environment variables.</p>
+        <h2>Every frame is 512 bytes</h2>
+        <p>Whether you send one byte or four hundred. Select a field for its bounds.</p>
       </div>
 
       <div class="panel">
-        <div class="install-row">
-          <span><span class="os">Linux / macOS &middot;</span> <span class="cmd">curl -sSf https://ggn.kellersystems.dev/install.sh | sh</span></span>
+        <div class="frame-bar" id="frameBar">
+          <div class="seg seg-hash"    data-field="Session hash"    data-range="0 – 4"     data-note="Truncated session identifier, also mixed into the AEAD nonce so nonces never collide across sessions.">HASH</div>
+          <div class="seg seg-counter" data-field="Packet counter"  data-range="4 – 8"     data-note="Monotonic counter, checked against the replay window. A repeat is dropped.">CTR</div>
+          <div class="seg seg-shard"   data-field="Shard index"     data-range="8 – 9"     data-note="Which Reed-Solomon shard this datagram carries: 0 or 1 for data, 2 for parity.">SHARD</div>
+          <div class="seg seg-flags"   data-field="Flags"           data-range="9 – 10"    data-note="Bit 0 marks a 1472-byte bulk frame, bit 1 an unordered tunnel datagram.">FLAGS</div>
+          <div class="seg seg-payload" data-field="Encrypted shard" data-range="10 – 496"  data-note="486 bytes of ChaCha20-Poly1305 ciphertext carrying one Reed-Solomon shard.">ENCRYPTED SHARD &mdash; 486 B</div>
+          <div class="seg seg-tag"     data-field="Poly1305 tag"    data-range="496 – 512" data-note="16-byte authentication tag. One flipped bit anywhere in the frame fails verification.">TAG 16 B</div>
+          <div class="seg seg-jitter"  data-field="Jitter padding"  data-range="512 +"     data-note="0 to 64 random trailing bytes, generated per frame, so length reveals nothing.">JITTER</div>
         </div>
-        <div class="install-row">
-          <span><span class="os">Windows &middot;</span> <span class="cmd">irm https://ggn.kellersystems.dev/install.ps1 | iex</span></span>
+        <div class="seg-detail">
+          <span class="field" id="frameField">Session hash</span>
+          <span class="range" id="frameRange">bytes 0 – 4</span>
         </div>
-
-        <pre class="code"><span class="cmt"># or build it yourself</span>
-git clone https://github.com/KELLERBABG/Global-Ghost-Net.git
-cd Global-Ghost-Net && cargo build --release
-
-<span class="cmt"># client node: SOCKS5 proxy on 127.0.0.1:1080</span>
-GHOST_SOCKS5=1 ./target/release/vantablack
-
-<span class="cmt"># exit node: opens outbound connections for allowlisted peers
-# (bind 2271 — 2270/UDP is the discovery beacon)</span>
-GHOST_EXIT_ALLOWLIST=any GHOST_BIND=0.0.0.0:2271 ./target/release/vantablack</pre>
-
-        <p class="note">
-          Then point anything at the proxy: <code>curl --socks5 127.0.0.1:1080 https://example.com</code>.
-          Configuration reference: <a href="https://github.com/KELLERBABG/Global-Ghost-Net/blob/main/config.env.example">config.env.example</a>.
-        </p>
+        <p class="seg-note" id="frameNote">Truncated session identifier, also mixed into the AEAD nonce so nonces never collide across sessions.</p>
       </div>
     </section>
 
     <footer>
       <span>Global Ghost Net &middot; v0.4.1</span>
-      <span>Pre-release: mesh core implemented and tested; the LAN-over-WAN layer (<code>--features vpn</code>) is experimental.</span>
+      <span><a href="https://github.com/KELLERBABG/Global-Ghost-Net/blob/main/config.env.example">config.env.example</a> lists every variable</span>
+      <span>Pre-release: mesh core implemented and tested; the LAN-over-WAN layer is experimental.</span>
       <span><a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">GitHub</a> &middot; <a href="https://kellersystems.dev">Keller Systems</a></span>
     </footer>
 
@@ -823,15 +753,13 @@ GHOST_EXIT_ALLOWLIST=any GHOST_BIND=0.0.0.0:2271 ./target/release/vantablack</pr
         return s + (bytes.length > n ? '…' : '');
       }
 
-      function fromHexChar(c) { return c <= 57 ? c - 48 : c - 87; }
-
       function render() {
         for (var i = 0; i < cards.length; i++) {
           var card = cards[i];
           var state = card.querySelector('.shard-state');
           if (dropped[i]) {
             card.classList.add('dropped');
-            state.textContent = 'LOST';
+            state.textContent = 'lost';
             state.className = 'shard-state gone';
             card.querySelector('.shard-hex').textContent = '—';
           } else {
@@ -845,10 +773,9 @@ GHOST_EXIT_ALLOWLIST=any GHOST_BIND=0.0.0.0:2271 ./target/release/vantablack</pr
         var live = shards.map(function (s, i) { return dropped[i] ? null : s; });
         var rebuilt = rsReconstruct(live);
         if (!rebuilt) {
-          out.textContent = '— unrecoverable: fewer than two shards remain';
+          out.textContent = '— fewer than two shards remain';
           return;
         }
-        // Trim the zero padding we added at encode time, then decode as UTF-8.
         var text = '';
         try {
           text = new TextDecoder().decode(new Uint8Array(rebuilt)).replace(/\u0000+$/, '');
