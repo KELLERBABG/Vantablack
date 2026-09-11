@@ -850,11 +850,13 @@ async fn handle_exit_connect(
 
     let tkey = exit_tunnel_key(src, sh);
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let mut rx = RxState::default();
     // Anchor the tunnel's reorder window at (CONNECT counter + 1): the first
     // data frame the initiator sends. Out-of-order frames are buffered, never
     // dropped on a task-scheduling race.
-    rx.next = Some(connect_ctr + 1);
+    let rx = RxState {
+        next: Some(connect_ctr + 1),
+        ..Default::default()
+    };
     tunnels.insert(tkey.clone(), ExitTunnel {
         out_tx,
         rx,
@@ -1559,7 +1561,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let secs = nc.keepalive_interval_secs.load(Ordering::Relaxed);
-                let interval = Duration::from_secs(secs.min(300).max(1));
+                let interval = Duration::from_secs(secs.clamp(1, 300));
                 sleep(interval).await;
             }
         });

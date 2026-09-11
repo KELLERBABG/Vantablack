@@ -111,14 +111,14 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 | :--- | :--- | :---: |
 | **Quantum Computing Decryption** | Hybrid ML-KEM-512 (Kyber) + Ephemeral X25519 ECDH | **Immune** |
 | **Single-Node Eavesdropping** | RS(2,1) Reed-Solomon asymmetric multi-path sharding | **Immune** |
-| **Deep Packet Inspection (DPI)** | 512-byte fixed frame size + 0â€“64 byte random jitter padding | **Immune** |
+| **Deep Packet Inspection (DPI)** | 512-byte fixed frame size + 0-64 byte random jitter padding | **Immune** |
 | **Packet Replay Attacks** | Atomic 64-bit sliding window bitmap (`SessionGuardU64`) | **Immune** |
 | **In-Memory Scraping** | Volatile zeroization on drop + AES-256-XTS RAM protection | **Hardened** |
 | **Central Server Seizure** | Pure decentralized P2P architecture with local `peers.cache` | **Immune** |
 
 ---
 
-## Technical Architecture (L0â€“L9)
+## Technical Architecture (L0-L9)
 
 Global Ghost Net implements the 10-layer GHOST protocol stack:
 
@@ -145,14 +145,16 @@ Global Ghost Net implements the 10-layer GHOST protocol stack:
 
 ## Technical Documentation & Deep Dives
 
+Interactive documentation portal is live at [**ggn.kellersystems.dev/docs**](https://ggn.kellersystems.dev/docs).
+
 For engineers, cryptographers, and contributors wishing to inspect the mathematics, security models, and implementation details:
 
-* [**Technical Specifications**](docs/SPECIFICATIONS.md) â€” Low-level frame layouts, GTF byte structures, and replay window bitmasks.
-* [**Protocol Whitepaper**](docs/WHITEPAPER.md) â€” Architectural overview of the GHOST network layers (L0 through L9).
-* [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) â€” In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
-* [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) â€” Formal analysis of ML-KEM-512, X25519 hybrid key exchange, directional nonces, and memory security.
-* [**Zero-Cost Peer Discovery Guide**](docs/PEER_DISCOVERY_GUIDE.md) â€” Step-by-step walkthrough for configuring free Cloudflare DNS seeds and local caching.
-* [**Configuration Reference**](config.env.example) â€” Parameter reference for network ports, transit rate limits, and egress allowlists.
+* [**Technical Specifications**](docs/SPECIFICATIONS.md) — Low-level frame layouts, GTF byte structures, and replay window bitmasks.
+* [**Protocol Whitepaper**](docs/WHITEPAPER.md) — Architectural overview of the GHOST network layers (L0 through L9).
+* [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) — In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
+* [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-512, X25519 hybrid key exchange, directional nonces, and memory security.
+* [**Zero-Cost Peer Discovery Guide**](docs/PEER_DISCOVERY_GUIDE.md) — Step-by-step walkthrough for configuring free Cloudflare DNS seeds and local caching.
+* [**Configuration Reference**](config.env.example) — Parameter reference for network ports, transit rate limits, and egress allowlists.
 
 ---
 
