@@ -162,9 +162,12 @@ pub fn build_test_gtf_packet(
     packet[4..8].copy_from_slice(&counter.to_be_bytes());
     // Shard index at offset 8
     packet[8] = shard_index;
-    // Payload at offset 9
-    let payload_end = 9 + payload.len().min(487);
-    packet[9..payload_end].copy_from_slice(&payload[..payload.len().min(487)]);
+    // Flags at offset 9 (privacy mode = 0)
+    packet[9] = 0;
+    // Payload at offset 10 (OFFSET_PAYLOAD_START)
+    let payload_max = 486;
+    let payload_end = 10 + payload.len().min(payload_max);
+    packet[10..payload_end].copy_from_slice(&payload[..payload.len().min(payload_max)]);
     // Auth tag at offset 496
     packet[496..512].copy_from_slice(auth_tag);
 

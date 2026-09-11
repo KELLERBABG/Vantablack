@@ -370,6 +370,7 @@ impl UdpFlow {
 /// Bounded UDP flow table (audit rule 3): TTLs, per-fp cap, global cap, LRU.
 pub struct UdpFlowTable {
     flows: Mutex<HashMap<FlowKey, Arc<UdpFlow>>>,
+    by_port: Mutex<HashMap<u16, FlowKey>>,
     lan_bind: IpAddr,
     /// Flow TTLs (production defaults; injectable for churn-gate timing).
     dns_ttl: Duration,
@@ -402,6 +403,7 @@ impl UdpFlowTable {
     pub fn with_timing(lan_bind: IpAddr, dns_ttl: Duration, general_ttl: Duration) -> Self {
         Self {
             flows: Mutex::new(HashMap::new()),
+            by_port: Mutex::new(HashMap::new()),
             lan_bind,
             bind_socket: Box::new(real_bind),
             dns_ttl,
@@ -416,6 +418,7 @@ impl UdpFlowTable {
     ) -> Self {
         Self {
             flows: Mutex::new(HashMap::new()),
+            by_port: Mutex::new(HashMap::new()),
             lan_bind,
             bind_socket: f,
             dns_ttl: UDP_DNS_TTL,
@@ -430,22 +433,21 @@ impl UdpFlowTable {
         let mut flows = self.flows.lock();
         if let Some(f) = flows.get(&key) {
             // cheap refresh: bump last_seen by reinserting a fresh Arc copy
-            let existing = Arc::clone(f);
             let refreshed = Arc::new(UdpFlow {
                 key: f.key.clone(),
                 socket: Arc::clone(&f.socket),
                 last_seen: Instant::now(),
                 is_dns: f.is_dns,
             });
-            flows.insert(key.clone(), refreshed);
-            return Some(existing);
+            flows.insert(key, Arc::clone(&refreshed));
+            return Some(refreshed);
         }
         let per_fp = flows.values().filter(|f| f.key.fp == key.fp).count();
         if per_fp >= UDP_FLOWS_PER_FP {
-            Self::evict_lru_for(&mut *flows, Some(&key.fp));
+            Self::evict_lru_for(&mut *flows, &mut *self.by_port.lock(), Some(&key.fp));
         }
         if flows.len() >= UDP_FLOWS_GLOBAL {
-            Self::evict_lru_for(&mut *flows, None);
+            Self::evict_lru_for(&mut *flows, &mut *self.by_port.lock(), None);
             if flows.len() >= UDP_FLOWS_GLOBAL {
                 return None; // still full: refuse (drop) — bounded
             }
@@ -453,39 +455,52 @@ impl UdpFlowTable {
         let socket = (self.bind_socket)(self.lan_bind).ok()?;
         let is_dns = key.dst.port() == 53;
         let flow = Arc::new(UdpFlow { key: key.clone(), socket, last_seen: Instant::now(), is_dns });
-        flows.insert(key, Arc::clone(&flow));
+        let local_port = flow.local_port();
+        flows.insert(key.clone(), Arc::clone(&flow));
+        if local_port != 0 {
+            self.by_port.lock().insert(local_port, key);
+        }
         Some(flow)
     }
 
-    fn evict_lru_for(flows: &mut HashMap<FlowKey, Arc<UdpFlow>>, fp: Option<&str>) {
+    fn evict_lru_for(
+        flows: &mut HashMap<FlowKey, Arc<UdpFlow>>,
+        by_port: &mut HashMap<u16, FlowKey>,
+        fp: Option<&str>,
+    ) {
         let victim = flows
             .values()
             .filter(|f| fp.map_or(true, |p| f.key.fp == p))
             .min_by_key(|f| f.last_seen)
-            .map(|f| f.key.clone());
-        if let Some(k) = victim {
+            .map(|f| (f.key.clone(), f.local_port()));
+        if let Some((k, port)) = victim {
             flows.remove(&k);
+            by_port.remove(&port);
         }
     }
 
     /// Lazy expiry: drop flows silent past their TTL.
     pub fn sweep(&self) -> usize {
         let mut flows = self.flows.lock();
+        let mut by_port = self.by_port.lock();
         let before = flows.len();
+        let dns_ttl = self.dns_ttl;
+        let general_ttl = self.general_ttl;
         flows.retain(|_, f| {
-            let ttl = if f.is_dns { self.dns_ttl } else { self.general_ttl };
-            f.last_seen.elapsed() < ttl
+            let ttl = if f.is_dns { dns_ttl } else { general_ttl };
+            let keep = f.last_seen.elapsed() < ttl;
+            if !keep {
+                by_port.remove(&f.local_port());
+            }
+            keep
         });
         before - flows.len()
     }
 
     /// Demux: which flow does a packet arriving on local port `port` belong to?
+    /// O(1) lookup via secondary by_port index.
     pub fn flow_for_local_port(&self, port: u16) -> Option<FlowKey> {
-        let flows = self.flows.lock();
-        flows
-            .values()
-            .find(|f| f.local_port() == port)
-            .map(|f| f.key.clone())
+        self.by_port.lock().get(&port).cloned()
     }
 
     pub fn len(&self) -> usize {
@@ -774,5 +789,13 @@ mod tests {
         }
         assert_eq!(t.sweep(), 1);
         assert_eq!(t.len(), 0);
+        assert_eq!(t.flow_for_local_port(port), None); // by_port secondary index cleaned up
+
+        // Test D11: refreshed Arc is returned with fresh last_seen
+        let flow1 = t.get_or_create(key.clone()).unwrap();
+        let old_seen = flow1.last_seen;
+        std::thread::sleep(Duration::from_millis(5));
+        let flow2 = t.get_or_create(key.clone()).unwrap();
+        assert!(flow2.last_seen > old_seen, "get_or_create must return refreshed Arc");
     }
 }

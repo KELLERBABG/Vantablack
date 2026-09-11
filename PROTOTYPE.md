@@ -1,14 +1,13 @@
 # PROTOTYPE — LAN over WAN ("Home LAN on my phone")
 
 Working folder for the road-warrior VPN prototype built on the GHOST mesh.
-**Baseline:** commit `4bc75b7`, tag `proto-baseline` (v0.4.0 source snapshot).
+**Baseline:** commit `4bc75b7` (upstream v0.4.0 source snapshot). In this repository, the import is tagged `audit-baseline`.
 
 ## Rollback
 
 ```bash
-git tag                            # shows proto-baseline
-git reset --hard proto-baseline    # nuke all prototype work, back to v0.4.0
-git checkout proto-baseline -- .   # restore files only, keep history
+git tag                            # shows audit-baseline
+git reset --hard audit-baseline    # reset to audit baseline
 ```
 
 The original source tree (`../Global-Ghost-Net-main`) stays untouched as a
@@ -117,67 +116,59 @@ route 192.168.1.0/24, DNS=router                          smoltcp netstack,
 
 ## Known flaws & missing spots (honest ledger)
 
-Updated 2026-09-09 after the churn fix (`2df37fd`). Everything below is
-open as of this commit; fixed bug classes are listed at the end so future
-maintainers know the gates earn their keep.
+Updated 2026-09-11 (reconciled with tree and THINKTANK-BIN pass).
+Everything below reflects current tree status; fixed items are struck and detailed.
 
-### The big one: nothing is wire-proven yet
+### The big one: driver & hardware layer pending
 
 Every rule above is proven in simulation and through the real crypto/framing
-path (see ledger below), but **no two physical nodes have ever talked**.
-The two-node smoke test (hub + elevated wintun client, real LAN server)
-has never run. Remaining hardware unknowns: wintun adapter creation under
+path (see ledger below), including zero-elevation two-process loopback ICMP.
+However, **no real wintun client has talked to a physical LAN host**.
+Remaining hardware/elevation unknowns: wintun adapter creation under Windows
 admin, NAT44 against a real LAN host, actual Wi-Fi→LTE handover mid-SSH.
-Every unit-level excuse for failure has been removed; the driver-level ones
-are untouched.
+Every unit- and protocol-level excuse for failure has been removed; the OS
+driver/hardware layer is the top remaining gate.
 
-### Open flaws, ranked by user impact
+### Status of audit flaws
 
-1. **Counter exhaustion has no trigger.** `send_tunnel_frame` silently
-   drops at `ctr >= u32::MAX - 2` (no log, no rotation); `seal_for_client`
-   wraps to 1 at `u32::MAX`, after which the client's replay window
-   (`v_max = MAX`) rejects every reply forever. The resilience loop is the
-   recovery vehicle, but nothing counts down and re-keys *before* death.
-2. **UDP reply truncation at 2048 B.** `spawn_flow_reader`'s buffer caps
-   EDNS0-sized DNS responses (up to 4 KB) — `recv` truncates silently.
-   One-line fix, gated only up to 2048 B today.
-3. **No ICMP proxying to LAN targets.** Client pings to real LAN IPs are
-   dropped (counted) — correct (no fake answers) but user-visible "ping
-   the NAS doesn't work" until hub-side ICMP relay exists (v2).
-4. **Egress seals at produce, not at drain.** Queued sealed datagrams die
-   (counter spent, epoch stale) when a client re-anchors while the 4096-slot
-   egress queue holds them. Seal-at-drain with typed `IpPacket` payloads
-   makes re-anchor atomic w.r.t. queued traffic and makes the unsealed-relay
-   bug class unrepresentable.
-5. **Mesh handshakes are not allowlisted.** Any PQ-authenticated peer can
-   establish a mesh *session* with a hub (VPN tunnels are allowlisted, mesh
-   sessions are not) — a WAN-exposed hub accumulates session state from
-   strangers. Hardening item, not a VPN-tunnel leak.
-6. **`identity.key` is CWD-relative.** Two nodes launched from one
-   directory share a fingerprint. Operational trap for the first smoke test.
+1. ~~**Counter exhaustion has no trigger.**~~ **CLOSED.** `COUNTER_REKEY_AT`
+   triggers `Action::Rehandshake` before wrap in `TunnelWatchdog::poll_with_counter`
+   (`client.rs`); hub proximity warning active in `hub.rs`. Tested by
+   `counter_exhaustion_triggers_rehandshake_before_wrap`.
+2. ~~**UDP reply truncation at 2048 B.**~~ **CLOSED.** Flow-reader buffer is
+   4096 B (EDNS0 ceiling) with explicit truncation note (`hub.rs:284`).
+3. **No ICMP proxying to LAN targets.** **OPEN (v2 by design).** Client pings
+   to real LAN IPs are dropped (counted) — userspace echo responder only
+   answers the hub's own overlay IP.
+4. ~~**Egress seals at produce, not at drain.**~~ **CLOSED.** `poll_egress`
+   now seals at drain time reading current session material and counter;
+   mid-queue re-anchors no longer orphan queued packets.
+5. ~~**Mesh handshakes are not allowlisted.**~~ **CLOSED.** Hub handshake path
+   rejects non-allowlisted fingerprints in `main.rs:397`.
+6. ~~**`identity.key` is CWD-relative.**~~ **CLOSED.** `GHOST_IDENTITY_FILE`
+   override implemented in `l0_identity.rs:24`.
 
-### Missing surfaces
+### Missing surfaces status
 
-- **`vpn_*` metrics**: hub/client stats exist only as console text;
-  `/metrics` and `/healthz` are VPN-blind. Counter headroom and
-  watchdog-dead gauges would make flaw #1 visible before it bites.
-- **Zero-elevation demo**: `FakeTun` implements `TunDevice` but is not
-  wired into `main.rs` — a `GHOST_VPN_FAKE_TUN=1` client mode would enable
-  a two-process loopback self-test without admin.
-- **`VPN STATUS`** human-readable per-lease view (endpoint, epoch, last
-  seen, flows) — today only the five-number `VPNSTATS` exists.
+- ~~**`vpn_*` metrics**~~: **CLOSED.** 7 `ghost_vpn_*` series on `/metrics`
+  (including `counter_headroom_min`); `"vpn"` + `vpn_stats` on `/healthz`.
+- ~~**Zero-elevation demo**~~: **CLOSED.** `PlatformTun::Fake` wired in via
+  `GHOST_VPN_FAKE_TUN=1`; validated via `scripts/vpn_loopback_test.sh` and
+  `run-vpn-test.bat`.
+- ~~**`VPN STATUS`**~~: **CLOSED.** Implemented in `main.rs:2129+` (per-lease
+  table with FP, IP, endpoint, epoch, flows, headroom).
 - **LAN→client initiated connections** are unsupported by design (NAT44
   outbound only). mDNS relay stays v2 as originally scoped.
 - **main.rs god-file**: ~2k lines owning VPN wire protocol, egress pumps
-  and console; `ClientState`/`VpnHub` mirror epoch/counter state. The
-  structural cap on the DESIGN grade.
+  and console; `ClientState`/`VpnHub` mirror epoch/counter state.
 
 ### Verification ledger
 
 | Layer | Proof |
 |---|---|
-| Simulator (virtual net, lossy links, flood caps) | 173 tests green, `--features vpn` |
+| Simulator (virtual net, lossy links, flood caps) | 174 tests green, `--features vpn` |
 | Real crypto + framing path (GTF, ChaCha, tunnel magic) | `vpn_transport`, `vpn_dns`, `vpn_resilience`, `vpn_churn` gates |
+| Zero-elevation loopback (real handshake + ICMP roundtrip) | `scripts/vpn_loopback_test.sh` (6/6 passed) |
 | Real process (binary boot, console, handshake) | hub binary exercised; `PEER` via shared `initiate_handshake` |
 | Real hardware (wintun, LAN, LTE handover) | ❌ pending — the smoke test |
 

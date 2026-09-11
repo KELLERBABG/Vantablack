@@ -1005,7 +1005,11 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(not(feature = "vpn"))]
     let _vpn_mode: Option<VpnMode> = None;
 
-    tracing::info!("Global Ghost Net v0.4.0 starting — L0-L9 stack fully wired");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "Global Ghost Net v{} starting — L0-L9 stack fully wired",
+        env!("CARGO_PKG_VERSION")
+    );
     if socks { tracing::info!("Mode: SOCKS5 proxy on 127.0.0.1:{socks_port}"); }
     if revocation_list.prune_expired() > 0 { tracing::info!("Revocation list initialized"); }
 

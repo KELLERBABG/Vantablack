@@ -495,11 +495,13 @@
       transition: filter 0.2s;
     }
     .frame-segment:hover { filter: brightness(1.25); }
-    .seg-magic { width: 8%; background: #0284c7; }
-    .seg-nonce { width: 14%; background: #6366f1; }
-    .seg-poly { width: 20%; background: #8b5cf6; }
-    .seg-payload { width: 48%; background: #0ea5e9; }
-    .seg-noise { width: 10%; background: #059669; }
+    .seg-session { width: 4%; background: #0284c7; }
+    .seg-counter { width: 4%; background: #6366f1; }
+    .seg-shard { width: 3%; background: #a855f7; }
+    .seg-flags { width: 3%; background: #ec4899; }
+    .seg-payload { width: 70%; background: #0ea5e9; }
+    .seg-poly { width: 8%; background: #8b5cf6; }
+    .seg-noise { width: 8%; background: #059669; }
 
     .inspector-detail {
       background: #06080c;
@@ -695,11 +697,13 @@
         </div>
 
         <div class="frame-bar">
-          <div class="frame-segment seg-magic" onmouseover="inspect('Session & Magic ID', '0..4 Bytes', 'Cryptographic session identifier preventing cross-session frame reflection attacks.')">MAGIC [4B]</div>
-          <div class="frame-segment seg-nonce" onmouseover="inspect('Monotonic Nonce Counter', '4..12 Bytes', '64-bit strictly monotonic packet sequence counter checked against anti-replay sliding window.')">NONCE [8B]</div>
-          <div class="frame-segment seg-poly" onmouseover="inspect('Poly1305 MAC Tag', '12..28 Bytes', '16-byte Poly1305 one-time authentication tag validating frame integrity.')">POLY1305 [16B]</div>
-          <div class="frame-segment seg-payload" onmouseover="inspect('Ciphertext Shard Payload', '28..480 Bytes', 'Encrypted Reed-Solomon polynomial shard payload protected by ChaCha20-Poly1305.')">REED-SOLOMON SHARD PAYLOAD [452B]</div>
-          <div class="frame-segment seg-noise" onmouseover="inspect('Uniform Anti-DPI Jitter Padding', '480..512 Bytes', 'Cryptographically secure pseudorandom bytes standardizing frame length against deep packet inspection.')">NOISE [32B]</div>
+          <div class="frame-segment seg-session" onmouseover="inspect('Session Hash', '0..4 Bytes', 'Cryptographic session identifier for O(1) table lookup and AEAD nonce mixing.')">HASH [4B]</div>
+          <div class="frame-segment seg-counter" onmouseover="inspect('Monotonic Packet Counter', '4..8 Bytes', '32-bit big-endian packet counter checked against anti-replay sliding window.')">CTR [4B]</div>
+          <div class="frame-segment seg-shard" onmouseover="inspect('Shard Index', '8..9 Bytes', 'Reed-Solomon RS(2,1) shard index (0 or 1 data, 2 parity).')">SHARD [1B]</div>
+          <div class="frame-segment seg-flags" onmouseover="inspect('Flags', '9..10 Bytes', 'Protocol flags: bit 0 = bulk mode (1472B), bit 1 = unordered tunnel datagram.')">FLAGS [1B]</div>
+          <div class="frame-segment seg-payload" onmouseover="inspect('Ciphertext Shard Payload', '10..496 Bytes', '486-byte ChaCha20-Poly1305 encrypted shard payload.')">ENCRYPTED SHARD PAYLOAD [486B]</div>
+          <div class="frame-segment seg-poly" onmouseover="inspect('Poly1305 MAC Tag', '496..512 Bytes', '16-byte Poly1305 one-time authentication tag validating frame integrity.')">POLY1305 [16B]</div>
+          <div class="frame-segment seg-noise" onmouseover="inspect('Anti-DPI Jitter Padding', '512..576 Bytes', '0 to 64 bytes pseudorandom trailing jitter padding to defeat length-analysis.')">JITTER [0..64B]</div>
         </div>
 
         <div class="inspector-detail" id="inspectorBox">
@@ -873,7 +877,7 @@
       </div>
 
       <div class="code-container" style="position:relative;">
-        <pre class="code-window" id="ggnCode" onclick="copyCode('ggnCode', 'ggnCopyStatus')" style="white-space:pre; cursor:pointer; margin:20px 0;" title="Click to copy commands">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git && cd Global-Ghost-Net && cargo build --release && ./target/release/ggn-daemon --listen 0.0.0.0:2270 --socks 127.0.0.1:1080</pre>
+        <pre class="code-window" id="ggnCode" onclick="copyCode('ggnCode', 'ggnCopyStatus')" style="white-space:pre; cursor:pointer; margin:20px 0;" title="Click to copy commands">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git && cd Global-Ghost-Net && cargo build --release && GHOST_BIND=0.0.0.0:2270 GHOST_SOCKS=127.0.0.1:1080 ./target/release/vantablack</pre>
         <span id="ggnCopyStatus" style="position:absolute; top:30px; right:20px; font-family:var(--font-mono); font-size:11px; background:rgba(0,242,254,0.15); border:1px solid var(--cyan); color:var(--cyan); padding:4px 8px; border-radius:4px; pointer-events:none; opacity:0.8; transition:all 0.2s;">CLICK TO COPY</span>
       </div>
 

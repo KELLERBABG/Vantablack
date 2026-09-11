@@ -56,10 +56,8 @@ cleanup(){
 }
 trap cleanup EXIT
 
-if [ ! -x "$BIN" ]; then
-  say "building (debug, --features vpn)"
-  cargo build --features vpn || { bad "cargo build --features vpn"; exit 1; }
-fi
+say "ensuring binary is built (debug, --features vpn)"
+cargo build --features vpn || { bad "cargo build --features vpn"; exit 1; }
 
 # ── phase 1: learn the hub fingerprint ──────────────────────────────────────
 # The hub's identity persists in GHOST_IDENTITY_FILE, so its fingerprint is

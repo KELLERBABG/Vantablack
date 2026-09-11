@@ -20,6 +20,9 @@ tray = ["dep:tray-icon", "dep:tao"]
 vpn = ["dep:smoltcp", "dep:socket2"]
 # Enable fuzz targets (fuzz/Cargo.toml)
 fuzzing = []
+# Hardware TPM 2.0 and PKCS#11 HSM integration stubs
+hardware-tpm = []
+pkcs11 = []
 
 [profile.release]
 opt-level = "z"     # Optimize for size

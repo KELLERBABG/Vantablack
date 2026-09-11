@@ -1,4 +1,4 @@
-# Global Ghost Net — Technical Specifications
+# Global Ghost Net â€” Technical Specifications
 
 This document defines the low-level protocols, cryptographic guarantees, and frame formats implemented in Global Ghost Net.
 
@@ -30,7 +30,7 @@ In privacy mode, all datagrams are fixed to 512 bytes with randomized trailing j
 | Byte Range | Field | Type | Description |
 |---|---|---|---|
 | `00..03` | Session Hash | `[u8; 4]` | Truncated session identifier for fast lookup |
-| `04..07` | Packet Counter | `u32` (LE) | Monotonic counter used for replay protection |
+| `04..07` | Packet Counter | `u32` (BE) | Monotonic counter used for replay protection |
 | `08` | Shard Index | `u8` | Shard indicator (`0`, `1`, or `2` for RS parity) |
 | `09` | Flags | `u8` | Bit flags (`0x00`: privacy, `0x01`: bulk transfer) |
 | `10..495` | Encrypted Shard | `[u8; 486]` | ChaCha20-Poly1305 ciphertext payload |

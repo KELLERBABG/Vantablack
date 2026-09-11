@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 TMP="$ROOT/target/smoke_test_$$"
 BIN=""
-for d in "$ROOT/target/debug" "C:/Users/Public/ggn-target/debug"; do
+for d in "$ROOT/target/debug"; do
   if [ -f "$d/vantablack.exe" ]; then BIN="$d/vantablack.exe"; break; fi
 done
 [ -n "$BIN" ] || BIN="$(cargo metadata --format-version 1 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/vantablack.exe"

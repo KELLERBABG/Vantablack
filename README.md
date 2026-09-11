@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # &#128420; Global Ghost Net
 
@@ -54,7 +54,6 @@ Pre-configured scripts are included for instant zero-friction setup:
 2. **Exit Node (Transit Provider):**
    Double-click `run-exit-node.bat`
    - Acts as an egress gateway that routes external internet traffic for mesh computers.
-   - Rotates egress IPs so outbound requests cannot be correlated to a single computer.
 
 3. **Browse Securely:**
    Configure your browser proxy or terminal to use `127.0.0.1:1080`:
@@ -112,7 +111,6 @@ CHAT 9a4f7e2c "Direct post-quantum encrypted ping"
 | **Packet Replay Attacks** | Atomic 64-bit sliding window bitmap (`SessionGuardU64`) | **Immune** |
 | **In-Memory Scraping** | Volatile zeroization on drop + AES-256-XTS RAM protection | **Hardened** |
 | **Central Server Seizure** | Pure decentralized P2P architecture with local `peers.cache` | **Immune** |
-| **Residential NAT Firewalls** | Dual-side simultaneous STUN UDP hole-punching | **Bypassed** |
 
 ---
 

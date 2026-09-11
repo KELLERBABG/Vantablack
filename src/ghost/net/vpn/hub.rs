@@ -295,11 +295,10 @@ impl VpnHub {
                             client_port,
                             &buf[..n],
                         ) {
-                            // Seal with the CURRENT session info at reply time.
-                            if let Some(wire) = this.seal_for_client(&fp, ip) {
-                                if replies.send((fp.clone(), wire)).is_err() {
-                                    break;
-                                }
+                            // Flaw #4: Enqueue unsealed raw IP packet. Sealing happens at drain time
+                            // in poll_egress, preventing stale epochs/counters on mid-queue re-anchor.
+                            if replies.send((fp.clone(), ip)).is_err() {
+                                break;
                             }
                         }
                     }
@@ -356,11 +355,9 @@ impl VpnHub {
         self.enqueue_to_client(fp, epoch, reply);
     }
 
-    /// Seal an IP packet for a client and queue it for the egress pump.
+    /// Queue an IP packet for a client into the egress pump (Flaw #4: seal-at-drain).
     fn enqueue_to_client(&self, fp: &str, _epoch: u32, ip_packet: Vec<u8>) {
-        if let Some(wire) = self.seal_for_client(fp, ip_packet) {
-            let _ = self.egress_tx.try_send((fp.to_string(), wire));
-        }
+        let _ = self.egress_tx.try_send((fp.to_string(), ip_packet));
     }
 
     /// Seal an IP packet for a client → bare tunnel datagram (no magic).
@@ -396,15 +393,26 @@ impl VpnHub {
 
     /// Drain one pending egress item. Returns an `EgressUnit` the caller
     /// sends over the mesh (session-encrypted, GVPN1-wrapped).
+    /// Seals at drain time (Flaw #4 / THINKTANK §2.2), reading current session
+    /// key, epoch, and counter when handing the unit to the wire.
     pub fn poll_egress(&self) -> Option<EgressUnit> {
-        let (fp, wire) = self.egress.lock().try_recv().ok()?;
-        let info = self.sessions.lock().get(&fp).cloned()?;
-        Some(EgressUnit {
-            fingerprint: fp.clone(),
-            session_hash: info.session_hash,
-            endpoint: info.endpoint,
-            wire,
-        })
+        loop {
+            let (fp, ip_packet) = self.egress.lock().try_recv().ok()?;
+            let Some(wire) = self.seal_for_client(&fp, ip_packet) else {
+                self.stats_dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            let Some(info) = self.sessions.lock().get(&fp).cloned() else {
+                self.stats_dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            return Some(EgressUnit {
+                fingerprint: fp,
+                session_hash: info.session_hash,
+                endpoint: info.endpoint,
+                wire,
+            });
+        }
     }
 
     /// Drain netstack egress (TCP): one NAT-egress IP packet, sealed for the
