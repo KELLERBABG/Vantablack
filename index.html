@@ -134,15 +134,6 @@
       border-radius: 8px;
       object-fit: contain;
       flex-shrink: 0;
-      box-shadow: 0 0 16px rgba(34, 211, 238, 0.22);
-    }
-    .brand-glow {
-      position: absolute;
-      inset: -4px;
-      border-radius: 10px;
-      background: radial-gradient(circle, rgba(34, 211, 238, 0.4) 0%, transparent 75%);
-      filter: blur(4px);
-      pointer-events: none;
     }
     .brand-titles {
       display: flex;
@@ -225,118 +216,6 @@
       box-shadow: 0 6px 20px rgba(34, 211, 238, 0.3);
     }
     @media (max-width: 840px) { .nav-link { display: none; } }
-
-    /* —— On-Site Documentation Drawer / Modal ————————————————————————— */
-    .docs-modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(5, 7, 10, 0.82);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      z-index: 200;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-    }
-    .docs-modal-overlay.open { display: flex; }
-    .docs-modal {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      width: 100%;
-      max-width: 960px;
-      max-height: 86vh;
-      display: flex;
-      flex-direction: column;
-      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7), 0 0 40px rgba(34, 211, 238, 0.1);
-      overflow: hidden;
-    }
-    .docs-header {
-      padding: 18px 24px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--surface-raised);
-    }
-    .docs-header h3 {
-      font-size: 15px;
-      font-weight: 600;
-      letter-spacing: -0.01em;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .docs-nav-tabs {
-      display: flex;
-      gap: 8px;
-    }
-    .docs-tab {
-      background: none;
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      padding: 4px 10px;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    .docs-tab.active, .docs-tab:hover {
-      background: var(--surface);
-      color: var(--accent);
-      border-color: var(--accent-border);
-    }
-    .docs-close {
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      font-size: 20px;
-      cursor: pointer;
-      line-height: 1;
-      padding: 4px;
-    }
-    .docs-close:hover { color: var(--text); }
-    .docs-body {
-      padding: 32px 36px;
-      overflow-y: auto;
-      font-family: var(--font-heading);
-      font-size: 14.5px;
-      line-height: 1.7;
-      color: var(--text-muted);
-    }
-    .docs-body h1, .docs-body h2, .docs-body h3 {
-      color: var(--text);
-      margin-top: 24px;
-      margin-bottom: 12px;
-    }
-    .docs-body h1 { font-size: 22px; margin-top: 0; }
-    .docs-body h2 { font-size: 18px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; }
-    .docs-body p { margin-bottom: 14px; }
-    .docs-body table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 16px 0 24px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-    }
-    .docs-body th, .docs-body td {
-      border: 1px solid var(--border);
-      padding: 8px 12px;
-      text-align: left;
-    }
-    .docs-body th { background: var(--surface-raised); color: var(--text); }
-    .docs-body pre {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      padding: 14px 16px;
-      border-radius: 6px;
-      font-family: var(--font-mono);
-      font-size: 12.5px;
-      overflow-x: auto;
-      margin: 14px 0 20px;
-      color: var(--accent);
-    }
 
     /* —— Hero ———————————————————————————————————————————————————————— */
     .hero { padding: 120px 0 60px; max-width: 820px; }
@@ -694,7 +573,6 @@
     <div class="header-inner">
       <a href="/" class="brand">
         <div class="brand-icon-wrap">
-          <div class="brand-glow"></div>
           <img class="brand-icon" src="assets/icon.svg" alt="Global Ghost Net Logo" width="36" height="36" />
         </div>
         <div class="brand-titles">
@@ -707,7 +585,7 @@
         <a href="#architecture" class="nav-link">Architecture</a>
         <a href="#sharding" class="nav-link">RS(2,1) Demo</a>
         <a href="#wire-format" class="nav-link">Wire Spec</a>
-        <a href="javascript:void(0)" class="nav-link" id="openDocsBtn">Documentation</a>
+        <a href="/docs" class="nav-link">Documentation</a>
         <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener" class="btn-repo">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
           Repository
@@ -716,27 +594,6 @@
       </div>
     </div>
   </header>
-
-  <!-- On-Site Interactive Documentation Reader -->
-  <div class="docs-modal-overlay" id="docsModal" aria-hidden="true">
-    <div class="docs-modal">
-      <div class="docs-header">
-        <h3>
-          <span style="color:var(--accent)">//</span>
-          <span>Technical Documentation &amp; Protocol Reference</span>
-        </h3>
-        <div class="docs-nav-tabs">
-          <button type="button" class="docs-tab active" data-tab="specs">Protocol Specs</button>
-          <button type="button" class="docs-tab" data-tab="unwired">Verification Status</button>
-          <button type="button" class="docs-tab" data-tab="cli">CLI Quickstart</button>
-        </div>
-        <button type="button" class="docs-close" id="closeDocsBtn" aria-label="Close Documentation">&times;</button>
-      </div>
-      <div class="docs-body" id="docsBody">
-        <!-- Tab Content dynamically injected / switched via JS -->
-      </div>
-    </div>
-  </div>
 
   <canvas id="globe-canvas" aria-hidden="true"></canvas>
   <div class="vignette" aria-hidden="true"></div>
@@ -1223,140 +1080,6 @@
       input.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
       input.addEventListener('input', run);
       run();
-    })();
-
-    /* —— On-Site Documentation Interactive Viewer Controller ————————— */
-    (function () {
-      var modal = document.getElementById('docsModal');
-      var openBtn = document.getElementById('openDocsBtn');
-      var closeBtn = document.getElementById('closeDocsBtn');
-      var tabs = document.querySelectorAll('.docs-tab');
-      var body = document.getElementById('docsBody');
-
-      var docsContent = {
-        specs: `
-          <h1>Global Ghost Net &mdash; Protocol Specifications</h1>
-          <p>This document defines the low-level protocols, cryptographic guarantees, and frame formats implemented in Global Ghost Net.</p>
-          
-          <h2>1. Cryptographic Suite</h2>
-          <ul>
-            <li><strong>Identity Layer (L0):</strong> Ed25519 permanent signing key pair generated on first run and stored locally (<code>identity.key</code>). Used for authenticating identity beacons and capability vouchers.</li>
-            <li><strong>Key Agreement (L1):</strong> Hybrid Ephemeral Key Exchange:
-              <ul>
-                <li>Classical: X25519 ECDH.</li>
-                <li>Post-Quantum: ML-KEM-512 (Kyber-512 / FIPS 203) Key Encapsulation Mechanism.</li>
-                <li>Salt & Pre-Shared Key: HKDF-SHA256 mixes both shared secrets with an optional 32-byte pre-shared key (<code>GHOST_PSK</code>).</li>
-              </ul>
-            </li>
-            <li><strong>Authenticated Encryption (L2):</strong> ChaCha20-Poly1305 (RFC 8439) with a 256-bit symmetric key. Nonce generation mixes session hash, direction bit, and monotonic counter.</li>
-            <li><strong>Erasure Coding (L4):</strong> Reed-Solomon RS(2,1) over Galois Field GF(2^8). Plaintexts are split into two primary data shards and one parity shard. Any 2 shards reconstruct the exact original payload.</li>
-            <li><strong>Memory Hardening (L8):</strong> Ephemeral session keys and decrypted buffers are locked in physical RAM via <code>VirtualLock</code>/<code>mlock</code> with volatile zeroization on drop.</li>
-          </ul>
-
-          <h2>2. Ghost Transport Frame (GTF) Format</h2>
-          <p>All mesh communication travels encapsulated in uniform UDP datagrams. In privacy mode, frames are fixed to 512 bytes with 0 to 64 bytes of cryptographically random jitter padding.</p>
-          <table>
-            <thead>
-              <tr><th>Offset</th><th>Field</th><th>Type</th><th>Description</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>00..03</td><td>Session Hash</td><td>[u8; 4]</td><td>Truncated session identifier for fast lookup</td></tr>
-              <tr><td>04..07</td><td>Packet Counter</td><td>u32 (BE)</td><td>Monotonic counter used for sliding replay protection</td></tr>
-              <tr><td>08</td><td>Shard Index</td><td>u8</td><td>Shard indicator (0, 1 data; 2 for RS parity)</td></tr>
-              <tr><td>09</td><td>Flags</td><td>u8</td><td>Bit flags (0x00: privacy 512B, 0x01: bulk 1472B)</td></tr>
-              <tr><td>10..495</td><td>Encrypted Shard</td><td>[u8; 486]</td><td>ChaCha20-Poly1305 ciphertext payload</td></tr>
-              <tr><td>496..511</td><td>Auth Tag</td><td>[u8; 16]</td><td>128-bit Poly1305 authentication MAC</td></tr>
-              <tr><td>512..576</td><td>Jitter Padding</td><td>[u8; 0..64]</td><td>Variable pseudorandom noise bytes</td></tr>
-            </tbody>
-          </table>
-        `,
-        unwired: `
-          <h1>Implementation &amp; Hardware Verification Status</h1>
-          <p>Global Ghost Net adheres to rigorous cryptographic transparency. The codebase clearly distinguishes between production-verified primitives and clean-room research interfaces reserved for specialized environments.</p>
-
-          <h2>Production-Active Core Modules (Verified)</h2>
-          <table>
-            <thead>
-              <tr><th>Module / Layer</th><th>Operational Role</th><th>Verification Status</th></tr>
-            </thead>
-            <tbody>
-              <tr><td><code>AdaptiveShardRouter</code></td><td>Dispatches RS(2,1) shards over best disparate latency paths</td><td>Active &amp; Benchmarked in <code>src/main.rs</code></td></tr>
-              <tr><td><code>LockedMemory</code></td><td>Pins session master secrets into RAM via <code>VirtualLock</code> / <code>mlock</code></td><td>Active (Zero swap leakage)</td></tr>
-              <tr><td><code>RevocationList</code></td><td>Enforces issuer-signed Ed25519 cryptographic certificate revocation</td><td>Active (Constant-time verification)</td></tr>
-              <tr><td><code>PoissonReputationMatrix</code></td><td>Tracks peer timing distributions and isolates Byzantine anomalies</td><td>Active (Automatic quarantine)</td></tr>
-              <tr><td><code>SessionGuardU64</code></td><td>Atomic 64-bit sliding window bitmap replay protection</td><td>Active (All replays rejected)</td></tr>
-            </tbody>
-          </table>
-
-          <h2>Experimental Scaffolding Modules</h2>
-          <p>Modules representing clean-room architectural designs for specialized satellite orbits (Doppler shift simulation, Keplerian state tracking) and hardware enclaves (TPM2/PKCS#11) remain preserved for physical deployment when specialized test environments are attached.</p>
-        `,
-        cli: `
-          <h1>Daemon Command Line &amp; Configuration Quickstart</h1>
-          <p>Global Ghost Net runs as a self-contained daemon without external dependencies.</p>
-
-          <h2>Environment Variables &amp; Flags</h2>
-          <pre># Join the worldwide public swarm (Default Mode)
-GHOST_BIND=0.0.0.0:2271 vantablack
-
-# Join or seed via custom DNS rendezvous
-GHOST_DNS_SEED=seeds.kellersystems.dev GHOST_BIND=0.0.0.0:2271 vantablack
-
-# Isolate as a Private Mesh (Only authorized PSK holders can connect)
-export GHOST_PSK=$(openssl rand -hex 32)
-GHOST_BIND=0.0.0.0:2271 vantablack
-
-# Run Exit Node with Allowed Client Fingerprints
-GHOST_EXIT_ALLOWLIST=4a8f9b2c... GHOST_BIND=0.0.0.0:2271 vantablack
-
-# Client Mode: Route traffic through local SOCKS5 proxy
-GHOST_SOCKS5=1 GHOST_SEEDS=exit.domain.com:2271 vantablack
-curl --socks5 127.0.0.1:1080 https://checkip.amazonaws.com</pre>
-        `
-      };
-
-      function openDocs(tabName) {
-        tabName = tabName || 'specs';
-        switchTab(tabName);
-        modal.classList.add('open');
-        modal.setAttribute('aria-hidden', 'false');
-        document.body.style.overflow = 'hidden';
-      }
-
-      function closeDocs() {
-        modal.classList.remove('open');
-        modal.setAttribute('aria-hidden', 'true');
-        document.body.style.overflow = '';
-      }
-
-      function switchTab(tabKey) {
-        for (var i = 0; i < tabs.length; i++) {
-          if (tabs[i].dataset.tab === tabKey) {
-            tabs[i].classList.add('active');
-          } else {
-            tabs[i].classList.remove('active');
-          }
-        }
-        body.innerHTML = docsContent[tabKey] || docsContent.specs;
-        body.scrollTop = 0;
-      }
-
-      if (openBtn) openBtn.addEventListener('click', function () { openDocs('specs'); });
-      if (closeBtn) closeBtn.addEventListener('click', closeDocs);
-      modal.addEventListener('click', function (e) {
-        if (e.target === modal) closeDocs();
-      });
-      document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && modal.classList.contains('open')) closeDocs();
-      });
-
-      for (var i = 0; i < tabs.length; i++) {
-        (function (tab) {
-          tab.addEventListener('click', function () {
-            switchTab(tab.dataset.tab);
-          });
-        })(tabs[i]);
-      }
     })();
   </script>
 </body>

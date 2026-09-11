@@ -12,7 +12,7 @@ Global Ghost Net implements onion routing **from first principles** in pure Rust
 1. **Zero Legacy Dependencies:** No C/C++ libraries, no OpenSSL, no legacy circuit protocols.
 2. **Datagram-Native (UDP):** Operates on fixed 512-byte Ghost Transport Frames (GTF) over UDP, eliminating TCP circuit stalls, head-of-line blocking, and TCP fingerprinting.
 3. **Post-Quantum Layering:** Key encapsulation at each layer uses hybrid **ML-KEM-512 (Kyber)** and **X25519**, defending transit payloads against future quantum decryption.
-4. **No Central Directory Authorities:** Relays discover each other through decentralized DNS seeds, peer-to-peer exchange, and local signed beacons—completely eliminating trusted directory servers.
+4. **No Central Directory Authorities:** Relays discover each other through decentralized DNS seeds, peer-to-peer exchange, and local signed beaconsâ€”completely eliminating trusted directory servers.
 
 ---
 
@@ -22,15 +22,15 @@ In Global Ghost Net, onion routing is handled through the clean-room `RLY!` head
 
 ```
 Initiator (A)
-   ¦
-   ¦ Encrypted with Relay Key (R) & Outer Key (B)
+   Â¦
+   Â¦ Encrypted with Relay Key (R) & Outer Key (B)
    ?
 [Hop 1: Relay Node R] ---- Unwraps outer RLY! layer
-   ¦                   ---- Learns only: "Next Hop is Exit Node B"
-   ¦                   ---- Does NOT see payload or origin identity
+   Â¦                   ---- Learns only: "Next Hop is Exit Node B"
+   Â¦                   ---- Does NOT see payload or origin identity
    ?
 [Hop 2: Exit Node B]  ---- Unwraps final inner AEAD layer
-   ¦                   ---- Delivers payload to destination
+   Â¦                   ---- Delivers payload to destination
    ?
 Target Destination / WAN
 ```
@@ -88,4 +88,4 @@ Unlike traditional onion routing where a single full stream travels through a st
 
 - **64-Bit Replay Sliding Window (`SessionGuardU64`):** Every hop maintains a lockless sliding window bitmap. Replayed onion packets are discarded before decryption occurs.
 - **Fixed-Slot Temporal Isolation:** Decapsulation and crypto verification routines run in constant-time slots with dummy iterations to mitigate side-channel timing analysis.
-- **Jitter Padding:** Frames are normalized to 512 bytes with 0–64 bytes of pseudorandom noise, masking packet lengths from passive network observers.
+- **Jitter Padding:** Frames are normalized to 512 bytes with 0â€“64 bytes of pseudorandom noise, masking packet lengths from passive network observers.

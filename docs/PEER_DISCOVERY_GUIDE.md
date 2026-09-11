@@ -16,7 +16,7 @@ Global Ghost Net uses standard DNS `A` and `AAAA` record resolution to discover 
    - **Name:** `seeds` (or whatever subdomain you prefer, e.g. `seeds.yourdomain.com`).
    - **IPv4 address:** Enter the public IP of your primary node or exit node.
    - **Proxy status:** **DNS only (Grey Cloud)**.  
-     *(Important: Do NOT enable the orange cloud proxy. Cloudflare’s HTTP reverse proxy does not forward raw UDP mesh packets).*
+     *(Important: Do NOT enable the orange cloud proxy. Cloudflareâ€™s HTTP reverse proxy does not forward raw UDP mesh packets).*
    - **TTL:** Auto or 2 minutes.
 
 ### Step 2: Multi-Peer Round-Robin (Optional)

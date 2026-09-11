@@ -1,6 +1,6 @@
 # Global Ghost Net (Vantablack)
 ## Post-Quantum WAN Mesh Routing Architecture
-**Technical Specification — Version 0.4.0**
+**Technical Specification â€” Version 0.4.0**
 
 ---
 
@@ -19,7 +19,7 @@ Global Ghost Net is an autonomous, post-quantum WAN mesh routing daemon. Operati
 
 ---
 
-### 2. GHOST Protocol Stack (L0–L9)
+### 2. GHOST Protocol Stack (L0â€“L9)
 
 | Layer | Component | Implementation | Function |
 |---|---|---|---|

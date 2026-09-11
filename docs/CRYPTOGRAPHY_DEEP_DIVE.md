@@ -6,7 +6,7 @@ This document details the mathematical and algorithmic foundations of the crypto
 
 ## 1. Threat Model & Post-Quantum Transition
 
-Classical public-key cryptography (RSA, ECDH, Diffie-Hellman) relies on mathematical problems such as prime factorization and discrete logarithms. These problems can be solved in polynomial time by Shor’s algorithm running on a cryptographically relevant quantum computer (CRQC).
+Classical public-key cryptography (RSA, ECDH, Diffie-Hellman) relies on mathematical problems such as prime factorization and discrete logarithms. These problems can be solved in polynomial time by Shorâ€™s algorithm running on a cryptographically relevant quantum computer (CRQC).
 
 Mass-surveillance adversaries frequently engage in **"Store Now, Decrypt Later"** attacks: capturing and archiving encrypted network traffic today with the objective of decrypting it once quantum computing hardware matures.
 
