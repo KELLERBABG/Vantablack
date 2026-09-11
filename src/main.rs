@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use ml_kem::kem::{Decapsulate, KeyExport, TryKeyInit};
+use ml_kem::kem::Decapsulate;
 use ml_kem::{Ciphertext, DecapsulationKey512, MlKem512};
 #[cfg(feature = "tray")]
 mod tray;
@@ -26,7 +26,7 @@ use vantablack::ghost::{
         l4_rs,
     },
     net::{self, send_gtf, parse_packet_counter, GTF_BULK_SIZE, OFFSET_PAYLOAD_START,
-          BEACON_PREFIX, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_INTERVAL_SECS,
+          BEACON_PREFIX, BEACON_MULTICAST_ADDR, BEACON_PORT,
           relay::{spawn_store_forward_task, BundleBuffer,
                   parse_relay_header, build_relay_packet},
           routing::PoissonReputationMatrix,
@@ -40,7 +40,6 @@ use vantablack::ghost::net::vpn::{
     tun::TunDevice,
 };
 
-type StreamPool = Arc<DashMap<u32, Vec<Option<Vec<u8>>>>>;
 type PendingHandshakes = Arc<DashMap<String, (x25519_dalek::EphemeralSecret, DecapsulationKey512)>>;
 
 /// Hard cap on the shard-reassembly spool (per-node). Entries with fewer than
@@ -159,9 +158,7 @@ struct RxState {
 struct ExitTunnel {
     out_tx: mpsc::UnboundedSender<Vec<u8>>,
     rx: RxState,
-    peer_addr: SocketAddr,
     session_hash: [u8; 4],
-    key: [u8; 32],
 }
 
 type ExitTunnels = Arc<DashMap<String, ExitTunnel>>;
@@ -785,9 +782,7 @@ async fn handle_exit_connect(
     tunnels.insert(tkey.clone(), ExitTunnel {
         out_tx,
         rx,
-        peer_addr: *src,
         session_hash: *sh,
-        key: *key,
     });
     tracing::info!(dest = %dest, peer = %peer_fp, "Exit tunnel established");
 
@@ -1474,7 +1469,6 @@ async fn main() -> anyhow::Result<()> {
             };
             let mc_addr: SocketAddr = format!("{}:{}", BEACON_MULTICAST_ADDR, BEACON_PORT)
                 .parse().expect("Invalid beacon address");
-            let mut interval = Duration::from_secs(BEACON_INTERVAL_SECS);
             loop {
                 if nc.beacon_enabled.load(Ordering::Relaxed) {
                     // Beacons are signed with the device identity so a forged
@@ -1488,8 +1482,8 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let secs = nc.keepalive_interval_secs.load(Ordering::Relaxed);
-                interval = Duration::from_secs(secs.min(300));
-                sleep(Duration::from_secs(BEACON_INTERVAL_SECS)).await;
+                let interval = Duration::from_secs(secs.min(300).max(1));
+                sleep(interval).await;
             }
         });
     }

@@ -697,9 +697,9 @@ pub fn nat_egress(pkt: &[u8], reverse: &HashMap<u16, Tuple>) -> Option<Vec<u8>> 
     if proto != 6 && proto != 17 {
         return None;
     }
-    // Demux key = reply SOURCE port (the unique local port L of the flow).
-    let L = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
-    let (c, cp, t, tp) = *reverse.get(&L)?;
+    // Demux key = reply SOURCE port (the unique local port of the flow).
+    let local_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
+    let (c, cp, t, tp) = *reverse.get(&local_port)?;
     let mut out = pkt.to_vec();
     out[12..16].copy_from_slice(&t.octets()); // src addr = real target
     out[16..20].copy_from_slice(&c.octets()); // dst addr = real client
