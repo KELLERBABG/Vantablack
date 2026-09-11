@@ -18,10 +18,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: cargo test
+      # The pristine v0.4.0 surface: no optional features compiled.
+      - name: cargo test (default features)
         run: cargo test --locked
+      # The LAN-over-WAN subsystem is feature-gated. Without this step it is
+      # never compiled in CI, so the whole VPN path can rot silently and the
+      # "merge only with its verification gate green" rule cannot be enforced.
+      - name: cargo test (--features vpn)
+        run: cargo test --locked --features vpn
+      # Zero-elevation, two-process end-to-end proof of the tunnel path:
+      # real UDP, real hybrid handshake, real seal/open, client on the
+      # in-memory TUN (no wintun.dll, no Administrator, no OS interface).
+      - name: vpn loopback self-test
+        shell: bash
+        run: bash scripts/vpn_loopback_test.sh
       - name: clippy (warnings not yet fatal — Phase 3 cleanup)
-        run: cargo clippy --all-targets
+        run: cargo clippy --all-targets --features vpn
 
   build-windows:
     name: vantablack (windows x86_64-msvc)
