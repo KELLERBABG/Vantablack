@@ -1,14 +1,14 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Ghost Net — Post-Quantum Peer-to-Peer Mesh &amp; LAN-over-WAN Tunnel</title>
-  <meta name="description" content="State-of-the-art Rust daemon linking infrastructure into a zero-trust, post-quantum P2P mesh and LAN-over-WAN tunnel. Hybrid ML-KEM-512 + X25519, Reed-Solomon RS(2,1) multi-path sharding, RAM-locked secrets, no central coordinator.">
+  <title>Global Ghost Net — Zero-SaaS, Post-Quantum P2P Mesh &amp; LAN-over-WAN Tunnel</title>
+  <meta name="description" content="A zero-coordinator Rust daemon linking servers, homelabs, and mobile devices into a sovereign post-quantum mesh. Hybrid ML-KEM-512 + X25519, Reed-Solomon RS(2,1) multi-path sharding, RAM-locked secrets, 512-byte invariant frames.">
   <meta name="theme-color" content="#05070a">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Global Ghost Net — Post-Quantum Peer-to-Peer Mesh">
+  <meta property="og:title" content="Global Ghost Net — Zero-SaaS, Post-Quantum P2P Mesh">
   <meta property="og:description" content="Autonomous cryptographic mesh with zero central servers. Hybrid ML-KEM-512 + X25519, RS(2,1) multi-path sharding, mlock/VirtualLock RAM secrets, LAN-over-WAN mobile routing.">
   <meta property="og:image" content="assets/banner.svg">
   <meta name="twitter:card" content="summary_large_image">
@@ -57,7 +57,7 @@
       -webkit-font-smoothing: antialiased;
     }
 
-    /* ── Ambient Background Canvas ─────────────────────────────────── */
+    /* —— Ambient Background Canvas ——————————————————————————————————— */
     #globe-canvas {
       position: fixed;
       inset: 0;
@@ -94,7 +94,7 @@
       white-space: nowrap;
     }
 
-    /* ── Nav ───────────────────────────────────────────────────────── */
+    /* —— Nav ————————————————————————————————————————————————————————— */
     .nav {
       display: flex;
       align-items: center;
@@ -137,8 +137,8 @@
     .nav-cta:hover { border-color: var(--accent) !important; color: var(--accent) !important; }
     @media (max-width: 840px) { .nav-links a:not(.nav-cta) { display: none; } }
 
-    /* ── Hero ──────────────────────────────────────────────────────── */
-    .hero { padding: 110px 0 0; max-width: 880px; }
+    /* —— Hero ———————————————————————————————————————————————————————— */
+    .hero { padding: 100px 0 0; max-width: 880px; }
     .hero-badge {
       display: inline-flex;
       align-items: center;
@@ -160,7 +160,7 @@
       box-shadow: 0 0 8px var(--emerald);
     }
     h1 {
-      font-size: clamp(38px, 5.8vw, 68px);
+      font-size: clamp(38px, 5.8vw, 66px);
       font-weight: 600;
       line-height: 1.08;
       letter-spacing: -0.03em;
@@ -177,8 +177,8 @@
       font-size: 19px;
       font-weight: 300;
       color: var(--text-muted);
-      max-width: 680px;
-      line-height: 1.6;
+      max-width: 720px;
+      line-height: 1.62;
     }
     .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 36px; }
     .btn {
@@ -198,12 +198,12 @@
     .btn-ghost { border: 1px solid var(--border); color: var(--text); background: var(--surface); }
     .btn-ghost:hover { border-color: var(--border-glow); }
 
-    /* ── Metrics Grid ──────────────────────────────────────────────── */
+    /* —— Metrics Grid ———————————————————————————————————————————————— */
     .facts {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 1px;
-      margin-top: 68px;
+      margin-top: 64px;
       background: var(--border);
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -219,7 +219,51 @@
     }
     .fact-label { font-size: 12.5px; color: var(--text-dim); }
 
-    /* ── Architecture Pillars ──────────────────────────────────────── */
+    /* —— Audience / Persona Matrix ——————————————————————————————————— */
+    .persona-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .persona-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .persona-tag {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--accent);
+      letter-spacing: 0.08em;
+      margin-bottom: 10px;
+    }
+    .persona-card h3 {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 12px;
+    }
+    .persona-card p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+    .persona-takeaway {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-dim);
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 12px;
+    }
+    .persona-takeaway strong { color: var(--text); }
+
+    /* —— Architecture Pillars ———————————————————————————————————————— */
     .pillar-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -253,9 +297,9 @@
       line-height: 1.6;
     }
 
-    /* ── Sections ──────────────────────────────────────────────────── */
+    /* —— Sections ———————————————————————————————————————————————————— */
     section { padding-top: 100px; }
-    .section-head { max-width: 680px; margin-bottom: 30px; }
+    .section-head { max-width: 720px; margin-bottom: 30px; }
     .section-tag {
       font-family: var(--font-mono);
       font-size: 11.5px;
@@ -273,7 +317,7 @@
     }
     .section-head p { color: var(--text-muted); font-size: 16px; }
 
-    /* ── Wire Format Spec (Replacing Tacky Pill Bar) ───────────────── */
+    /* —— Wire Format Spec (Monospace Spec Table) ————————————————————— */
     .spec-table {
       width: 100%;
       border-collapse: collapse;
@@ -308,7 +352,7 @@
     .spec-field { color: var(--text); font-weight: 500; }
     .spec-desc { font-family: var(--font-heading); font-size: 13.5px; line-height: 1.5; color: var(--text-muted); }
 
-    /* ── Terminal & Steps ──────────────────────────────────── */
+    /* —— Terminal & Steps ———————————————————————————————————————————— */
     .route {
       display: grid;
       gap: 1px;
@@ -352,7 +396,7 @@
     .term .p { color: var(--accent); }
     .term .val { color: #facc15; }
 
-    /* ── Panels & Controls ─────────────────────────────────── */
+    /* —— Panels & Controls ——————————————————————————————————————————— */
     .panel {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -437,7 +481,7 @@
     }
     .demo-result .value { font-family: var(--font-mono); font-size: 13.5px; color: var(--text); word-break: break-all; }
 
-    /* ── Footer ───────────────────────────────────────────── */
+    /* —— Footer ————————————————————————————————————————————————————— */
     footer {
       margin-top: 110px;
       padding-top: 32px;
@@ -476,8 +520,9 @@
         <span class="brand-tag">v0.4.1</span>
       </a>
       <div class="nav-links">
+        <a href="#why">Why GGN</a>
         <a href="#architecture">Architecture</a>
-        <a href="#sharding">RS(2,1) Demo</a>
+        <a href="#sharding">RS(2,1) Proof</a>
         <a href="#wire-format">Wire Spec</a>
         <a href="#deploy">Deploy</a>
         <a class="nav-cta" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">GitHub &nearr;</a>
@@ -487,39 +532,83 @@
     <header class="hero">
       <div class="hero-badge">
         <span class="hero-badge-dot"></span>
-        <span>HYBRID POST-QUANTUM MESH &bull; ZERO CENTRAL COORDINATOR</span>
+        <span>ZERO SAAS COORDINATION &bull; POST-QUANTUM MESH</span>
       </div>
       <h1>Route through a mesh, <em>not a company.</em></h1>
       <p class="lead">
-        An autonomous Rust daemon establishing encrypted, post-quantum LAN-over-WAN tunnels. 
-        Zero registries, zero centralized coordinators, RAM-locked cryptographic secrets, 
-        and multi-path erasure sharding.
+        Your network shouldn't depend on another company's login page, central auth server, or closed control plane. 
+        Global Ghost Net is an autonomous Rust daemon linking servers, homelabs, and remote devices into a sovereign, 
+        erasure-sharded WAN tunnel with RAM-locked post-quantum encryption.
       </p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#deploy">Deploy Node</a>
-        <a class="btn btn-ghost" href="#architecture">Technical Spec</a>
+        <a class="btn btn-ghost" href="#why">Who This Is For</a>
         <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">View Source &nearr;</a>
       </div>
 
       <div class="facts">
         <div class="fact">
+          <div class="fact-value">Zero Central Servers</div>
+          <div class="fact-label">Raw UDP beacons + self-seeded DNS</div>
+        </div>
+        <div class="fact">
           <div class="fact-value">ML-KEM-512 + X25519</div>
-          <div class="fact-label">Hybrid post-quantum key exchange</div>
+          <div class="fact-label">Quantum-resistant dual key exchange</div>
         </div>
         <div class="fact">
           <div class="fact-value">RS(2,1) Multi-Path</div>
           <div class="fact-label">Any 2 of 3 shards reconstruct payload</div>
         </div>
         <div class="fact">
-          <div class="fact-value">RAM Pinned Secrets</div>
+          <div class="fact-value">Hardware RAM Pinned</div>
           <div class="fact-label">VirtualLock / mlock zero-swap paging</div>
-        </div>
-        <div class="fact">
-          <div class="fact-value">Constant Wire Size</div>
-          <div class="fact-label">512B GTF frames + random jitter</div>
         </div>
       </div>
     </header>
+
+    <!-- WHO THIS IS FOR / USE CASES -->
+    <section id="why">
+      <div class="section-head">
+        <span class="section-tag">BUILT FOR SOVEREIGN OPERATIONS</span>
+        <h2>Why Engineers Choose Global Ghost Net</h2>
+        <p>Built for teams and individuals who refuse to route infrastructure secrets through third-party SaaS coordinators or tolerate central points of failure.</p>
+      </div>
+
+      <div class="persona-grid">
+        <div class="persona-card">
+          <div>
+            <div class="persona-tag">HOMELAB &amp; REMOTE ENGINEERS</div>
+            <h3>Direct LAN-over-WAN Tunneling</h3>
+            <p>Access your internal home subnets, hypervisors, and storage pools from cellular or untrusted hotel Wi-Fi. No port forwarding on your router, no exposing SSH or Web UIs to the public internet, and zero corporate telemetry.</p>
+          </div>
+          <div class="persona-takeaway">
+            Solution: <strong>Native SOCKS5 proxy or virtual TUN tunnel back to your home exit hub.</strong>
+          </div>
+        </div>
+
+        <div class="persona-card">
+          <div>
+            <div class="persona-tag">CLOUD &amp; BARE-METAL ARCHITECTS</div>
+            <h3>Zero-SaaS Node Interconnect</h3>
+            <p>Interconnect multi-region VPS instances and off-site edge servers into a unified peer-to-peer fabric. Nodes discover one another via decentralized signed UDP beacons or custom DNS seeds with automated failover.</p>
+          </div>
+          <div class="persona-takeaway">
+            Solution: <strong>No third-party control plane. If our website goes down, your mesh never notices.</strong>
+          </div>
+        </div>
+
+        <div class="persona-card">
+          <div>
+            <div class="persona-tag">SECURITY PRACTITIONERS &amp; PRIVACY ADVOCATES</div>
+            <h3>Deep Packet Inspection Invariance</h3>
+            <p>Adversaries intercepting internet links see only fixed-width 512-byte datagrams with random trailing jitter. Payloads are fragmented into RS(2,1) shards routed over divergent IP paths; single-path taps capture meaningless noise.</p>
+          </div>
+          <div class="persona-takeaway">
+            Solution: <strong>Harvest-Now-Decrypt-Later defense via lattice ML-KEM-512 + RAM locking.</strong>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- ARCHITECTURAL PILLARS -->
     <section id="architecture">
@@ -740,7 +829,7 @@
   </div>
 
   <script>
-    /* ── Ambient 3D Rotating Globe ─────────────────────────────────── */
+    /* —— Ambient 3D Rotating Globe ——————————————————————————————————— */
     (function () {
       if (typeof THREE === 'undefined') return;
       var canvas = document.getElementById('globe-canvas');
@@ -820,7 +909,7 @@
       })();
     })();
 
-    /* ── Reed-Solomon (2,1) GF(256) Pure Client-Side Implementation ── */
+    /* —— Reed-Solomon (2,1) GF(256) Pure Client-Side Implementation —— */
     var RS_EXP = new Uint8Array(512), RS_LOG = new Uint8Array(256);
     (function () {
       var x = 1;
@@ -871,7 +960,7 @@
       return Array.prototype.slice.call(s0).concat(Array.prototype.slice.call(s1));
     }
 
-    /* ── Live Sharding Interactive Bindings ────────────────────────── */
+    /* —— Live Sharding Interactive Bindings —————————————————————————— */
     (function () {
       var input = document.getElementById('demoInput');
       var runBtn = document.getElementById('demoRun');
@@ -944,4 +1033,3 @@
   </script>
 </body>
 </html>
-
