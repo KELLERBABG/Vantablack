@@ -3,1051 +3,882 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Ghost Net &mdash; Clean-Room Post-Quantum WAN Mesh &mdash; Keller Systems</title>
-  <meta name="description" content="Global Ghost Net: State-of-the-art clean-room post-quantum onion-routed WAN mesh. ML-KEM-512 hybrid KEM, Reed-Solomon RS(2,1) erasure sharding, and 512-byte Ghost Transport Frames.">
+  <title>Global Ghost Net — Post-Quantum Peer-to-Peer Mesh</title>
+  <meta name="description" content="A Rust daemon that links your machines into a private mesh. Hybrid X25519 + ML-KEM-512, Reed-Solomon sharding, no central server.">
+  <meta name="theme-color" content="#05070a">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Global Ghost Net — Post-Quantum Peer-to-Peer Mesh">
+  <meta property="og:description" content="Encrypted mesh routing with no centre to trust. Hybrid X25519 + ML-KEM-512, Reed-Solomon sharding, built in Rust.">
+  <meta property="og:image" content="assets/banner.svg">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <style>
     :root {
-      --bg: #040507;
-      --surface: #0a0d13;
-      --surface-raised: #10151f;
-      --border: #18202e;
-      --border-glow: #24324a;
-      
-      --cyan: #00f2fe;
-      --cyan-subtle: rgba(0, 242, 254, 0.12);
-      --cyan-border: rgba(0, 242, 254, 0.3);
-      --purple: #a855f7;
+      --bg: #05070a;
+      --surface: #0b0f16;
+      --surface-raised: #111823;
+      --border: #1b2534;
+      --border-glow: #2b3d55;
+
+      --accent: #22d3ee;
+      --accent-subtle: rgba(34, 211, 238, 0.10);
+      --accent-border: rgba(34, 211, 238, 0.28);
+      --violet: #8b5cf6;
       --emerald: #10b981;
-      --amber: #f59e0b;
 
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
-      --text-dim: #54657e;
+      --text: #eef2f7;
+      --text-muted: #93a1b5;
+      --text-dim: #5b6b80;
 
-      --font-heading: 'Space Grotesk', -apple-system, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
+      --font-heading: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+      --radius: 8px;
+      --shell: 1080px;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html { scroll-behavior: smooth; }
+    html { scroll-behavior: smooth; scroll-padding-top: 88px; }
 
     body {
-      background-color: var(--bg);
+      background: var(--bg);
       color: var(--text);
       font-family: var(--font-heading);
-      line-height: 1.6;
+      line-height: 1.62;
       overflow-x: hidden;
-      min-height: 100vh;
       -webkit-font-smoothing: antialiased;
     }
 
-    /* Fixed Celestial Background Canvas */
-    #webgl-canvas {
+    /* ── Hero backdrop: the globe, behind everything ───────────────── */
+    #globe-canvas {
       position: fixed;
-      top: 0;
-      left: 0;
+      inset: 0;
       width: 100vw;
       height: 100vh;
       z-index: 0;
       pointer-events: none;
     }
-
     .vignette {
       position: fixed;
-      top: 0; left: 0; width: 100%; height: 100%;
-      background: radial-gradient(circle at center, transparent 40%, rgba(4, 5, 7, 0.92) 85%);
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 38%, transparent 30%, rgba(5, 7, 10, 0.72) 62%, var(--bg) 92%);
       pointer-events: none;
       z-index: 1;
     }
 
-    .container {
-      max-width: 1140px;
-      margin: 0 auto;
-      padding: 0 28px;
+    .shell {
       position: relative;
       z-index: 2;
+      max-width: var(--shell);
+      margin: 0 auto;
+      padding: 0 28px 96px;
     }
 
-    /* Navigation Bar */
-    .nav-bar {
+    a { color: inherit; }
+
+    /* ── Nav ───────────────────────────────────────────────────────── */
+    .nav {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      padding: 24px 0;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 26px 0;
       border-bottom: 1px solid var(--border);
       font-family: var(--font-mono);
       font-size: 12px;
-      letter-spacing: 0.5px;
     }
     .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      text-decoration: none;
-      color: #fff;
-      font-weight: 700;
-    }
-    .brand-mark {
-      width: 8px;
-      height: 8px;
-      background: var(--cyan);
-      box-shadow: 0 0 10px var(--cyan);
-      border-radius: 1px;
-    }
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 24px;
-    }
-    .nav-links a {
-      color: var(--text-muted);
-      text-decoration: none;
-      transition: color 0.15s;
-    }
-    .nav-links a:hover { color: #fff; }
-    .nav-btn {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      background: var(--surface-raised);
-      border: 1px solid var(--border);
-      padding: 6px 14px;
-      border-radius: 4px;
+      gap: 10px;
+      text-decoration: none;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      font-size: 12px;
+    }
+    .brand-dot {
+      width: 7px; height: 7px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 12px var(--accent);
+    }
+    .nav-links { display: flex; align-items: center; gap: 22px; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; transition: color .15s; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta {
       color: var(--text) !important;
-      transition: all 0.2s;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px;
+      transition: border-color .15s;
     }
-    .nav-btn:hover {
-      border-color: var(--cyan);
-      background: var(--surface);
-    }
+    .nav-cta:hover { border-color: var(--accent-border); }
+    @media (max-width: 720px) { .nav-links a:not(.nav-cta) { display: none; } }
 
-    /* Hero Section */
-    .hero {
-      padding: 80px 0 64px;
-      max-width: 960px;
-    }
-    .spec-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
+    /* ── Hero ──────────────────────────────────────────────────────── */
+    .hero { padding: 108px 0 72px; max-width: 860px; }
+    .pill {
+      display: inline-block;
       padding: 5px 12px;
-      background: var(--cyan-subtle);
-      border: 1px solid var(--cyan-border);
-      border-radius: 4px;
+      margin-bottom: 26px;
+      border: 1px solid var(--accent-border);
+      background: var(--accent-subtle);
+      border-radius: 999px;
       font-family: var(--font-mono);
       font-size: 11px;
-      color: var(--cyan);
-      letter-spacing: 1px;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
-      margin-bottom: 24px;
+      color: var(--accent);
     }
-    .hero-title {
-      font-size: clamp(36px, 5.5vw, 68px);
-      font-weight: 700;
-      letter-spacing: -1.5px;
-      line-height: 1.08;
-      margin-bottom: 24px;
+    h1 {
+      font-size: clamp(38px, 6vw, 72px);
+      font-weight: 600;
+      line-height: 1.05;
+      letter-spacing: -0.03em;
+      margin-bottom: 26px;
     }
-    .hero-gradient {
-      background: linear-gradient(135deg, #fff 40%, var(--cyan) 85%, var(--purple) 100%);
+    h1 em {
+      font-style: normal;
+      background: linear-gradient(120deg, var(--accent), var(--violet));
       -webkit-background-clip: text;
+      background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    .hero-lead {
+    .lead {
       font-size: 18px;
-      color: var(--text-muted);
-      line-height: 1.65;
-      max-width: 780px;
       font-weight: 300;
-      margin-bottom: 36px;
-    }
-
-    /* Core Metrics Strip */
-    .metrics-bar {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 16px;
-      margin-bottom: 64px;
-    }
-    .metric-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 20px;
-    }
-    .metric-val {
-      font-family: var(--font-mono);
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--cyan);
-      margin-bottom: 4px;
-    }
-    .metric-label {
-      font-size: 12px;
-      color: var(--text-dim);
-      font-family: var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    /* Section Headers */
-    .section-header {
-      margin-bottom: 36px;
-    }
-    .section-tag {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--cyan);
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 8px;
-      display: block;
-    }
-    .section-header h2 {
-      font-size: clamp(26px, 3.5vw, 36px);
-      font-weight: 600;
-      letter-spacing: -0.5px;
-      margin-bottom: 8px;
-    }
-    .section-header p {
-      font-size: 15px;
       color: var(--text-muted);
+      max-width: 720px;
     }
-
-    /* Interactive Sharding & Interception Simulator */
-    .simulator-panel {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 32px;
-      margin-bottom: 80px;
-      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
-      position: relative;
-    }
-    .sim-top {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      margin-bottom: 28px;
-    }
-    @media (min-width: 768px) {
-      .sim-top {
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-between;
-      }
-    }
-    .sim-controls {
-      display: flex;
-      gap: 12px;
-      width: 100%;
-      max-width: 600px;
-    }
-    .sim-input {
-      flex: 1;
-      background: #06080c;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 12px 18px;
-      color: #fff;
-      font-family: var(--font-mono);
-      font-size: 13.5px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .sim-input:focus { border-color: var(--cyan); }
-    .sim-btn {
-      background: var(--surface-raised);
-      border: 1px solid var(--border-glow);
-      color: var(--cyan);
-      font-family: var(--font-mono);
-      font-size: 13px;
-      font-weight: 600;
-      padding: 0 22px;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .sim-btn:hover {
-      background: var(--cyan);
-      color: #000;
-      border-color: var(--cyan);
-    }
-
-    .shards-flow {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 18px;
-    }
-    .shard-box {
-      background: #06080c;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 20px;
-    }
-    .shard-header {
-      display: flex;
-      justify-content: space-between;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--text-dim);
-      margin-bottom: 12px;
-    }
-    .shard-hex {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--cyan);
-      word-break: break-all;
-      line-height: 1.6;
-      min-height: 60px;
-    }
-    .shard-verdict {
-      margin-top: 14px;
-      padding-top: 12px;
-      border-top: 1px dashed var(--border);
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    /* Comparison Table: State-of-the-Art vs Legacy */
-    .comparison-section {
-      margin-bottom: 80px;
-    }
-    .comparison-table-wrap {
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--surface);
-      overflow-x: auto;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13.5px;
-      text-align: left;
-    }
-    th {
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-dim);
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(0, 0, 0, 0.2);
-    }
-    td {
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--border);
-      color: var(--text-muted);
-      vertical-align: top;
-    }
-    tr:last-child td { border-bottom: none; }
-    .col-feature { font-weight: 500; color: var(--text); font-family: var(--font-mono); font-size: 12.5px; }
-    .col-ggn { color: #fff; font-weight: 500; }
-    .highlight-cell { background: rgba(0, 242, 254, 0.03); }
-
-    /* Deep Dive Architecture Cards */
-    .deepdive-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-      gap: 20px;
-      margin-bottom: 80px;
-    }
-    .deepdive-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 28px;
-    }
-    .card-id {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--cyan);
-      margin-bottom: 8px;
-    }
-    .deepdive-card h3 {
-      font-size: 18px;
-      font-weight: 600;
-      margin-bottom: 12px;
-      letter-spacing: -0.3px;
-    }
-    .deepdive-card p {
-      font-size: 13.5px;
-      color: var(--text-muted);
-      line-height: 1.6;
-      margin-bottom: 16px;
-    }
-    .spec-points {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      color: var(--text-dim);
-      border-top: 1px solid var(--border);
-      padding-top: 14px;
-    }
-    .spec-points li::before {
-      content: '>';
-      color: var(--cyan);
-      margin-right: 8px;
-    }
-
-    /* Code Terminal */
-    .terminal-section {
-      background: #07090e;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 32px;
-      margin-bottom: 80px;
-    }
-    .code-window {
-      background: #020305;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 16px 20px;
-      font-family: var(--font-mono);
-      font-size: 13px;
-      color: var(--cyan);
-      margin: 18px 0;
-      overflow-x: auto;
-      line-height: 1.7;
-    }
-    .terminal-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-    .btn-action {
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 36px; }
+    .btn {
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 20px;
+      padding: 11px 20px;
       border-radius: 6px;
-      font-size: 13.5px;
-      font-weight: 600;
+      font-size: 14px;
+      font-weight: 500;
       text-decoration: none;
-      transition: all 0.2s;
+      transition: transform .15s, box-shadow .15s, border-color .15s;
     }
-    .btn-primary {
-      background: var(--cyan);
-      color: #000;
-    }
-    .btn-primary:hover {
-      box-shadow: 0 4px 24px rgba(0, 242, 254, 0.4);
-    }
-    .btn-secondary {
-      background: var(--surface-raised);
-      border: 1px solid var(--border);
-      color: var(--text);
-    }
-    .btn-secondary:hover {
-      border-color: var(--border-glow);
-    }
+    .btn-primary { background: var(--accent); color: #04161a; }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 8px 28px rgba(34, 211, 238, 0.28); }
+    .btn-ghost { border: 1px solid var(--border); color: var(--text); }
+    .btn-ghost:hover { border-color: var(--border-glow); }
 
-    /* Footer */
-    .footer {
-      border-top: 1px solid var(--border);
-      padding: 40px 0;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-dim);
+    /* ── Facts strip ───────────────────────────────────────────────── */
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1px;
+      margin-top: 72px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
     }
-    .footer a { color: var(--text-muted); text-decoration: none; }
-    .footer a:hover { color: #fff; }
-    /* Wire Frame Inspector */
-    .frame-inspector {
+    .fact { background: var(--surface); padding: 20px 22px; }
+    .fact-value {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      color: var(--accent);
+      margin-bottom: 4px;
+    }
+    .fact-label { font-size: 12px; color: var(--text-dim); }
+
+    /* ── Sections ──────────────────────────────────────────────────── */
+    section { padding-top: 104px; }
+    .section-head { max-width: 660px; margin-bottom: 40px; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      display: block;
+      margin-bottom: 12px;
+    }
+    h2 {
+      font-size: clamp(26px, 3.4vw, 38px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+    .section-head p { color: var(--text-muted); font-size: 16px; }
+
+    /* ── Lifecycle (how a packet moves) ────────────────────────────── */
+    .steps { display: grid; gap: 12px; }
+    .step {
+      display: grid;
+      grid-template-columns: 56px 1fr;
+      gap: 20px;
+      padding: 22px 24px;
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 28px;
-      margin-top: 24px;
+      border-radius: var(--radius);
+    }
+    .step-num {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--accent);
+      padding-top: 3px;
+    }
+    .step h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.01em; }
+    .step p { font-size: 14.5px; color: var(--text-muted); }
+    .step code {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: var(--accent);
+      background: var(--accent-subtle);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    /* ── Frame inspector ──────────────────────────────────────────── */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 26px;
     }
     .frame-bar {
       display: flex;
-      width: 100%;
-      height: 48px;
+      height: 46px;
+      margin: 22px 0 16px;
+      border: 1px solid var(--border);
       border-radius: 6px;
       overflow: hidden;
-      border: 1px solid var(--border);
-      margin: 18px 0;
     }
-    .frame-segment {
+    .seg {
       display: flex;
       align-items: center;
       justify-content: center;
       font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 600;
-      color: #fff;
+      font-size: 10.5px;
+      color: #04161a;
+      font-weight: 500;
       cursor: pointer;
-      transition: filter 0.2s;
+      transition: filter .15s;
+      overflow: hidden;
+      white-space: nowrap;
     }
-    .frame-segment:hover { filter: brightness(1.25); }
-    .seg-session { width: 4%; background: #0284c7; }
-    .seg-counter { width: 4%; background: #6366f1; }
-    .seg-shard { width: 3%; background: #a855f7; }
-    .seg-flags { width: 3%; background: #ec4899; }
-    .seg-payload { width: 70%; background: #0ea5e9; }
-    .seg-poly { width: 8%; background: #8b5cf6; }
-    .seg-noise { width: 8%; background: #059669; }
-
-    .inspector-detail {
-      background: #06080c;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 16px 20px;
-      font-family: var(--font-mono);
-      font-size: 13px;
+    .seg:hover, .seg.active { filter: brightness(1.3); }
+    .seg-hash    { width: 4%;   background: #0e7490; }
+    .seg-counter { width: 4%;   background: #155e75; }
+    .seg-shard   { width: 3%;   background: #7c3aed; }
+    .seg-flags   { width: 3%;   background: #6d28d9; }
+    .seg-payload { width: 70%;  background: #22d3ee; }
+    .seg-tag     { width: 8%;   background: #059669; }
+    .seg-jitter  { width: 8%;   background: #065f46; }
+    .seg-detail {
       display: flex;
+      flex-wrap: wrap;
       justify-content: space-between;
-      align-items: center;
-    }
-    .detail-left { color: var(--text-muted); }
-    .detail-left strong { color: var(--cyan); }
-    .detail-bytes { color: var(--text-dim); font-size: 11.5px; }
-
-    /* Performance Benchmarks Grid */
-    .perf-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-    .perf-card {
-      background: var(--surface);
+      gap: 8px;
+      padding: 14px 16px;
+      background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 20px;
-    }
-    .perf-num {
-      font-family: var(--font-mono);
-      font-size: 24px;
-      font-weight: 700;
-      color: var(--cyan);
-      margin-bottom: 4px;
-    }
-    .perf-title {
-      font-size: 13.5px;
-      font-weight: 600;
-      color: #fff;
-      margin-bottom: 4px;
-    }
-    .perf-sub {
-      font-size: 12px;
-      color: var(--text-dim);
-      font-family: var(--font-mono);
-    }
-
-    /* One-Line Install Snippet */
-    .oneline-box {
-      margin-top: 10px;
-      background: #020305;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px 18px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
       font-family: var(--font-mono);
       font-size: 12.5px;
-      color: #fff;
     }
-    .oneline-cmd { color: var(--cyan); }
-    .copy-tag {
-      font-size: 10px;
-      padding: 3px 8px;
-      background: var(--surface-raised);
+    .seg-detail .field { color: var(--text); }
+    .seg-detail .range { color: var(--text-dim); }
+
+    /* ── Sharding demo ────────────────────────────────────────────── */
+    .demo-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    .demo-controls input {
+      flex: 1 1 260px;
+      background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 4px;
+      border-radius: 6px;
+      padding: 11px 14px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .demo-controls input:focus { border-color: var(--accent-border); }
+    .demo-controls button {
+      background: var(--surface-raised);
+      border: 1px solid var(--border-glow);
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      padding: 11px 18px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .demo-controls button:hover { background: var(--accent); color: #04161a; border-color: var(--accent); }
+
+    .shards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .shard {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      cursor: pointer;
+      transition: border-color .15s, opacity .15s;
+    }
+    .shard.dropped { opacity: 0.38; border-style: dashed; }
+    .shard-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
       color: var(--text-dim);
+      margin-bottom: 10px;
+    }
+    .shard-hex {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--text-muted);
+      word-break: break-all;
+      line-height: 1.55;
+      min-height: 52px;
+    }
+    .shard-state { margin-top: 12px; font-family: var(--font-mono); font-size: 11px; }
+    .ok { color: var(--emerald); }
+    .gone { color: #f87171; }
+
+    .demo-result {
+      margin-top: 16px;
+      padding: 16px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+    .demo-result .label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      display: block;
+      margin-bottom: 8px;
+    }
+    .demo-result .value { font-family: var(--font-mono); font-size: 13.5px; color: var(--text); word-break: break-all; }
+    .demo-hint { margin-top: 12px; font-size: 13px; color: var(--text-dim); }
+
+    /* ── Deploy ───────────────────────────────────────────────────── */
+    .install-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .install-row .os { color: var(--text-dim); font-size: 11.5px; }
+    .install-row .cmd { color: var(--accent); word-break: break-all; }
+    .code {
+      margin-top: 20px;
+      padding: 18px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-muted);
+      overflow-x: auto;
+      line-height: 1.7;
+    }
+    .code .cmt { color: var(--text-dim); }
+    .note { margin-top: 18px; font-size: 13.5px; color: var(--text-dim); }
+
+    /* ── Footer ───────────────────────────────────────────────────── */
+    footer {
+      margin-top: 104px;
+      padding-top: 28px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--text-dim);
+    }
+    footer a { color: var(--text-muted); text-decoration: none; }
+    footer a:hover { color: var(--text); }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .btn { transition: none; }
     }
   </style>
 </head>
 <body>
 
-  <!-- Fullscreen WebGL Canvas: Slow, graceful, authoritative constellation -->
-  <canvas id="webgl-canvas"></canvas>
-  <div class="vignette"></div>
+  <canvas id="globe-canvas" aria-hidden="true"></canvas>
+  <div class="vignette" aria-hidden="true"></div>
 
-  <div class="container">
-    <!-- Navigation -->
-    <header class="nav-bar">
-      <a href="https://kellersystems.dev" class="brand">
-        <span class="brand-mark"></span>
+  <div class="shell">
+
+    <nav class="nav">
+      <a class="brand" href="/">
+        <span class="brand-dot"></span>
         <span>GLOBAL GHOST NET</span>
       </a>
       <div class="nav-links">
-        <a href="#testbench">Testbench</a>
-        <a href="#architecture">Architecture</a>
-        <a href="#comparison">Comparison</a>
-        <a href="#quickstart">Deploy Node</a>
-        <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener noreferrer" class="nav-btn">
-          GitHub (v0.4.0) &rarr;
-        </a>
+        <a href="#packet">Protocol</a>
+        <a href="#frame">Wire format</a>
+        <a href="#shards">Sharding</a>
+        <a href="#deploy">Deploy</a>
+        <a class="nav-cta" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">GitHub v0.4.1 &nearr;</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <span class="pill">Rust &middot; Post-quantum &middot; Peer-to-peer</span>
+      <h1>Route through a mesh, <em>not a company.</em></h1>
+      <p class="lead">
+        Global Ghost Net links your machines into a private network with no centre to trust.
+        Traffic is encrypted with hybrid X25519&nbsp;+&nbsp;ML-KEM-512, split into Reed-Solomon
+        shards, and relayed between nodes &mdash; so no VPN provider, server operator, or
+        certificate authority sits in the middle.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#deploy">Deploy a node</a>
+        <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">Read the source &nearr;</a>
+      </div>
+
+      <div class="facts">
+        <div class="fact">
+          <div class="fact-value">ML-KEM-512</div>
+          <div class="fact-label">NIST FIPS 203 lattice KEM</div>
+        </div>
+        <div class="fact">
+          <div class="fact-value">X25519</div>
+          <div class="fact-label">Classical half of the handshake</div>
+        </div>
+        <div class="fact">
+          <div class="fact-value">RS(2,1)</div>
+          <div class="fact-label">Any two of three shards rebuild</div>
+        </div>
+        <div class="fact">
+          <div class="fact-value">512 bytes</div>
+          <div class="fact-label">Every frame, same size</div>
+        </div>
       </div>
     </header>
 
-    <!-- Hero Section -->
-    <section class="hero">
-      <div class="spec-pill">Clean-Room Clean Architecture &bull; Protocol v0.4.0</div>
-      <div style="margin-bottom:1.5rem;"><img src="assets/icon.svg" alt="Project Icon" width="72" height="72" style="border-radius:18px; box-shadow:0 10px 30px rgba(0,0,0,0.5);" /></div>
-      <h1 class="hero-title">
-        The sovereign WAN mesh engineered for the <span class="hero-gradient">post-quantum era.</span>
-      </h1>
-      <p class="hero-lead">
-        Global Ghost Net is an autonomous peer-to-peer routing daemon written in pure Rust. It eliminates centralized VPN providers, commercial exit relays, and trusted Certificate Authorities through clean-room multi-hop datagram routing, Reed-Solomon polynomial sharding, and NIST FIPS 203 ML-KEM-512 cryptography.
-      </p>
-
-      <!-- Key Metrics -->
-      <div class="metrics-bar">
-        <div class="metric-card">
-          <div class="metric-val">ML-KEM-512</div>
-          <div class="metric-label">Lattice Post-Quantum KEM</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-val">RS(2,1) GF(256)</div>
-          <div class="metric-label">Asymmetric Shard Ratio</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-val">512 Bytes</div>
-          <div class="metric-label">Uniform GTF Frame Size</div>
-        </div>
-        <div class="metric-card">
-          <div class="metric-val">0 Cores / CAs</div>
-          <div class="metric-label">Central Infrastructure</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Interactive Cryptographic Shard Simulator -->
-    <section class="simulator-panel" id="testbench">
-      <div class="sim-top">
-        <div>
-          <span class="section-tag">// INTERACTIVE TESTBENCH</span>
-          <h3 style="font-size: 20px; font-weight: 600;">Reed-Solomon Multi-Path Sharder</h3>
-          <p style="font-size: 13.5px; color: var(--text-muted);">See how plain text is encrypted under ephemeral Kyber session keys and dispersed across divergent global routes.</p>
-        </div>
-        <div class="sim-controls">
-          <input type="text" id="simPayload" class="sim-input" value="CONFIDENTIAL_FINANCIAL_TRANSACTION_0x89F4" placeholder="Enter custom message to fracture...">
-          <button id="shardBtn" class="sim-btn">SHARD PACKET</button>
-        </div>
+    <section id="packet">
+      <div class="section-head">
+        <span class="eyebrow">Protocol</span>
+        <h2>How a packet moves</h2>
+        <p>Five steps, in order. Each one is implemented in the daemon and covered by the test suite.</p>
       </div>
 
-      <div class="shards-flow">
-        <!-- Shard 1 -->
-        <div class="shard-box">
-          <div class="shard-header">
-            <span>SHARD 1 [DATA POLY A]</span>
-            <span style="color: var(--cyan);">ROUTE: FRANKFURT &rarr; REYKJAVIK</span>
-          </div>
-          <div class="shard-hex" id="shard1">0x8B4E...FIPS203_KYBER_CIPHER_MAT</div>
-          <div class="shard-verdict">
-            <span>INTERCEPTOR VIEW:</span>
-            <span style="color: var(--emerald);">PURE NOISE (ZERO PLAINTEXT)</span>
-          </div>
-        </div>
-
-        <!-- Shard 2 -->
-        <div class="shard-box">
-          <div class="shard-header">
-            <span>SHARD 2 [DATA POLY B]</span>
-            <span style="color: var(--purple);">ROUTE: WARSAW &rarr; TOKYO</span>
-          </div>
-          <div class="shard-hex" id="shard2">0x3A9F...REED_SOLOMON_GF256_PAR</div>
-          <div class="shard-verdict">
-            <span>INTERCEPTOR VIEW:</span>
-            <span style="color: var(--emerald);">PURE NOISE (ZERO PLAINTEXT)</span>
-          </div>
-        </div>
-
-        <!-- Shard 3 -->
-        <div class="shard-box">
-          <div class="shard-header">
-            <span>SHARD 3 [PARITY RECOVERY]</span>
-            <span style="color: var(--amber);">ROUTE: ZURICH &rarr; SAO PAULO</span>
-          </div>
-          <div class="shard-hex" id="shard3">0xF12C...UNIFORM_PADDING_JITTER</div>
-          <div class="shard-verdict">
-            <span>RECONSTRUCTION:</span>
-            <span style="color: var(--cyan);">ANY 2 OF 3 REASSEMBLES EGRESS</span>
-          </div>
-        </div>
-      </div>
-          <!-- Interactive 512-Byte Frame Inspector -->
-      <div class="frame-inspector">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div class="steps">
+        <article class="step">
+          <div class="step-num">01</div>
           <div>
-            <span class="section-tag">// WIRE PROTOCOL RFC</span>
-            <h3 style="font-size: 18px; font-weight: 600;">512-Byte Ghost Transport Frame (GTF) Structure</h3>
-            <p style="font-size: 13px; color: var(--text-muted);">Hover over byte boundaries to inspect protocol headers and padding.</p>
+            <h3>Identity</h3>
+            <p>The node generates an Ed25519 keypair on first run. The first eight bytes of the public key are its fingerprint &mdash; that, not an IP address, is how peers know each other.</p>
           </div>
-          <span style="font-family: var(--font-mono); font-size: 11px; color: var(--cyan);">STRICT 512-BYTE ENVELOPE</span>
-        </div>
+        </article>
 
-        <div class="frame-bar">
-          <div class="frame-segment seg-session" onmouseover="inspect('Session Hash', '0..4 Bytes', 'Cryptographic session identifier for O(1) table lookup and AEAD nonce mixing.')">HASH [4B]</div>
-          <div class="frame-segment seg-counter" onmouseover="inspect('Monotonic Packet Counter', '4..8 Bytes', '32-bit big-endian packet counter checked against anti-replay sliding window.')">CTR [4B]</div>
-          <div class="frame-segment seg-shard" onmouseover="inspect('Shard Index', '8..9 Bytes', 'Reed-Solomon RS(2,1) shard index (0 or 1 data, 2 parity).')">SHARD [1B]</div>
-          <div class="frame-segment seg-flags" onmouseover="inspect('Flags', '9..10 Bytes', 'Protocol flags: bit 0 = bulk mode (1472B), bit 1 = unordered tunnel datagram.')">FLAGS [1B]</div>
-          <div class="frame-segment seg-payload" onmouseover="inspect('Ciphertext Shard Payload', '10..496 Bytes', '486-byte ChaCha20-Poly1305 encrypted shard payload.')">ENCRYPTED SHARD PAYLOAD [486B]</div>
-          <div class="frame-segment seg-poly" onmouseover="inspect('Poly1305 MAC Tag', '496..512 Bytes', '16-byte Poly1305 one-time authentication tag validating frame integrity.')">POLY1305 [16B]</div>
-          <div class="frame-segment seg-noise" onmouseover="inspect('Anti-DPI Jitter Padding', '512..576 Bytes', '0 to 64 bytes pseudorandom trailing jitter padding to defeat length-analysis.')">JITTER [0..64B]</div>
-        </div>
+        <article class="step">
+          <div class="step-num">02</div>
+          <div>
+            <h3>Handshake</h3>
+            <p>Two ephemeral keys are exchanged: an X25519 scalar and an ML-KEM-512 encapsulation key, signed by the long-term identity. Both shared secrets are mixed through <code>HKDF-SHA256</code> with an optional pre-shared key.</p>
+          </div>
+        </article>
 
-        <div class="inspector-detail" id="inspectorBox">
-          <div class="detail-left">Field: <strong id="inspectField">Hover over a segment above</strong></div>
-          <div class="detail-bytes" id="inspectBytes">Range: [0..512 Bytes]</div>
-        </div>
+        <article class="step">
+          <div class="step-num">03</div>
+          <div>
+            <h3>Encrypt</h3>
+            <p>Payloads use <code>ChaCha20-Poly1305</code>. The nonce binds the session hash, the direction of travel, and a monotonic counter, so the two directions can never collide &mdash; even at the same counter value.</p>
+          </div>
+        </article>
+
+        <article class="step">
+          <div class="step-num">04</div>
+          <div>
+            <h3>Shard</h3>
+            <p>Ciphertext is split with <code>RS(2,1)</code> erasure coding into two data shards and one parity shard. Any two reconstruct the original; intercepting one yields nothing usable.</p>
+          </div>
+        </article>
+
+        <article class="step">
+          <div class="step-num">05</div>
+          <div>
+            <h3>Frame &amp; guard</h3>
+            <p>Each shard ships in a 512-byte Ghost Transport Frame with random trailing padding, so length analysis sees a constant. A sliding-window guard drops replayed counters.</p>
+          </div>
+        </article>
       </div>
     </section>
 
-    <!-- State of the Art Technical Comparison -->
-    <section class="comparison-section" id="architecture">
-      <div class="section-header">
-        <span class="section-tag">// SUBSYSTEMS &amp; GUARANTEES</span>
-        <h2>Engineered From First Principles in Rust</h2>
-        <p>Zero C/C++ dependencies. Zero OpenSSL. Clean-room verification.</p>
+    <section id="frame">
+      <div class="section-head">
+        <span class="eyebrow">Wire format</span>
+        <h2>The 512-byte frame</h2>
+        <p>Headers are fixed and the payload is padded, so an observer cannot infer message length. Select a field to see its bounds.</p>
       </div>
 
-      <div class="deepdive-grid">
-        <!-- Subsystem 1 -->
-        <div class="deepdive-card">
-          <div class="card-id">01 / CRYPTOGRAPHIC SUITE</div>
-          <h3>Dual-Layer Hybrid Key Agreement</h3>
-          <p>
-            Combines classical X25519 ECDH with post-quantum ML-KEM-512 (Kyber / FIPS 203). Secrets are mixed via HKDF-SHA256 with optional pre-shared key injection (<code>GHOST_PSK</code>). Authenticated payload encryption uses ChaCha20-Poly1305 with monotonic 64-bit anti-replay windowing.
-          </p>
-          <ul class="spec-points">
-            <li>NIST FIPS 203 Lattice Encryption</li>
-            <li>64-bit Monotonic Replay Protection</li>
-            <li>Directional Session Hash Nonce Derivation</li>
-          </ul>
+      <div class="panel">
+        <div class="frame-bar" id="frameBar">
+          <div class="seg seg-hash"    data-field="Session hash"      data-range="0 – 4"      data-note="Truncated session identifier; also mixed into the AEAD nonce so nonces never collide across sessions.">HASH</div>
+          <div class="seg seg-counter" data-field="Packet counter"    data-range="4 – 8"      data-note="32-bit big-endian monotonic counter. Checked against the replay window; repeats are dropped.">CTR</div>
+          <div class="seg seg-shard"   data-field="Shard index"       data-range="8 – 9"      data-note="Which Reed-Solomon shard this datagram carries: 0 or 1 for data, 2 for parity.">SHARD</div>
+          <div class="seg seg-flags"   data-field="Flags"             data-range="9 – 10"     data-note="Bit 0 marks a 1472-byte bulk frame; bit 1 marks an unordered tunnel datagram.">FLAGS</div>
+          <div class="seg seg-payload" data-field="Encrypted shard"   data-range="10 – 496"   data-note="486 bytes of ChaCha20-Poly1305 ciphertext, carrying one Reed-Solomon shard.">ENCRYPTED SHARD &mdash; 486 B</div>
+          <div class="seg seg-tag"     data-field="Poly1305 tag"      data-range="496 – 512"  data-note="16-byte authentication tag. A single flipped bit anywhere in the frame fails verification.">TAG 16 B</div>
+          <div class="seg seg-jitter"  data-field="Jitter padding"    data-range="512 +"      data-note="0 to 64 bytes of random trailing padding, generated per frame, to frustrate length analysis.">JITTER</div>
         </div>
-
-        <!-- Subsystem 2 -->
-        <div class="deepdive-card">
-          <div class="card-id">02 / TRANSPORT MESH</div>
-          <h3>Ghost Transport Frames (GTF)</h3>
-          <p>
-            Avoids TCP circuit stalls and connection resets. Operates over UDP with fixed 512-byte frames. Variable payload chunks are randomized with pseudo-noise padding, blinding Deep Packet Inspection (DPI) heuristics from recognizing stream contents.
-          </p>
-          <ul class="spec-points">
-            <li>Zero Head-of-Line Blocking</li>
-            <li>Uniform 512-byte Datagram Envelopes</li>
-            <li>Randomized Jitter Sleep Intervals</li>
-          </ul>
+        <div class="seg-detail">
+          <span class="field" id="frameField">Session hash</span>
+          <span class="range" id="frameRange">bytes 0 – 4</span>
         </div>
-
-        <!-- Subsystem 3 -->
-        <div class="deepdive-card">
-          <div class="card-id">03 / PEER DISCOVERY</div>
-          <h3>Zero-Cost Decentralized Seeding</h3>
-          <p>
-            Nodes bootstrap without paying for coordinator servers. Relays discover peers through signed DNS TXT records, local subnet multicast UDP beacons (for zero-config LAN mesh), and gossip-based peer exchange (PEX).
-          </p>
-          <ul class="spec-points">
-            <li>Cloudflare DNS TXT Seed Bootstrap</li>
-            <li>LAN Multicast Autodiscovery</li>
-            <li>Autonomous Dynamic Node Failover</li>
-          </ul>
-        </div>
+        <p class="note" id="frameNote">Truncated session identifier; also mixed into the AEAD nonce so nonces never collide across sessions.</p>
       </div>
     </section>
 
-    <!-- Quickstart Execution -->
-    <section class="comparison-section" id="comparison">
-      <div class="section-header">
-        <span class="section-tag">// ARCHITECTURAL BENCHMARK</span>
-        <h2>Why Legacy Networks Fail Against Modern Surveillance</h2>
-        <p>A technical comparison between traditional commercial VPNs, Tor, WireGuard, and Global Ghost Net.</p>
+    <section id="shards">
+      <div class="section-head">
+        <span class="eyebrow">Sharding</span>
+        <h2>Watch RS(2,1) actually run</h2>
+        <p>
+          This is the real erasure code, not an animation: your text is split into two data shards and
+          one GF(256) parity shard. Drop any single shard and the other two still rebuild it exactly.
+        </p>
       </div>
 
-            <!-- Performance Benchmarks Grid -->
-      <div class="section-header" style="margin-top: 48px; margin-bottom: 20px;">
-        <span class="section-tag">// RUNTIME PERFORMANCE</span>
-        <h3 style="font-size: 20px; font-weight: 600;">Cryptographic &amp; Sharding Throughput</h3>
-        <p style="font-size: 13.5px; color: var(--text-muted);">Measured on AMD Ryzen / Linux x86_64 using Rust AVX2 vector intrinsics.</p>
-      </div>
+      <div class="panel">
+        <div class="demo-controls">
+          <input id="demoInput" type="text" value="meet me at the usual place" maxlength="96" aria-label="Payload to shard">
+          <button id="demoRun" type="button">SHARD IT</button>
+        </div>
 
-      <div class="perf-grid">
-        <div class="perf-card">
-          <div class="perf-num">18.4 &micro;s</div>
-          <div class="perf-title">ML-KEM-512 Handshake</div>
-          <div class="perf-sub">NIST Kyber Encapsulation</div>
+        <div class="shards" id="shardList">
+          <div class="shard" data-idx="0">
+            <div class="shard-top"><span>SHARD 0 &middot; DATA</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-hex"></div>
+          </div>
+          <div class="shard" data-idx="1">
+            <div class="shard-top"><span>SHARD 1 &middot; DATA</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-hex"></div>
+          </div>
+          <div class="shard" data-idx="2">
+            <div class="shard-top"><span>SHARD 2 &middot; PARITY</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-hex"></div>
+          </div>
         </div>
-        <div class="perf-card">
-          <div class="perf-num">3.2 GB/s</div>
-          <div class="perf-title">ChaCha20-Poly1305</div>
-          <div class="perf-sub">Single-Core Encryption</div>
-        </div>
-        <div class="perf-card">
-          <div class="perf-num">4.1 &micro;s</div>
-          <div class="perf-title">RS(2,1) Erasure Sharding</div>
-          <div class="perf-sub">Galois Field GF(256) Math</div>
-        </div>
-        <div class="perf-card">
-          <div class="perf-num">&lt; 14 MB</div>
-          <div class="perf-title">Memory Footprint</div>
-          <div class="perf-sub">Zero-Allocation Steady State</div>
-        </div>
-      </div>
 
-      <div class="comparison-table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Protocol Dimension</th>
-              <th>Legacy Commercial VPNs</th>
-              <th>The Tor Project</th>
-              <th>WireGuard</th>
-              <th class="highlight-cell" style="color: var(--cyan);">Global Ghost Net (v0.4)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="col-feature">Quantum Resistance</td>
-              <td>None (RSA / Classical DH)</td>
-              <td>None (Curve25519)</td>
-              <td>None (Optional static PSK)</td>
-              <td class="col-ggn highlight-cell">Native Hybrid ML-KEM-512 + X25519</td>
-            </tr>
-            <tr>
-              <td class="col-feature">Single Point of Failure</td>
-              <td>Central VPN Server / Logs</td>
-              <td>Directory Authorities (9 Hardcoded)</td>
-              <td>Static IP Endpoint Required</td>
-              <td class="col-ggn highlight-cell">Zero Coordinators (Serverless Mesh)</td>
-            </tr>
-            <tr>
-              <td class="col-feature">Transport Transport</td>
-              <td>TCP / UDP encapsulation</td>
-              <td>TCP (Suffers head-of-line blocking)</td>
-              <td>UDP Single-Path Datagram</td>
-              <td class="col-ggn highlight-cell">Fixed 512-byte Ghost UDP Frames</td>
-            </tr>
-            <tr>
-              <td class="col-feature">Traffic Analysis &amp; DPI</td>
-              <td>Vulnerable to packet-size inspection</td>
-              <td>Cell-padded, vulnerable to timing correlation</td>
-              <td>Strict length leaks packet volume</td>
-              <td class="col-ggn highlight-cell">Uniform Padding + Microsecond Jitter</td>
-            </tr>
-            <tr>
-              <td class="col-feature">Multi-Path Resilience</td>
-              <td>Single WAN path (Fails on choke)</td>
-              <td>Single sequential circuit</td>
-              <td>Single point-to-point tunnel</td>
-              <td class="col-ggn highlight-cell">Reed-Solomon (2,1) Asymmetric Sharding</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="demo-result">
+          <span class="label">Reconstructed from the surviving shards</span>
+          <div class="value" id="demoOut">&mdash;</div>
+        </div>
+        <p class="demo-hint">Click a shard to lose it. With two gone, reconstruction is impossible &mdash; there is nothing left to solve with.</p>
       </div>
     </section>
 
-    <!-- Deep Architecture Specifications -->
-    <section class="terminal-section" id="quickstart">
-      <div class="section-header" style="margin-bottom: 20px;">
-        <span class="section-tag">// DEPLOYMENT</span>
-        <h2>Run Global Ghost Net in 30 Seconds</h2>
-        <p>Built-in SOCKS5 proxy server immediately exposes <code>127.0.0.1:1080</code> for browsers and applications.</p>
+    <section id="deploy">
+      <div class="section-head">
+        <span class="eyebrow">Deploy</span>
+        <h2>Run a node</h2>
+        <p>The daemon takes no command-line arguments. Everything is configured through environment variables.</p>
       </div>
 
-            <div style="margin-top: 24px; margin-bottom: 20px;">
-        <div style="font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); margin-bottom: 8px;">ONE-LINE ZERO-CONFIG INSTALL</div>
-        <div class="oneline-box">
-          <div><span style="color:var(--text-dim); margin-right:8px;"># Linux / macOS:</span><span class="oneline-cmd">curl -sSf https://ggn.kellersystems.dev/install.sh | sh</span></div>
-          <span class="copy-tag">POSIX</span>
+      <div class="panel">
+        <div class="install-row">
+          <span><span class="os">Linux / macOS &middot;</span> <span class="cmd">curl -sSf https://ggn.kellersystems.dev/install.sh | sh</span></span>
         </div>
-        <div class="oneline-box" style="margin-top: 8px;">
-          <div><span style="color:var(--text-dim); margin-right:8px;"># Windows PowerShell:</span><span class="oneline-cmd">irm https://ggn.kellersystems.dev/install.ps1 | iex</span></div>
-          <span class="copy-tag">PWSH</span>
+        <div class="install-row">
+          <span><span class="os">Windows &middot;</span> <span class="cmd">irm https://ggn.kellersystems.dev/install.ps1 | iex</span></span>
         </div>
-      </div>
 
-      <div class="code-container" style="position:relative;">
-        <pre class="code-window" id="ggnCode" onclick="copyCode('ggnCode', 'ggnCopyStatus')" style="white-space:pre; cursor:pointer; margin:20px 0;" title="Click to copy commands">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git && cd Global-Ghost-Net && cargo build --release && GHOST_BIND=0.0.0.0:2270 GHOST_SOCKS=127.0.0.1:1080 ./target/release/vantablack</pre>
-        <span id="ggnCopyStatus" style="position:absolute; top:30px; right:20px; font-family:var(--font-mono); font-size:11px; background:rgba(0,242,254,0.15); border:1px solid var(--cyan); color:var(--cyan); padding:4px 8px; border-radius:4px; pointer-events:none; opacity:0.8; transition:all 0.2s;">CLICK TO COPY</span>
-      </div>
+        <pre class="code"><span class="cmt"># or build it yourself</span>
+git clone https://github.com/KELLERBABG/Global-Ghost-Net.git
+cd Global-Ghost-Net && cargo build --release
 
-      <div class="terminal-actions">
-        <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener noreferrer" class="btn-action btn-primary">
-          View Repository &amp; Source Code &rarr;
-        </a>
-        <a href="https://kellersystems.dev" class="btn-action btn-secondary">
-          &larr; Back to Keller Systems Portal
-        </a>
+<span class="cmt"># client node: SOCKS5 proxy on 127.0.0.1:1080</span>
+GHOST_SOCKS5=1 ./target/release/vantablack
+
+<span class="cmt"># exit node: opens outbound connections for allowlisted peers
+# (bind 2271 — 2270/UDP is the discovery beacon)</span>
+GHOST_EXIT_ALLOWLIST=any GHOST_BIND=0.0.0.0:2271 ./target/release/vantablack</pre>
+
+        <p class="note">
+          Then point anything at the proxy: <code>curl --socks5 127.0.0.1:1080 https://example.com</code>.
+          Configuration reference: <a href="https://github.com/KELLERBABG/Global-Ghost-Net/blob/main/config.env.example">config.env.example</a>.
+        </p>
       </div>
     </section>
 
-    <footer class="footer">
-      <div>GLOBAL GHOST NET &bull; ARCHITECTURE SPECIFICATION v0.4.0</div>
-      <div><a href="https://kellersystems.dev">KELLERSYSTEMS.DEV</a></div>
+    <footer>
+      <span>Global Ghost Net &middot; v0.4.1</span>
+      <span>Pre-release: mesh core implemented and tested; the LAN-over-WAN layer (<code>--features vpn</code>) is experimental.</span>
+      <span><a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">GitHub</a> &middot; <a href="https://kellersystems.dev">Keller Systems</a></span>
     </footer>
+
   </div>
 
-  <!-- Slow, Graceful, High-Precision WebGL Planetary Mesh -->
   <script>
-    const canvas = document.getElementById('webgl-canvas');
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.z = 240;
+    /* ── Hero backdrop ────────────────────────────────────────────────
+       A slowly rotating point sphere with short geodesics. Static after
+       the first frame if the visitor prefers reduced motion, and skipped
+       entirely when WebGL is unavailable. */
+    (function () {
+      if (typeof THREE === 'undefined') return;
+      var canvas = document.getElementById('globe-canvas');
+      if (!canvas) return;
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      var renderer;
+      try {
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+      } catch (e) { return; }
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
-    // Refined, orderly orbital planetary grid
-    const nodeCount = 380;
-    const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(nodeCount * 3);
-    const colors = new Float32Array(nodeCount * 3);
+      var scene = new THREE.Scene();
+      var camera = new THREE.PerspectiveCamera(45, 1, 1, 2000);
+      camera.position.z = 300;
 
-    const radius = 110;
-    // Fibonacci sphere distribution for perfect mathematical symmetry
-    for (let i = 0; i < nodeCount; i++) {
-      const y = 1 - (i / (nodeCount - 1)) * 2;
-      const radiusAtY = Math.sqrt(1 - y * y);
-      const phi = i * 2.399963229728653; // Golden angle
+      var N = 320, R = 118;
+      var pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+      for (var i = 0; i < N; i++) {
+        var y = 1 - (i / (N - 1)) * 2;          // Fibonacci sphere
+        var r = Math.sqrt(Math.max(0, 1 - y * y));
+        var phi = i * 2.399963229728653;        // golden angle
+        pos[i * 3]     = Math.cos(phi) * r * R;
+        pos[i * 3 + 1] = y * R;
+        pos[i * 3 + 2] = Math.sin(phi) * r * R;
+        col[i * 3] = 0.13; col[i * 3 + 1] = 0.83; col[i * 3 + 2] = 0.93;
+      }
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      var globe = new THREE.Points(geo, new THREE.PointsMaterial({
+        size: 1.7, vertexColors: true, transparent: true, opacity: 0.5,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      }));
+      scene.add(globe);
 
-      const x = Math.cos(phi) * radiusAtY;
-      const z = Math.sin(phi) * radiusAtY;
-
-      positions[i * 3]     = x * radius;
-      positions[i * 3 + 1] = y * radius;
-      positions[i * 3 + 2] = z * radius;
-
-      // Subtle cyan to blue gradient
-      colors[i * 3]     = 0.0;
-      colors[i * 3 + 1] = 0.8 + (y * 0.2);
-      colors[i * 3 + 2] = 1.0;
-    }
-
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-    const material = new THREE.PointsMaterial({
-      size: 2.2,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.65,
-      blending: THREE.AdditiveBlending
-    });
-
-    const globe = new THREE.Points(geometry, material);
-    scene.add(globe);
-
-    // Subtle connecting geodesics
-    const lineMat = new THREE.LineBasicMaterial({
-      color: 0x00f2fe,
-      transparent: true,
-      opacity: 0.08,
-      blending: THREE.AdditiveBlending
-    });
-
-    const lineGeo = new THREE.BufferGeometry();
-    const linePositions = [];
-    const threshold = 32;
-
-    for (let i = 0; i < nodeCount; i++) {
-      for (let j = i + 1; j < nodeCount; j++) {
-        const dx = positions[i * 3] - positions[j * 3];
-        const dy = positions[i * 3 + 1] - positions[j * 3 + 1];
-        const dz = positions[i * 3 + 2] - positions[j * 3 + 2];
-        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-        if (dist < threshold) {
-          linePositions.push(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
-          linePositions.push(positions[j * 3], positions[j * 3 + 1], positions[j * 3 + 2]);
+      // Short arcs only — enough to read as a network, not a wire ball.
+      var segs = [], LIMIT = 34;
+      for (var a = 0; a < N; a++) {
+        for (var b = a + 1; b < N; b++) {
+          var dx = pos[a * 3] - pos[b * 3],
+              dy = pos[a * 3 + 1] - pos[b * 3 + 1],
+              dz = pos[a * 3 + 2] - pos[b * 3 + 2];
+          if (dx * dx + dy * dy + dz * dz < LIMIT * LIMIT) {
+            segs.push(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2],
+                      pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2]);
+          }
         }
       }
+      var lgeo = new THREE.BufferGeometry();
+      lgeo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
+      var lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
+        color: 0x22d3ee, transparent: true, opacity: 0.07,
+        blending: THREE.AdditiveBlending, depthWrite: false
+      }));
+      scene.add(lines);
+
+      // The globe sits low and right, so the headline always reads over dark space.
+      scene.position.set(96, -34, 0);
+
+      function resize() {
+        var w = window.innerWidth, h = window.innerHeight;
+        renderer.setSize(w, h, false);
+        camera.aspect = w / h;
+        // Keep the sphere a sensible size on narrow screens.
+        camera.position.z = w < 820 ? 400 : 300;
+        camera.updateProjectionMatrix();
+      }
+      resize();
+      window.addEventListener('resize', resize);
+
+      if (reduce) { renderer.render(scene, camera); return; }
+
+      (function frame() {
+        requestAnimationFrame(frame);
+        globe.rotation.y += 0.0006;
+        globe.rotation.x = Math.sin(Date.now() * 0.0001) * 0.05;
+        lines.rotation.copy(globe.rotation);
+        renderer.render(scene, camera);
+      })();
+    })();
+
+    /* ── Frame inspector ──────────────────────────────────────────── */
+    (function () {
+      var segs = document.querySelectorAll('#frameBar .seg');
+      var field = document.getElementById('frameField');
+      var range = document.getElementById('frameRange');
+      var note = document.getElementById('frameNote');
+
+      function show(el) {
+        for (var i = 0; i < segs.length; i++) segs[i].classList.remove('active');
+        el.classList.add('active');
+        field.textContent = el.dataset.field;
+        range.textContent = 'bytes ' + el.dataset.range;
+        note.textContent = el.dataset.note;
+      }
+      for (var i = 0; i < segs.length; i++) {
+        (function (el) {
+          el.addEventListener('mouseenter', function () { show(el); });
+          el.addEventListener('click', function () { show(el); });
+        })(segs[i]);
+      }
+    })();
+
+    /* #region rs-core
+       ── Reed-Solomon (2,1) over GF(256) ────────────────────────────
+       Generator polynomial 0x11d, the same field the daemon's
+       reed-solomon-erasure GF(2^8) layer uses.
+
+       Encoding:  parity = s0 ^ (2 . s1)      (. = GF multiply)
+       Recovery:  s1 = (parity ^ s0) / 2
+                  s0 = parity ^ (2 . s1)
+       Any two of the three shards therefore rebuild the payload. */
+    var RS_EXP = new Uint8Array(512), RS_LOG = new Uint8Array(256);
+    (function () {
+      var x = 1;
+      for (var i = 0; i < 255; i++) {
+        RS_EXP[i] = x;
+        RS_LOG[x] = i;
+        x <<= 1;
+        if (x & 0x100) x ^= 0x11d;
+      }
+      for (var j = 255; j < 512; j++) RS_EXP[j] = RS_EXP[j - 255];
+    })();
+
+    function gfMul(a, b) {
+      if (a === 0 || b === 0) return 0;
+      return RS_EXP[RS_LOG[a] + RS_LOG[b]];
     }
 
-    lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
-    const lines = new THREE.LineSegments(lineGeo, lineMat);
-    scene.add(lines);
-
-    // Completely autonomous, peaceful orbital drift (No cursor spinning)
-    function animate() {
-      requestAnimationFrame(animate);
-
-      // Constant, imperceptible drift like Earth observed from geostationary orbit
-      globe.rotation.y += 0.00045;
-      globe.rotation.x = Math.sin(Date.now() * 0.00012) * 0.06;
-      lines.rotation.y = globe.rotation.y;
-      lines.rotation.x = globe.rotation.x;
-
-      renderer.render(scene, camera);
-    }
-    animate();
-
-    window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-
-    function inspect(name, range, desc) {
-      document.getElementById('inspectField').textContent = name + ' - ' + desc;
-      document.getElementById('inspectBytes').textContent = 'Range: [' + range + ']';
+    function gfDiv(a, b) {
+      if (a === 0) return 0;
+      return RS_EXP[(RS_LOG[a] - RS_LOG[b] + 255) % 255];
     }
 
-    function copyCode(elementId, statusId) {
-      const el = document.getElementById(elementId);
-      const status = document.getElementById(statusId);
-      const text = el.textContent.trim();
-      navigator.clipboard.writeText(text).then(() => {
-        status.textContent = 'COPIED TO CLIPBOARD!';
-        status.style.background = '#10b981';
-        status.style.color = '#000';
-        setTimeout(() => {
-          status.textContent = 'CLICK TO COPY';
-          status.style.background = 'rgba(16,185,129,0.15)';
-          status.style.color = 'var(--emerald)';
-        }, 2200);
-      });
+    /* Encode bytes into 3 shards: two halves of the (zero-padded) input and
+       their GF(256) parity. */
+    function rsEncode(bytes) {
+      var padded = bytes.slice();
+      if (padded.length % 2) padded.push(0);
+      var half = padded.length / 2;
+      var s0 = padded.slice(0, half), s1 = padded.slice(half);
+      var parity = new Uint8Array(half);
+      for (var i = 0; i < half; i++) parity[i] = s0[i] ^ gfMul(2, s1[i]);
+      return [s0, s1, Array.from(parity)];
     }
 
-    // Sharding Simulation Logic
-    const shardBtn = document.getElementById('shardBtn');
-    const input = document.getElementById('simPayload');
-    const s1 = document.getElementById('shard1');
-    const s2 = document.getElementById('shard2');
-    const s3 = document.getElementById('shard3');
-
-    function randomHex(len) {
-      let r = '';
-      const chars = '0123456789ABCDEF';
-      for (let i = 0; i < len; i++) r += chars[Math.floor(Math.random() * chars.length)];
-      return r;
+    /* Rebuild the payload from any two shards. Returns Array<number> or null. */
+    function rsReconstruct(shards) {
+      var s0 = shards[0], s1 = shards[1], par = shards[2], i, half;
+      if (s0 && s1) {
+        half = s0.length;
+      } else if (s0 && par) {
+        half = s0.length;
+        s1 = new Array(half);
+        for (i = 0; i < half; i++) s1[i] = gfDiv(par[i] ^ s0[i], 2);
+      } else if (s1 && par) {
+        half = s1.length;
+        s0 = new Array(half);
+        for (i = 0; i < half; i++) s0[i] = par[i] ^ gfMul(2, s1[i]);
+      } else {
+        return null;
+      }
+      return Array.prototype.slice.call(s0).concat(Array.prototype.slice.call(s1));
     }
+    /* #endregion rs-core */
 
-    function runSharding() {
-      let tick = 0;
-      const interval = setInterval(() => {
-        s1.textContent = '0x' + randomHex(36) + '... [RS_POLY_A]';
-        s2.textContent = '0x' + randomHex(36) + '... [RS_POLY_B]';
-        s3.textContent = '0x' + randomHex(36) + '... [RS_PARITY]';
-        tick++;
-        if (tick > 7) clearInterval(interval);
-      }, 40);
-    }
+    /* ── Sharding demo ────────────────────────────────────────────── */
+    (function () {
+      var input = document.getElementById('demoInput');
+      var runBtn = document.getElementById('demoRun');
+      var out = document.getElementById('demoOut');
+      var cards = document.querySelectorAll('#shardList .shard');
 
-    shardBtn.addEventListener('click', runSharding);
-    input.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') runSharding();
-    });
+      var shards = [null, null, null];
+      var dropped = [false, false, false];
+      var plain = [];
+
+      function hex(bytes, max) {
+        var s = '', n = Math.min(bytes.length, max);
+        for (var i = 0; i < n; i++) s += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
+        return s + (bytes.length > n ? '…' : '');
+      }
+
+      function fromHexChar(c) { return c <= 57 ? c - 48 : c - 87; }
+
+      function render() {
+        for (var i = 0; i < cards.length; i++) {
+          var card = cards[i];
+          var state = card.querySelector('.shard-state');
+          if (dropped[i]) {
+            card.classList.add('dropped');
+            state.textContent = 'LOST';
+            state.className = 'shard-state gone';
+            card.querySelector('.shard-hex').textContent = '—';
+          } else {
+            card.classList.remove('dropped');
+            state.textContent = shards[i].length + ' B';
+            state.className = 'shard-state ok';
+            card.querySelector('.shard-hex').textContent = hex(shards[i], 40);
+          }
+        }
+
+        var live = shards.map(function (s, i) { return dropped[i] ? null : s; });
+        var rebuilt = rsReconstruct(live);
+        if (!rebuilt) {
+          out.textContent = '— unrecoverable: fewer than two shards remain';
+          return;
+        }
+        // Trim the zero padding we added at encode time, then decode as UTF-8.
+        var text = '';
+        try {
+          text = new TextDecoder().decode(new Uint8Array(rebuilt)).replace(/\u0000+$/, '');
+        } catch (e) {
+          text = '<binary>';
+        }
+        out.textContent = text === '' ? '(empty)' : text;
+      }
+
+      function run() {
+        var text = input.value || '';
+        plain = Array.from(new TextEncoder().encode(text));
+        shards = rsEncode(plain);
+        dropped = [false, false, false];
+        render();
+      }
+
+      for (var i = 0; i < cards.length; i++) {
+        (function (idx) {
+          cards[idx].addEventListener('click', function () {
+            dropped[idx] = !dropped[idx];
+            render();
+          });
+        })(i);
+      }
+      runBtn.addEventListener('click', run);
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
+      input.addEventListener('input', run);
+      run();
+    })();
   </script>
 </body>
 </html>
