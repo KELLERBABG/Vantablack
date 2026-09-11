@@ -492,6 +492,11 @@ impl UdpFlowTable {
         self.flows.lock().len()
     }
 
+    /// How many live flows belong to one fingerprint (`VPN STATUS`).
+    pub fn count_for(&self, fp: &str) -> usize {
+        self.flows.lock().keys().filter(|k| k.fp == fp).count()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.flows.lock().is_empty()
     }

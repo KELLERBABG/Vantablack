@@ -205,3 +205,159 @@ fp=ab12…  ip=10.66.0.10  endpoint=203.0.113.9:51000  epoch=7  last_seen=2s  fl
 - `MAX_IP_PACKET`/`TUNNEL_MAX_PAYLOAD`/`TUN_MTU` are consistent today (1280 TUN
   MTU → 1446 B bulk payload); if TUN_MTU ever rises, `OVERLAY_MSS` and the
   netstack MSS clamp must move together. Worth an assertion.
+
+---
+
+## 7. What only you can do (operator checklist)
+
+Blocked on hardware, credentials, an external service, or a decision that is
+yours — not on more code.
+
+### 7.1 Cheap, unblocked right now
+
+- [ ] **Back the history up.** It exists only in
+      `C:/Users/LNegenborn/Downloads/ggn temp/.git` with **no remote**. Either
+      `git remote add origin <url> && git push -u origin main --tags`, or
+      offline: `git bundle create ggn-history.bundle --all`.
+- [ ] **Create the real `proto-baseline` tag.** I deliberately did not: it
+      denotes the pre-prototype v0.4.0 snapshot (`4bc75b7`), which is not in this
+      tree. If `../Global-Ghost-Net-main` exists, find its v0.4.0 commit, tag it
+      there, then `git fetch ../Global-Ghost-Net-main proto-baseline`.
+- [ ] **Decide the two-document-sets conflict.** The repo ships a candid set
+      (`PROTOTYPE.md`, `docs/LAN_OVER_WAN.md`, `THINKTANK-BIN.md`) *and* an
+      overclaiming one: `README.md` still claims egress-IP rotation and STUN
+      hole-punching, `index.html` advertises a `ggn-daemon` binary that does not
+      exist, `docs/SPECIFICATIONS.md` calls the GTF counter little-endian while
+      the code writes big-endian, and `config.env` documents
+      `GHOST_LISTEN_PORT`, which nothing reads. Which set wins? Either direction
+      is implementable.
+- [ ] **Decide the fate of the ~20 unwired modules** catalogued in `UNWIRED.md`
+      (L3 Shamir, L7 LDPC, L8 memsec, `orbit`, `mesh`, `dispatcher`, `hsm`, …):
+      wire, gate behind a feature, or delete. Keeping them is the one option that
+      keeps costing.
+- [ ] **`wintun.dll` licensing.** PROTOTYPE.md notes the Tailscale-shipped copy
+      is dev-only. Vendor the official 0.14.x zip for anything distributed, or
+      ship no `.dll` and document the download.
+
+### 7.2 Needs hardware or privileges — the real remaining gates
+
+- [ ] **The two-node smoke test** (`PROTOTYPE.md`: *"no two physical nodes have
+      ever talked"*). Two machines, both built `--features vpn`:
+      - hub: `GHOST_VPN=hub GHOST_VPN_CLIENTS=<client fp> GHOST_BIND=0.0.0.0:2271`
+      - client: `GHOST_VPN=client GHOST_VPN_HUB_FP=<hub fp> GHOST_BIND=0.0.0.0:0`
+        — **without** `GHOST_VPN_FAKE_TUN`, so it needs `wintun.dll` beside the
+        binary plus one-time **Administrator** elevation.
+      - Then reach a real LAN host from the client (`ping <nas>`,
+        `curl http://192.168.1.x`, SMB) — the one thing the zero-elevation
+        loopback test cannot cover.
+      - Use distinct `GHOST_IDENTITY_FILE` paths per node (two nodes in one
+        directory otherwise share a fingerprint).
+- [ ] **M3: Wi-Fi→LTE handover mid-SSH** with no session loss. Needs a phone and
+      the Android build below.
+- [ ] Real-router unknowns (NAT44, corporate Wi-Fi) only appear here.
+
+### 7.3 Android (M3)
+
+- [ ] `cargo install cargo-ndk`
+- [ ] `rustup target add aarch64-linux-android`
+- [ ] `cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --release --features vpn`
+- [ ] Wrap the two Kotlin files (`GhostCore.kt`, `GhostVpnService.kt`) in a Gradle
+      app per `android/README.md`, `minSdk = 26`.
+- [ ] Invariants that bite if skipped: `VpnService.protect(fd)` **before** the
+      socket sends anything; MTU 1280; on network change re-bind + re-protect
+      instead of tearing down the TUN.
+
+### 7.4 GitHub (you said "later")
+
+- [ ] The workflow now runs `cargo test --locked --features vpn` and the loopback
+      gate, so the first push exercises the VPN path for the first time. The
+      loopback step is timing-based (7 s startup waits, up to 40 s for the round
+      trip) — the step most likely to need a longer budget on a slow runner.
+- [ ] The `build-*` jobs still build only the default feature set. Decide whether
+      release artefacts should include `--features vpn`.
+
+### 7.5 At a Windows shell
+
+- [ ] Never invoke these scripts with the bare name `bash` in PowerShell — it
+      resolves to `C:\Windows\System32\bash.exe` (the WSL shim) and fails with
+      *"Windows-Subsystem für Linux verfügt über keine installierten
+      Distributionen"*. Use `run-vpn-test.bat`, or explicitly
+      `& "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe" scripts/vpn_loopback_test.sh`.
+
+---
+
+## 8. How to test what changed (copy-paste)
+
+From the repo root. On Windows use Git Bash or `run-vpn-test.bat` — never the
+bare name `bash` in PowerShell (§7.5). Replace `<bin>` with
+`target/debug/vantablack.exe` (Windows) or `target/release/vantablack`.
+
+### 8.1 The gate (fastest signal)
+
+```bash
+cargo build                        # non-vpn surface must stay clean
+cargo build --features vpn
+cargo test --locked --features vpn # expect: passed=174 failed=0
+```
+
+### 8.2 Zero-elevation end-to-end tunnel (no admin, no wintun)
+
+```bash
+bash scripts/vpn_loopback_test.sh   # expect: "6 passed, 0 failed"
+```
+Windows: double-click `run-vpn-test.bat`. Expect `[+] VPN loopback self-test
+PASSED`, and in the client log
+`FAKE-TUN self-test: PASS — ICMP echo reply returned through the mesh`.
+This is the gate PROTOTYPE.md called "nothing is wire-proven yet".
+
+### 8.3 Flaw #5 — a hub must refuse non-allowlisted mesh handshakes
+
+The negative case is the interesting one. Start a hub with an **empty** allowlist
+(deny all), then PEER it from a client (use the two-process shape from
+`scripts/vpn_loopback_test.sh` phase 2/3):
+
+```bash
+GHOST_VPN=hub GHOST_BIND=127.0.0.1:2271 GHOST_IDENTITY_FILE=/tmp/hub.key \
+  GHOST_METRICS_ENABLED=0 RUST_LOG=info <bin>
+```
+Expect on the hub: `Handshake rejected — not in the VPN allowlist
+(GHOST_VPN_CLIENTS)` and **zero** `Session established` lines. Then re-run with
+`GHOST_VPN_CLIENTS=<client fp>` — the session must establish and §8.2 must pass.
+
+### 8.4 Flaw #6 — two nodes from one directory
+
+```bash
+GHOST_IDENTITY_FILE=/tmp/a.key GHOST_BIND=127.0.0.1:22801 <bin> &
+GHOST_IDENTITY_FILE=/tmp/b.key GHOST_BIND=127.0.0.1:22802 <bin> &
+# FINGERPRINT must differ. Without the variable both load identity.key and
+# therefore advertise one fingerprint.
+```
+
+### 8.5 `vpn_*` metrics
+
+```bash
+GHOST_VPN=hub GHOST_METRICS_PORT=9090 GHOST_BIND=127.0.0.1:2271 <bin>
+curl -s localhost:9090/healthz   # "vpn":"hub" + a vpn_stats object
+curl -s localhost:9090/metrics | grep ^ghost_vpn_   # 7 series
+```
+Expected series: `ghost_vpn_active_leases`, `ghost_vpn_tunnel_frames_in_total`,
+`ghost_vpn_tunnel_frames_out_total`, `ghost_vpn_frames_dropped_total`,
+`ghost_vpn_tcp_flows`, `ghost_vpn_udp_flows`, `ghost_vpn_counter_headroom_min`.
+A plain node (no `GHOST_VPN`) must report `"vpn":"disabled"` and **zero**
+`ghost_vpn_` lines — that is the "v0.4.0 surface unchanged" check.
+
+### 8.6 `VPN STATUS` console
+
+Feed the hub's stdin `VPN STATUS` → per-lease table
+(fingerprint / overlay / endpoint / epoch / flows / v_max / idle / headroom) plus
+a totals line. `HELP` lists it. On a client: hub fingerprint, epoch, tx counter +
+headroom, watchdog state.
+
+### 8.7 What I could NOT verify
+
+- **`VPN STATUS` row rendering with a live lease.** The code compiles, the gate
+  is green (174), and the empty-hub and non-VPN paths are confirmed — but every
+  attempt to render an actual row was blocked. Look here first.
+- Everything in §7.2/§7.3: wintun, real LAN reachability, Wi-Fi→LTE handover,
+  the Android build.
+

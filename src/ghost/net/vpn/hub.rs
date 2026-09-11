@@ -446,6 +446,35 @@ impl VpnHub {
         self.leases.snapshot()
     }
 
+    /// Per-lease detail for the console `VPN STATUS` view.
+    ///
+    /// Each lock is taken and released on its own (never nested), so this can
+    /// never invert lock order against the seal/ingest paths.
+    pub fn lease_views(&self) -> Vec<LeaseView> {
+        let leases = self.leases.snapshot();
+        let mut views = Vec::with_capacity(leases.len());
+        for l in leases {
+            let udp_flows = self.flows.count_for(&l.fingerprint);
+            let counter_headroom = self
+                .tx_counters
+                .lock()
+                .get(&l.fingerprint)
+                .map(|c| u32::MAX.saturating_sub(*c))
+                .unwrap_or(u32::MAX);
+            views.push(LeaseView {
+                fingerprint: l.fingerprint,
+                overlay_ip: l.overlay_ip,
+                endpoint: l.endpoint,
+                epoch: l.epoch,
+                idle_secs: l.last_seen.elapsed().as_secs_f32(),
+                tunnel_v_max: l.tunnel_v_max,
+                udp_flows,
+                counter_headroom,
+            });
+        }
+        views
+    }
+
     /// Metrics snapshot for `/metrics` and `/healthz`.
     ///
     /// `counter_headroom_min` is the operationally important one: how close the
@@ -485,6 +514,28 @@ pub struct VpnHubMetrics {
     /// Smallest remaining tunnel-counter headroom across leases
     /// (`u32::MAX` when no lease has spent a counter yet).
     pub counter_headroom_min: u32,
+}
+
+/// One lease as rendered by the console `VPN STATUS` view.
+///
+/// The lease table alone cannot answer "which client is holding flows?" or "how
+/// close is this client to a counter re-key?" — which is what you actually want
+/// mid-incident — so this joins the lease, its UDP flow count and its
+/// per-epoch counter headroom into a single row.
+#[derive(Debug, Clone)]
+pub struct LeaseView {
+    pub fingerprint: String,
+    pub overlay_ip: Ipv4Addr,
+    pub endpoint: SocketAddr,
+    pub epoch: u32,
+    /// Seconds since an authenticated packet from the current endpoint.
+    pub idle_secs: f32,
+    /// Highest tunnel counter accepted from this client in this epoch.
+    pub tunnel_v_max: u32,
+    /// Live UDP flow bindings owned by this fingerprint.
+    pub udp_flows: usize,
+    /// Remaining per-epoch tunnel-counter headroom (`u32::MAX` = untouched).
+    pub counter_headroom: u32,
 }
 
 // ── IP/UDP packet construction (LAN → client replies) ───────────────

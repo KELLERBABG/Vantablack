@@ -385,6 +385,24 @@ async fn handle_pkt(
             return;
         }
 
+        // VPN hub: gate the MESH session the same way the VPN tunnel already is.
+        // Tunnel traffic from an unlisted peer was rejected, but the mesh session
+        // itself was not — so a WAN-exposed hub accumulated session state from
+        // strangers (PROTOTYPE.md flaw #5). No-op unless this node is a hub.
+        #[cfg(feature = "vpn")]
+        if let Some(VpnMode::Hub(hub)) = vpn_mode {
+            if !hub.authorized(&fp) {
+                tracing::warn!(
+                    peer = %src, fingerprint = %fp,
+                    "Handshake rejected — not in the VPN allowlist (GHOST_VPN_CLIENTS)"
+                );
+                if let Some(rep) = reputation_matrix {
+                    rep.record_interaction(&node.fingerprint(), &fp, false);
+                }
+                return;
+            }
+        }
+
         // WIRED: RevocationList check — reject known-compromised identities
                 if let Some(rl) = revocation_list {
                     if rl.reject_handshake(&fp) {
@@ -2146,6 +2164,67 @@ async fn main() -> anyhow::Result<()> {
                     None => println!("VPN disabled (set GHOST_VPN=hub|client)"),
                 }
             }
+            #[cfg(feature = "vpn")]
+            "VPN" => match p.get(1).copied().map(str::to_uppercase).as_deref() {
+                Some("STATUS") => match vpn_mode.as_ref() {
+                    Some(VpnMode::Hub(hub)) => {
+                        let views = hub.lease_views();
+                        println!("VPN hub — {} lease(s)", views.len());
+                        if views.is_empty() {
+                            println!("  (no leases yet: no client has handshaked)");
+                        } else {
+                            println!(
+                                "  {:<17} {:<13} {:<22} {:>5} {:>6} {:>6} {:>8} {:>10}",
+                                "fingerprint", "overlay", "endpoint", "epoch",
+                                "flows", "v_max", "idle", "headroom"
+                            );
+                            for v in &views {
+                                println!(
+                                    "  {:<17} {:<13} {:<22} {:>5} {:>6} {:>6} {:>7.0}s {:>10}",
+                                    &v.fingerprint[..16.min(v.fingerprint.len())],
+                                    v.overlay_ip,
+                                    v.endpoint,
+                                    v.epoch,
+                                    v.udp_flows,
+                                    v.tunnel_v_max,
+                                    v.idle_secs,
+                                    v.counter_headroom
+                                );
+                            }
+                        }
+                        let m = hub.metrics();
+                        println!(
+                            "  totals: leases={} tcp_flows={} udp_flows={} in={} out={} dropped={} headroom_min={}",
+                            m.leases, m.tcp_flows, m.udp_flows,
+                            m.frames_in, m.frames_out, m.frames_dropped, m.counter_headroom_min
+                        );
+                    }
+                    Some(VpnMode::Client(c, _)) => {
+                        let ctr = c.tx_counter();
+                        let (dead, attempts) = {
+                            let wd = c.watchdog.lock();
+                            (wd.is_dead(), wd.attempts())
+                        };
+                        println!("VPN client:");
+                        println!("  hub fingerprint : {}", c.fingerprint);
+                        println!("  epoch           : {}", c.current_epoch());
+                        println!(
+                            "  tx counter      : {}  (headroom {})",
+                            ctr,
+                            u32::MAX.saturating_sub(ctr)
+                        );
+                        println!(
+                            "  watchdog        : {} (re-handshake attempts {})",
+                            if dead { "DEAD" } else { "healthy" },
+                            attempts
+                        );
+                    }
+                    None => println!("VPN disabled (set GHOST_VPN=hub|client)"),
+                },
+                _ => println!("Usage: VPN STATUS"),
+            },
+            #[cfg(not(feature = "vpn"))]
+            "VPN" => println!("VPN disabled (build with --features vpn)"),
             #[cfg(not(feature = "vpn"))]
             "LEASES" | "VPNSTATS" => println!("VPN disabled (build with --features vpn)"),
             "HELP" => {
@@ -2160,8 +2239,9 @@ async fn main() -> anyhow::Result<()> {
                 println!("  BEACON <on|off>     - Toggle beacon discovery");
                 println!("  REVOKE <fp>         - Revoke a compromised identity");
                 println!("  REP <from> <to>     - Show reputation between peers");
-                println!("  LEASES               - VPN hub: client leases (hub mode)");
-                println!("  VPNSTATS             - VPN in/out/flow stats");
+                println!("  LEASES               - VPN hub: client leases (raw)");
+                println!("  VPNSTATS             - VPN in/out/flow totals");
+                println!("  VPN STATUS           - VPN per-lease detail (hub) / client state");
                 println!("  HELP                - This help");
             }
             _ => tracing::warn!("Unknown command: {}. Type HELP for commands.", p[0]),
