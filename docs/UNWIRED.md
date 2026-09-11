@@ -8,7 +8,12 @@ there.
 
 Last verified against `v0.4.0` on the commit that added this file.
 
----
+> **Project Gameplan & Architectural Intent:**
+> The unwired modules documented below (Doppler shift simulation, orbital mechanics, HSM/TPM,
+> LDPC outer coding, verified ring buffers, XDP/eBPF acceleration) represent clean-room
+> architectural principles designed for deployment once specific physical hardware environments
+> (hardware TPMs, orbital telemetry feeds, atomic clocks, eBPF kernels) become available for
+> physical verification. They remain preserved as experimental modules.
 
 ## 1. The lost roadmap document
 
