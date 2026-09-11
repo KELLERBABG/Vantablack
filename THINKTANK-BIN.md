@@ -15,31 +15,34 @@ carries enough detail to be picked up cold.
 | **Flaw #2** UDP reply truncation at 2048 B | Flow-reader buffer 2048 → **4096** (EDNS0 ceiling), with a comment explaining that `recv` truncates silently | `net/vpn/hub.rs` (`spawn_flow_reader`) |
 | **Flaw #1** counter exhaustion is silent | `send_tunnel_frame` no longer drops silently: it counts the drop in `stats.drops`, logs `warn!` at the wall, and logs a second `warn!` at a 1M-packet pre-wrap margin. Hub `seal_for_client` gained the same proximity warning. | `main.rs`, `net/vpn/hub.rs` |
 | **§2.4 zero-elevation self-test** *(was a design sketch, now implemented)* | `PlatformTun` is now an enum (`Real`/`Fake`) implementing `TunDevice` by delegation; `open_fake_tun()` returns the device plus a shared `FakeTun` handle (the queues are `Arc`-shared, so a clone can inject and observe); `GHOST_VPN_FAKE_TUN=1` selects it and spawns a driver that pushes an ICMP echo toward the hub overlay and reports what the tunnel writes back. Harness promoted to `scripts/vpn_loopback_test.sh`. | `net/vpn/tun/mod.rs`, `main.rs`, `scripts/vpn_loopback_test.sh` |
+| **Flaw #1 re-key trigger** *(was §2.1, now implemented)* | `TunnelWatchdog::poll_with_counter(now, tx_counter)` treats a spent counter as a second liveness trigger and demands a fresh epoch, reusing the recovery path that already existed; `main.rs`'s 500 ms watchdog tick feeds it `ClientState::tx_counter()`. Regression test `counter_exhaustion_triggers_rehandshake_before_wrap`. | `net/vpn/client.rs`, `main.rs` |
+| **§3.1 `vpn_*` metrics** *(was a design, now implemented)* | `VpnHub::metrics()`. `/metrics` gains 7 `ghost_vpn_*` series (including `counter_headroom_min`); a client additionally reports `tx_counter`, `counter_headroom`, `epoch`, `watchdog_dead`. `/healthz` gains `"vpn"` + `vpn_stats`. The series are *appended*, so the v0.4.0 metric set stays byte-identical with the feature off. | `net/vpn/hub.rs`, `main.rs` |
+| **Repo + CI gate** | `git init` plus an honest `audit-baseline` tag; CI now runs `cargo test --locked --features vpn` and the loopback gate, and clippy covers the feature. | `.github/workflows/release.yml`, `.gitignore` |
 
 **Ledger lines in PROTOTYPE.md that can now be struck** (§"Open flaws, ranked by
-user impact"): #2 is fully fixed; #6 is fixed; #1 is *mitigated, not closed* —
-see §2.1 below, the actual re-key trigger is still missing.
+user impact"): **#1 is closed** — the re-key trigger exists and is tested; #2 and
+#6 are fixed. Still open: #3 (ICMP to LAN, v2 by design), #4 (seal-at-drain),
+#5 (mesh handshake allowlist).
 
-**"The big one" is no longer unproven off-hardware.** Two real processes over
-real UDP sockets, the real hybrid handshake, the real tunnel seal/open path —
-the client on the in-memory TUN, so **no wintun.dll, no Administrator, no OS
-interface, no traffic leaving the machine**. `scripts/vpn_loopback_test.sh`
-observes ICMP echo replies returning through the mesh (8 in the recorded run,
-`replies_total=8`). The wintun / real-LAN / Wi-Fi→LTE-handover layer still needs
-hardware, but "no two physical nodes have ever talked" is no longer the state of
-the *protocol* path.
+**`proto-baseline` deliberately not created.** PROTOTYPE.md defines that tag as
+the pre-prototype v0.4.0 snapshot (commit `4bc75b7`), which this tree does not
+contain — this tree *is* the post-prototype work. Tagging it `proto-baseline`
+would make the documented `git reset --hard proto-baseline` restore the wrong
+state. The import is tagged `audit-baseline` instead. Create a real
+`proto-baseline` from `../Global-Ghost-Net-main` if that snapshot should be the
+rollback point.
 
-**New finding from that run — beacon port collision.** Both nodes bind
-`0.0.0.0:2270` for the beacon listener, so on one host one of them loses the
-bind and logs `ERROR Beacon listener: … (os error 10048)`. Harmless for this test
-(no beacons are used), but two co-located nodes therefore cannot both receive
-beacons, and the failure is logged at ERROR. Consider `SO_REUSEADDR`/`SO_REUSEPORT`
-on the beacon socket, or a `GHOST_BEACON_PORT` override.
+**Windows gotcha that cost a debugging round.** Running
+`scripts/vpn_loopback_test.sh` from PowerShell returns silently with no output —
+PowerShell will not execute a `.sh` file. Use `bash scripts/vpn_loopback_test.sh`,
+or the new `run-vpn-test.bat`, which locates bash and reports the exit code.
 
-**Verification for this pass:** `cargo check --features vpn` clean;
-`cargo test --locked` green (66 lib + integration); `cargo test --lib --features vpn`
-green (93 lib); `bash scripts/vpn_loopback_test.sh` PASS. No behaviour change on
-the control channel.
+**Verification (most recent pass):** `cargo build` clean for **both** feature
+sets; `cargo test --locked --features vpn` → **174 passed, 0 failed**;
+`bash scripts/vpn_loopback_test.sh` → PASS; live `/healthz` + `/metrics` inspected
+on a plain node (`"vpn":"disabled"`, 0 `ghost_vpn_` lines) and on a hub
+(`"vpn":"hub"`, all 7 series, `counter_headroom_min 4294967295`). No behaviour
+change on the control channel.
 
 ---
 
