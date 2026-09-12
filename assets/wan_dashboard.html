@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Ghost Net — Live Kernel WAN Telemetry</title>
+  <title>Global Ghost Net — Level 2 Multi-Hop & Chaos WAN Telemetry</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
   <style>
@@ -14,7 +14,8 @@
       --cyan: #00f0ff;
       --green: #00ff88;
       --yellow: #ffb800;
-      --purple: #7928ca;
+      --red: #ff3366;
+      --purple: #9d4edd;
       --text: #e6edf3;
       --dim: #8b949e;
     }
@@ -54,7 +55,7 @@
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 20px;
       margin-bottom: 24px;
     }
@@ -65,14 +66,14 @@
       padding: 20px;
     }
     .card-title {
-      font-size: 12px;
+      font-size: 11px;
       text-transform: uppercase;
       color: var(--dim);
       letter-spacing: 1px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     .val {
-      font-size: 24px;
+      font-size: 22px;
       font-weight: 700;
       color: var(--cyan);
     }
@@ -86,7 +87,7 @@
     }
     .carriers {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 16px;
       margin-top: 16px;
     }
@@ -99,7 +100,23 @@
     }
     .carrier-box.active {
       border-color: var(--cyan);
-      box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
+    }
+    .carrier-box.severed {
+      border-color: var(--red);
+      background: rgba(255, 51, 102, 0.05);
+    }
+    .carrier-box.reserve {
+      border-color: var(--yellow);
+    }
+    .routes-box {
+      background: #05070a;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      font-size: 13px;
+      color: var(--cyan);
+      margin-top: 12px;
+      line-height: 1.8;
     }
     .headers-log {
       background: #05070a;
@@ -108,19 +125,20 @@
       padding: 16px;
       font-size: 13px;
       color: var(--green);
-      max-height: 180px;
+      max-height: 160px;
       overflow-y: auto;
       white-space: pre-wrap;
     }
-    .tag {
+    .badge {
       display: inline-block;
       padding: 2px 8px;
       border-radius: 4px;
       font-size: 11px;
-      background: rgba(0, 240, 255, 0.1);
-      color: var(--cyan);
-      border: 1px solid rgba(0, 240, 255, 0.2);
+      font-weight: 600;
     }
+    .badge-green { background: rgba(0, 255, 136, 0.1); color: var(--green); border: 1px solid rgba(0, 255, 136, 0.2); }
+    .badge-red { background: rgba(255, 51, 102, 0.1); color: var(--red); border: 1px solid rgba(255, 51, 102, 0.2); }
+    .badge-yellow { background: rgba(255, 184, 0, 0.1); color: var(--yellow); border: 1px solid rgba(255, 184, 0, 0.2); }
   </style>
 </head>
 <body>
@@ -128,52 +146,45 @@
   <div class="header">
     <div class="title">
       <div class="pulse-dot"></div>
-      GLOBAL GHOST NET — LEVEL 1 KERNEL WAN EMULATOR
+      GLOBAL GHOST NET — LEVEL 2 MULTI-HOP & CHAOS ADAPTIVE ROUTING
     </div>
-    <div class="tag" id="status-tag">ACTIVE MONITORING</div>
+    <div class="badge badge-green" id="status-tag">LEVEL 2 OPERATIONAL</div>
   </div>
 
   <div class="grid">
     <div class="card">
-      <div class="card-title">Mesh Cycle</div>
+      <div class="card-title">Mesh Flight Cycle</div>
       <div class="val" id="cycle-val">#0</div>
-      <div class="sub">Autonomous packet flight cycles</div>
+      <div class="sub">Autonomous multi-hop flights</div>
     </div>
     <div class="card">
-      <div class="card-title">Target Destination</div>
-      <div class="val" id="target-val" style="color: var(--text);">www.google.com:80</div>
-      <div class="sub">Sealed in RS(2,1) multi-path shards</div>
+      <div class="card-title">Chaos Monkey State</div>
+      <div class="val" id="chaos-val" style="font-size: 16px; color: var(--yellow);">ACTIVE MONITORING</div>
+      <div class="sub">Dynamic link rupture & failover</div>
     </div>
     <div class="card">
-      <div class="card-title">Exit Node Egress IP</div>
+      <div class="card-title">Exit Egress Rotation</div>
       <div class="val" id="egress-val" style="color: var(--yellow);">198.51.100.10</div>
-      <div class="sub">Round-robin rotated egress interface</div>
+      <div class="sub">Virtual egress interface</div>
+    </div>
+    <div class="card">
+      <div class="card-title">SOCKS5 Proxy Status</div>
+      <div class="val" style="color: var(--green); font-size: 16px;">127.0.0.1:1080</div>
+      <div class="sub">Direct mesh tunnel active</div>
     </div>
   </div>
 
   <div class="topology-container">
-    <div class="card-title">Linux Kernel Emulated Carrier Paths (tc netem)</div>
+    <div class="card-title">Carrier Node Fleet (Kernel tc netem & Multi-Hop Topologies)</div>
     
-    <div class="carriers">
-      <div class="carrier-box" id="carrier-1">
-        <div style="font-weight: 700; color: var(--cyan); margin-bottom: 6px;">Carrier 1 (172.28.1.11)</div>
-        <div style="font-size: 12px; color: var(--dim);">Netem: 45ms ±5ms (1% loss)</div>
-        <div style="font-size: 20px; font-weight: 700; margin-top: 10px;" id="rtt-1">-- ms</div>
-        <div class="sub">Actual measured WAN RTT</div>
-      </div>
-      
-      <div class="carrier-box" id="carrier-2">
-        <div style="font-weight: 700; color: var(--cyan); margin-bottom: 6px;">Carrier 2 (172.28.1.12)</div>
-        <div style="font-size: 12px; color: var(--dim);">Netem: 85ms ±15ms (3% loss)</div>
-        <div style="font-size: 20px; font-weight: 700; margin-top: 10px;" id="rtt-2">-- ms</div>
-        <div class="sub">Actual measured WAN RTT</div>
-      </div>
+    <div class="carriers" id="carriers-list">
+      <!-- Injected dynamically -->
+    </div>
 
-      <div class="carrier-box" id="carrier-3">
-        <div style="font-weight: 700; color: var(--cyan); margin-bottom: 6px;">Carrier 3 (172.28.1.13)</div>
-        <div style="font-size: 12px; color: var(--dim);">Netem: 160ms ±25ms (8% loss)</div>
-        <div style="font-size: 20px; font-weight: 700; margin-top: 10px;" id="rtt-3">-- ms</div>
-        <div class="sub">Actual measured WAN RTT</div>
+    <div style="margin-top: 20px;">
+      <div class="card-title">Active Disjoint Multi-Hop Paths (RS 2,1 Sharded)</div>
+      <div class="routes-box" id="routes-box">
+        Evaluating path topology...
       </div>
     </div>
   </div>
@@ -190,17 +201,56 @@
         if (res.ok) {
           const data = await res.json();
           document.getElementById('cycle-val').innerText = '#' + data.cycle;
-          document.getElementById('target-val').innerText = data.target || 'www.google.com:80';
           document.getElementById('egress-val').innerText = data.exit_egress_ip || '--';
-          
-          document.getElementById('rtt-1').innerText = (data.carrier_rtts_ms[0] || 0) + ' ms';
-          document.getElementById('rtt-2').innerText = (data.carrier_rtts_ms[1] || 0) + ' ms';
-          document.getElementById('rtt-3').innerText = (data.carrier_rtts_ms[2] || 0) + ' ms';
+          document.getElementById('status-tag').innerText = data.status;
+
+          if (data.cycle % 10 >= 5) {
+            document.getElementById('chaos-val').innerHTML = '<span style="color: var(--red);">CARRIER 3 SEVERED</span>';
+          } else {
+            document.getElementById('chaos-val').innerHTML = '<span style="color: var(--green);">ALL PATHS NOMINAL</span>';
+          }
+
+          if (data.carriers) {
+            let ch = '';
+            data.carriers.forEach((c) => {
+              let cl = 'carrier-box';
+              let badge = '<span class="badge badge-green">ACTIVE</span>';
+              if (c.status.includes('SEVERED')) {
+                cl += ' severed';
+                badge = '<span class="badge badge-red">SEVERED</span>';
+              } else if (c.status.includes('FAILOVER')) {
+                cl += ' active';
+                badge = '<span class="badge badge-yellow">FAILOVER IN USE</span>';
+              } else if (c.status.includes('HOT STANDBY')) {
+                cl += ' reserve';
+                badge = '<span class="badge badge-yellow">HOT STANDBY</span>';
+              }
+
+              ch += `
+                <div class="${cl}">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                    <div style="font-weight: 700; color: var(--cyan);">${c.name}</div>
+                    ${badge}
+                  </div>
+                  <div style="font-size: 11px; color: var(--dim);">${c.role} (${c.ip})</div>
+                  <div style="font-size: 11px; color: var(--dim); margin-top: 2px;">Netem: ${c.netem}</div>
+                  <div style="font-size: 20px; font-weight: 700; margin-top: 10px; color: ${c.status.includes('SEVERED') ? 'var(--red)' : 'var(--text)'};">
+                    ${c.rtt_ms > 0 ? c.rtt_ms + ' ms' : '--'}
+                  </div>
+                  <div class="sub">${c.status}</div>
+                </div>
+              `;
+            });
+            document.getElementById('carriers-list').innerHTML = ch;
+          }
+
+          if (data.active_routes && data.active_routes.length > 0) {
+            document.getElementById('routes-box').innerHTML = data.active_routes.map(r => `<div>⚡ ${r}</div>`).join('');
+          }
 
           if (data.google_headers && data.google_headers.length > 0) {
             document.getElementById('headers-log').innerText = data.google_headers.join('\n');
           }
-          document.getElementById('status-tag').innerText = data.status;
         }
       } catch (e) {
         console.warn('Telemetry poll error', e);

@@ -46,6 +46,36 @@ services:
       wan_mesh:
         ipv4_address: 172.28.1.13
 
+  mesh-carrier-4:
+    build:
+      context: .
+      dockerfile: Dockerfile.wan
+    container_name: vantablack-carrier-4
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=carrier
+      - LISTEN_ADDR=0.0.0.0:8000
+      - NETEM_RULE=delay 25ms 3ms
+    networks:
+      wan_mesh:
+        ipv4_address: 172.28.1.14
+
+  mesh-carrier-5:
+    build:
+      context: .
+      dockerfile: Dockerfile.wan
+    container_name: vantablack-carrier-5
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=carrier
+      - LISTEN_ADDR=0.0.0.0:8000
+      - NETEM_RULE=delay 55ms 8ms loss 1%
+    networks:
+      wan_mesh:
+        ipv4_address: 172.28.1.15
+
   mesh-exit:
     build:
       context: .
@@ -63,6 +93,8 @@ services:
       - mesh-carrier-1
       - mesh-carrier-2
       - mesh-carrier-3
+      - mesh-carrier-4
+      - mesh-carrier-5
 
   mesh-client:
     build:
