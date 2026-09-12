@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Ghost Net — Byzantine Tamper Defense & Level 2 WAN Telemetry</title>
+  <title>Global Ghost Net — Byzantine, Replay, Traffic Shaping & Mesh Convergence</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
   <style>
@@ -55,111 +55,101 @@
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
       margin-bottom: 24px;
     }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 18px;
+      padding: 16px;
     }
     .card-title {
       font-size: 11px;
       text-transform: uppercase;
       color: var(--dim);
       letter-spacing: 1px;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
     }
     .val {
-      font-size: 20px;
+      font-size: 18px;
       font-weight: 700;
       color: var(--cyan);
     }
     .sub { font-size: 11px; color: var(--dim); margin-top: 4px; }
-    .byzantine-alert-box {
+    .alert-banner {
       background: rgba(255, 51, 102, 0.08);
       border: 1px solid var(--red);
       border-radius: 8px;
-      padding: 16px 20px;
-      margin-bottom: 24px;
+      padding: 14px 18px;
+      margin-bottom: 20px;
       display: none;
     }
-    .byzantine-alert-box.active {
+    .alert-banner.active {
       display: block;
       animation: flashBorder 1.5s infinite;
     }
     @keyframes flashBorder {
-      0%, 100% { border-color: var(--red); box-shadow: 0 0 15px rgba(255, 51, 102, 0.3); }
+      0%, 100% { border-color: var(--red); box-shadow: 0 0 12px rgba(255, 51, 102, 0.3); }
       50% { border-color: rgba(255, 51, 102, 0.4); box-shadow: none; }
     }
     .topology-container {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 24px;
+      padding: 20px;
       margin-bottom: 24px;
     }
     .carriers {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-top: 16px;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
+      margin-top: 14px;
     }
     .carrier-box {
       background: #090d14;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 16px;
+      padding: 14px;
       transition: all 0.3s;
     }
-    .carrier-box.active {
-      border-color: var(--cyan);
-    }
-    .carrier-box.severed {
-      border-color: var(--red);
-      background: rgba(255, 51, 102, 0.05);
-    }
-    .carrier-box.tampered {
-      border-color: var(--red);
-      background: rgba(255, 51, 102, 0.12);
-      box-shadow: 0 0 12px rgba(255, 51, 102, 0.25);
-    }
-    .carrier-box.reserve {
-      border-color: var(--yellow);
-    }
+    .carrier-box.active { border-color: var(--cyan); }
+    .carrier-box.severed { border-color: var(--red); background: rgba(255, 51, 102, 0.05); }
+    .carrier-box.tampered { border-color: var(--red); background: rgba(255, 51, 102, 0.12); box-shadow: 0 0 10px rgba(255, 51, 102, 0.25); }
+    .carrier-box.reserve { border-color: var(--yellow); }
     .routes-box {
       background: #05070a;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 16px;
-      font-size: 13px;
+      padding: 14px;
+      font-size: 12px;
       color: var(--cyan);
-      margin-top: 12px;
-      line-height: 1.8;
+      margin-top: 10px;
+      line-height: 1.7;
     }
     .headers-log {
       background: #05070a;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 16px;
-      font-size: 13px;
+      padding: 14px;
+      font-size: 12px;
       color: var(--green);
-      max-height: 160px;
+      max-height: 150px;
       overflow-y: auto;
       white-space: pre-wrap;
     }
     .badge {
       display: inline-block;
-      padding: 2px 8px;
+      padding: 2px 7px;
       border-radius: 4px;
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 600;
     }
     .badge-green { background: rgba(0, 255, 136, 0.1); color: var(--green); border: 1px solid rgba(0, 255, 136, 0.2); }
     .badge-red { background: rgba(255, 51, 102, 0.1); color: var(--red); border: 1px solid rgba(255, 51, 102, 0.2); }
     .badge-yellow { background: rgba(255, 184, 0, 0.1); color: var(--yellow); border: 1px solid rgba(255, 184, 0, 0.2); }
+    .badge-purple { background: rgba(157, 78, 221, 0.1); color: var(--purple); border: 1px solid rgba(157, 78, 221, 0.2); }
   </style>
 </head>
 <body>
@@ -167,61 +157,66 @@
   <div class="header">
     <div class="title">
       <div class="pulse-dot"></div>
-      GLOBAL GHOST NET — LEVEL 2 MULTI-HOP & BYZANTINE FAULT TOLERANCE
+      GLOBAL GHOST NET — LEVEL 2 ZERO-TRUST WAN PROTOCOL STACK
     </div>
-    <div class="badge badge-green" id="status-tag">LEVEL 2 OPERATIONAL</div>
+    <div class="badge badge-green" id="status-tag">STACK OPERATIONAL</div>
   </div>
 
-  <!-- Real-Time Byzantine Security Alert Banner -->
-  <div class="byzantine-alert-box" id="byzantine-banner">
+  <!-- Real-Time Byzantine & Security Alert Banner -->
+  <div class="alert-banner" id="byzantine-banner">
     <div style="display: flex; align-items: center; justify-content: space-between;">
-      <div style="font-weight: 700; color: var(--red); font-size: 14px; letter-spacing: 0.5px;">
-        SECURITY ALERT: BYZANTINE ADVERSARY DATA CORRUPTION ISOLATED
+      <div style="font-weight: 700; color: var(--red); font-size: 13px;" id="alert-title">
+        SECURITY EVENT DETECTED
       </div>
-      <span class="badge badge-red">POLY1305 AUTH FAILED</span>
+      <span class="badge badge-red" id="alert-badge">ADVERSARY ISOLATED</span>
     </div>
-    <div style="font-size: 12px; color: var(--text); margin-top: 6px;" id="byzantine-details">
-      Evaluating payload integrity...
+    <div style="font-size: 12px; color: var(--text); margin-top: 4px;" id="byzantine-details">
+      Evaluating security layer state...
     </div>
   </div>
 
   <div class="grid">
     <div class="card">
-      <div class="card-title">Mesh Flight Cycle</div>
+      <div class="card-title">Flight Cycle</div>
       <div class="val" id="cycle-val">#0</div>
-      <div class="sub">Autonomous multi-hop flights</div>
+      <div class="sub">Autonomous mesh flights</div>
     </div>
     <div class="card">
-      <div class="card-title">Byzantine Defense</div>
-      <div class="val" id="tamper-val" style="font-size: 15px; color: var(--green);">AUTHENTICATED</div>
-      <div class="sub">Poly1305 Tag Isolation</div>
+      <div class="card-title">Byzantine Isolation</div>
+      <div class="val" id="tamper-val" style="color: var(--green); font-size: 14px;">AUTHENTICATED</div>
+      <div class="sub">Poly1305 Tag Verification</div>
     </div>
     <div class="card">
-      <div class="card-title">Chaos Monkey State</div>
-      <div class="val" id="chaos-val" style="font-size: 15px; color: var(--yellow);">ACTIVE MONITORING</div>
-      <div class="sub">Dynamic link rupture & failover</div>
+      <div class="card-title">L6 Anti-Replay Guard</div>
+      <div class="val" id="replay-val" style="color: var(--cyan); font-size: 14px;">WINDOW ACTIVE</div>
+      <div class="sub" id="replay-sub">128-bit sliding bitmask</div>
     </div>
     <div class="card">
-      <div class="card-title">Exit Egress Rotation</div>
-      <div class="val" id="egress-val" style="color: var(--yellow); font-size: 18px;">198.51.100.10</div>
-      <div class="sub">Virtual egress interface</div>
+      <div class="card-title">L5 Traffic Shaping</div>
+      <div class="val" id="shaping-val" style="color: var(--purple); font-size: 14px;">RANDOM JITTER</div>
+      <div class="sub" id="shaping-sub">16-64B wire cover</div>
     </div>
     <div class="card">
-      <div class="card-title">SOCKS5 Proxy Status</div>
-      <div class="val" style="color: var(--green); font-size: 15px;">127.0.0.1:1080</div>
-      <div class="sub">Direct mesh tunnel active</div>
+      <div class="card-title">Convergence Latency</div>
+      <div class="val" id="convergence-val" style="color: var(--yellow); font-size: 14px;">0 ms</div>
+      <div class="sub">Zero-stall failover recovery</div>
+    </div>
+    <div class="card">
+      <div class="card-title">SOCKS5 Proxy</div>
+      <div class="val" style="color: var(--green); font-size: 14px;">127.0.0.1:1080</div>
+      <div class="sub">Direct TCP tunnel active</div>
     </div>
   </div>
 
   <div class="topology-container">
-    <div class="card-title">Carrier Node Fleet (Kernel tc netem, Multi-Hop & Byzantine State)</div>
+    <div class="card-title">Carrier Relay Node Fleet (Linux tc netem WAN Constraints)</div>
     
     <div class="carriers" id="carriers-list">
       <!-- Injected dynamically -->
     </div>
 
-    <div style="margin-top: 20px;">
-      <div class="card-title">Active Disjoint Multi-Hop Paths (RS 2,1 Sharded)</div>
+    <div style="margin-top: 18px;">
+      <div class="card-title">Disjoint Multi-Hop Paths & Failover Topology</div>
       <div class="routes-box" id="routes-box">
         Evaluating path topology...
       </div>
@@ -229,8 +224,8 @@
   </div>
 
   <div class="card">
-    <div class="card-title">Verified Public WAN Ingest (Google HTTP Response)</div>
-    <div class="headers-log" id="headers-log">Awaiting first decrypted packet flight...</div>
+    <div class="card-title">Verified Public WAN Ingest (Live Google HTTP Payload via Mesh)</div>
+    <div class="headers-log" id="headers-log">Awaiting first flight...</div>
   </div>
 
   <script>
@@ -240,7 +235,6 @@
         if (res.ok) {
           const data = await res.json();
           document.getElementById('cycle-val').innerText = '#' + data.cycle;
-          document.getElementById('egress-val').innerText = data.exit_egress_ip || '--';
           document.getElementById('status-tag').innerText = data.status;
 
           // Byzantine state handling
@@ -255,12 +249,31 @@
             tamperVal.innerHTML = '<span style="color: var(--green);">AUTHENTICATED</span>';
           }
 
-          if (data.cycle % 10 >= 5) {
-            document.getElementById('chaos-val').innerHTML = '<span style="color: var(--red);">CARRIER 3 SEVERED</span>';
+          // Anti-Replay Guard Telemetry
+          const replayVal = document.getElementById('replay-val');
+          const replaySub = document.getElementById('replay-sub');
+          if (data.replay_defense && data.replay_defense.includes('INJECTED')) {
+            replayVal.innerHTML = '<span style="color: var(--yellow);">ATTACK BLOCKED</span>';
+            replaySub.innerText = data.replay_defense;
           } else {
-            document.getElementById('chaos-val').innerHTML = '<span style="color: var(--green);">ALL PATHS NOMINAL</span>';
+            replayVal.innerHTML = '<span style="color: var(--green);">WINDOW SECURED</span>';
+            replaySub.innerText = `128-bit sliding mask (Blocked: ${data.replay_attacks_blocked || 0})`;
           }
 
+          // Traffic Shaping Telemetry
+          if (data.jitter_bytes_injected) {
+            document.getElementById('shaping-val').innerText = `+${data.jitter_bytes_injected}B JITTER`;
+            document.getElementById('shaping-sub').innerText = 'Anti-fingerprinting active';
+          }
+
+          // Convergence Latency Telemetry
+          if (data.failover_convergence_ms && data.failover_convergence_ms > 0) {
+            document.getElementById('convergence-val').innerHTML = `<span style="color: var(--yellow);">${data.failover_convergence_ms} ms</span>`;
+          } else {
+            document.getElementById('convergence-val').innerHTML = `<span style="color: var(--green);">NOMINAL (0 ms stall)</span>`;
+          }
+
+          // Carrier fleet cards
           if (data.carriers) {
             let ch = '';
             data.carriers.forEach((c) => {
@@ -271,10 +284,10 @@
                 badge = '<span class="badge badge-red">SEVERED</span>';
               } else if (c.status.includes('TAMPER')) {
                 cl += ' tampered';
-                badge = '<span class="badge badge-red">FORGERY DETECTED</span>';
+                badge = '<span class="badge badge-red">FORGERY REJECTED</span>';
               } else if (c.status.includes('FAILOVER')) {
                 cl += ' active';
-                badge = '<span class="badge badge-yellow">FAILOVER IN USE</span>';
+                badge = '<span class="badge badge-yellow">HOT FAILOVER</span>';
               } else if (c.status.includes('HOT STANDBY')) {
                 cl += ' reserve';
                 badge = '<span class="badge badge-yellow">HOT STANDBY</span>';
@@ -282,13 +295,13 @@
 
               ch += `
                 <div class="${cl}">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                     <div style="font-weight: 700; color: var(--cyan);">${c.name}</div>
                     ${badge}
                   </div>
                   <div style="font-size: 11px; color: var(--dim);">${c.role} (${c.ip})</div>
                   <div style="font-size: 11px; color: var(--dim); margin-top: 2px;">Netem: ${c.netem}</div>
-                  <div style="font-size: 20px; font-weight: 700; margin-top: 10px; color: ${c.status.includes('SEVERED') || c.status.includes('TAMPER') ? 'var(--red)' : 'var(--text)'};">
+                  <div style="font-size: 18px; font-weight: 700; margin-top: 8px; color: ${c.status.includes('SEVERED') || c.status.includes('TAMPER') ? 'var(--red)' : 'var(--text)'};">
                     ${c.rtt_ms > 0 ? c.rtt_ms + ' ms' : '--'}
                   </div>
                   <div class="sub">${c.status}</div>
@@ -303,8 +316,7 @@
           }
 
           if (data.google_headers && data.google_headers.length > 0) {
-            document.getElementById('headers-log').innerText = data.google_headers.join('
-');
+            document.getElementById('headers-log').innerText = data.google_headers.join('\n');
           }
         }
       } catch (e) {

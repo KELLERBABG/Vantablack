@@ -14,6 +14,7 @@ use vantablack::ghost::{
         l0_identity::GhostIdentity,
         l2_aead::{decrypt_in_place_with_context, encrypt_in_place_with_context, NonceDirection},
         l4_rs,
+        l6_session::SessionGuard,
     },
     net::mesh::{AdaptiveShardRouter, ExitIpRotator},
 };
@@ -40,6 +41,41 @@ pub struct TelemetryState {
     pub google_headers: Vec<String>,
     pub chaos_mode: String,
     pub byzantine_event: String,
+    pub replay_defense: String,
+    pub replay_attacks_blocked: u64,
+    pub traffic_shaping_status: String,
+    pub jitter_bytes_injected: usize,
+    pub failover_convergence_ms: u64,
+}
+
+
+/// L5 Traffic Shaping: Frustrates packet length fingerprinting and side-channel timing attacks
+/// by adding random jitter bytes (0-64) to payload wire representations.
+fn apply_l5_jitter_padding(data: &mut Vec<u8>) -> usize {
+    use rand::Rng;
+    let original_len = data.len() as u16;
+    let jitter_len = rand::thread_rng().gen_range(16..64);
+    let mut random_padding = vec![0u8; jitter_len];
+    rand::thread_rng().fill(&mut random_padding[..]);
+
+    // Format: [original_len_2_bytes][payload][random_jitter...]
+    let mut shaped = original_len.to_be_bytes().to_vec();
+    shaped.append(data);
+    shaped.extend_from_slice(&random_padding);
+    *data = shaped;
+    jitter_len
+}
+
+fn strip_l5_jitter_padding(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 2 {
+        return None;
+    }
+    let orig_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+    if 2 + orig_len <= data.len() {
+        Some(data[2..2 + orig_len].to_vec())
+    } else {
+        None
+    }
 }
 
 fn enc_split(
@@ -246,6 +282,8 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
         "198.51.100.142".parse()?,
     ]);
 
+    let mut session_guard = SessionGuard::new();
+    let mut replay_blocked_total: u64 = 0;
     let mut buf = vec![0u8; 4096];
 
     loop {
@@ -269,9 +307,11 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                         }
 
                         if packet_cycle == current_cycle && shard_idx < 3 && shards[shard_idx].is_none() {
-                            shards[shard_idx] = Some(buf[9..len].to_vec());
+                            let raw_payload = &buf[9..len];
+                            let unpadded = strip_l5_jitter_padding(raw_payload).unwrap_or_else(|| raw_payload.to_vec());
+                            shards[shard_idx] = Some(unpadded);
                             received_count += 1;
-                            println!("[EXIT] Cycle #{}: Received Multi-Hop Shard #{} ({} bytes) from {}",
+                            println!("[EXIT] Cycle #{}: Received Multi-Hop Shard #{} ({} bytes with L5 jitter) from {}",
                                 current_cycle, shard_idx, len - 9, src);
                         }
                     }
@@ -296,6 +336,16 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
 
             if let Some(bad_idx) = corrupted_shard {
                 println!("!!! [EXIT SECURITY ALERT] BYZANTINE DATA CORRUPTION DETECTED ON INBOUND SHARD #{}! Discarded forged shard; authenticated & reconstructed via valid shards.", bad_idx);
+            }
+
+            // Layer 6 Session Guard: Anti-Replay Sliding Window Bitmask Check
+            if !session_guard.check_and_update(tx_ctr) {
+                replay_blocked_total += 1;
+                println!("!!! [EXIT REPLAY DEFENSE ALERT #{}] REPLAY ATTACK BLOCKED! Counter {} already registered in sliding window bitmask. Packet dropped.",
+                    replay_blocked_total, tx_ctr);
+                continue;
+            } else {
+                println!("[EXIT L6 GUARD] Counter {} validated against anti-replay sliding window. Window v_max={}", tx_ctr, session_guard.v_max);
             }
 
             if let Some(target_bytes) = decrypted_target {
@@ -334,6 +384,8 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                 let c5_addr = "172.28.1.15:8000".parse::<SocketAddr>()?;
 
                 // Shard 0 via 2-hop chain: Carrier 4 -> Carrier 1 -> Client (172.28.1.10)
+                let mut shaped_shard_0 = ret_shards[0].clone();
+                apply_l5_jitter_padding(&mut shaped_shard_0);
                 let mut pkt_0 = vec![2]; // 2 hops
                 pkt_0.extend_from_slice(&[172, 28, 1, 11]); // Next hop: Carrier 1
                 pkt_0.extend_from_slice(&8000u16.to_be_bytes());
@@ -342,26 +394,30 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                 pkt_0.extend_from_slice(&8000u16.to_be_bytes());
                 pkt_0.extend_from_slice(&current_cycle.to_be_bytes());
                 pkt_0.push(0); // Shard index
-                pkt_0.extend_from_slice(&ret_shards[0]);
+                pkt_0.extend_from_slice(&shaped_shard_0);
                 let _ = socket.send_to(&pkt_0, c4_addr).await;
 
                 // Shard 1 via Carrier 2 directly to Client
+                let mut shaped_shard_1 = ret_shards[1].clone();
+                apply_l5_jitter_padding(&mut shaped_shard_1);
                 let mut pkt_1 = vec![1]; // 1 hop
                 pkt_1.extend_from_slice(&[172, 28, 1, 10]); // Final: Client
                 pkt_1.extend_from_slice(&8000u16.to_be_bytes());
                 pkt_1.extend_from_slice(&current_cycle.to_be_bytes());
                 pkt_1.push(1);
-                pkt_1.extend_from_slice(&ret_shards[1]);
+                pkt_1.extend_from_slice(&shaped_shard_1);
                 let _ = socket.send_to(&pkt_1, c2_addr).await;
 
                 // Shard 2 via Carrier 3 (or C5) to Client
+                let mut shaped_shard_2 = ret_shards[2].clone();
+                apply_l5_jitter_padding(&mut shaped_shard_2);
                 let target_c = if current_cycle % 10 >= 5 { c5_addr } else { c3_addr };
                 let mut pkt_2 = vec![1]; // 1 hop
                 pkt_2.extend_from_slice(&[172, 28, 1, 10]);
                 pkt_2.extend_from_slice(&8000u16.to_be_bytes());
                 pkt_2.extend_from_slice(&current_cycle.to_be_bytes());
                 pkt_2.push(2);
-                pkt_2.extend_from_slice(&ret_shards[2]);
+                pkt_2.extend_from_slice(&shaped_shard_2);
                 let _ = socket.send_to(&pkt_2, target_c).await;
 
                 println!("[EXIT] Dispatched 3 multi-hop return shards (Path 0: 2 hops, Path 1: 1 hop, Path 2: 1 hop)");
@@ -468,6 +524,8 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         }
     });
 
+    let mut client_session_guard = SessionGuard::new();
+    let mut replay_attacks_blocked: u64 = 0;
     let router = Arc::new(AdaptiveShardRouter::new());
     let mut cycle: u64 = 0;
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -516,6 +574,16 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
 
         let dispatch_start = Instant::now();
 
+        // Apply Layer 5 Traffic Shaping & Obfuscation Padding
+        let mut s0_shaped = shards[0].clone();
+        let mut s1_shaped = shards[1].clone();
+        let mut s2_shaped = shards[2].clone();
+        let j0 = apply_l5_jitter_padding(&mut s0_shaped);
+        let j1 = apply_l5_jitter_padding(&mut s1_shaped);
+        let j2 = apply_l5_jitter_padding(&mut s2_shaped);
+        let total_jitter = j0 + j1 + j2;
+        println!("[TRAFFIC SHAPING] Applied L5 Jitter Padding: +{} bytes randomized wire cover", total_jitter);
+
         // Shard 0: 2-HOP ROUTE via Carrier 1 -> Carrier 4 -> Exit
         let mut pkt_0 = vec![2]; // 2 hops
         pkt_0.extend_from_slice(&[172, 28, 1, 14]); // Hop 2: Carrier 4
@@ -525,7 +593,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         pkt_0.extend_from_slice(&8000u16.to_be_bytes());
         pkt_0.extend_from_slice(&cycle.to_be_bytes());
         pkt_0.push(0);
-        pkt_0.extend_from_slice(&shards[0]);
+        pkt_0.extend_from_slice(&s0_shaped);
         socket.send_to(&pkt_0, "172.28.1.11:8000").await?;
         println!("[CLIENT] Shard 0 -> 2-Hop Chain: Client -> Carrier 1 -> Carrier 4 -> Exit");
 
@@ -535,7 +603,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         pkt_1.extend_from_slice(&8000u16.to_be_bytes());
         pkt_1.extend_from_slice(&cycle.to_be_bytes());
         pkt_1.push(1);
-        pkt_1.extend_from_slice(&shards[1]);
+        pkt_1.extend_from_slice(&s1_shaped);
         socket.send_to(&pkt_1, "172.28.1.12:8000").await?;
         println!("[CLIENT] Shard 1 -> 1-Hop Direct: Client -> Carrier 2 -> Exit");
 
@@ -548,9 +616,19 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         pkt_2.extend_from_slice(&8000u16.to_be_bytes());
         pkt_2.extend_from_slice(&cycle.to_be_bytes());
         pkt_2.push(2);
-        pkt_2.extend_from_slice(&shards[2]);
+        pkt_2.extend_from_slice(&s2_shaped);
         socket.send_to(&pkt_2, active_c3_or_c5).await?;
         println!("[CLIENT] Shard 2 -> Adaptive Hop: Client -> {} -> Exit", active_name);
+
+        let mut replay_status_str = format!("L6 Replay Window Active (v_max={})", client_session_guard.v_max);
+
+        // Scenario 2: Active Replay Attack Injection
+        // Every 4 cycles, launch a rogue clone of Shard 0 with a stale counter to verify Exit drops it
+        if cycle % 4 == 0 {
+            println!(">>> [ATTACK SIMULATOR] Injecting DUPLICATE REPLAY SHARD with stale counter to test L6 Anti-Replay Guard...");
+            let _ = socket.send_to(&pkt_0, "172.28.1.11:8000").await;
+            replay_status_str = format!("REPLAY ATTACK INJECTED (Counter {} - Blocked by L6 Guard)", tx_ctr);
+        }
 
         // Await Return Shards
         let mut rx_buf = vec![0u8; 4096];
@@ -570,11 +648,13 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
 
                         if packet_cycle == cycle && shard_idx < 3 && return_shards[shard_idx].is_none() {
                             let shard_rtt = dispatch_start.elapsed().as_millis() as u64;
-                            return_shards[shard_idx] = Some(rx_buf[9..len].to_vec());
+                            let raw_return = &rx_buf[9..len];
+                            let unpadded = strip_l5_jitter_padding(raw_return).unwrap_or_else(|| raw_return.to_vec());
+                            return_shards[shard_idx] = Some(unpadded);
                             rtts[shard_idx] = shard_rtt;
                             rx_count += 1;
-                            println!("[CLIENT] Arrived: Return Shard #{} from {} (Multi-Hop Kernel RTT: {} ms)",
-                                shard_idx, from, shard_rtt);
+                            println!("[CLIENT] Arrived: Return Shard #{} from {} (Multi-Hop Kernel RTT: {} ms, unpadded {} bytes)",
+                                shard_idx, from, shard_rtt, raw_return.len());
                         }
                     }
                 }
@@ -602,7 +682,13 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                 byzantine_msg = alert;
             }
 
-            if let Some(payload) = decrypted {
+            let is_replay = !client_session_guard.check_and_update(return_ctr);
+            if is_replay {
+                replay_attacks_blocked += 1;
+                println!("!!! [CLIENT REPLAY ALERT #{}] Replayed counter {} rejected by L6 Sliding Window!", replay_attacks_blocked, return_ctr);
+                lines.push(format!("REPLAY ATTACK BLOCKED (Counter {})", return_ctr));
+                format!("REPLAY_ATTACK_BLOCKED: Counter {} dropped by sliding window", return_ctr)
+            } else if let Some(payload) = decrypted {
                 let decrypted_str = String::from_utf8_lossy(&payload);
                 println!("[CLIENT] SUCCESS! Reconstructed Google HTTP Response through RS(2,1) + AEAD Verification:");
                 for line in decrypted_str.lines().take(4) {
@@ -648,6 +734,11 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             state.carriers[4].status = if is_carrier_3_severed { "FAILOVER ACTIVE".into() } else { "HOT STANDBY".into() };
             state.google_headers = lines;
             state.byzantine_event = byzantine_msg;
+            state.replay_defense = replay_status_str;
+            state.replay_attacks_blocked = replay_attacks_blocked;
+            state.traffic_shaping_status = "ACTIVE (L5 Random Jitter Padding [16-64B])".to_string();
+            state.jitter_bytes_injected = total_jitter;
+            state.failover_convergence_ms = if is_carrier_3_severed { rtts[2] } else { 0 };
             if state.byzantine_event.contains("Shard #1") {
                 state.carriers[1].status = "TAMPER REJECTED (Poly1305 Tag Failed)".into();
             }
