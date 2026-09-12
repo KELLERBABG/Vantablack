@@ -1720,7 +1720,21 @@ async fn main() -> anyhow::Result<()> {
             let zk_required = std::env::var("GHOST_ZK_DISCOVERY")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
-            let listen_sock = match UdpSocket::bind(format!("0.0.0.0:{}", BEACON_PORT)).await {
+            let listen_sock = match (|| -> std::io::Result<UdpSocket> {
+                let s2 = socket2::Socket::new(
+                    socket2::Domain::IPV4,
+                    socket2::Type::DGRAM,
+                    Some(socket2::Protocol::UDP),
+                )?;
+                let _ = s2.set_reuse_address(true);
+                #[cfg(not(windows))]
+                let _ = s2.set_reuse_port(true);
+                let sa: std::net::SocketAddr = format!("0.0.0.0:{}", BEACON_PORT).parse().unwrap();
+                s2.bind(&sa.into())?;
+                s2.set_nonblocking(true)?;
+                let std_sock: std::net::UdpSocket = s2.into();
+                UdpSocket::from_std(std_sock)
+            })() {
                 Ok(s) => { let _ = s.join_multicast_v4(
                     std::net::Ipv4Addr::new(239, 255, 0, 1),
                     std::net::Ipv4Addr::UNSPECIFIED,
