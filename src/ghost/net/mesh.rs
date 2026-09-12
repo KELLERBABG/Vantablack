@@ -854,7 +854,7 @@ pub async fn forward_to_exit_tunnel(
     // The reconstructed payload is already the decrypted inner content.
     // We re-encrypt it for the exit node and dispatch with a rotated egress IP.
     let mut framed = reconstructed_payload.to_vec();
-    let needs_padding = if !framed.len().is_multiple_of(2) { 1 } else { 0 };
+    let needs_padding = if framed.len() % 2 != 0 { 1 } else { 0 };
     if needs_padding > 0 {
         framed.push(0);
     }

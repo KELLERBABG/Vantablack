@@ -1,0 +1,13 @@
+FROM rust:1.85-slim-bookworm AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release --bin wan_mesh
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates iproute2 iptables && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/wan_mesh /usr/local/bin/wan_mesh
+COPY entrypoint.wan.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/wan_mesh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

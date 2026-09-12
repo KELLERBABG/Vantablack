@@ -21,7 +21,7 @@ pub fn encode(data: &mut Vec<u8>) -> Vec<Vec<u8>> {
     }
 
     // Pad to even length
-    if !data.len().is_multiple_of(2) {
+    if data.len() % 2 != 0 {
         data.push(0);
     }
 

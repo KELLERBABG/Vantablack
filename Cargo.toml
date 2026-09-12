@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "scale_mesh"
 path = "src/bin/scale_mesh.rs"
 
+[[bin]]
+name = "wan_mesh"
+path = "src/bin/wan_mesh.rs"
+
 [lib]
 name = "vantablack"
 crate-type = ["rlib", "cdylib"] # cdylib: Android JNI surface (cargo-ndk)

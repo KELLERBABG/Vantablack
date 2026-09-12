@@ -45,7 +45,7 @@ fn enc_split(
     let pay_len = pay.len() as u16;
     let mut framed = pay_len.to_be_bytes().to_vec();
     framed.extend_from_slice(pay);
-    if !framed.len().is_multiple_of(2) {
+    if framed.len() % 2 != 0 {
         framed.push(0);
     }
     encrypt_in_place_with_context(key, ctr, session_hash, direction, &mut framed);

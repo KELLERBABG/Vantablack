@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  mesh-carrier-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.wan
+    container_name: vantablack-carrier-1
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=carrier
+      - LISTEN_ADDR=0.0.0.0:8000
+      - NETEM_RULE=delay 45ms 5ms loss 1%
+    networks:
+      wan_mesh:
+        ipv4_address: 172.28.1.11
+
+  mesh-carrier-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.wan
+    container_name: vantablack-carrier-2
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=carrier
+      - LISTEN_ADDR=0.0.0.0:8000
+      - NETEM_RULE=delay 85ms 15ms loss 3%
+    networks:
+      wan_mesh:
+        ipv4_address: 172.28.1.12
+
+  mesh-carrier-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.wan
+    container_name: vantablack-carrier-3
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=carrier
+      - LISTEN_ADDR=0.0.0.0:8000
+      - NETEM_RULE=delay 160ms 25ms loss 8%
+    networks:
+      wan_mesh:
+        ipv4_address: 172.28.1.13
+
+  mesh-exit:
+    build:
+      context: .
+      dockerfile: Dockerfile.wan
+    container_name: vantablack-exit
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=exit
+      - LISTEN_ADDR=0.0.0.0:8000
+    networks:
+      wan_mesh:
+        ipv4_address: 172.28.1.20
+    depends_on:
+      - mesh-carrier-1
+      - mesh-carrier-2
+      - mesh-carrier-3
+
+  mesh-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.wan
+    container_name: vantablack-client
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=client
+      - LISTEN_ADDR=0.0.0.0:8000
+    networks:
+      wan_mesh:
+        ipv4_address: 172.28.1.10
+    depends_on:
+      - mesh-exit
+
+networks:
+  wan_mesh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
