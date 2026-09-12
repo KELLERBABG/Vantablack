@@ -192,28 +192,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(">>> [CYCLE #{}] DISPATCHING TRAFFIC ACROSS 5000-NODE MESH TOPOLOGY <<<", cycle);
         println!("================================================================================");
 
-        // STEP 1: Feed path metrics into AdaptiveShardRouter
-        println!("[STEP 1] ADAPTIVE SHARD ROUTER: EVALUATING {}-NODE TOPOLOGY FITNESS", total_nodes);
+        // STEP 1: Dynamically update WAN metrics across the 5000-node topology
+        println!("[STEP 1] ADAPTIVE SHARD ROUTER: EVALUATING 5000-NODE TOPOLOGY DRIFT");
         let router = AdaptiveShardRouter::new();
-        let mut candidate_peers: Vec<(String, SocketAddr)> = Vec::new();
+        let mut candidate_peers: Vec<(String, SocketAddr)> = Vec::with_capacity(nodes.len());
 
         for n in &nodes[1..exit_idx] {
-            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), n.port);
-            candidate_peers.push((n.fingerprint.clone(), addr));
+            // Real WAN network dynamics: bandwidth load, BGP route shifts, and latency jitter
+            let jitter = rng.gen_range(-15.0..15.0);
+            let current_rtt = (n.rtt_ms + jitter).max(4.0);
+            let current_loss = if rng.gen_range(0.0..1.0) < (1.0 - n.reliability) { true } else { false };
 
-            let rtt_us = (n.rtt_ms + rng.gen_range(-2.0..2.0)).max(5.0) * 1000.0;
-            let is_loss = n.reliability < 0.85;
-            if is_loss {
+            let rtt_us = current_rtt * 1000.0;
+            if current_loss {
                 router.record_loss(&n.fingerprint);
             } else {
                 router.record_success(&n.fingerprint, rtt_us);
             }
+
+            let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), n.port);
+            candidate_peers.push((n.fingerprint.clone(), addr));
         }
 
+        // Shuffle candidate peers slightly before sort so equal-fitness nodes rotate naturally
+        use rand::seq::SliceRandom;
+        candidate_peers.shuffle(&mut rng);
+
         let best_candidates = router.select_shard_targets(&candidate_peers);
-        println!("       Top candidate routes selected by multi-factor fitness function:");
+        println!("       Live path telemetry evaluated across {} nodes. Top routes selected:", candidate_peers.len());
         for (rank, (fp, addr, score)) in best_candidates.iter().take(3).enumerate() {
-            println!("         Rank {}: Peer [{}] at {} -> Fitness Score: {:.4}", rank + 1, &fp[..12], addr, score);
+            let matched_node = nodes.iter().find(|n| n.fingerprint == *fp);
+            let node_id = matched_node.map(|n| n.id).unwrap_or(0);
+            println!("         Rank {}: Carrier Node #{} [{}] at {} -> Fitness: {:.4}",
+                rank + 1, node_id, &fp[..12], addr, score);
         }
 
         let shard_routes = router.assign_shards(&best_candidates);
@@ -221,13 +232,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let carrier_b = &nodes[nodes.iter().position(|n| n.fingerprint == shard_routes[1].peer_fingerprint).unwrap_or(2)];
         let carrier_c = &nodes[nodes.iter().position(|n| n.fingerprint == shard_routes[2].peer_fingerprint).unwrap_or(3)];
 
-        println!("       Assigned Disjoint Multi-Path Routes for RS(2,1):");
-        println!("         Path 0 (Shard 0) -> Carrier Node {} [{}] ({:.1} ms RTT, {:.0} Mbps)",
+        println!("       Dynamic Multi-Path Routes for RS(2,1):");
+        println!("         Path 0 (Shard 0) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
             carrier_a.id, &carrier_a.fingerprint[..12], carrier_a.rtt_ms, carrier_a.bw_mbps);
-        println!("         Path 1 (Shard 1) -> Carrier Node {} [{}] ({:.1} ms RTT, {:.0} Mbps)",
+        println!("         Path 1 (Shard 1) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
             carrier_b.id, &carrier_b.fingerprint[..12], carrier_b.rtt_ms, carrier_b.bw_mbps);
-        println!("         Path 2 (Shard 2) -> Carrier Node {} [{}] ({:.1} ms RTT, {:.0} Mbps)",
+        println!("         Path 2 (Shard 2) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
             carrier_c.id, &carrier_c.fingerprint[..12], carrier_c.rtt_ms, carrier_c.bw_mbps);
+
+        // Randomize which shard is dropped by the simulated WAN failure
+        let drop_shard_idx = rng.gen_range(0..3usize);
 
         // STEP 2: Hybrid Post-Quantum KEM Handshake between Client and Exit Node
         println!("\n[STEP 2] HYBRID POST-QUANTUM KEM HANDSHAKE: CLIENT <--> EXIT NODE");
@@ -291,20 +305,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client.socket.send_to(&shards[0], carrier_a_addr).await?;
         let mut buf_a = vec![0u8; 1500];
         let (len_a, _) = carrier_a.socket.recv_from(&mut buf_a).await?;
-        carrier_a.socket.send_to(&buf_a[..len_a], exit_addr).await?;
 
         // Client transmits Shard 1 over real UDP socket to Carrier B
         client.socket.send_to(&shards[1], carrier_b_addr).await?;
         let mut buf_b = vec![0u8; 1500];
         let (len_b, _) = carrier_b.socket.recv_from(&mut buf_b).await?;
-        carrier_b.socket.send_to(&buf_b[..len_b], exit_addr).await?;
 
-        // Client transmits Shard 2 to Carrier C, simulated WAN link loss drops it
+        // Client transmits Shard 2 over real UDP socket to Carrier C
         client.socket.send_to(&shards[2], carrier_c_addr).await?;
         let mut buf_c = vec![0u8; 1500];
         let (len_c, _) = carrier_c.socket.recv_from(&mut buf_c).await?;
-        println!("       [LIVE UDP] Client -> Shards 0, 1, 2 routed via Carriers {}, {}, {} (Shard 2 dropped on wire)",
+
+        // Carriers relay to Exit Node according to drop_shard_idx
+        if drop_shard_idx != 0 { carrier_a.socket.send_to(&buf_a[..len_a], exit_addr).await?; }
+        if drop_shard_idx != 1 { carrier_b.socket.send_to(&buf_b[..len_b], exit_addr).await?; }
+        if drop_shard_idx != 2 { carrier_c.socket.send_to(&buf_c[..len_c], exit_addr).await?; }
+
+        println!("       [LIVE UDP] Client -> Dispatched 3 Shards across Carriers #{}, #{}, #{}",
             carrier_a.id, carrier_b.id, carrier_c.id);
+        println!("       [LIVE UDP] Wire fault injection: Shard {} dropped in flight!", drop_shard_idx);
 
         // Exit Node receives incoming live UDP frames
         let mut exit_rx_buf_0 = vec![0u8; 1500];
@@ -314,11 +333,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // STEP 5: Exit Node Reassembles from 2 Shards & Decrypts
         println!("\n[STEP 5] EXIT NODE RECONSTRUCTION & AUTHENTICATION");
-        let mut exit_rx_pool = vec![
-            Some(exit_rx_buf_0[2..exit_len_0].to_vec()),
-            Some(exit_rx_buf_1[2..exit_len_1].to_vec()),
-            None, // Dropped!
-        ];
+        let mut exit_rx_pool = vec![None, None, None];
+        match drop_shard_idx {
+            0 => {
+                exit_rx_pool[1] = Some(exit_rx_buf_0[2..exit_len_0].to_vec());
+                exit_rx_pool[2] = Some(exit_rx_buf_1[2..exit_len_1].to_vec());
+            }
+            1 => {
+                exit_rx_pool[0] = Some(exit_rx_buf_0[2..exit_len_0].to_vec());
+                exit_rx_pool[2] = Some(exit_rx_buf_1[2..exit_len_1].to_vec());
+            }
+            _ => {
+                exit_rx_pool[0] = Some(exit_rx_buf_0[2..exit_len_0].to_vec());
+                exit_rx_pool[1] = Some(exit_rx_buf_1[2..exit_len_1].to_vec());
+            }
+        }
 
         let recovered_bytes = dec_join(
             &exit_master,
