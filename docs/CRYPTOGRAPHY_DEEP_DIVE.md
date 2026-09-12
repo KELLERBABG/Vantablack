@@ -1,6 +1,6 @@
 # Cryptographic Deep Dive: Post-Quantum Hybrid Defense
 
-This document details the mathematical and algorithmic foundations of the cryptographic suite powering Global Ghost Net.
+This document details the mathematical and algorithmic foundations of the cryptographic suite powering Global Ghost Net, including hybrid key exchange, authenticated data transport, combinatorial Byzantine tamper resistance, and anti-replay session mechanics.
 
 ---
 
@@ -61,7 +61,53 @@ Payload frames are authenticated and encrypted using **ChaCha20-Poly1305** (RFC 
 
 ---
 
-## 4. In-Memory Security & Zeroization (L8)
+## 4. Combinatorial RS(2,1) + Poly1305 Byzantine Tamper Isolation
+
+When operating over untrusted carrier networks, adversarial nodes may alter encrypted bytes in flight without knowledge of the decryption key. Reed-Solomon RS(2,1) erasure coding mathematically enables payload recovery from any 2 of 3 shards, while Poly1305 provides cryptographic integrity verification:
+
+```text
+Outbound Payload
+       │
+       ▼ [RS(2,1) Split + ChaCha20-Poly1305 Encrypt]
+ ┌─────┴─────┬───────────┐
+ ▼           ▼           ▼
+Shard 0   Shard 1     Shard 2
+ (Path A)  (Carrier B: (Path C)
+            Corrupted!)
+```
+
+### Pairwise Combinatorial Verification Algorithm
+When the receiver gathers $\ge 2$ shards, it attempts pair reconstruction:
+1. **Pair $(0, 1)$:** Reconstruct with $S_0, S_1 \rightarrow$ Compute Poly1305 tag $\rightarrow$ **Tag mismatch (rejected)**.
+2. **Pair $(1, 2)$:** Reconstruct with $S_1, S_2 \rightarrow$ Compute Poly1305 tag $\rightarrow$ **Tag mismatch (rejected)**.
+3. **Pair $(0, 2)$:** Reconstruct with $S_0, S_2 \rightarrow$ Compute Poly1305 tag $\rightarrow$ **Tag valid (ACCEPTED)**.
+
+Through this combinatorial elimination:
+- The tampered shard ($S_1$) is mathematically and cryptographically identified.
+- The carrier path is flagged as Byzantine (`TAMPER REJECTED`).
+- Plaintext payload is reconstructed without corruption and without requesting retransmission.
+
+---
+
+## 5. Layer 6 SessionGuard: Replay Sliding Window Mechanics
+
+Session freshness is enforced via `SessionGuard` using an atomic bitmask window covering 128 sequence numbers:
+- **Leading Bit Progression:** When counter $C > V_{\text{max}}$, the bitmask is shifted left by $(C - V_{\text{max}})$ and the lowest bit is set.
+- **In-Window Verification:** When $C \le V_{\text{max}}$, the offset $(V_{\text{max}} - C)$ is checked against the bitmask. If the bit is already set, the packet is an active replay attack and is dropped immediately before decryption.
+- **Trailing Window Bounds:** Counters lagging behind $(V_{\text{max}} - 128)$ are immediately discarded.
+
+---
+
+## 6. Layer 5 Traffic Shaping & Wire Jitter
+
+To prevent passive network observers from inferring packet contents via size or inter-arrival timing:
+- Payloads are prepended with a 2-byte big-endian length prefix.
+- $16..64$ cryptographically secure pseudorandom bytes are appended to every frame.
+- Receivers parse the true length prefix and slice off the padding, rendering wire packet lengths unpredictable and uncorrelated with payload size.
+
+---
+
+## 7. In-Memory Security & Zeroization (L8)
 
 - **Volatile Zeroization on Drop:** Sensitive cryptographic keys implement `Zeroize` and `ZeroizeOnDrop`. When a session terminates or a key is rotated, the operating system memory addresses are wiped with zero bytes through compiler-barrier memory fences.
 - **AES-256-XTS In-Memory Protection:** High-security session rings use AES-XTS memory encryption to protect transit frames while buffered in system RAM against unauthorized DMA reads or host memory dump exploits.

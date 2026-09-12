@@ -232,7 +232,7 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
     let mut pkt_counter: u64 = 0;
 
     loop {
-        let (len, src) = socket.recv_from(&mut buf).await?;
+        let (len, _src) = socket.recv_from(&mut buf).await?;
         if len >= 7 {
             pkt_counter += 1;
             let hops_remaining = buf[0];
@@ -511,7 +511,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                         _ => return,
                     };
                     let _ = stream.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 04, 56]).await;
-                    if let Ok(mut out) = TcpStream::connect(&dest).await {
+                    if let Ok(out) = TcpStream::connect(&dest).await {
                         let (mut ri, mut wi) = stream.into_split();
                         let (mut ro, mut wo) = out.into_split();
                         let _ = tokio::join!(

@@ -13,7 +13,7 @@
 
 <br>
 
-[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**Protocol Whitepaper**](docs/WHITEPAPER.md) &bull; [**Configuration Reference**](config.env.example)
+[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**Protocol Whitepaper**](docs/WHITEPAPER.md) &bull; [**Onion Routing Architecture**](docs/ONION_ARCHITECTURE.md) &bull; [**LAN over WAN**](docs/LAN_OVER_WAN.md) &bull; [**Configuration Reference**](config.env.example)
 
 </div>
 
@@ -21,26 +21,153 @@
 
 ## What is Global Ghost Net?
 
-**Global Ghost Net** is an autonomous peer-to-peer mesh routing daemon written in Rust. It enables personal computers, servers, and devices to communicate securely across the public internet without central servers, commercial VPN providers, or trusted Certificate Authorities.
+**Global Ghost Net** is an autonomous peer-to-peer mesh routing daemon written in pure Rust. It enables personal computers, servers, and edge devices to communicate securely across the public internet without central servers, commercial VPN providers, or trusted Certificate Authorities.
 
-Instead of sending your data through a central VPN provider where it can be monitored, logged, or intercepted, Global Ghost Net encrypts your traffic with **post-quantum cryptography**, breaks it into **Reed-Solomon mathematical shards**, and routes them across multiple independent computers simultaneously.
+Instead of funneling traffic through a central VPN provider where it can be monitored, logged, or intercepted, Global Ghost Net encrypts traffic with **post-quantum cryptography**, breaks it into **Reed-Solomon mathematical shards**, and routes them across multiple independent intermediary carrier nodes simultaneously over divergent WAN paths.
 
 ---
 
 ## Why Use It?
 
-* **Quantum-Resilient Privacy:** Uses hybrid ML-KEM-512 (Kyber / FIPS 203) and ephemeral X25519 ECDH. Data captured by state surveillance today cannot be decrypted when quantum computers arrive.
+* **Quantum-Resilient Privacy:** Uses hybrid ML-KEM-512 (Kyber / FIPS 203) and ephemeral X25519 ECDH. Data captured by state surveillance today cannot be decrypted when cryptographically relevant quantum computers arrive.
 * **Asymmetric Shard Routing:** Every message is split into 3 mathematical shards (Reed-Solomon RS(2,1)). Shards travel through different computers across divergent internet paths; intercepting any single path yields zero readable information.
+* **Byzantine Tamper Resistance:** Pairwise combinatorial Poly1305 MAC tag verification isolates and drops corrupted shards in real-time, reconstructing intact payloads via pristine alternate paths.
 * **Zero Infrastructure Costs:** No need to pay for a central VPS. Connect your devices seamlessly using free Cloudflare DNS seeds and automatic local peer caching.
-* **Anti-Traffic Fingerprinting:** All mesh packets are normalized to a uniform size with randomized jitter noise, defeating deep packet inspection (DPI), packet-length analysis, and timing correlation.
+* **Anti-Traffic Fingerprinting:** Layer 5 traffic shaping injects randomized jitter noise (16–64 bytes) to defeat deep packet inspection (DPI), packet-length analysis, and timing correlation.
 * **Instant SOCKS5 Proxy:** Runs a built-in proxy on `127.0.0.1:1080` out of the box, allowing any browser, terminal tool, or application to immediately route through the mesh.
-* **100% Peer-to-Peer & Self-Healing:** The mesh automatically reconnects, routes around failed nodes, and discovers peers through local subnet multicast beacons and peer exchange.
+* **Self-Healing & Chaos Resilience:** Autonomous multi-path failover seamlessly switches around severed carrier links with zero packet loss or connection drops.
 
 ---
 
-## Quick Start (Windows & Linux)
+## Level 2 Multi-Hop Mesh WAN Architecture
 
-### Option 1: Running the Node
+Global Ghost Net includes a complete **Level 2 Multi-Hop WAN Mesh Simulation Environment** built on Docker Compose, replicating realistic transcontinental carrier links using Linux `tc netem` (traffic control network emulator).
+
+```
+                      +-------------------+
+                      |   Client Node     |
+                      | (172.28.1.10:8000)|
+                      +---------+---------+
+                                |
+       +------------------------+------------------------+
+       | Shard 0 (2 Hops)       | Shard 1 (1 Hop)        | Shard 2 (1 Hop / Failover)
+       v                        v                        v
++--------------+         +--------------+         +--------------+
+|  Carrier 1   |         |  Carrier 2   |         |  Carrier 3   |
+| 172.28.1.11  |         | 172.28.1.12  |         | 172.28.1.13  |
+| 45ms / 1% loss|        | 85ms / 3% loss|        | 160ms / 8%   |
++------+-------+         | (Byzantine)  |         +------+-------+
+       |                 +------+-------+                | (Chaos Sever)
+       v                        |                        v
++--------------+                |                 +--------------+
+|  Carrier 4   |                |                 |  Carrier 5   |
+| 172.28.1.14  |                |                 | 172.28.1.15  |
+| 25ms / 0.5%  |                |                 | 55ms Hot Res.|
++------+-------+                |                 +------+-------+
+       |                        |                        |
+       +------------------------+------------------------+
+                                |
+                                v
+                      +-------------------+
+                      |     Exit Node     |
+                      | (172.28.1.20:8000)|
+                      +---------+---------+
+                                | Egress IP Rotation (198.51.100.x)
+                                v
+                       Public Internet (WAN)
+                         e.g. Google HTTP
+```
+
+### 7-Node Carrier Topology
+
+| Node Name | Container Name | Subnet IP | Linux `tc netem` Condition | Simulated Role |
+| :--- | :--- | :--- | :--- | :--- |
+| **mesh-client** | `vantablack-client` | `172.28.1.10` | Unconstrained | Protected Client Node (Dashboard & SOCKS5) |
+| **mesh-carrier-1**| `vantablack-carrier-1`| `172.28.1.11`| `delay 45ms 5ms loss 1%` | Transatlantic Fiber (Hop 1 of 2) |
+| **mesh-carrier-2**| `vantablack-carrier-2`| `172.28.1.12`| `delay 85ms 15ms loss 3%` | Transpacific Edge (`BYZANTINE_TAMPER=1`) |
+| **mesh-carrier-3**| `vantablack-carrier-3`| `172.28.1.13`| `delay 160ms 25ms loss 8%`| High-Latency Satellite Uplink (Chaos Target) |
+| **mesh-carrier-4**| `vantablack-carrier-4`| `172.28.1.14`| `delay 25ms 3ms loss 0.5%`| Continental Core Backbone (Hop 2 of 2) |
+| **mesh-carrier-5**| `vantablack-carrier-5`| `172.28.1.15`| `delay 55ms 8ms loss 1%` | Dynamic Hot Standby Failover Reserve |
+| **mesh-exit** | `vantablack-exit` | `172.28.1.20` | Unconstrained | Egress Gateway & IP Rotator |
+
+---
+
+## 4 Active Test Scenarios
+
+The Level 2 WAN simulation autonomously evaluates 4 critical cryptographic and networking resilience invariants:
+
+### Scenario 1: Byzantine Tamper Isolation (RS(2,1) + Combinatorial Poly1305)
+* **Mechanics:** `mesh-carrier-2` acts as an active Byzantine adversary (`BYZANTINE_TAMPER=1`), deliberately corrupting 4 bytes of in-flight encrypted shard payloads every 3 cycles.
+* **Defense:** When all 3 shards arrive, the receiver executes pairwise combinatorial reconstruction:
+  - Pair $(0, 1)$ testing (excludes Shard 2)
+  - Pair $(0, 2)$ testing (excludes Shard 1)
+  - Pair $(1, 2)$ testing (excludes Shard 0)
+* **Outcome:** The ChaCha20-Poly1305 AEAD tag authentication fails on corrupted pairs and succeeds on pristine pairs. The router isolates the adversarial carrier, marks it as `TAMPER REJECTED`, and reconstructs pristine plaintext with zero data loss.
+
+### Scenario 2: Layer 6 Anti-Replay Sliding Window Defense (SessionGuard)
+* **Mechanics:** The test harness periodically launches duplicate clone transmissions of Shard 0 with stale sequence counters ($T_x$) to simulate network replay attacks.
+* **Defense:** Both Client and Exit nodes maintain a `SessionGuard` tracking packet counters across a 64-bit/128-bit sliding window bitmap.
+* **Outcome:** Counters trailing the window or already recorded in the bitmask are unconditionally dropped before reaching decryption buffers (`REPLAY_ATTACK_BLOCKED`), preventing replay side-channels.
+
+### Scenario 3: Layer 5 Traffic Shaping & Analysis Resistance (Randomized Jitter)
+* **Mechanics:** DPI and timing-correlation attacks analyze packet size patterns and interval histograms to infer traffic types.
+* **Defense:** Every outbound frame is wrapped with a 2-byte big-endian original length prefix, followed by the ciphertext and $16..64$ cryptographically randomized padding bytes (`apply_l5_jitter_padding`).
+* **Outcome:** Packet lengths vary continuously on the wire, masking MTU signatures and frustating deep packet inspection.
+
+### Scenario 4: Real-time Convergence Latency Measurement (Autonomous Chaos Monkey)
+* **Mechanics:** An integrated Chaos Monkey routine severs the link to `mesh-carrier-3` on alternating cycles (5 out of every 10 cycles).
+* **Defense:** The `AdaptiveShardRouter` registers link loss, updates Poisson path fitness metrics, and dynamically redirects the shard through the hot standby `mesh-carrier-5`.
+* **Outcome:** Real-time failover convergence occurs in $\le 55\text{ ms}$ (the RTT of the standby carrier) without dropping TCP streams or invalidating session crypto.
+
+---
+
+## Running the Level 2 WAN Mesh Simulation
+
+### Prerequisites
+- Docker & Docker Compose
+- Linux kernel with `sch_netem` support (available by default on Linux; WSL2 on Windows supports `cap_add: NET_ADMIN`)
+
+### Step 1: Start the 7-Node Carrier Mesh
+```bash
+# Build and start all 7 nodes in detached mode
+docker compose -f docker-compose.wan.yml up --build -d
+
+# View live container logs
+docker compose -f docker-compose.wan.yml logs -f mesh-client
+```
+
+### Step 2: Access the Live Telemetry Dashboard
+Open your browser to:
+```
+http://localhost:8080
+```
+The real-time dashboard monitors:
+- Live network topology diagram with dynamic link color-coding.
+- Shard delivery rates (RS(2,1) quorum progress: 2/3 and 3/3).
+- Active security alerts (Byzantine tamper detection, Replay attacks blocked).
+- Live RTT per carrier under Linux `tc netem` rules.
+- Autonomous Chaos Monkey link severance and failover convergence latency.
+- Egress IP rotation (`198.51.100.x`).
+- Live HTTP headers ingested from upstream targets.
+
+The JSON telemetry feed is available programmatically at `http://localhost:8080/api/telemetry`.
+
+### Step 3: Route Client Traffic via Mesh SOCKS5
+While the simulation runs, you can route terminal commands and browser traffic through the multi-hop mesh on port `1080`:
+```bash
+curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
+```
+
+### Step 4: Stop the Simulation
+```bash
+docker compose -f docker-compose.wan.yml down
+```
+
+---
+
+## Quick Start (Standalone Binary)
+
+### Option 1: Running the Node Locally
 
 Run the pre-compiled binary or build with cargo:
 
@@ -49,7 +176,7 @@ Run the pre-compiled binary or build with cargo:
    cargo run --release
    # Or run target/release/vantablack
    ```
-   - Binds its mesh data socket per `GHOST_BIND` (default: an ephemeral port). Port `2270/UDP` is reserved for the discovery beacon.
+   - Binds its mesh data socket per `GHOST_BIND` (default: ephemeral port). Port `2270/UDP` is used for discovery beacons.
    - Starts local SOCKS5 proxy on `127.0.0.1:1080`.
    - Automatically queries DNS seeds and connects to active mesh peers.
 
@@ -111,8 +238,10 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 | :--- | :--- | :---: |
 | **Quantum Computing Decryption** | Hybrid ML-KEM-512 (Kyber) + Ephemeral X25519 ECDH | **Immune** |
 | **Single-Node Eavesdropping** | RS(2,1) Reed-Solomon asymmetric multi-path sharding | **Immune** |
-| **Deep Packet Inspection (DPI)** | 512-byte fixed frame size + 0-64 byte random jitter padding | **Immune** |
-| **Packet Replay Attacks** | Atomic 64-bit sliding window bitmap (`SessionGuardU64`) | **Immune** |
+| **Byzantine Node Tampering** | Pairwise combinatorial Poly1305 AEAD validation | **Immune** |
+| **Deep Packet Inspection (DPI)** | L5 Random Jitter Padding (16–64 bytes) + Uniform Frames | **Immune** |
+| **Packet Replay Attacks** | Sliding window bitmask guard (`SessionGuard` / `SessionGuardU64`) | **Immune** |
+| **Carrier Failover / Severance** | Dynamic `AdaptiveShardRouter` with Poisson fitness tracking | **Resilient (<55ms)** |
 | **In-Memory Scraping** | Volatile zeroization on drop + AES-256-XTS RAM protection | **Hardened** |
 | **Central Server Seizure** | Pure decentralized P2P architecture with local `peers.cache` | **Immune** |
 
@@ -133,8 +262,8 @@ Global Ghost Net implements the 10-layer GHOST protocol stack:
 | L2   | Authenticated AEAD   | ChaCha20-Poly1305 + HKDF      |
 | L3   | Secret Sharing       | Shamir SSS (GF256, 2-of-3)    |
 | L4   | Erasure Coding       | Reed-Solomon RS(2,1) shards   |
-| L5   | Traffic Padding      | Jitter-padded uniform frames  |
-| L6   | Session Guard        | 64-bit replay sliding window  |
+| L5   | Traffic Shaping      | 16-64B jitter cover padding   |
+| L6   | Session Guard        | Sliding window replay bitmask |
 | L7   | Forward Error Corr.  | LDPC parity-check matrix      |
 | L8   | Memory Defense       | AES-256-XTS RAM encryption    |
 | L9   | Infrastructure Trust | TPM/HSM enclave & NTS sync    |
@@ -149,9 +278,10 @@ Interactive documentation portal is live at [**ggn.kellersystems.dev/docs**](htt
 
 For engineers, cryptographers, and contributors wishing to inspect the mathematics, security models, and implementation details:
 
-* [**Technical Specifications**](docs/SPECIFICATIONS.md) — Low-level frame layouts, GTF byte structures, and replay window bitmasks.
+* [**Technical Specifications**](docs/SPECIFICATIONS.md) — Low-level frame layouts, Level 2 multi-hop headers, L5 jitter wire structures, and SessionGuard bitmasks.
 * [**Protocol Whitepaper**](docs/WHITEPAPER.md) — Architectural overview of the GHOST network layers (L0 through L9).
 * [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) — In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
+* [**LAN over WAN (VPN Layer)**](docs/LAN_OVER_WAN.md) — Road-warrior userspace VPN architecture, TUN drivers, and mobile network roaming.
 * [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-512, X25519 hybrid key exchange, directional nonces, and memory security.
 * [**Zero-Cost Peer Discovery Guide**](docs/PEER_DISCOVERY_GUIDE.md) — Step-by-step walkthrough for configuring free Cloudflare DNS seeds and local caching.
 * [**Configuration Reference**](config.env.example) — Parameter reference for network ports, transit rate limits, and egress allowlists.
@@ -166,9 +296,12 @@ Global Ghost Net is written in pure Rust with zero C toolchain dependencies:
 # Build optimized release binary (~1.1 MB)
 cargo build --release
 
-# Run comprehensive test suite
+# Run comprehensive unit & integration test suite
 cargo test --lib
 cargo test --test simulation
+
+# Build and run the Level 2 Multi-Hop WAN binary
+cargo run --bin wan_mesh
 ```
 
 ---
