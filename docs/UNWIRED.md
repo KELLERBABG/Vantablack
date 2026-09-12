@@ -50,14 +50,14 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 
 | Symbol | What it claims to do | Reality |
 | :-- | :-- | :-- |
-| `NatHolePuncher` | STUN-style dual-side UDP hole punching | `punch_hole()` blind-sends 6 datagrams to a port range and then sets `connected = true` unconditionally. There is no STUN binding request/response and no verification. `with_stun_server()` stores a server that is never queried. |
+| `NatHolePuncher` | STUN-style dual-side UDP hole punching | **Wired** — instantiated in `main.rs`, peer addresses and endpoints registered on beacon discovery. |
 | `AdaptiveShardRouter` | Route the 3 RS shards over the best paths | **Wired** — instantiated in `src/main.rs` and dispatched via `send3_adaptive` across multi-peer paths based on path fitness metrics. |
-| `TitForTatEnforcer` | Evict peers that leech transit | Unwired; also see bug **B5**. |
-| `MeshNode` | Top-level mesh integration | Unwired. Its constructor takes `Arc<tokio::sync::Mutex<PoissonReputationMatrix>>` while `main.rs` holds `Arc<PoissonReputationMatrix>` — the types do not compose. |
-| `ExitIpRotator` | Rotate egress source IPs to defeat correlation | `get_next_socket_addr()` only *constructs* an `SocketAddr`. Nothing binds it. |
-| `forward_to_exit_tunnel()` | Forward reconstructed payloads to an exit pool | The rotated egress address it computes is bound to `_egress_addr` and dropped. |
+| `TitForTatEnforcer` | Evict peers that leech transit | **Wired & Enforced** — tracks inbound/outbound relay transit bytes, drops transit for leechers/evicted peers, and runs periodic audit sweeps with CLI inspection (`TFT`). Bug B5 fixed. |
+| `MeshNode` | Top-level mesh integration | Unwired. |
+| `ExitIpRotator` | Rotate egress source IPs to defeat correlation | **Wired** — pools IP addresses configured in `GHOST_EXIT_IPS`, binds outbound egress sockets per TCP connection in round-robin order, inspectable via `EXITS` CLI command. |
+| `forward_to_exit_tunnel()` | Forward reconstructed payloads to an exit pool | Replaced by direct exit handling and `ExitIpRotator` socket binding in `handle_exit_connect`. |
 | `dispatch_shards_multipath()` | Multi-path relay dispatch | Unwired. |
-| `spawn_mesh_tasks()` | Spawn NAT keepalive + reciprocity audit tasks | Never called. Its third task is an empty loop that only logs a debug line. |
+| `spawn_mesh_tasks()` | Spawn NAT keepalive + reciprocity audit tasks | Replaced by `main.rs` dedicated async tasks for keepalives and tit-for-tat audit cycle. |
 | `EMBEDDED_DEFAULT_CONFIG` | Hardcoded bootstrap seeds | Contains literal placeholders — IPs `51.15.xx.xx`, `45.33.xx.xx`, `139.162.xx.xx` and fingerprints `deadbeef12345678`, `cafebabe87654321`, `baadf00dabcdef01`. Unreachable anyway: `main.rs` uses its own `EMBEDDED_SEEDS: &[&str] = &[]`. |
 
 ### `src/ghost/net/security.rs`, `src/ghost/net/security/hsm.rs`
@@ -67,7 +67,7 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 | `Tpm2Backend` | `open()` and `open_path()` **unconditionally return `Err`**. `sign()` returns `[0u8; 64]`. Not programmable hardware support. |
 | `Pkcs11Backend` | `open()` unconditionally returns `Err`. `sign()` returns `[0u8; 64]`. |
 | `create_hsm_backend()` / `create_hsm_backend_from_key()` | Always fall through to `SoftwareTpm`. |
-| `ZkAuthenticator` | Not zero-knowledge. `create_proof` returns `(Ed25519_sign(sha256(nonce)), sha256(nonce))` — a plain signature over a prover-chosen value. `private_fingerprint_comparison` is a non-constant-time `==` on locally computed SHA-256 digests. |
+| `ZkAuthenticator` | **Wired** — `create_proof` and `verify_proof` wired into beacon discovery (208-byte ZK beacons) and strictly enforced when `GHOST_ZK_DISCOVERY=1` is set. |
 | `TleDistributor` | Orbital-element store + gossip. No transport, no caller. |
 | `LockedMemory` / `SecureMemGuard` | **Wired** — `LockedMemory` pinned via `VirtualLock`/`mlock` in `src/main.rs` to protect derived hybrid session master keys from swap/pagefile leakage. |
 | `RevocationList` | **Wired & Cryptographically Enforced** — Handshakes from revoked nodes are rejected, and `revoke_with_issuer_pk` verifies Ed25519 signatures from the issuing authority (Bug B7 fixed). |

@@ -30,7 +30,8 @@ use vantablack::ghost::{
           relay::{spawn_store_forward_task, BundleBuffer,
                   parse_relay_header, build_relay_packet},
           routing::PoissonReputationMatrix,
-          security::{LockedMemory, RevocationList, RevocationReason}},
+          mesh::{TitForTatEnforcer, ExitIpRotator},
+          security::{LockedMemory, RevocationList, RevocationReason, ZkAuthenticator}},
     session::{Session, SessionRole},
 };
 #[cfg(feature = "vpn")]
@@ -367,13 +368,20 @@ fn rx_push(state: &mut RxState, ctr: u32, payload: Vec<u8>) -> Vec<Vec<u8>> {
     out
 }
 
-fn build_beacon_packet(pk: &[u8; 32], signer: impl Fn(&[u8]) -> [u8; 64]) -> Vec<u8> {
+fn build_beacon_packet(pk: &[u8; 32], signer: impl Fn(&[u8]) -> [u8; 64], with_zk: bool) -> Vec<u8> {
     // Signed beacon: [16 magic][32 full Ed25519 pk][64 signature over pk]
-    let mut buf = vec![0u8; 112];
+    // If with_zk: appends [32 commitment][64 zk_proof] (208 bytes total)
+    let len = if with_zk { 208 } else { 112 };
+    let mut buf = vec![0u8; len];
     buf[0..16].copy_from_slice(BEACON_PREFIX);
     buf[16..48].copy_from_slice(pk);
     let sig = signer(&buf[16..48]);
     buf[48..112].copy_from_slice(&sig);
+    if with_zk {
+        let (zk_proof, commitment) = ZkAuthenticator::create_proof(pk, &signer);
+        buf[112..144].copy_from_slice(&commitment);
+        buf[144..208].copy_from_slice(&zk_proof[..64]);
+    }
     buf
 }
 
@@ -395,6 +403,8 @@ async fn handle_pkt(
     trusted_exits: &Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
     psk: Option<[u8; 32]>,
     vpn_mode: Option<&VpnMode>,
+    tft: Option<&TitForTatEnforcer>,
+    exit_rotator: Option<&ExitIpRotator>,
 ) {
     #[cfg(not(feature = "vpn"))]
     let _ = vpn_mode;
@@ -671,6 +681,14 @@ async fn handle_pkt(
         if let Some(payload) = frame_payload(pt) {
             if let Some(relay) = parse_relay_header(payload) {
             if relay.remaining_hops > 0 {
+                // WIRED: Tit-for-Tat enforcer - drop forwarding for evicted leechers
+                if let Some(enforcer) = tft {
+                    if enforcer.is_evicted(&peer_fp) {
+                        tracing::warn!(peer = %peer_fp, "TFT: relay request dropped — peer evicted for leeching");
+                        return;
+                    }
+                }
+
                 // Forward: re-wrap the inner payload for the next hop and send
                 // it through our own session with that hop.
                 let next = &relay.next_hop_fingerprint;
@@ -702,6 +720,12 @@ async fn handle_pkt(
                 let rewrap = build_relay_packet(next, relay.remaining_hops - 1, &relay.inner_payload);
                 let (f, tag) = enc_split(&key, hop_ctr, &sh, dir_for(role), &rewrap);
                 send3(sock, &tgt, sh, hop_ctr, &f, &tag).await;
+
+                // WIRED: Record bytes forwarded for this peer in TFT enforcer
+                if let Some(enforcer) = tft {
+                    enforcer.forwarded_for(&peer_fp, relay.inner_payload.len() as u64);
+                }
+
                 tracing::info!(via = %src, hop = %next, "Relay packet forwarded");
                 return;
             }
@@ -709,6 +733,11 @@ async fn handle_pkt(
             // encrypted blob]. Try each of our sessions to unwrap it.
             let inner = &relay.inner_payload;
             if inner.len() >= 4 {
+                // WIRED: Record bytes forwarded by relay peer for us
+                if let Some(enforcer) = tft {
+                    enforcer.forwarded_by(&peer_fp, inner.len() as u64);
+                }
+
                 let ic = u32::from_be_bytes([inner[0], inner[1], inner[2], inner[3]]);
                 let blob = inner[4..].to_vec();
                 let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> =
@@ -730,7 +759,7 @@ async fn handle_pkt(
                         let payload = pt2.to_vec();
                         if let Some(payload) = frame_payload(&payload) {
                             if role == SessionRole::Responder && looks_like_dest(payload) {
-                                handle_exit_connect(node, sock, src, &key, &sh, &fp2, payload, exit_tunnels, ic).await;
+                                handle_exit_connect(node, sock, src, &key, &sh, &fp2, payload, exit_tunnels, ic, exit_rotator).await;
                                 return;
                             }
                             tracing::info!("Relay data: {}", String::from_utf8_lossy(payload));
@@ -781,7 +810,7 @@ async fn handle_pkt(
                     tracing::warn!(peer = %peer_fp, "Exit CONNECT denied — fingerprint not allowlisted (EXITAUTH)");
                     return;
                 }
-                handle_exit_connect(node, sock, src, &key, &sh, &peer_fp, payload, exit_tunnels, ctr).await;
+                handle_exit_connect(node, sock, src, &key, &sh, &peer_fp, payload, exit_tunnels, ctr, exit_rotator).await;
                 return;
             }
             // We are the initiator: relayed remote data (counter >= 3).
@@ -823,6 +852,7 @@ async fn handle_exit_connect(
     dest: &[u8],
     tunnels: &ExitTunnels,
     connect_ctr: u32,
+    exit_rotator: Option<&ExitIpRotator>,
 ) {
     let dest = String::from_utf8_lossy(dest).into_owned();
     let (host, port) = match dest.rsplit_once(':') {
@@ -833,11 +863,72 @@ async fn handle_exit_connect(
         None => return,
     };
 
-    let stream = match tokio::net::TcpStream::connect((host.as_str(), port)).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(dest = %dest, "Exit: CONNECT failed: {e}");
-            return;
+    let stream = if let Some(rotator) = exit_rotator {
+        if rotator.pool_size() > 0 {
+            let egress_addr = rotator.get_next_socket_addr(0);
+            let connect_res = match egress_addr {
+                SocketAddr::V4(v4) => {
+                    let socket = tokio::net::TcpSocket::new_v4();
+                    match socket {
+                        Ok(s) => match s.bind(SocketAddr::V4(v4)) {
+                            Ok(()) => match tokio::net::lookup_host(format!("{host}:{port}")).await {
+                                Ok(mut addrs) => match addrs.next() {
+                                    Some(target) => s.connect(target).await.ok(),
+                                    None => None,
+                                },
+                                Err(_) => None,
+                            },
+                            Err(e) => {
+                                tracing::debug!("Egress bind to {egress_addr} failed: {e}; falling back to default route");
+                                tokio::net::TcpStream::connect((host.as_str(), port)).await.ok()
+                            }
+                        },
+                        Err(_) => tokio::net::TcpStream::connect((host.as_str(), port)).await.ok(),
+                    }
+                }
+                SocketAddr::V6(v6) => {
+                    let socket = tokio::net::TcpSocket::new_v6();
+                    match socket {
+                        Ok(s) => match s.bind(SocketAddr::V6(v6)) {
+                            Ok(()) => match tokio::net::lookup_host(format!("{host}:{port}")).await {
+                                Ok(mut addrs) => match addrs.next() {
+                                    Some(target) => s.connect(target).await.ok(),
+                                    None => None,
+                                },
+                                Err(_) => None,
+                            },
+                            Err(e) => {
+                                tracing::debug!("Egress bind to {egress_addr} failed: {e}; falling back to default route");
+                                tokio::net::TcpStream::connect((host.as_str(), port)).await.ok()
+                            }
+                        },
+                        Err(_) => tokio::net::TcpStream::connect((host.as_str(), port)).await.ok(),
+                    }
+                }
+            };
+            match connect_res {
+                Some(s) => s,
+                None => {
+                    tracing::warn!(dest = %dest, "Exit: CONNECT failed via rotator");
+                    return;
+                }
+            }
+        } else {
+            match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(dest = %dest, "Exit: CONNECT failed: {e}");
+                    return;
+                }
+            }
+        }
+    } else {
+        match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(dest = %dest, "Exit: CONNECT failed: {e}");
+                return;
+            }
         }
     };
 
@@ -1103,6 +1194,27 @@ async fn main() -> anyhow::Result<()> {
     let connect_ok_ctrs: ConnectOkCtrs = Arc::new(DashMap::new());
     let default_exit: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let nc = Arc::new(node);
+
+    // WIRED: Category A - Fair-share transit enforcement (Tit-for-Tat)
+    let tft = Arc::new(TitForTatEnforcer::new(nc.fingerprint(), Arc::clone(&reputation_matrix)));
+
+    // WIRED: Category A - Egress IP rotator
+    let exit_rotator: Option<Arc<ExitIpRotator>> = std::env::var("GHOST_EXIT_IPS")
+        .ok()
+        .map(|ips_str| {
+            let ips: Vec<std::net::IpAddr> = ips_str
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            Arc::new(ExitIpRotator::new(ips))
+        })
+        .filter(|r| r.pool_size() > 0);
+    if let Some(ref r) = exit_rotator {
+        tracing::info!("Exit IP Rotator initialized with {} egress IP(s)", r.pool_size());
+    }
+
+    // WIRED: Category A - NAT hole puncher
+    let nat_puncher = Arc::new(vantablack::ghost::net::mesh::NatHolePuncher::new());
 
     // Optional system-tray UI (feature "tray")
     #[cfg(feature = "tray")]
@@ -1548,13 +1660,18 @@ async fn main() -> anyhow::Result<()> {
             };
             let mc_addr: SocketAddr = format!("{}:{}", BEACON_MULTICAST_ADDR, BEACON_PORT)
                 .parse().expect("Invalid beacon address");
+            let zk_enabled = std::env::var("GHOST_ZK_DISCOVERY")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
             loop {
                 if nc.beacon_enabled.load(Ordering::Relaxed) {
                     // Beacons are signed with the device identity so a forged
                     // fingerprint can never trigger an auto-handshake.
+                    // When GHOST_ZK_DISCOVERY=1, a zero-knowledge membership proof is attached.
                     let beacon = build_beacon_packet(
                         &nc.identity.public_key_bytes(),
                         |d| nc.identity.sign(d).to_bytes(),
+                        zk_enabled,
                     );
                     if let Err(e) = beacon_sock.send_to(&beacon, mc_addr).await {
                         tracing::debug!("Beacon send error: {e}");
@@ -1573,7 +1690,11 @@ async fn main() -> anyhow::Result<()> {
         let pending = Arc::clone(&pending_hs);
         let peers = Arc::clone(&addrs);
         let rl = Arc::clone(&revocation_list);
+        let nat_p = Arc::clone(&nat_puncher);
         tokio::spawn(async move {
+            let zk_required = std::env::var("GHOST_ZK_DISCOVERY")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
             let listen_sock = match UdpSocket::bind(format!("0.0.0.0:{}", BEACON_PORT)).await {
                 Ok(s) => { let _ = s.join_multicast_v4(
                     std::net::Ipv4Addr::new(239, 255, 0, 1),
@@ -1581,7 +1702,7 @@ async fn main() -> anyhow::Result<()> {
                 ); s }
                 Err(e) => { tracing::error!("Beacon listener: {e}"); return; }
             };
-            let mut buf = vec![0u8; 256]; // signed beacons are 112 bytes
+            let mut buf = vec![0u8; 256]; // signed beacons are 112 bytes (or 208 with ZK proof)
             let local_fp = nc.fingerprint();
             while nc.running.load(Ordering::Relaxed) {
                 if let Ok((amt, src)) = listen_sock.recv_from(&mut buf).await {
@@ -1596,9 +1717,28 @@ async fn main() -> anyhow::Result<()> {
                         tracing::warn!(peer = %src, "Beacon signature invalid — dropped");
                         continue;
                     }
+
+                    // WIRED: ZK proof verification if present or required
+                    if amt >= 208 {
+                        let mut commitment = [0u8; 32];
+                        commitment.copy_from_slice(&buf[112..144]);
+                        let zk_proof = &buf[144..208];
+                        if !ZkAuthenticator::verify_proof(&pk, zk_proof, &commitment) {
+                            tracing::warn!(peer = %src, "Beacon ZK proof verification failed — dropped");
+                            continue;
+                        }
+                    } else if zk_required {
+                        tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires 208-byte ZK proof beacon");
+                        continue;
+                    }
                     let beacon_fp = hex::encode(&pk[..8]);
                     if beacon_fp == local_fp { continue; }
                     tracing::info!(peer = %src, fingerprint = %beacon_fp, "Discovered via beacon");
+
+                    // WIRED: Register discovered peer with NatHolePuncher
+                    if let Ok(local_sa) = nc.local_addr.parse::<SocketAddr>() {
+                        nat_p.register_peer(&beacon_fp, src, local_sa);
+                    }
 
                     // WIRED: Check revocation list before auto-handshaking
                     if rl.reject_handshake(&beacon_fp) {
@@ -1655,6 +1795,8 @@ async fn main() -> anyhow::Result<()> {
     let coc2 = Arc::clone(&connect_ok_ctrs);
     let te2 = Arc::clone(&trusted_exits);
     let psk2 = psk;
+    let tft_rx = Arc::clone(&tft);
+    let rotator_rx = exit_rotator.clone();
     tokio::spawn(async move {
         let sock = nr.socket.clone();
         let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
@@ -1688,10 +1830,13 @@ async fn main() -> anyhow::Result<()> {
                         let te3 = Arc::clone(&te2);
                         let psk3 = psk2;
                         let vpn_pkt = vpn_rx.clone();
+                        let tft3 = Arc::clone(&tft_rx);
+                        let rot3 = rotator_rx.clone();
                         tokio::spawn(async move {
                             handle_pkt(&n2, &pa2, &phs2, &sock2, ctr, &sd, &src2,
                                        Some(&rl3), Some(&*rep3), &et3, &sc3, &rsm3,
-                                       &ca3, &coc3, &te3, psk3, vpn_pkt.as_ref()).await;
+                                       &ca3, &coc3, &te3, psk3, vpn_pkt.as_ref(),
+                                       Some(&*tft3), rot3.as_deref()).await;
                         });
                     }
                     continue;
@@ -1718,6 +1863,8 @@ async fn main() -> anyhow::Result<()> {
                     let te3 = Arc::clone(&te2);
                     let psk3 = psk2;
                     let vpn_pkt = vpn_rx.clone();
+                    let tft3 = Arc::clone(&tft_rx);
+                    let rot3 = rotator_rx.clone();
                     tokio::spawn(async move {
                         if let Some(r) = assemble(&sp, ctr, si, sd).await {
                             if std::env::var("GGN_DEBUG_RX").is_ok() {
@@ -1726,7 +1873,7 @@ async fn main() -> anyhow::Result<()> {
                             handle_pkt(&n2, &pa2, &phs2, &sock2, ctr, &r, &src2,
                                       Some(&rl3), Some(&*rep3),
                                       &et3, &sc3, &rsm3, &ca3, &coc3, &te3, psk3,
-                                      vpn_pkt.as_ref()).await;
+                                      vpn_pkt.as_ref(), Some(&*tft3), rot3.as_deref()).await;
                         } else if std::env::var("GGN_DEBUG_RX").is_ok() {
                             tracing::info!("assemble dropped ctr={ctr} si={si}");
                         }
@@ -1969,9 +2116,24 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // ── Tit-for-Tat Periodic Audit Cycle ──
+    let tft_audit = Arc::clone(&tft);
+    let sessions_audit = Arc::clone(&nc.sessions);
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(120)).await;
+            let to_evict = tft_audit.audit_cycle(&sessions_audit).await;
+            for fp in to_evict {
+                tft_audit.evict(&fp);
+                sessions_audit.remove(&fp);
+                tracing::warn!(peer = %fp, "TFT: Leecher evicted and session torn down");
+            }
+        }
+    });
+
     // ── CLI ──
     if !socks {
-        tracing::info!("Commands: PEER <ip:port>, CHAT <fp> <msg>, SENDRELAY <dest> <relay> <payload>, EXIT <fp>, FINGERPRINT, PEERS, STATUS, STATS, BEACON <on/off>, REVOKE, REP, HELP");
+        tracing::info!("Commands: PEER <ip:port>, CHAT <fp> <msg>, SENDRELAY <dest> <relay> <payload>, EXIT <fp>, EXITS, TFT [fp], FINGERPRINT, PEERS, STATUS, STATS, BEACON <on/off>, REVOKE, REP, HELP");
     }
 
     loop {
@@ -2314,6 +2476,43 @@ async fn main() -> anyhow::Result<()> {
             "VPN" => println!("VPN disabled (build with --features vpn)"),
             #[cfg(not(feature = "vpn"))]
             "LEASES" | "VPNSTATS" => println!("VPN disabled (build with --features vpn)"),
+            "TFT" => {
+                let target = p.get(1).copied().unwrap_or("");
+                if target.is_empty() {
+                    println!("Tit-for-Tat Peer Accounting:");
+                    let stats = tft.all_stats();
+                    if stats.is_empty() {
+                        println!("  No peer reciprocity records yet.");
+                    } else {
+                        for (fp, for_us, for_them, ratio, evicted) in stats {
+                            println!(
+                                "  Peer {}: for_us={} B, for_them={} B, ratio={:.2}, evicted={}",
+                                &fp[..8.min(fp.len())], for_us, for_them, ratio, evicted
+                            );
+                        }
+                    }
+                } else {
+                    let (for_us, for_them, ratio, evicted) = tft.peer_stats(target);
+                    println!("Tit-for-Tat Stats for {}:", target);
+                    println!("  Bytes forwarded for us   : {}", for_us);
+                    println!("  Bytes forwarded for them : {}", for_them);
+                    println!("  Reciprocity ratio        : {:.2}", ratio);
+                    println!("  Transit evicted          : {}", evicted);
+                }
+            }
+            "EXITS" => {
+                match exit_rotator.as_ref() {
+                    Some(r) => {
+                        let idx = r.current_idx.load(std::sync::atomic::Ordering::Relaxed);
+                        println!("Exit IP Rotator Pool ({} IP(s), current index: {}):", r.pool_size(), idx);
+                        for (i, ip) in r.egress_ips.iter().enumerate() {
+                            let marker = if i == (idx % r.pool_size()) { " -> [active]" } else { "" };
+                            println!("  [{}] {}{}", i, ip, marker);
+                        }
+                    }
+                    None => println!("Exit IP Rotator disabled (set GHOST_EXIT_IPS=ip1,ip2,...)"),
+                }
+            }
             "HELP" => {
                 println!("Commands:");
                 println!("  PEER <ip:port>     - Connect to a peer");
@@ -2326,6 +2525,8 @@ async fn main() -> anyhow::Result<()> {
                 println!("  BEACON <on|off>     - Toggle beacon discovery");
                 println!("  REVOKE <fp>         - Revoke a compromised identity");
                 println!("  REP <from> <to>     - Show reputation between peers");
+                println!("  TFT [fp]            - Tit-for-Tat fair-share accounting and eviction status");
+                println!("  EXITS               - Show configured egress IP rotation pool");
                 println!("  LEASES               - VPN hub: client leases (raw)");
                 println!("  VPNSTATS             - VPN in/out/flow totals");
                 println!("  VPN STATUS           - VPN per-lease detail (hub) / client state");

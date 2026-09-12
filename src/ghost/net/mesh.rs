@@ -403,17 +403,17 @@ impl Default for ReciprocityRecord {
 
 impl ReciprocityRecord {
     /// Update the reciprocity ratio.
-    /// Ratio = (bytes received from peer) / (bytes sent to peer)
-    /// Ratio < 0.5 means the peer is leeching (taking more than giving).
+    /// Ratio = (bytes forwarded for us by peer) / (bytes forwarded for them by us)
+    /// Ratio < 0.3 means the peer is leeching (we give much more than we receive).
     pub fn update_ratio(&mut self) {
         let sent = self.bytes_forwarded_for_them.max(1);
         let recv = self.bytes_forwarded_for_us;
         self.reciprocity_ratio = recv as f64 / sent as f64;
     }
 
-    /// Check if this peer is leeching (receiving significantly more than forwarding).
+    /// Check if this peer is leeching (we forwarded significantly for them, but they gave back almost nothing).
     pub fn is_leeching(&self) -> bool {
-        self.reciprocity_ratio < 0.3 && self.bytes_forwarded_for_us > 10_000
+        self.bytes_forwarded_for_them > 10_000 && self.reciprocity_ratio < 0.3
     }
 }
 
@@ -425,7 +425,7 @@ pub struct TitForTatEnforcer {
     /// Reciprocity records keyed by (us, them).
     reciprocity: Arc<DashMap<(String, String), ReciprocityRecord>>,
     /// Reference to the reputation matrix for Byzantine scoring.
-    reputation: Arc<tokio::sync::Mutex<PoissonReputationMatrix>>,
+    reputation: Arc<PoissonReputationMatrix>,
     /// Our fingerprint.
     our_fingerprint: String,
     /// Leechers that have been evicted (session torn down).
@@ -435,7 +435,7 @@ pub struct TitForTatEnforcer {
 }
 
 impl TitForTatEnforcer {
-    pub fn new(our_fingerprint: String, reputation: Arc<tokio::sync::Mutex<PoissonReputationMatrix>>) -> Self {
+    pub fn new(our_fingerprint: String, reputation: Arc<PoissonReputationMatrix>) -> Self {
         Self {
             reciprocity: Arc::new(DashMap::new()),
             reputation,
@@ -450,7 +450,6 @@ impl TitForTatEnforcer {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let mut record = self.reciprocity.entry(key).or_default();
         record.bytes_forwarded_for_them += bytes;
-        record.shards_relayed_for_us += 1;
         record.update_ratio();
         record.last_activity = Instant::now();
     }
@@ -493,15 +492,13 @@ impl TitForTatEnforcer {
                     peer_fp, record.reciprocity_ratio);
 
                 // Also record in reputation matrix
-                let rep = self.reputation.lock().await;
-                rep.record_interaction(&self.our_fingerprint, peer_fp, false);
+                self.reputation.record_interaction(&self.our_fingerprint, peer_fp, false);
                 return true;
             }
 
             // If peer has good ratio, record positive reputation
             if record.reciprocity_ratio > 0.8 {
-                let rep = self.reputation.lock().await;
-                rep.record_interaction(&self.our_fingerprint, peer_fp, true);
+                self.reputation.record_interaction(&self.our_fingerprint, peer_fp, true);
             }
         }
         false
@@ -525,6 +522,30 @@ impl TitForTatEnforcer {
     /// Check if a peer has been evicted.
     pub fn is_evicted(&self, peer_fp: &str) -> bool {
         self.evicted.get(peer_fp).map(|v| *v).unwrap_or(false)
+    }
+
+    /// Get detailed reciprocity stats for a peer: (bytes_for_them, bytes_for_us, ratio, is_evicted)
+    pub fn peer_stats(&self, peer_fp: &str) -> (u64, u64, f64, bool) {
+        let key = (self.our_fingerprint.clone(), peer_fp.to_string());
+        let (sent, recv, ratio) = self.reciprocity
+            .get(&key)
+            .map(|r| (r.bytes_forwarded_for_them, r.bytes_forwarded_for_us, r.reciprocity_ratio))
+            .unwrap_or((0, 0, 1.0));
+        let evicted = self.is_evicted(peer_fp);
+        (sent, recv, ratio, evicted)
+    }
+
+    /// Iterate all tracked reciprocity records
+    pub fn all_stats(&self) -> Vec<(String, u64, u64, f64, bool)> {
+        self.reciprocity
+            .iter()
+            .map(|entry| {
+                let peer_fp = entry.key().1.clone();
+                let r = entry.value();
+                let evicted = self.is_evicted(&peer_fp);
+                (peer_fp, r.bytes_forwarded_for_them, r.bytes_forwarded_for_us, r.reciprocity_ratio, evicted)
+            })
+            .collect()
     }
 
     /// Run the periodic audit cycle — evaluate all peers for eviction.
@@ -563,7 +584,7 @@ pub struct MeshNode {
 
 impl MeshNode {
     /// Create a new mesh node.
-    pub async fn new(fingerprint: String, reputation: Arc<tokio::sync::Mutex<PoissonReputationMatrix>>) -> Self {
+    pub async fn new(fingerprint: String, reputation: Arc<PoissonReputationMatrix>) -> Self {
         Self {
             tft: Arc::new(TitForTatEnforcer::new(fingerprint.clone(), reputation)),
             fingerprint,
@@ -991,7 +1012,7 @@ mod tests {
 
     #[test]
     fn test_reciprocity_detection() {
-        let rep = Arc::new(tokio::sync::Mutex::new(PoissonReputationMatrix::new()));
+        let rep = Arc::new(PoissonReputationMatrix::new());
         let tft = TitForTatEnforcer::new("self".to_string(), rep);
 
         // Simulate a leecher: they forward very little for us
