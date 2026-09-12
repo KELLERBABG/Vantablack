@@ -35,9 +35,12 @@ In privacy mode, all datagrams are fixed to 512 bytes with randomized trailing j
 | `04..07` | Packet Counter | `u32` (BE) | Monotonic counter used for replay protection |
 | `08` | Shard Index | `u8` | Shard indicator (`0`, `1`, or `2` for RS parity) |
 | `09` | Flags | `u8` | Bit flags (`0x00`: privacy, `0x01`: bulk transfer, `0x02`: VPN datagram) |
-| `10..495` | Encrypted Shard | `[u8; 486]` | ChaCha20-Poly1305 ciphertext payload |
+| `10..495` | Encrypted Shard | `[u8; 486]` | ChaCha20-Poly1305 ciphertext payload with canonical 2-byte big-endian length prefix (`[len u16 BE][shard]`), padded up to byte 496 |
 | `496..511`| Auth Tag | `[u8; 16]` | Poly1305 authentication MAC tag |
 | `512..576`| Jitter Padding | `[u8; 16..64]` | Variable pseudorandom noise bytes |
+
+#### Shard Length-Prefix Invariant
+To ensure binary-safe extraction across variable-size application datagrams packed into fixed 486-byte GTF payload slices, every shard is framed via `frame_shard()` (`[len: u16 BE][shard]`) before GTF encapsulation and restored via `unframe()` upon reception before Reed-Solomon inversion.
 
 #### Bulk Mode Frame (1472 Bytes)
 For high-bandwidth file transfers and TUN VPN traffic across verified links, MTU-aligned 1472-byte frames maximize payload throughput without IP fragmentation.
@@ -184,3 +187,15 @@ For received shards $S = [S_0, S_1, S_2]$:
 - **Cloudflare DNS Seed Resolution:** The daemon queries `GHOST_DNS_SEED`, extracting all associated `A` and `AAAA` records.
 - **Local Cache Persistence:** Peer socket addresses are stored in `peers.cache`. During cold boots without WAN access, the cache is read first.
 - **Local Subnet Multicast:** LAN nodes announce themselves on `239.255.0.1:2270` using Ed25519-signed beacons containing timestamp, port, and public key. Expired or invalid beacons are silently dropped.
+
+---
+
+## 7. Autonomous SOCKS5 Proxy & Public WAN Egress
+
+Global Ghost Net implements an integrated SOCKS5 proxy engine listening locally on `127.0.0.1:1080`:
+
+1. **Local Ingress:** Client applications (browsers, CLI utilities, cURL) establish a standard RFC 1928 SOCKS5 handshake over `127.0.0.1:1080` without authentication (`0x00`).
+2. **Mesh Encapsulation:** SOCKS5 CONNECT targets (`host:port` or `ipv4:port`) are framed and dispatched across the multi-hop carrier mesh using ephemeral post-quantum session keys and Reed-Solomon RS(2,1) sharding.
+3. **Exit Node Relay:** The Exit Node (`172.28.1.20`) reassembles shards, verifies Poly1305 MAC authenticity, connects to the target destination, and proxies streams back across the carrier fleet.
+4. **Egress IP Rotation:** The exit node dynamically rotates outbound egress IP addresses (`198.51.100.x`) across successive requests to protect client privacy against destination tracking.
+

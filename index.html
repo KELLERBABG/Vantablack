@@ -945,7 +945,7 @@
             <td class="spec-offset">0x0A &hellip; 0x1F3</td>
             <td class="spec-field">Encrypted Shard</td>
             <td>486 Bytes</td>
-            <td class="spec-desc">Ciphertext carrying the payload shard, encrypted with ChaCha20 authenticated encryption.</td>
+            <td class="spec-desc">Ciphertext carrying the payload shard framed with 2-byte big-endian length prefix (<code>[len u16 BE][shard]</code>), encrypted with ChaCha20-Poly1305.</td>
           </tr>
           <tr>
             <td class="spec-offset">0x1F4 &hellip; 0x203</td>
@@ -1061,6 +1061,28 @@
           </div>
           <div class="scenario-metric">
             Convergence: <strong>&le; 55 ms (Standby Carrier RTT)</strong>
+          </div>
+        </div>
+
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge badge-cyan">PRODUCTION FEATURE &bull; POST-QUANTUM KEM</span>
+            <h3>ML-KEM-512 + X25519 Handshake</h3>
+            <p>True post-quantum key exchange combines lattice-based ML-KEM-512 (Kyber) with X25519 ECDH. Ephemeral secrets are derived via HKDF-SHA256 with live 4-byte session hash verification.</p>
+          </div>
+          <div class="scenario-metric">
+            Security: <strong>NIST FIPS 203 ML-KEM-512 Hybrid (Live Rekeying)</strong>
+          </div>
+        </div>
+
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge badge-amber">PRODUCTION FEATURE &bull; APPLICATION EGRESS</span>
+            <h3>SOCKS5 Local Proxy (:1080)</h3>
+            <p>Integrated SOCKS5 engine binds <code>127.0.0.1:1080</code> for zero-config application routing. TCP streams are chunked, encrypted, sharded across the carrier mesh, and egress-rotated on public WAN.</p>
+          </div>
+          <div class="scenario-metric">
+            Egress: <strong>127.0.0.1:1080 SOCKS5 &bull; Rotating WAN IPs</strong>
           </div>
         </div>
       </div>
