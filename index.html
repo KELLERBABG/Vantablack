@@ -602,12 +602,104 @@
     }
     footer a { color: var(--text-muted); text-decoration: none; transition: color .15s; }
     footer a:hover { color: var(--text); }
-    .footer-left { display: flex; align-items: center; gap: 12px; }
-    .footer-right { display: flex; align-items: center; gap: 18px; }
+    /* —— Level 2 WAN & Scenario Cards ——————————————————————————————— */
+    .scenario-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .scenario-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: border-color .15s, transform .15s;
+    }
+    .scenario-card:hover {
+      border-color: var(--border-glow);
+      transform: translateY(-2px);
+    }
+    .scenario-badge {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      width: fit-content;
+    }
+    .badge-amber { background: rgba(245, 158, 11, 0.12); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-cyan { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--accent-border); }
+    .badge-emerald { background: var(--emerald-subtle); color: var(--emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-rose { background: rgba(244, 63, 94, 0.12); color: var(--rose); border: 1px solid rgba(244, 63, 94, 0.3); }
 
-    @media (prefers-reduced-motion: reduce) {
-      html { scroll-behavior: auto; }
-      .btn { transition: none; }
+    .scenario-card h3 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 10px;
+      line-height: 1.35;
+    }
+    .scenario-card p {
+      font-size: 13.5px;
+      color: var(--text-muted);
+      line-height: 1.55;
+      margin-bottom: 14px;
+    }
+    .scenario-metric {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--text-dim);
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 10px;
+    }
+    .scenario-metric strong { color: var(--accent); }
+
+    .wan-box {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 26px;
+      margin-top: 24px;
+    }
+    .wan-links-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+      margin-bottom: 20px;
+    }
+    .wan-link-item {
+      background: var(--bg);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .wan-link-item .title {
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .wan-link-item .cond {
+      color: var(--accent);
+      font-size: 11px;
+    }
+    .wan-link-item .desc {
+      color: var(--text-dim);
+      font-size: 11px;
+      margin-top: 4px;
     }
   </style>
 </head>
@@ -626,6 +718,7 @@
         </div>
       </a>
       <div class="nav-links">
+        <a href="#wan-mesh" class="nav-link">Level 2 WAN</a>
         <a href="/docs" class="nav-link">Documentation</a>
         <a href="/roadmap" class="nav-link">Roadmap</a>
         <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener" class="btn-repo">
@@ -870,6 +963,109 @@
       </table>
     </section>
 
+    <!-- LEVEL 2 MULTI-HOP MESH WAN & 4 SCENARIOS -->
+    <section id="wan-mesh">
+      <div class="section-head">
+        <span class="section-tag">CARRIER-SCALE RESILIENCE &bull; DOCKER TOPOLOGY</span>
+        <h2>Level 2 Multi-Hop Mesh WAN Architecture</h2>
+        <p>A 7-node carrier simulation environment replicating transcontinental WAN conditions with Linux kernel <code>tc netem</code> latency, jitter, packet loss, and Byzantine adversaries.</p>
+      </div>
+
+      <div class="wan-box">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:10px;">
+          <h3 style="font-size:18px; font-weight:600; color:var(--text);">7-Node Linux Kernel WAN Emulation Topology</h3>
+          <span style="font-family:var(--font-mono); font-size:12px; color:var(--accent);">Subnet: 172.28.0.0/16 &bull; Asymmetric RS(2,1) Dispersal</span>
+        </div>
+        <p style="font-size:14px; color:var(--text-muted); margin-top:8px; line-height:1.6;">
+          Traffic traverses multi-hop carrier networks where intermediary nodes parse explicit hop headers (<code>[hops_remaining][next_ip][next_port]</code>) without inspecting inner encrypted payloads. Corrupted, delayed, or severed carrier links are autonomously isolated and bypassed.
+        </p>
+
+        <div class="wan-links-grid">
+          <div class="wan-link-item">
+            <div class="title"><span>mesh-client</span> <span class="cond">172.28.1.10</span></div>
+            <div class="desc">Client ingress, SOCKS5 (:1080) &amp; Live Telemetry Dashboard (:8080)</div>
+          </div>
+          <div class="wan-link-item">
+            <div class="title"><span>Carrier 1</span> <span class="cond">45ms &plusmn;5ms (1% loss)</span></div>
+            <div class="desc">Transatlantic Fiber link &bull; Multi-hop chain hop 1 (172.28.1.11)</div>
+          </div>
+          <div class="wan-link-item">
+            <div class="title"><span>Carrier 2</span> <span class="cond" style="color:var(--amber);">85ms &plusmn;15ms (3% loss)</span></div>
+            <div class="desc">Transpacific Edge &bull; Byzantine adversary mode active (172.28.1.12)</div>
+          </div>
+          <div class="wan-link-item">
+            <div class="title"><span>Carrier 3</span> <span class="cond" style="color:var(--rose);">160ms &plusmn;25ms (8% loss)</span></div>
+            <div class="desc">Satellite Uplink &bull; Autonomous Chaos Monkey sever target (172.28.1.13)</div>
+          </div>
+          <div class="wan-link-item">
+            <div class="title"><span>Carrier 4</span> <span class="cond">25ms &plusmn;3ms (0.5% loss)</span></div>
+            <div class="desc">Continental Core Backbone &bull; Multi-hop chain hop 2 (172.28.1.14)</div>
+          </div>
+          <div class="wan-link-item">
+            <div class="title"><span>Carrier 5</span> <span class="cond" style="color:var(--emerald);">55ms &plusmn;8ms (1% loss)</span></div>
+            <div class="desc">Dynamic Failover Reserve &bull; Hot standby promotion (172.28.1.15)</div>
+          </div>
+          <div class="wan-link-item">
+            <div class="title"><span>mesh-exit</span> <span class="cond">172.28.1.20</span></div>
+            <div class="desc">Egress Gateway &bull; Outbound IP rotation (198.51.100.x) to public WAN</div>
+          </div>
+        </div>
+
+        <div class="term" style="margin-top:14px; margin-bottom:0;">
+          <span class="c"># Start the full 7-node carrier simulation stack</span><br>
+          <span class="p">docker compose -f docker-compose.wan.yml up --build -d</span><br><br>
+          <span class="c"># Open the live telemetry dashboard in your browser</span><br>
+          <span class="p">open</span> http://localhost:8080 <span class="c"># or query JSON via http://localhost:8080/api/telemetry</span>
+        </div>
+      </div>
+
+      <div class="scenario-grid">
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge badge-amber">SCENARIO 1 &bull; CRYPTOGRAPHIC INTEGRITY</span>
+            <h3>Byzantine Tamper Resistance</h3>
+            <p>Intermediary Carrier 2 injects 4-byte corruptions into in-flight payloads. Combinatorial pairwise RS(2,1) evaluation detects Poly1305 MAC failures, isolates the rogue carrier, and recovers pristine data.</p>
+          </div>
+          <div class="scenario-metric">
+            Defense: <strong>Combinatorial RS(2,1) + Poly1305 (Zero Data Loss)</strong>
+          </div>
+        </div>
+
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge badge-rose">SCENARIO 2 &bull; ANTI-REPLAY DEFENSE</span>
+            <h3>L6 Sliding Window Bitmask</h3>
+            <p>Adversarial replay injections of duplicate frames with stale sequence counters are evaluated against <code>SessionGuard</code>. Bitmask inspection drops replayed datagrams before reaching decryption buffers.</p>
+          </div>
+          <div class="scenario-metric">
+            Defense: <strong>SessionGuard 64-bit / 128-bit Bitmap (Instant Drop)</strong>
+          </div>
+        </div>
+
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge badge-cyan">SCENARIO 3 &bull; TRAFFIC ANALYSIS DEFENSE</span>
+            <h3>L5 Traffic Shaping &amp; Jitter Cover</h3>
+            <p>Frames are dynamically encapsulated with 16 to 64 bytes of cryptographically randomized trailing jitter padding. Variable wire footprints frustrate deep packet inspection (DPI) and timing correlation.</p>
+          </div>
+          <div class="scenario-metric">
+            Defense: <strong>Randomized Jitter Padding [16&ndash;64B Cover]</strong>
+          </div>
+        </div>
+
+        <div class="scenario-card">
+          <div>
+            <span class="scenario-badge badge-emerald">SCENARIO 4 &bull; AUTONOMOUS FAILOVER</span>
+            <h3>Real-time Convergence Latency</h3>
+            <p>Chaos Monkey severs the primary Satellite carrier link every 5 of 10 cycles. <code>AdaptiveShardRouter</code> detects loss and dynamically reroutes shards through hot standby Carrier 5 with zero stream drops.</p>
+          </div>
+          <div class="scenario-metric">
+            Convergence: <strong>&le; 55 ms (Standby Carrier RTT)</strong>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- DEPLOYMENT GUIDE -->
     <section id="deploy">
       <div class="section-head">
@@ -923,6 +1119,20 @@
             <span class="c"># Test proxy egress</span><br>
             <span class="p">curl --socks5 127.0.0.1:1080 https://checkip.amazonaws.com</span>
           </div>
+        </div>
+
+        <div class="route-step">
+          <h3><span>05</span> Run Level 2 Multi-Hop WAN Mesh Simulation (Docker Stack)</h3>
+          <p>Spin up the 7-node carrier mesh under Linux <code>tc netem</code> with live Web Dashboard and SOCKS5 proxy:</p>
+          <div class="term">
+            <span class="c"># Build and run the 7-node multi-hop carrier cluster in detached mode</span><br>
+            <span class="p">docker compose -f docker-compose.wan.yml up -d</span><br><br>
+            <span class="c"># Open the real-time topology &amp; convergence telemetry dashboard</span><br>
+            <span class="p">open</span> http://localhost:8080<br><br>
+            <span class="c"># Route traffic through the multi-hop WAN mesh via client SOCKS5 proxy</span><br>
+            <span class="p">curl --socks5 127.0.0.1:1080 https://httpbin.org/ip</span>
+          </div>
+          <p class="alt">Exports dashboard on <code>:8080</code> (HTML and <code>/api/telemetry</code>) and mesh client SOCKS5 proxy on <code>:1080</code>.</p>
         </div>
 
       </div>
