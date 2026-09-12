@@ -27,6 +27,7 @@ services:
       - NODE_ROLE=carrier
       - LISTEN_ADDR=0.0.0.0:8000
       - NETEM_RULE=delay 85ms 15ms loss 3%
+      - BYZANTINE_TAMPER=1
     networks:
       wan_mesh:
         ipv4_address: 172.28.1.12

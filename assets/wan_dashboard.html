@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Ghost Net — Level 2 Multi-Hop & Chaos WAN Telemetry</title>
+  <title>Global Ghost Net — Byzantine Tamper Defense & Level 2 WAN Telemetry</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
   <style>
@@ -55,29 +55,45 @@
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 20px;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
       margin-bottom: 24px;
     }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 20px;
+      padding: 18px;
     }
     .card-title {
       font-size: 11px;
       text-transform: uppercase;
       color: var(--dim);
       letter-spacing: 1px;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
     .val {
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 700;
       color: var(--cyan);
     }
-    .sub { font-size: 12px; color: var(--dim); margin-top: 4px; }
+    .sub { font-size: 11px; color: var(--dim); margin-top: 4px; }
+    .byzantine-alert-box {
+      background: rgba(255, 51, 102, 0.08);
+      border: 1px solid var(--red);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 24px;
+      display: none;
+    }
+    .byzantine-alert-box.active {
+      display: block;
+      animation: flashBorder 1.5s infinite;
+    }
+    @keyframes flashBorder {
+      0%, 100% { border-color: var(--red); box-shadow: 0 0 15px rgba(255, 51, 102, 0.3); }
+      50% { border-color: rgba(255, 51, 102, 0.4); box-shadow: none; }
+    }
     .topology-container {
       background: var(--card);
       border: 1px solid var(--border);
@@ -104,6 +120,11 @@
     .carrier-box.severed {
       border-color: var(--red);
       background: rgba(255, 51, 102, 0.05);
+    }
+    .carrier-box.tampered {
+      border-color: var(--red);
+      background: rgba(255, 51, 102, 0.12);
+      box-shadow: 0 0 12px rgba(255, 51, 102, 0.25);
     }
     .carrier-box.reserve {
       border-color: var(--yellow);
@@ -146,9 +167,22 @@
   <div class="header">
     <div class="title">
       <div class="pulse-dot"></div>
-      GLOBAL GHOST NET — LEVEL 2 MULTI-HOP & CHAOS ADAPTIVE ROUTING
+      GLOBAL GHOST NET — LEVEL 2 MULTI-HOP & BYZANTINE FAULT TOLERANCE
     </div>
     <div class="badge badge-green" id="status-tag">LEVEL 2 OPERATIONAL</div>
+  </div>
+
+  <!-- Real-Time Byzantine Security Alert Banner -->
+  <div class="byzantine-alert-box" id="byzantine-banner">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+      <div style="font-weight: 700; color: var(--red); font-size: 14px; letter-spacing: 0.5px;">
+        SECURITY ALERT: BYZANTINE ADVERSARY DATA CORRUPTION ISOLATED
+      </div>
+      <span class="badge badge-red">POLY1305 AUTH FAILED</span>
+    </div>
+    <div style="font-size: 12px; color: var(--text); margin-top: 6px;" id="byzantine-details">
+      Evaluating payload integrity...
+    </div>
   </div>
 
   <div class="grid">
@@ -158,24 +192,29 @@
       <div class="sub">Autonomous multi-hop flights</div>
     </div>
     <div class="card">
+      <div class="card-title">Byzantine Defense</div>
+      <div class="val" id="tamper-val" style="font-size: 15px; color: var(--green);">AUTHENTICATED</div>
+      <div class="sub">Poly1305 Tag Isolation</div>
+    </div>
+    <div class="card">
       <div class="card-title">Chaos Monkey State</div>
-      <div class="val" id="chaos-val" style="font-size: 16px; color: var(--yellow);">ACTIVE MONITORING</div>
+      <div class="val" id="chaos-val" style="font-size: 15px; color: var(--yellow);">ACTIVE MONITORING</div>
       <div class="sub">Dynamic link rupture & failover</div>
     </div>
     <div class="card">
       <div class="card-title">Exit Egress Rotation</div>
-      <div class="val" id="egress-val" style="color: var(--yellow);">198.51.100.10</div>
+      <div class="val" id="egress-val" style="color: var(--yellow); font-size: 18px;">198.51.100.10</div>
       <div class="sub">Virtual egress interface</div>
     </div>
     <div class="card">
       <div class="card-title">SOCKS5 Proxy Status</div>
-      <div class="val" style="color: var(--green); font-size: 16px;">127.0.0.1:1080</div>
+      <div class="val" style="color: var(--green); font-size: 15px;">127.0.0.1:1080</div>
       <div class="sub">Direct mesh tunnel active</div>
     </div>
   </div>
 
   <div class="topology-container">
-    <div class="card-title">Carrier Node Fleet (Kernel tc netem & Multi-Hop Topologies)</div>
+    <div class="card-title">Carrier Node Fleet (Kernel tc netem, Multi-Hop & Byzantine State)</div>
     
     <div class="carriers" id="carriers-list">
       <!-- Injected dynamically -->
@@ -204,6 +243,18 @@
           document.getElementById('egress-val').innerText = data.exit_egress_ip || '--';
           document.getElementById('status-tag').innerText = data.status;
 
+          // Byzantine state handling
+          const banner = document.getElementById('byzantine-banner');
+          const tamperVal = document.getElementById('tamper-val');
+          if (data.byzantine_event && data.byzantine_event.length > 0) {
+            banner.classList.add('active');
+            document.getElementById('byzantine-details').innerText = data.byzantine_event;
+            tamperVal.innerHTML = '<span style="color: var(--red);">TAMPER DISCARDED</span>';
+          } else {
+            banner.classList.remove('active');
+            tamperVal.innerHTML = '<span style="color: var(--green);">AUTHENTICATED</span>';
+          }
+
           if (data.cycle % 10 >= 5) {
             document.getElementById('chaos-val').innerHTML = '<span style="color: var(--red);">CARRIER 3 SEVERED</span>';
           } else {
@@ -218,6 +269,9 @@
               if (c.status.includes('SEVERED')) {
                 cl += ' severed';
                 badge = '<span class="badge badge-red">SEVERED</span>';
+              } else if (c.status.includes('TAMPER')) {
+                cl += ' tampered';
+                badge = '<span class="badge badge-red">FORGERY DETECTED</span>';
               } else if (c.status.includes('FAILOVER')) {
                 cl += ' active';
                 badge = '<span class="badge badge-yellow">FAILOVER IN USE</span>';
@@ -234,7 +288,7 @@
                   </div>
                   <div style="font-size: 11px; color: var(--dim);">${c.role} (${c.ip})</div>
                   <div style="font-size: 11px; color: var(--dim); margin-top: 2px;">Netem: ${c.netem}</div>
-                  <div style="font-size: 20px; font-weight: 700; margin-top: 10px; color: ${c.status.includes('SEVERED') ? 'var(--red)' : 'var(--text)'};">
+                  <div style="font-size: 20px; font-weight: 700; margin-top: 10px; color: ${c.status.includes('SEVERED') || c.status.includes('TAMPER') ? 'var(--red)' : 'var(--text)'};">
                     ${c.rtt_ms > 0 ? c.rtt_ms + ' ms' : '--'}
                   </div>
                   <div class="sub">${c.status}</div>
@@ -249,7 +303,8 @@
           }
 
           if (data.google_headers && data.google_headers.length > 0) {
-            document.getElementById('headers-log').innerText = data.google_headers.join('\n');
+            document.getElementById('headers-log').innerText = data.google_headers.join('
+');
           }
         }
       } catch (e) {

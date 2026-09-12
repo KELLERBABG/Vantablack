@@ -24,7 +24,7 @@ pub struct CarrierMetric {
     pub ip: String,
     pub netem: String,
     pub rtt_ms: u64,
-    pub status: String, // "ACTIVE", "SEVERED", "RESERVE"
+    pub status: String, // "ACTIVE", "SEVERED", "RESERVE", "TAMPERING"
     pub role: String,
 }
 
@@ -39,6 +39,7 @@ pub struct TelemetryState {
     pub carriers: Vec<CarrierMetric>,
     pub google_headers: Vec<String>,
     pub chaos_mode: String,
+    pub byzantine_event: String,
 }
 
 fn enc_split(
@@ -66,40 +67,101 @@ fn enc_split(
     (raw, t)
 }
 
-fn dec_join(
+/// Reconstructs and decrypts payload using Reed-Solomon RS(2,1) and ChaCha20-Poly1305 AEAD.
+/// If 3 shards are present but corrupted by a Byzantine intermediary, evaluates combinations
+/// of 2 shards to isolate, identify, and discard the forged shard.
+/// Returns (Option<payload>, Option<corrupted_shard_idx>).
+fn dec_join_tamper_resistant(
     key: &[u8; 32],
     ctr: u32,
     session_hash: &[u8; 4],
     direction: NonceDirection,
-    shards: &mut Vec<Option<Vec<u8>>>,
-) -> Option<Vec<u8>> {
-    if shards.iter().filter(|s| s.is_some()).count() < 2 {
-        return None;
-    }
-    let m = shards
+    shards: &[Option<Vec<u8>>],
+) -> (Option<Vec<u8>>, Option<usize>) {
+    let present_indices: Vec<usize> = shards
         .iter()
-        .filter_map(|x| x.as_ref().map(|v| v.len()))
-        .max()
-        .unwrap_or(0);
-    for v in shards.iter_mut().flatten() {
-        while v.len() < m {
-            v.push(0);
-        }
+        .enumerate()
+        .filter_map(|(i, s)| if s.is_some() { Some(i) } else { None })
+        .collect();
+
+    if present_indices.len() < 2 {
+        return (None, None);
     }
-    if l4_rs::reconstruct(shards).is_ok() {
-        let a = shards[0].as_ref()?;
-        let b = shards[1].as_ref()?;
-        let mut merged = [a.as_slice(), b.as_slice()].concat();
-        if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok() {
-            if merged.len() >= 2 {
-                let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
-                if 2 + len <= merged.len() {
-                    return Some(merged[2..2 + len].to_vec());
+
+    // Helper closure to attempt reconstruction and AEAD decryption for a pair of shards (idx_a, idx_b)
+    let try_pair = |idx_a: usize, idx_b: usize| -> Option<Vec<u8>> {
+        let mut pair_shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
+        pair_shards[idx_a] = shards[idx_a].clone();
+        pair_shards[idx_b] = shards[idx_b].clone();
+
+        let m = pair_shards
+            .iter()
+            .filter_map(|x| x.as_ref().map(|v| v.len()))
+            .max()
+            .unwrap_or(0);
+        for v in pair_shards.iter_mut().flatten() {
+            while v.len() < m {
+                v.push(0);
+            }
+        }
+
+        if l4_rs::reconstruct(&mut pair_shards).is_ok() {
+            let a = pair_shards[0].as_ref()?;
+            let b = pair_shards[1].as_ref()?;
+            let mut merged = [a.as_slice(), b.as_slice()].concat();
+            if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok() {
+                if merged.len() >= 2 {
+                    let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
+                    if 2 + len <= merged.len() {
+                        return Some(merged[2..2 + len].to_vec());
+                    }
                 }
             }
         }
+        None
+    };
+
+    // If all 3 shards arrived, first test all 3 combinations of pairs:
+    // Pair (0, 1): excludes Shard 2
+    // Pair (0, 2): excludes Shard 1
+    // Pair (1, 2): excludes Shard 0
+    if shards[0].is_some() && shards[1].is_some() && shards[2].is_some() {
+        let res_01 = try_pair(0, 1);
+        let res_02 = try_pair(0, 2);
+        let res_12 = try_pair(1, 2);
+
+        // If all 3 pairs succeed, all shards are clean and uncorrupted
+        if res_01.is_some() && res_02.is_some() && res_12.is_some() {
+            return (res_01, None);
+        }
+
+        // If Shard 1 was tampered with:
+        // Pair (0, 2) succeeds! Pair (0, 1) and (1, 2) fail AEAD Poly1305 check.
+        if res_02.is_some() && res_01.is_none() && res_12.is_none() {
+            return (res_02, Some(1));
+        }
+
+        // If Shard 0 was tampered with:
+        // Pair (1, 2) succeeds!
+        if res_12.is_some() && res_01.is_none() && res_02.is_none() {
+            return (res_12, Some(0));
+        }
+
+        // If Shard 2 was tampered with:
+        // Pair (0, 1) succeeds!
+        if res_01.is_some() && res_02.is_none() && res_12.is_none() {
+            return (res_01, Some(2));
+        }
+    } else {
+        // Exactly 2 shards arrived (e.g. one path dropped or severed by chaos monkey)
+        let i = present_indices[0];
+        let j = present_indices[1];
+        if let Some(payload) = try_pair(i, j) {
+            return (Some(payload), None);
+        }
     }
-    None
+
+    (None, None)
 }
 
 #[tokio::main]
@@ -125,29 +187,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Level 2 Multi-Hop Carrier Relay
 /// Reads hop header: [hops_remaining_u8][next_ip_4_bytes][next_port_2_bytes][payload...]
 async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Error>> {
+    let tamper_enabled = env::var("BYZANTINE_TAMPER").unwrap_or_else(|_| "0".to_string()) == "1";
     println!("[CARRIER] Active. Multi-hop packet relay initialized under Linux tc netem.");
+    if tamper_enabled {
+        println!(">>> [BYZANTINE ADVERSARY MODE ACTIVE] This carrier node will intentionally corrupt in-flight shards on selected cycles!");
+    }
     let mut buf = vec![0u8; 4096];
+    let mut pkt_counter: u64 = 0;
 
     loop {
         let (len, src) = socket.recv_from(&mut buf).await?;
         if len >= 7 {
+            pkt_counter += 1;
             let hops_remaining = buf[0];
             let next_ip = std::net::Ipv4Addr::new(buf[1], buf[2], buf[3], buf[4]);
             let next_port = u16::from_be_bytes([buf[5], buf[6]]);
             let next_addr = SocketAddr::new(std::net::IpAddr::V4(next_ip), next_port);
 
-            let payload = &buf[7..len];
+            let mut payload = buf[7..len].to_vec();
+
+            // Byzantine Tampering Simulation:
+            // Corrupt in-flight shard payload every 3 packets to demonstrate cryptographic tamper isolation
+            if tamper_enabled && pkt_counter % 3 == 0 && payload.len() > 10 {
+                println!("!!! [BYZANTINE ATTACK] Intercepted in-flight shard packet! Injected 4-byte corruption into encrypted payload...");
+                let p_len = payload.len();
+                payload[p_len - 1] ^= 0xFF;
+                payload[p_len - 2] ^= 0xAA;
+                payload[p_len - 3] ^= 0x55;
+                payload[p_len - 4] ^= 0x33;
+            }
 
             if hops_remaining > 1 {
                 // Decrement hops remaining and forward to next intermediary hop
                 let mut forwarded = vec![hops_remaining - 1];
-                forwarded.extend_from_slice(payload);
+                forwarded.extend_from_slice(&payload);
                 let _ = socket.send_to(&forwarded, next_addr).await;
                 println!("[CARRIER] Multi-hop relay: {} bytes forwarded to NEXT HOP {} ({} hops left)",
                     payload.len(), next_addr, hops_remaining - 1);
             } else {
                 // Final hop delivery (e.g. into Exit node or Client)
-                let _ = socket.send_to(payload, next_addr).await;
+                let _ = socket.send_to(&payload, next_addr).await;
                 println!("[CARRIER] Final-hop relay: {} bytes delivered to ENDPOINT {}", payload.len(), next_addr);
             }
         }
@@ -207,9 +286,21 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
             let session_hash = [0x5A, 0x11, 0xCA, (current_cycle % 256) as u8];
             let tx_ctr = (current_cycle * 10 + 2) as u32;
 
-            if let Some(target_bytes) = dec_join(&session_key, tx_ctr, &session_hash, NonceDirection::InitiatorToResponder, &mut shards) {
+            let (decrypted_target, corrupted_shard) = dec_join_tamper_resistant(
+                &session_key,
+                tx_ctr,
+                &session_hash,
+                NonceDirection::InitiatorToResponder,
+                &shards,
+            );
+
+            if let Some(bad_idx) = corrupted_shard {
+                println!("!!! [EXIT SECURITY ALERT] BYZANTINE DATA CORRUPTION DETECTED ON INBOUND SHARD #{}! Discarded forged shard; authenticated & reconstructed via valid shards.", bad_idx);
+            }
+
+            if let Some(target_bytes) = decrypted_target {
                 let target_str = String::from_utf8_lossy(&target_bytes);
-                println!("[EXIT] RS(2,1) Reconstruction SUCCEEDED! Decrypted target: \"{}\"", target_str);
+                println!("[EXIT] RS(2,1) Reconstruction & AEAD Verification SUCCEEDED! Decrypted target: \"{}\"", target_str);
 
                 let egress = exit_rotator.get_next_socket_addr(80);
                 println!("[EXIT] Outbound Egress IP Rotated -> {}", egress.ip());
@@ -492,16 +583,37 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         }
 
         let mut lines = Vec::new();
+        let mut byzantine_msg = String::new();
         let status = if rx_count >= 2 {
             let return_ctr = tx_ctr + 1;
-            if let Some(decrypted) = dec_join(&session_key, return_ctr, &session_hash, NonceDirection::ResponderToInitiator, &mut return_shards) {
-                let decrypted_str = String::from_utf8_lossy(&decrypted);
-                println!("[CLIENT] SUCCESS! Reconstructed Google HTTP Response through RS(2,1):");
+            let (decrypted, corrupted_idx) = dec_join_tamper_resistant(
+                &session_key,
+                return_ctr,
+                &session_hash,
+                NonceDirection::ResponderToInitiator,
+                &return_shards,
+            );
+
+            if let Some(bad_idx) = corrupted_idx {
+                let alert = format!("BYZANTINE ATTACK DETECTED: Shard #{} corrupted in transit! Poly1305 auth tag rejected forgery; RS(2,1) recovered original data from remaining shards.", bad_idx);
+                println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                println!(">>> [SECURITY EVENT] {}", alert);
+                println!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                byzantine_msg = alert;
+            }
+
+            if let Some(payload) = decrypted {
+                let decrypted_str = String::from_utf8_lossy(&payload);
+                println!("[CLIENT] SUCCESS! Reconstructed Google HTTP Response through RS(2,1) + AEAD Verification:");
                 for line in decrypted_str.lines().take(4) {
                     println!("         {}", line);
                     lines.push(line.to_string());
                 }
-                format!("SUCCESS: Reconstructed payload with {}/3 shards", rx_count)
+                if corrupted_idx.is_some() {
+                    format!("TAMPER_ISOLATED: Shard corrupted & rejected, payload successfully recovered")
+                } else {
+                    format!("SUCCESS: Reconstructed payload with {}/3 shards", rx_count)
+                }
             } else {
                 "DECRYPTION_FAILED".to_string()
             }
@@ -535,6 +647,10 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             state.carriers[4].rtt_ms = if is_carrier_3_severed { rtts[2] } else { 0 };
             state.carriers[4].status = if is_carrier_3_severed { "FAILOVER ACTIVE".into() } else { "HOT STANDBY".into() };
             state.google_headers = lines;
+            state.byzantine_event = byzantine_msg;
+            if state.byzantine_event.contains("Shard #1") {
+                state.carriers[1].status = "TAMPER REJECTED (Poly1305 Tag Failed)".into();
+            }
         }
 
         tokio::time::sleep(Duration::from_secs(5)).await;
