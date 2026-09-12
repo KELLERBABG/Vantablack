@@ -24,7 +24,7 @@ use vantablack::ghost::{
         l6_session::SessionGuard,
     },
     net::{
-        build_gtf_frame, extract_payload,
+        build_gtf_frame, extract_payload, frame_shard, unframe,
         BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BASE_SIZE,
         mesh::{AdaptiveShardRouter, ExitIpRotator},
     },
@@ -216,7 +216,8 @@ fn enc_split_gtf(
     let (shards, tag) = enc_split(key, ctr, session_hash, direction, pay);
     let mut gtf_shards = Vec::with_capacity(3);
     for (i, shard) in shards.iter().enumerate() {
-        let mut frame = build_gtf_frame(*session_hash, ctr, i as u8, shard, &tag, false);
+        let framed_shard = frame_shard(shard);
+        let mut frame = build_gtf_frame(*session_hash, ctr, i as u8, &framed_shard, &tag, false);
         // build_gtf_frame creates base 512B + jitter. Ensure minimum 512B GTF standard
         if frame.len() < GTF_BASE_SIZE {
             frame.resize(GTF_BASE_SIZE, 0);
@@ -475,9 +476,10 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                         if packet_cycle == current_cycle && shard_idx < 3 && shards[shard_idx].is_none() {
                             let gtf_raw = &buf[9..len];
                             let unpadded = if gtf_raw.len() >= GTF_BASE_SIZE {
-                                extract_payload(gtf_raw).to_vec()
+                                let raw_payload = extract_payload(gtf_raw);
+                                unframe(raw_payload).unwrap_or_else(|| raw_payload.to_vec())
                             } else {
-                                gtf_raw.to_vec()
+                                unframe(gtf_raw).unwrap_or_else(|| gtf_raw.to_vec())
                             };
                             shards[shard_idx] = Some(unpadded);
                             received_count += 1;
@@ -929,9 +931,10 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                             let shard_rtt = dispatch_start.elapsed().as_millis() as u64;
                             let gtf_return = &rx_buf[9..len];
                             let unpadded = if gtf_return.len() >= GTF_BASE_SIZE {
-                                extract_payload(gtf_return).to_vec()
+                                let raw_payload = extract_payload(gtf_return);
+                                unframe(raw_payload).unwrap_or_else(|| raw_payload.to_vec())
                             } else {
-                                gtf_return.to_vec()
+                                unframe(gtf_return).unwrap_or_else(|| gtf_return.to_vec())
                             };
                             return_shards[shard_idx] = Some(unpadded);
                             rtts[shard_idx] = shard_rtt;
