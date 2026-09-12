@@ -74,6 +74,9 @@ services:
     environment:
       - NODE_ROLE=client
       - LISTEN_ADDR=0.0.0.0:8000
+    ports:
+      - "8080:8080"
+      - "1080:1080"
     networks:
       wan_mesh:
         ipv4_address: 172.28.1.10

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Global Ghost Net — Live Kernel WAN Telemetry</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #07090e;
+      --card: #0d1117;
+      --border: #1f242c;
+      --cyan: #00f0ff;
+      --green: #00ff88;
+      --yellow: #ffb800;
+      --purple: #7928ca;
+      --text: #e6edf3;
+      --dim: #8b949e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      padding: 24px;
+      line-height: 1.5;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+      margin-bottom: 24px;
+    }
+    .title {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .pulse-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+    .card-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      color: var(--dim);
+      letter-spacing: 1px;
+      margin-bottom: 12px;
+    }
+    .val {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--cyan);
+    }
+    .sub { font-size: 12px; color: var(--dim); margin-top: 4px; }
+    .topology-container {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .carriers {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .carrier-box {
+      background: #090d14;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      transition: all 0.3s;
+    }
+    .carrier-box.active {
+      border-color: var(--cyan);
+      box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
+    }
+    .headers-log {
+      background: #05070a;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+      font-size: 13px;
+      color: var(--green);
+      max-height: 180px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      background: rgba(0, 240, 255, 0.1);
+      color: var(--cyan);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title">
+      <div class="pulse-dot"></div>
+      GLOBAL GHOST NET — LEVEL 1 KERNEL WAN EMULATOR
+    </div>
+    <div class="tag" id="status-tag">ACTIVE MONITORING</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-title">Mesh Cycle</div>
+      <div class="val" id="cycle-val">#0</div>
+      <div class="sub">Autonomous packet flight cycles</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Target Destination</div>
+      <div class="val" id="target-val" style="color: var(--text);">www.google.com:80</div>
+      <div class="sub">Sealed in RS(2,1) multi-path shards</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Exit Node Egress IP</div>
+      <div class="val" id="egress-val" style="color: var(--yellow);">198.51.100.10</div>
+      <div class="sub">Round-robin rotated egress interface</div>
+    </div>
+  </div>
+
+  <div class="topology-container">
+    <div class="card-title">Linux Kernel Emulated Carrier Paths (tc netem)</div>
+    
+    <div class="carriers">
+      <div class="carrier-box" id="carrier-1">
+        <div style="font-weight: 700; color: var(--cyan); margin-bottom: 6px;">Carrier 1 (172.28.1.11)</div>
+        <div style="font-size: 12px; color: var(--dim);">Netem: 45ms ±5ms (1% loss)</div>
+        <div style="font-size: 20px; font-weight: 700; margin-top: 10px;" id="rtt-1">-- ms</div>
+        <div class="sub">Actual measured WAN RTT</div>
+      </div>
+      
+      <div class="carrier-box" id="carrier-2">
+        <div style="font-weight: 700; color: var(--cyan); margin-bottom: 6px;">Carrier 2 (172.28.1.12)</div>
+        <div style="font-size: 12px; color: var(--dim);">Netem: 85ms ±15ms (3% loss)</div>
+        <div style="font-size: 20px; font-weight: 700; margin-top: 10px;" id="rtt-2">-- ms</div>
+        <div class="sub">Actual measured WAN RTT</div>
+      </div>
+
+      <div class="carrier-box" id="carrier-3">
+        <div style="font-weight: 700; color: var(--cyan); margin-bottom: 6px;">Carrier 3 (172.28.1.13)</div>
+        <div style="font-size: 12px; color: var(--dim);">Netem: 160ms ±25ms (8% loss)</div>
+        <div style="font-size: 20px; font-weight: 700; margin-top: 10px;" id="rtt-3">-- ms</div>
+        <div class="sub">Actual measured WAN RTT</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Verified Public WAN Ingest (Google HTTP Response)</div>
+    <div class="headers-log" id="headers-log">Awaiting first decrypted packet flight...</div>
+  </div>
+
+  <script>
+    async function updateTelemetry() {
+      try {
+        const res = await fetch('/api/telemetry');
+        if (res.ok) {
+          const data = await res.json();
+          document.getElementById('cycle-val').innerText = '#' + data.cycle;
+          document.getElementById('target-val').innerText = data.target || 'www.google.com:80';
+          document.getElementById('egress-val').innerText = data.exit_egress_ip || '--';
+          
+          document.getElementById('rtt-1').innerText = (data.carrier_rtts_ms[0] || 0) + ' ms';
+          document.getElementById('rtt-2').innerText = (data.carrier_rtts_ms[1] || 0) + ' ms';
+          document.getElementById('rtt-3').innerText = (data.carrier_rtts_ms[2] || 0) + ' ms';
+
+          if (data.google_headers && data.google_headers.length > 0) {
+            document.getElementById('headers-log').innerText = data.google_headers.join('\n');
+          }
+          document.getElementById('status-tag').innerText = data.status;
+        }
+      } catch (e) {
+        console.warn('Telemetry poll error', e);
+      }
+    }
+    setInterval(updateTelemetry, 1500);
+    updateTelemetry();
+  </script>
+</body>
+</html>

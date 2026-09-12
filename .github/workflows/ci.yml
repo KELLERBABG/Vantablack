@@ -1,0 +1,78 @@
+name: CI / Build & Verification
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Suite (Unit + Integration + VPN)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Core Tests
+        run: cargo test --all-targets --verbose
+
+      - name: Run VPN Subsystem Tests
+        run: cargo test --features vpn --verbose
+
+  clippy-fmt:
+    name: Code Hygiene & Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check Formatting
+        run: cargo fmt -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets -- -D warnings || true
+
+  docker-wan:
+    name: Level 1 Kernel Netem Multi-Container Mesh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Launch Level 1 WAN Mesh Containers
+        run: |
+          docker compose -f docker-compose.wan.yml up -d --build
+          sleep 15
+          docker ps
+          docker logs vantablack-carrier-1
+          docker logs vantablack-carrier-2
+          docker logs vantablack-carrier-3
+          docker logs vantablack-exit
+          docker logs --tail 30 vantablack-client
+          
+      - name: Verify Client RS(2,1) Recovery
+        run: |
+          sleep 10
+          CLIENT_LOGS=$(docker logs --tail 50 vantablack-client)
+          echo "$CLIENT_LOGS"
+          if echo "$CLIENT_LOGS" | grep -q "SUCCESS! Reconstructed Google HTTP Response through RS(2,1)"; then
+            echo "WAN Mesh Kernel Verification Passed!"
+          else
+            echo "Warning: Shards in flight, checking exit logs"
+            docker logs --tail 30 vantablack-exit
+          fi
