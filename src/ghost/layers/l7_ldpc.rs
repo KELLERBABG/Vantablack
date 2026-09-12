@@ -177,8 +177,6 @@ impl LdpcCodec {
     fn belief_propagation(&self, llr: &mut [f64]) -> Vec<bool> {
         let n = LDPC_BLOCK_BITS; // total variable nodes
         let m = LDPC_PARITY_BITS; // total check nodes
-        let _vn_to_cn = vec![0.0f64; n * 3]; // Variable→Check messages (max 3 per variable)
-        let _cn_to_vn = vec![0.0f64; m * 3]; // Check→Variable messages (max 3 per check)
         let mut hard_decision = vec![false; n];
 
         // Build variable-to-check and check-to-variable adjacency
@@ -192,54 +190,73 @@ impl LdpcCodec {
             }
         }
 
-        // Check node adjacency
+        // Check node adjacency:
+        // Parity equation j: parity_j = \sum_{i: j \in parity_cols[i]} data_i
+        // That is: parity_j ^ (\sum_{i: j \in parity_cols[i]} data_i) = 0
         let mut check_vars: Vec<Vec<usize>> = vec![Vec::new(); m];
-        for ci in 0..m {
-            // Each check node is connected to variable nodes:
-            // data bit ci and parity columns
-            check_vars[ci].push(ci); // data bit connection
-            for &vj in &self.parity_cols[ci] {
-                check_vars[ci].push(LDPC_DATA_BITS + vj);
+        for j in 0..m {
+            // Parity bit j is variable node LDPC_DATA_BITS + j
+            check_vars[j].push(LDPC_DATA_BITS + j);
+        }
+        for (i, cols) in self.parity_cols.iter().enumerate() {
+            for &j in cols {
+                if j < m {
+                    // Data bit i participates in parity equation j
+                    check_vars[j].push(i);
+                }
             }
         }
 
-        // Iterative decoding
+        // Gallager bit-flipping decoding:
+        // Compute syndrome s = H * x. Count how many unsatisfied parity checks each variable node participates in.
+        // The variable node(s) with the most unsatisfied checks are flipped.
         for _iter in 0..MAX_ITERATIONS {
-            // Variable node processing: vn_to_cn = LLR + Σ(cn_to_vn from other checks)
-            // (Simplified: in this implementation, we use hard-decision majority)
-
-            // Hard decision: majority vote of LLR sign
             for i in 0..n {
                 hard_decision[i] = llr[i] < 0.0;
             }
 
-            // Check node processing: check if parity equations are satisfied
-            let mut all_satisfied = true;
+            // Check parity equations
+            let mut unsatisfied_checks = vec![false; m];
+            let mut any_unsatisfied = false;
             for ci in 0..m {
                 let mut parity = false;
                 for &vj in &check_vars[ci] {
                     parity ^= hard_decision[vj];
                 }
                 if parity {
-                    // Parity check failed — flip the least reliable variable
-                    let mut min_reliability = f64::MAX;
-                    let mut min_idx = 0;
-                    for &vj in &check_vars[ci] {
-                        let rel = llr[vj].abs();
-                        if rel < min_reliability {
-                            min_reliability = rel;
-                            min_idx = vj;
-                        }
-                    }
-                    // Flip the bit with lowest confidence
-                    hard_decision[min_idx] = !hard_decision[min_idx];
-                    llr[min_idx] = -llr[min_idx]; // Update LLR
-                    all_satisfied = false;
+                    unsatisfied_checks[ci] = true;
+                    any_unsatisfied = true;
                 }
             }
 
-            if all_satisfied {
+            if !any_unsatisfied {
                 break;
+            }
+
+            // Count unsatisfied check constraints per variable node
+            let mut failed_counts = vec![0usize; n];
+            let mut max_failed = 0;
+            for ci in 0..m {
+                if unsatisfied_checks[ci] {
+                    for &vj in &check_vars[ci] {
+                        failed_counts[vj] += 1;
+                        if failed_counts[vj] > max_failed {
+                            max_failed = failed_counts[vj];
+                        }
+                    }
+                }
+            }
+
+            if max_failed == 0 {
+                break;
+            }
+
+            // Flip the variable nodes involved in the maximum number of unsatisfied parity checks
+            for i in 0..n {
+                if failed_counts[i] == max_failed {
+                    hard_decision[i] = !hard_decision[i];
+                    llr[i] = -llr[i];
+                }
             }
         }
 
@@ -383,5 +400,32 @@ mod tests {
             }
             _ => panic!("Expected InvalidLength error"),
         }
+    }
+
+    #[test]
+    fn test_ldpc_bit_flip_correction() {
+        let codec = LdpcCodec::new();
+        let original_data = vec![0x42u8; LDPC_DATA_BYTES];
+        let mut codeword = codec.encode(&original_data).expect("Encoding failed");
+
+        // Corrupt 1 bit in data
+        codeword[0] ^= 0x01;
+
+        let decoded = codec.decode(&codeword).expect("Decoding failed");
+        assert_eq!(decoded, original_data, "LDPC must correct single bit flip");
+    }
+
+    #[test]
+    fn test_ldpc_multi_bit_corruption() {
+        let codec = LdpcCodec::new();
+        let original_data = vec![0xA5u8; LDPC_DATA_BYTES];
+        let mut codeword = codec.encode(&original_data).expect("Encoding failed");
+
+        // Flip bits in distant bytes
+        codeword[2] ^= 0x04;
+        codeword[15] ^= 0x10;
+
+        let decoded = codec.decode(&codeword).expect("Decoding failed");
+        assert_eq!(decoded, original_data, "LDPC must correct dispersed bit flips");
     }
 }

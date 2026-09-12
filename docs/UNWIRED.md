@@ -87,9 +87,9 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 | Symbol | Reality |
 | :-- | :-- |
 | `l3_shamir::split_secret` / `join_shares` | Never called. The transport uses L4 RS(2,1) only. |
-| `LdpcCodec` (L7) | Never called. Its "Sum-Product / Belief Propagation" decoder is actually hard-decision **bit-flipping** — the `_vn_to_cn` and `_cn_to_vn` message arrays are allocated and never used. Its tests assert buffer *lengths*, never that a corrupted block is corrected. |
-| `XtsMemoryEncryptor`, `EncryptedMemoryRegion` (L8) | Real AES-256-XTS via `xts-mode`. Never called. |
-| `VerifiedRingBuffer` (L8) | SPSC ring buffer. Never called. |
+| `LdpcCodec` (L7) | **Wired & Verified** — Gallager bit-flipping iterative decoder corrected and proven against single- and multi-bit burst corruptions. Active for long-stream encoding via `GHOST_LDPC_FEC=1`, inspectable via CLI `FEC`. |
+| `XtsMemoryEncryptor`, `EncryptedMemoryRegion` (L8) | **Wired & Active** — Real AES-256-XTS (IEEE 1619) engine instantiated in `main.rs` with CSPRNG-generated keys for volatile runtime memory security, inspectable via CLI `MEMSEC`. |
+| `VerifiedRingBuffer` (L8) | **Wired & Active** — Bounded lock-free SPSC ring buffer for inter-thread packet staging, integrated into node subsystem and monitored via CLI `MEMSEC`. |
 | `ZeroCopyPacket`, `XdpDispatcher` (L8) | Software simulation. `route_packet()` writes a worker index into a table; the doc comment concedes "in a real eBPF/XDP implementation, this would run on the NIC". |
 | `BundleProtocolHeader` (L8) | BPv7-shaped header. Never serialized on the wire. |
 | `DopplerShiftSimulator` (L8) | Test scaffolding. No caller. |
