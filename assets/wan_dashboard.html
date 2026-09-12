@@ -182,28 +182,48 @@
       <div class="sub">Autonomous mesh flights</div>
     </div>
     <div class="card">
+      <div class="card-title">Post-Quantum KEM</div>
+      <div class="val" id="kem-val" style="color: var(--cyan); font-size: 13px;">ML-KEM-512 + X25519</div>
+      <div class="sub" id="kem-sub">Quantum-resistant hybrid</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Session Hash & Rekey</div>
+      <div class="val" id="hash-val" style="color: var(--green); font-size: 13px;">00000000</div>
+      <div class="sub" id="hash-sub">Rekey count: 0 (500 cycle epoch)</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Peer Discovery</div>
+      <div class="val" id="disc-val" style="color: var(--yellow); font-size: 13px;">HYBRID DISCOVERY</div>
+      <div class="sub" id="disc-sub">DNS + Multicast + peers.cache</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Frame Standard</div>
+      <div class="val" id="frame-val" style="color: var(--purple); font-size: 13px;">GTF 512B INVARIANT</div>
+      <div class="sub" id="frame-sub">Deterministic constant size</div>
+    </div>
+    <div class="card">
       <div class="card-title">Byzantine Isolation</div>
-      <div class="val" id="tamper-val" style="color: var(--green); font-size: 14px;">AUTHENTICATED</div>
-      <div class="sub">Poly1305 Tag Verification</div>
+      <div class="val" id="tamper-val" style="color: var(--green); font-size: 13px;">AUTHENTICATED</div>
+      <div class="sub">Combinatorial RS(2,1) + Poly1305</div>
     </div>
     <div class="card">
       <div class="card-title">L6 Anti-Replay Guard</div>
-      <div class="val" id="replay-val" style="color: var(--cyan); font-size: 14px;">WINDOW ACTIVE</div>
+      <div class="val" id="replay-val" style="color: var(--cyan); font-size: 13px;">WINDOW ACTIVE</div>
       <div class="sub" id="replay-sub">128-bit sliding bitmask</div>
     </div>
     <div class="card">
       <div class="card-title">L5 Traffic Shaping</div>
-      <div class="val" id="shaping-val" style="color: var(--purple); font-size: 14px;">RANDOM JITTER</div>
+      <div class="val" id="shaping-val" style="color: var(--purple); font-size: 13px;">RANDOM JITTER</div>
       <div class="sub" id="shaping-sub">16-64B wire cover</div>
     </div>
     <div class="card">
       <div class="card-title">Convergence Latency</div>
-      <div class="val" id="convergence-val" style="color: var(--yellow); font-size: 14px;">0 ms</div>
+      <div class="val" id="convergence-val" style="color: var(--yellow); font-size: 13px;">0 ms</div>
       <div class="sub">Zero-stall failover recovery</div>
     </div>
     <div class="card">
       <div class="card-title">SOCKS5 Proxy</div>
-      <div class="val" style="color: var(--green); font-size: 14px;">127.0.0.1:1080</div>
+      <div class="val" style="color: var(--green); font-size: 13px;">127.0.0.1:1080</div>
       <div class="sub">Direct TCP tunnel active</div>
     </div>
   </div>
@@ -236,6 +256,22 @@
           const data = await res.json();
           document.getElementById('cycle-val').innerText = '#' + data.cycle;
           document.getElementById('status-tag').innerText = data.status;
+
+          // Post-Quantum KEM Telemetry
+          if (data.handshake_status) {
+            document.getElementById('kem-val').innerText = data.handshake_status;
+          }
+          if (data.session_hash) {
+            document.getElementById('hash-val').innerText = data.session_hash;
+            document.getElementById('hash-sub').innerText = `Rekey count: ${data.rekey_count || 0} (500 cycle epoch)`;
+          }
+          if (data.discovery_source) {
+            document.getElementById('disc-val').innerText = data.discovery_source.split('+')[0].trim();
+            document.getElementById('disc-sub').innerText = data.discovery_source;
+          }
+          if (data.frame_standard) {
+            document.getElementById('frame-val').innerText = data.frame_standard;
+          }
 
           // Byzantine state handling
           const banner = document.getElementById('byzantine-banner');
