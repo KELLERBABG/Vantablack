@@ -8,6 +8,10 @@ description = "Post-quantum, cryptographically layered WAN mesh routing node."
 name = "vantablack"
 path = "src/main.rs"
 
+[[bin]]
+name = "scale_mesh"
+path = "src/bin/scale_mesh.rs"
+
 [lib]
 name = "vantablack"
 crate-type = ["rlib", "cdylib"] # cdylib: Android JNI surface (cargo-ndk)

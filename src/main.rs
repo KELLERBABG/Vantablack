@@ -1521,6 +1521,7 @@ async fn main() -> anyhow::Result<()> {
         let rsm = Arc::clone(&rx_state_map);
         let ak = Arc::clone(&connect_acks);
         let de = Arc::clone(&default_exit);
+        let srouter_socks = Arc::clone(&shard_router);
         let sp = socks_port;
         tokio::spawn(async move {
             let lis = tokio::net::TcpListener::bind(("127.0.0.1", sp)).await
@@ -1534,6 +1535,7 @@ async fn main() -> anyhow::Result<()> {
                     let _rsm2 = Arc::clone(&rsm);
                     let ak2 = Arc::clone(&ak);
                     let de2 = Arc::clone(&de);
+                    let shard_router_proxy = Arc::clone(&srouter_socks);
                     tokio::spawn(async move {
                         let mut b = [0u8; 2];
                         if s.read_exact(&mut b).await.is_err() || b[0] != 5 { return; }
@@ -1640,6 +1642,8 @@ async fn main() -> anyhow::Result<()> {
                         let sh_out = sh;
                         let tgt_out = tgt;
                         let chh2 = Arc::clone(&chh);
+                        let srouter = Arc::clone(&shard_router_proxy);
+                        let aa_proxy = Arc::clone(&aa);
                         tokio::spawn(async move {
                             let mut rbuf = vec![0u8; 900]; // keeps each RS shard ≤ 486 B privacy-frame cap
                             loop {
@@ -1654,7 +1658,7 @@ async fn main() -> anyhow::Result<()> {
                                             NonceDirection::InitiatorToResponder,
                                             &rbuf[..n],
                                         );
-                                        send3(&nn2.socket, &tgt_out, sh_out, c, &f, &tag).await;
+                                        send3_adaptive(&nn2.socket, &tgt_out, &fp_out, sh_out, c, &f, &tag, &srouter, &aa_proxy).await;
                                     }
                                 }
                             }
