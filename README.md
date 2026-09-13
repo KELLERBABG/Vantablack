@@ -174,7 +174,7 @@ Run the pre-compiled binary or build with cargo:
 1. **Client Node (Protected User):**
    ```bash
    cargo run --release
-   # Or run target/release/vantablack
+   # Or run target/release/ggn (aliased to target/release/vantablack)
    ```
    - Binds its mesh data socket per `GHOST_BIND` (default: ephemeral port). Port `2270/UDP` is used for discovery beacons.
    - Starts local SOCKS5 proxy on `127.0.0.1:1080`.

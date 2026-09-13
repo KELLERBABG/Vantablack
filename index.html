@@ -622,8 +622,8 @@
             <h3>Post-quantum security by default</h3>
           </div>
           <div class="feature-body">
-            <p>All sessions negotiate keys using hybrid post-quantum lattice cryptography combined with classical curve algorithms. Traffic captured today remains protected against future quantum decryption. Master keys exist only in volatile RAM while active and are never written to disk or swap storage.</p>
-            <div class="feature-detail">Defends against store-now-decrypt-later adversaries &bull; Zero disk key footprint</div>
+            <p>All sessions negotiate keys using hybrid post-quantum lattice cryptography (ML-KEM / Kyber-768) combined with classical X25519 curve algorithms. Traffic captured today remains protected against future quantum decryption. Master keys exist only in volatile RAM while active and are never written to disk or swap storage.</p>
+            <div class="feature-detail">Standardized primitives &bull; Zero disk key footprint &bull; Formal verification &amp; 3rd-party audit in progress</div>
           </div>
         </div>
 
@@ -645,36 +645,36 @@
       <div class="section-head">
         <span class="section-tag">Quickstart</span>
         <h2>Up and running in a few minutes</h2>
-        <p>One program, no account, no installer wizard. Run it and you are on the network.</p>
+        <p>Built as sovereign infrastructure for developers, operators, and homelab users. Graphical 1-click desktop &amp; mobile clients are currently on the roadmap.</p>
       </div>
 
       <div class="route">
 
         <div class="route-step">
-          <h3><span>01</span> Download and run the program</h3>
-          <p>Global Ghost Net is a single self-contained program with no extra dependencies. Build it from source with Rust, or grab a ready-to-run release.</p>
+          <h3><span>01</span> Download or compile the node daemon</h3>
+          <p>Global Ghost Net runs via its high-performance routing daemon (available as both <code>ggn</code> and <code>vantablack</code>). Single self-contained binary with zero external dependencies.</p>
           <div class="term">
-            <span class="c"># Build and install from source (requires Rust)</span><br>
+            <span class="c"># Install from source via cargo (Rust)</span><br>
             <span class="p">cargo install --git https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br><br>
-            <span class="c"># Or clone and compile a release build</span><br>
+            <span class="c"># Or clone and compile release binaries (produces both 'ggn' and 'vantablack')</span><br>
             <span class="p">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br>
             <span class="p">cd Global-Ghost-Net &amp;&amp; cargo build --release</span><br><br>
-            <span class="c"># Start it</span><br>
-            <span class="p">vantablack</span>
+            <span class="c"># Start node daemon</span><br>
+            <span class="p">ggn</span> <span class="c"># (or: ./target/release/vantablack)</span>
           </div>
         </div>
 
         <div class="route-step">
-          <h3><span>02</span> Optional: make the network private</h3>
-          <p>By default you join the open Public Swarm. To keep the network exclusive to your own devices, generate a private key and start the program with it. Devices without the key are dropped before they can connect.</p>
+          <h3><span>02</span> Optional: isolate into your private network</h3>
+          <p>By default your node joins the open Public Swarm. To create an isolated private mesh, assign a shared Network ID. Nodes without matching network credentials are silently dropped at packet ingress before any handshake occurs.</p>
           <div class="term">
-            <span class="c"># Generate a private key (keep it secret)</span><br>
+            <span class="c"># Generate a 256-bit network isolation token</span><br>
             <span class="p">openssl rand -hex 32</span><br><br>
-            <span class="c"># Start your private network</span><br>
-            <span class="p">export GHOST_PSK</span>=<span class="val">&lt;paste-your-key&gt;</span><br>
-            <span class="p">vantablack</span>
+            <span class="c"># Start your node in isolated network mode</span><br>
+            <span class="p">export GHOST_PSK</span>=<span class="val">&lt;paste-your-token&gt;</span><br>
+            <span class="p">ggn</span>
           </div>
-          <p class="alt">Use the same key on every device you want in your network.</p>
+          <p class="alt">Use the same Network ID token across your cluster. All data streams inside the network are independently encrypted per session with forward-secret ratchets.</p>
         </div>
 
         <div class="route-step">
@@ -698,7 +698,7 @@
         <div class="docs-cta-copy">
           <span class="section-tag">For engineers, cryptographers &amp; auditors</span>
           <h2>Want the byte-level details?</h2>
-          <p>Packet formats and byte-offset tables, kernel-level network simulation benchmarks, and formal cryptographic proofs all live in the technical documentation.</p>
+          <p>Packet formats and byte-offset tables, kernel-level network simulation benchmarks, cryptographic design specifications, and audit notes all live in the technical documentation.</p>
         </div>
         <div class="docs-cta-actions">
           <a class="btn btn-primary" href="/docs">Read the technical docs &rarr;</a>

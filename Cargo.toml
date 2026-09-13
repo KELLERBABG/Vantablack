@@ -9,6 +9,10 @@ name = "vantablack"
 path = "src/main.rs"
 
 [[bin]]
+name = "ggn"
+path = "src/main.rs"
+
+[[bin]]
 name = "scale_mesh"
 path = "src/bin/scale_mesh.rs"
 
