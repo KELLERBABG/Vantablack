@@ -3,698 +3,799 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Ghost Net — Consumer Control Center & Carrier WAN Simulation</title>
+  <title>Global Ghost Net</title>
+  <meta name="theme-color" content="#05070a">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #07090e;
-      --card: #0d1117;
-      --card-hover: #121822;
-      --border: #1f242c;
-      --border-bright: #2d3542;
-      --cyan: #00f0ff;
-      --green: #00ff88;
-      --yellow: #ffb800;
-      --red: #ff3366;
-      --purple: #9d4edd;
-      --text: #e6edf3;
-      --dim: #8b949e;
-      --glow-green: 0 0 25px rgba(0, 255, 136, 0.45);
-      --glow-cyan: 0 0 25px rgba(0, 240, 255, 0.45);
-      --glow-red: 0 0 25px rgba(255, 51, 102, 0.45);
+      /* Same palette and type as the landing page, so the app and the site read
+         as one product. The legacy --cyan/--green/--yellow/--red/--purple/--dim
+         names stay, because the script below writes them into inline styles. */
+      --bg: #05070a;
+      --surface: #0b0f16;
+      --surface-raised: #111823;
+      --surface-sunken: #080b11;
+      --border: #1b2534;
+      --border-hover: #2b3d55;
+      --border-subtle: #141d2a;
+
+      --accent: #22d3ee;
+      --accent-subtle: rgba(34, 211, 238, 0.08);
+      --accent-border: rgba(34, 211, 238, 0.28);
+      --cyan: var(--accent);
+      --green: #34d399;
+      --yellow: #f59e0b;
+      --red: #fb7185;
+      --purple: #a78bfa;
+
+      --text: #eef2f7;
+      --text-muted: #93a1b5;
+      --dim: #8b9aad;
+      --text-dim: #5b6b80;
+
+      --font-heading: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --radius: 8px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background: var(--bg);
       color: var(--text);
-      font-family: 'JetBrains Mono', monospace;
-      padding: 24px;
-      line-height: 1.5;
+      font-family: var(--font-heading);
+      line-height: 1.62;
+      -webkit-font-smoothing: antialiased;
+      padding: 22px 24px 56px;
       min-height: 100vh;
     }
+    .shell { max-width: 900px; margin: 0 auto; }
+    button { font: inherit; }
+
+    /* ——— Top bar. In the native window this whole row is the drag strip, and
+           Hide/Quit sit next to the status pill instead of in a second bar. ——— */
+    .header-right { display: flex; align-items: center; gap: 10px; }
+    #native-chrome { display: none; align-items: center; gap: 6px; user-select: none; }
+    body.native #native-chrome { display: flex; }
+    body.native #native-drag { cursor: move; }
     .header {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 16px;
-      margin-bottom: 20px;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-    .title {
-      font-family: 'Space Grotesk', sans-serif;
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .pulse-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--green);
-      box-shadow: 0 0 10px var(--green);
-      animation: pulse 2s infinite;
-    }
-    .pulse-dot.offline {
-      background: var(--red);
-      box-shadow: 0 0 10px var(--red);
-    }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-    /* Navigation tabs */
-    .tabs-nav {
-      display: flex;
-      gap: 8px;
+      gap: 14px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-subtle);
       margin-bottom: 24px;
-      background: #090d14;
-      padding: 4px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      width: fit-content;
+      flex-wrap: wrap;
     }
+    .title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
+    .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: 0 0 auto; }
+    .pulse-dot.offline { background: var(--text-dim); }
+
+    /* ——— Tabs ——— */
+    .tabs-nav { display: flex; gap: 4px; margin-bottom: 22px; flex-wrap: wrap; }
     .tab-btn {
       background: transparent;
       border: none;
       color: var(--dim);
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-heading);
       font-size: 13px;
-      font-weight: 600;
-      padding: 8px 18px;
+      font-weight: 500;
+      padding: 7px 13px;
       border-radius: 6px;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: color 0.15s ease, background 0.15s ease;
     }
-    .tab-btn:hover {
-      color: var(--text);
-      background: rgba(255, 255, 255, 0.05);
-    }
-    .tab-btn.active {
-      color: #000;
-      background: var(--cyan);
-      box-shadow: 0 0 12px rgba(0, 240, 255, 0.35);
-    }
+    .tab-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+    .tab-btn.active { color: var(--accent); background: var(--accent-subtle); }
 
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
-    /* Main Big 1-Click Connect Button Card */
-    .power-hero {
-      background: linear-gradient(180deg, #0d121c 0%, #080b11 100%);
-      border: 1px solid var(--border-bright);
-      border-radius: 12px;
-      padding: 36px 24px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      margin-bottom: 24px;
-      position: relative;
-      overflow: hidden;
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    }
-    .power-hero::before {
-      content: '';
-      position: absolute;
-      width: 250px;
-      height: 250px;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgba(0, 255, 136, 0.12) 0%, transparent 70%);
-      pointer-events: none;
-      transition: all 0.5s ease;
-    }
-    .power-hero.disconnected::before {
-      background: radial-gradient(circle, rgba(255, 51, 102, 0.12) 0%, transparent 70%);
-    }
-
-    .power-switch {
-      width: 128px;
-      height: 128px;
-      border-radius: 50%;
-      background: #090e17;
-      border: 3px solid var(--green);
+    /* ——— Connect card ——— */
+    .connect-card { display: flex; flex-direction: column; gap: 18px; }
+    .connect-main { display: flex; align-items: center; justify-content: space-between; gap: 22px; flex-wrap: wrap; }
+    .connect-state {
+      font-size: 21px;
+      font-weight: 600;
+      letter-spacing: -0.4px;
       color: var(--green);
       display: flex;
-      flex-direction: column;
       align-items: center;
-      justify-content: center;
+      gap: 11px;
+    }
+    .connect-state::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+    .connect-state.disconnected { color: var(--text); }
+    .connect-line { font-size: 13px; color: var(--dim); margin-top: 5px; max-width: 44ch; }
+    .connect-btn {
+      font-family: var(--font-heading);
+      font-size: 13.5px;
+      font-weight: 600;
+      padding: 11px 26px;
+      border-radius: 999px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #04141a;
       cursor: pointer;
-      box-shadow: var(--glow-green);
-      transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-      user-select: none;
-      z-index: 2;
+      transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
     }
-    .power-switch:hover {
-      transform: scale(1.05);
-    }
-    .power-switch:active {
-      transform: scale(0.96);
-    }
-    .power-switch.disconnected {
-      border-color: var(--red);
-      color: var(--red);
-      box-shadow: var(--glow-red);
-    }
-    .power-icon {
-      font-size: 38px;
-      line-height: 1;
-      margin-bottom: 4px;
-    }
-    .power-state-label {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 1.5px;
-    }
-    .hero-status-text {
-      margin-top: 18px;
-      font-family: 'Space Grotesk', sans-serif;
-      font-size: 20px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-      color: var(--green);
-      z-index: 2;
-    }
-    .hero-status-text.disconnected {
-      color: var(--red);
-    }
-    .hero-subtext {
-      font-size: 12px;
-      color: var(--dim);
-      margin-top: 6px;
-      z-index: 2;
-    }
+    .connect-btn:hover { opacity: 0.88; }
+    /* Once connected the action is "disconnect", so the button steps back. */
+    .connect-btn:not(.disconnected) { background: transparent; border-color: rgba(52, 211, 153, 0.35); color: var(--green); }
 
-    /* Mode Switcher */
-    .mode-bar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-top: 20px;
-      background: #080c13;
-      padding: 6px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      z-index: 2;
-    }
+    /* ——— Mode switch ——— */
+    .mode-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+    .mode-label { font-size: 12.5px; color: var(--dim); }
+    .mode-bar { display: inline-flex; gap: 3px; background: var(--surface-sunken); border: 1px solid var(--border-subtle); border-radius: 999px; padding: 3px; }
     .mode-btn {
       background: transparent;
       border: none;
       color: var(--dim);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 7px 16px;
-      border-radius: 6px;
+      font-family: var(--font-heading);
+      font-size: 12.5px;
+      font-weight: 500;
+      padding: 6px 15px;
+      border-radius: 999px;
       cursor: pointer;
-      transition: all 0.2s ease;
+      transition: color 0.15s ease, background 0.15s ease;
     }
-    .mode-btn.active {
-      background: #151d2a;
-      color: var(--cyan);
-      border: 1px solid rgba(0, 240, 255, 0.3);
-      box-shadow: 0 0 10px rgba(0, 240, 255, 0.15);
-    }
+    .mode-btn.active { background: var(--surface-raised); color: var(--accent); }
 
-    /* Standard Cards & Grid */
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-      gap: 14px;
-      margin-bottom: 24px;
-    }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 16px;
-      transition: border-color 0.2s ease;
-    }
-    .card:hover {
-      border-color: var(--border-bright);
-    }
-    .card-title {
-      font-size: 11px;
-      text-transform: uppercase;
+    /* ——— Cards ——— */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .card-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+    .card-note { font-size: 12.5px; color: var(--dim); margin-top: 3px; }
+    .row-label { font-size: 12px; color: var(--dim); }
+    .val { font-family: var(--font-mono); font-size: 17px; font-weight: 500; color: var(--text); }
+    .sub { font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+
+    /* ——— Collapsed "mesh details" disclosure ——— */
+    .details-card { padding: 0; }
+    .details-card > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 15px 20px;
+      font-size: 13px;
+      font-weight: 500;
       color: var(--dim);
-      letter-spacing: 1px;
-      margin-bottom: 6px;
-    }
-    .val {
-      font-size: 18px;
-      font-weight: 700;
-      color: var(--cyan);
-    }
-    .sub { font-size: 11px; color: var(--dim); margin-top: 4px; }
-
-    /* Peer Device Cards */
-    .peers-section {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 24px;
-    }
-    .peers-header {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-      gap: 10px;
-    }
-    .btn-action {
-      background: #111822;
-      border: 1px solid var(--cyan);
-      color: var(--cyan);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 7px 14px;
-      border-radius: 6px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      transition: all 0.2s ease;
-    }
-    .btn-action:hover {
-      background: var(--cyan);
-      color: #000;
-      box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
-    }
-    .peer-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 12px;
     }
-    .peer-card {
-      background: #090d14;
+    .details-card > summary::-webkit-details-marker { display: none; }
+    .details-card > summary::after { content: 'Show'; font-size: 12px; color: var(--text-dim); }
+    .details-card[open] > summary { border-bottom: 1px solid var(--border-subtle); color: var(--text); }
+    .details-card[open] > summary::after { content: 'Hide'; }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 18px 22px; padding: 18px 20px 20px; }
+    .detail-label { font-size: 11.5px; color: var(--dim); }
+    .detail-value { font-family: var(--font-mono); font-size: 13px; color: var(--text); margin-top: 4px; overflow-wrap: anywhere; }
+    .detail-note { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+    /* ——— Device list ——— */
+    .peers-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .peers-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .peer-grid { display: flex; flex-direction: column; margin-top: 6px; }
+    .peer-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 0; border-top: 1px solid var(--border-subtle); }
+    .peer-card:first-child { border-top: none; }
+    .peer-info { display: flex; flex-direction: column; min-width: 0; }
+    .peer-name { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 500; color: var(--text); }
+    .peer-sub { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--dim); margin-top: 2px; }
+    .peer-meta { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+    .peer-ping { font-family: var(--font-mono); font-size: 12px; color: var(--dim); }
+    .peers-empty { font-size: 13px; color: var(--dim); padding: 14px 0 2px; }
+
+    /* ——— Buttons ——— */
+    .btn {
+      font-family: var(--font-heading);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 8px 14px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+    .btn:hover { border-color: var(--border-hover); color: var(--accent); }
+    .btn:disabled { opacity: 0.45; cursor: default; }
+    .icon-btn {
+      font-family: var(--font-heading);
+      font-size: 12px;
+      color: var(--dim);
+      background: transparent;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 14px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      padding: 4px 9px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease;
     }
-    .peer-card:hover {
-      border-color: var(--border-bright);
-    }
-    .peer-info {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-    }
-    .peer-name {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .peer-sub {
-      font-size: 11px;
-      color: var(--dim);
-    }
-    .peer-meta {
-      text-align: right;
-    }
-    .peer-ping {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--green);
-    }
+    .icon-btn:hover { color: var(--text); border-color: var(--border-hover); }
 
-    /* Modal Styling */
+    /* ——— Pairing modal ——— */
     .modal-overlay {
       position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(4, 6, 9, 0.8);
-      backdrop-filter: blur(4px);
+      inset: 0;
+      background: rgba(5, 7, 10, 0.78);
+      backdrop-filter: blur(6px);
       display: none;
       align-items: center;
       justify-content: center;
       z-index: 100;
       padding: 16px;
     }
-    .modal-overlay.active {
-      display: flex;
-    }
+    .modal-overlay.active { display: flex; }
     .modal-box {
-      background: #0e131d;
-      border: 1px solid var(--border-bright);
-      border-radius: 12px;
-      max-width: 480px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      max-width: 440px;
       width: 100%;
-      padding: 24px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      padding: 26px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
       position: relative;
     }
+    .modal-title { font-size: 16px; font-weight: 600; letter-spacing: -0.2px; }
     .modal-close {
       position: absolute;
-      top: 16px;
-      right: 16px;
+      top: 14px;
+      right: 14px;
       background: transparent;
       border: none;
-      color: var(--dim);
-      font-size: 18px;
+      color: var(--text-dim);
+      font-size: 20px;
+      line-height: 1;
       cursor: pointer;
     }
     .modal-close:hover { color: var(--text); }
     .qr-frame {
       background: #fff;
-      padding: 16px;
-      border-radius: 8px;
+      padding: 14px;
+      border-radius: var(--radius);
       display: flex;
       align-items: center;
       justify-content: center;
-      margin: 16px auto;
-      width: 196px;
-      height: 196px;
+      margin: 20px auto 10px;
+      width: 200px;
+      height: 200px;
     }
-    .copy-input-row {
-      display: flex;
-      gap: 8px;
-      margin-top: 14px;
-    }
+    .copy-input-row { display: flex; gap: 8px; margin-top: 8px; }
     .copy-input {
       flex: 1;
-      background: #07090e;
+      min-width: 0;
+      background: var(--surface-sunken);
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 7px;
       padding: 8px 12px;
-      color: var(--cyan);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
     }
+    .field-label { font-size: 11.5px; color: var(--dim); margin-top: 16px; }
 
-    /* Badges & Alerts */
+    /* ——— Status pills ——— */
     .badge {
-      display: inline-block;
-      padding: 2px 7px;
-      border-radius: 4px;
-      font-size: 10px;
-      font-weight: 600;
-    }
-    .badge-green { background: rgba(0, 255, 136, 0.1); color: var(--green); border: 1px solid rgba(0, 255, 136, 0.2); }
-    .badge-red { background: rgba(255, 51, 102, 0.1); color: var(--red); border: 1px solid rgba(255, 51, 102, 0.2); }
-    .badge-yellow { background: rgba(255, 184, 0, 0.1); color: var(--yellow); border: 1px solid rgba(255, 184, 0, 0.2); }
-    .badge-purple { background: rgba(157, 78, 221, 0.1); color: var(--purple); border: 1px solid rgba(157, 78, 221, 0.2); }
-
-    .alert-banner {
-      background: rgba(255, 51, 102, 0.08);
-      border: 1px solid var(--red);
-      border-radius: 8px;
-      padding: 14px 18px;
-      margin-bottom: 20px;
-      display: none;
-    }
-    .alert-banner.active {
-      display: block;
-      animation: flashBorder 1.5s infinite;
-    }
-    @keyframes flashBorder {
-      0%, 100% { border-color: var(--red); box-shadow: 0 0 12px rgba(255, 51, 102, 0.3); }
-      50% { border-color: rgba(255, 51, 102, 0.4); box-shadow: none; }
-    }
-    .topology-container {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 24px;
-    }
-    .carriers {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-      gap: 14px;
-      margin-top: 14px;
-    }
-    .carrier-box {
-      background: #090d14;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px;
-      transition: all 0.3s;
-    }
-    .carrier-box.active { border-color: var(--cyan); }
-    .carrier-box.severed { border-color: var(--red); background: rgba(255, 51, 102, 0.05); }
-    .carrier-box.tampered { border-color: var(--red); background: rgba(255, 51, 102, 0.12); box-shadow: 0 0 10px rgba(255, 51, 102, 0.25); }
-    .carrier-box.reserve { border-color: var(--yellow); }
-    .routes-box {
-      background: #05070a;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 11px;
+      border-radius: 999px;
       font-size: 12px;
-      color: var(--cyan);
+      font-weight: 500;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .badge-green { background: rgba(52, 211, 153, 0.10); color: var(--green); border-color: rgba(52, 211, 153, 0.22); }
+    .badge-red { background: rgba(251, 113, 133, 0.10); color: var(--red); border-color: rgba(251, 113, 133, 0.22); }
+    .badge-yellow { background: rgba(245, 158, 11, 0.10); color: var(--yellow); border-color: rgba(245, 158, 11, 0.22); }
+    .badge-purple { background: rgba(167, 139, 250, 0.10); color: var(--purple); border-color: rgba(167, 139, 250, 0.22); }
+
+    /* ——— Security notice (simulation tab) ——— */
+    .alert-banner {
+      display: none;
+      background: rgba(251, 113, 133, 0.07);
+      border: 1px solid rgba(251, 113, 133, 0.3);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      margin-bottom: 16px;
+    }
+    .alert-banner.active { display: block; }
+
+    /* ——— Carrier fleet ——— */
+    .carriers { display: flex; flex-direction: column; margin-top: 8px; }
+    .carrier-box { padding: 14px 0; border-top: 1px solid var(--border-subtle); }
+    .carrier-box:first-child { border-top: none; }
+    .carrier-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .carrier-name { font-size: 13.5px; font-weight: 500; color: var(--text); }
+    .carrier-meta { font-family: var(--font-mono); font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+    .carrier-rtt { font-family: var(--font-mono); font-size: 14px; color: var(--text); margin-top: 6px; }
+    .carrier-box.severed .carrier-rtt,
+    .carrier-box.tampered .carrier-rtt { color: var(--red); }
+    .routes-box {
+      background: var(--surface-sunken);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 13px 15px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--text-muted);
       margin-top: 10px;
-      line-height: 1.7;
+      line-height: 1.8;
+      overflow-x: auto;
     }
     .headers-log {
-      background: #05070a;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px;
-      font-size: 12px;
-      color: var(--green);
+      background: var(--surface-sunken);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 13px 15px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--dim);
       max-height: 150px;
       overflow-y: auto;
       white-space: pre-wrap;
+      margin-top: 10px;
     }
+
+    /* ——— Shared small pieces ——— */
+    .os-icon { width: 16px; height: 16px; flex: 0 0 16px; fill: currentColor; }
+    .os-icon svg { width: 100%; height: 100%; display: block; }
+    .os-windows { color: #4cc2ff; }
+    .os-macos { color: #eef2f7; }
+    .os-ios { color: #eef2f7; }
+    .os-linux { color: var(--yellow); }
+    .os-android { color: var(--green); }
+    .os-bsd { color: #fb923c; }
+    .os-unknown { color: var(--text-dim); }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: 0 0 7px; }
+    .status-online { background: var(--green); }
+    .status-idle { background: var(--yellow); }
+    .status-offline { background: var(--text-dim); }
+    .node-meta { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+    .detail-grid.plain { padding: 18px 0 0; }
+    .device-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+    .device-name { display: flex; align-items: center; gap: 9px; margin-top: 3px; font-size: 15px; font-weight: 600; }
+    .device-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+    .rename-input {
+      background: var(--surface-sunken);
+      border: 1px solid var(--accent-border);
+      color: var(--text);
+      font-family: var(--font-heading);
+      font-size: 13px;
+      border-radius: 6px;
+      padding: 4px 8px;
+      width: 170px;
+    }
+    .rename-input:focus { outline: none; border-color: var(--accent); }
+
+    /* ——— Settings ——— */
+    .setting-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .setting-title { font-size: 14px; font-weight: 600; }
+    .setting-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .mode-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 14px; }
+    .mode-option {
+      text-align: left;
+      font-family: var(--font-heading);
+      color: var(--text);
+      background: var(--surface-sunken);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 15px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .mode-option:hover { border-color: var(--border-hover); }
+    .mode-option.selected { border-color: var(--accent-border); background: var(--accent-subtle); }
+    .mode-title { font-size: 13.5px; font-weight: 600; }
+    .mode-desc { font-size: 12px; color: var(--dim); margin-top: 6px; line-height: 1.55; }
+    .rule-input-row { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+    .rule-input {
+      flex: 1;
+      min-width: 200px;
+      background: var(--surface-sunken);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 9px 12px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .rule-input:focus { outline: none; border-color: var(--accent-border); }
+    .rule-input::placeholder { color: var(--text-dim); }
+    .chips { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+    .chip {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--dim);
+      border-radius: 999px;
+      padding: 4px 11px;
+      font-size: 11.5px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+    .chip:hover { color: var(--accent); border-color: var(--accent-border); }
+    .rule-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border-subtle); font-size: 12px; }
+    .rule-row code { font-family: var(--font-mono); color: var(--text-muted); }
+
+    /* ——— Speedtest ——— */
+    .st-grid {
+      display: grid;
+      /* Nine tiles read as a tidy 3×3 block rather than leaving a gap. */
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--border-subtle);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-top: 14px;
+    }
+    .st-tile { background: var(--surface); padding: 12px 14px; }
+    .st-label { font-size: 11.5px; color: var(--dim); }
+    .st-value { font-family: var(--font-mono); font-size: 15px; color: var(--text); margin-top: 4px; }
+    .st-note { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+    /* ——— Text ——— */
+    .note { font-size: 12.5px; color: var(--dim); line-height: 1.6; margin-top: 8px; }
+    @media (max-width: 560px) {
+      .st-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .detail-grid { grid-template-columns: 1fr; }
+    }
+    input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px; vertical-align: middle; }
+    .warn-note { color: var(--yellow); }
+    .ok-note { color: var(--green); }
   </style>
 </head>
 <body>
+  <div class="shell">
 
-  <div class="header">
+  <div class="header" id="native-drag">
     <div class="title">
       <div class="pulse-dot" id="header-pulse"></div>
-      GLOBAL GHOST NET — CONTROL CENTER
+      Global Ghost Net
     </div>
-    <div style="display: flex; align-items: center; gap: 10px;">
-      <span class="badge badge-purple" id="network-id-badge">ID: --</span>
-      <div class="badge badge-green" id="status-tag">SYSTEM PROTECTED</div>
+    <div class="header-right">
+      <div class="badge badge-red" id="status-tag">Not connected</div>
+      <div id="native-chrome">
+        <button class="icon-btn" onclick="nativeSend('hide')" title="Hide to the tray — the node keeps running">Hide</button>
+        <button class="icon-btn" onclick="nativeSend('quit')" title="Quit Global Ghost Net completely">Quit</button>
+      </div>
     </div>
   </div>
 
-  <!-- View Switcher Tabs -->
   <div class="tabs-nav">
-    <button class="tab-btn active" onclick="switchTab('consumer')">Remote Control</button>
-    <button class="tab-btn" onclick="switchTab('carrier')">Level 2 Carrier Simulation</button>
+    <button class="tab-btn active" data-tab="consumer" onclick="switchTab('consumer')">Connect</button>
+    <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">Settings</button>
+    <button class="tab-btn" data-tab="carrier" onclick="switchTab('carrier')">Simulation</button>
   </div>
 
   <!-- ═════════════════════════════════════════════════════════════════════ -->
-  <!-- TAB 1: CONSUMER DESKTOP & REMOTE WEB CONTROL CENTER                  -->
+  <!-- TAB 1: CONNECT                                                        -->
   <!-- ═════════════════════════════════════════════════════════════════════ -->
   <div id="tab-consumer" class="tab-content active">
 
-    <!-- Big 1-Click Toggle Hero -->
-    <div class="power-hero" id="power-hero-box">
-      <div class="power-switch" id="power-toggle-btn" onclick="toggleConnection()">
-        <div class="power-icon">&#x23FB;</div>
-        <div class="power-state-label" id="power-btn-label">ACTIVE</div>
+    <!-- Connection -->
+    <div class="card connect-card" id="power-hero-box">
+      <div class="connect-main">
+        <div>
+          <div class="connect-state disconnected" id="hero-status-text">Not connected</div>
+          <p class="connect-line" id="hero-status-sub">Your traffic is going out over your normal connection.</p>
+        </div>
+        <button class="connect-btn disconnected" id="power-toggle-btn" onclick="toggleConnection()">
+          <span id="power-btn-label">Connect</span>
+        </button>
       </div>
-      <div class="hero-status-text" id="hero-status-text">PROTECTED BY QUANTUM MESH</div>
-      <div class="hero-subtext" id="hero-status-sub">All outbound traffic routed across post-quantum carrier paths</div>
-
-      <!-- Mode Selector -->
-      <div class="mode-bar">
-        <button class="mode-btn active" id="btn-mode-public" onclick="setMeshMode('public')">
-          Public Stealth Mesh (Global Egress)
-        </button>
-        <button class="mode-btn" id="btn-mode-private" onclick="setMeshMode('private')">
-          Private Home Mesh (Local LAN over WAN)
-        </button>
+      <div class="mode-row">
+        <span class="mode-label">Who can join this network</span>
+        <div class="mode-bar">
+          <button class="mode-btn active" id="btn-mode-public" onclick="setMeshMode('public')">Open mesh</button>
+          <button class="mode-btn" id="btn-mode-private" onclick="setMeshMode('private')">Only my devices</button>
+        </div>
       </div>
     </div>
 
-    <!-- Consumer Live Metrics Grid -->
-    <div class="grid">
-      <div class="card">
-        <div class="card-title">Link Latency</div>
-        <div class="val" id="c-latency-val">24 ms</div>
-        <div class="sub" id="c-latency-sub">Multi-carrier average RTT</div>
+    <!-- This device + pairing -->
+    <div class="card">
+      <div class="device-row">
+        <div>
+          <div class="row-label">This device</div>
+          <div class="device-name">
+            <span id="this-device-icon" class="os-icon os-unknown"></span>
+            <span id="this-device-name">—</span>
+          </div>
+        </div>
+        <button class="btn" onclick="openPairModal()">Pair a device</button>
       </div>
-      <div class="card">
-        <div class="card-title">Dispersed Paths</div>
-        <div class="val" id="c-paths-val" style="color: var(--yellow);">3 Carrier Paths</div>
-        <div class="sub">Disjoint carrier routes</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Erasure Coding</div>
-        <div class="val" id="c-rs-val" style="color: var(--green);">RS(2,1) ACTIVE</div>
-        <div class="sub">1-fault Byzantine immunity</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Network Throughput</div>
-        <div class="val" id="c-traffic-val" style="color: var(--purple); font-size: 14px;">TX: 0 B | RX: 0 B</div>
-        <div class="sub" id="c-pkts-sub">0 pkts sent / 0 pkts recv</div>
+      <div class="device-foot">
+        <span class="row-label">Reachable at</span>
+        <span class="node-meta" id="this-device-host">—</span>
       </div>
     </div>
 
-    <!-- Connected Devices / Mesh Peers Section -->
-    <div class="peers-section">
+    <!-- Devices on this network -->
+    <section class="peers-section">
       <div class="peers-header">
         <div>
-          <div style="font-weight: 700; font-size: 14px; color: var(--text);">Connected Devices & Peers</div>
-          <div style="font-size: 11px; color: var(--dim); margin-top: 2px;" id="peers-summary-txt">0 active devices discovered on mesh</div>
-        </div>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn-action" onclick="openPairModal()">
-            <span>&#x2795;</span> Add Device / Pair QR
-          </button>
-          <button class="btn-action" onclick="togglePinPrompt()">
-            <span>&#x1F512;</span> PIN Protect
-          </button>
+          <div class="card-title">Devices</div>
+          <div class="card-note" id="peers-summary-txt">Looking for devices…</div>
         </div>
       </div>
-
       <div class="peer-grid" id="consumer-peers-list">
-        <div style="font-size: 12px; color: var(--dim); padding: 12px;">Scanning mesh for active peer nodes...</div>
+        <div class="peers-empty">Looking for other devices on this network…</div>
+      </div>
+    </section>
+
+    <!-- The engineering numbers, only if you go looking for them -->
+    <details class="card details-card">
+      <summary>Mesh details</summary>
+      <div class="detail-grid">
+        <div>
+          <div class="detail-label">Paths in use</div>
+          <div class="detail-value" id="c-paths-val">0</div>
+          <div class="detail-note">Routes carrying your traffic at once</div>
+        </div>
+        <div>
+          <div class="detail-label">Added overhead per packet</div>
+          <div class="detail-value" id="c-latency-val">—</div>
+          <div class="detail-note" id="c-latency-sub">Run the speed test to measure</div>
+        </div>
+        <div>
+          <div class="detail-label">Fault tolerance</div>
+          <div class="detail-value">Survives one route loss</div>
+          <div class="detail-note">Without re-sending anything</div>
+        </div>
+        <div>
+          <div class="detail-label">Data sent / received</div>
+          <div class="detail-value" id="c-traffic-val">0 B · 0 B</div>
+          <div class="detail-note" id="c-pkts-sub">0 sent · 0 received</div>
+        </div>
+      </div>
+    </details>
+
+  </div>
+
+  <!-- ═════════════════════════════════════════════════════════════════════ -->
+  <!-- TAB 2: SETTINGS                                                       -->
+  <!-- ═════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-settings" class="tab-content">
+
+    <div class="setting-card">
+      <div class="setting-title">How should your traffic leave this device?</div>
+      <div class="note" id="egress-status-line">Checking the current mode…</div>
+      <div class="mode-picker">
+        <button class="mode-option" id="mode-opt-vpn" onclick="setEgressMode('system_vpn')">
+          <div class="mode-title">Route everything (system VPN)</div>
+          <div class="mode-desc">
+            Binds a virtual network adapter and sends all traffic through the mesh. Apps and browsers need no
+            configuration. Needs administrator rights the first time.
+          </div>
+        </button>
+        <button class="mode-option" id="mode-opt-socks" onclick="setEgressMode('app_socks')">
+          <div class="mode-title">Only the apps I choose (local proxy on <span id="socks-port-label">1080</span>)</div>
+          <div class="mode-desc">
+            Leaves your normal internet alone. Only apps you point at the local proxy use the mesh. No admin rights,
+            nothing installed.
+          </div>
+        </button>
+      </div>
+      <div class="note warn-note" id="egress-warning" style="display: none;"></div>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-title">Send these straight to your own internet</div>
+      <div class="note">
+        Some sites refuse to work over a VPN — your bank, local streaming, your own router. List them here and they
+        skip the mesh, using your normal connection instead. Accepted forms:
+        <span class="node-meta">banking.example.de</span>,
+        <span class="node-meta">*.netflix.com</span>,
+        <span class="node-meta">192.168.1.0/24</span>,
+        <span class="node-meta">10.0.0.5</span>.
+      </div>
+      <div class="rule-input-row">
+        <input type="text" class="rule-input" id="bypass-input" placeholder="banking.example.de"
+               onkeydown="if (event.key === 'Enter') { addBypassRule(); }">
+        <button class="btn" onclick="addBypassRule()">Add</button>
+      </div>
+      <div class="chips">
+        <span class="chip" onclick="quickAddBypass('192.168.0.0/16')">Add my local network</span>
+        <span class="chip" onclick="quickAddBypass('10.0.0.0/8')">Add 10.0.0.0/8</span>
+        <span class="chip" onclick="quickAddBypass('*.local')">Add *.local</span>
+      </div>
+      <div id="bypass-list"></div>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-head">
+        <div class="setting-title">Measure this connection</div>
+        <button class="btn" id="speedtest-btn" onclick="runSpeedtest()">Run test</button>
+      </div>
+      <div class="note">
+        Pushes real data through your own paths — encrypted, split three ways, then rebuilt from two with one path
+        deliberately cut — and times every stage. It measures the mesh's own overhead, not your broadband speed.
+      </div>
+      <label class="note" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+        <input type="checkbox" id="speedtest-isp">
+        Also measure my internet round-trip
+      </label>
+      <div class="st-grid" id="speedtest-results">
+        <div class="st-tile"><div class="st-label">Status</div><div class="st-value" id="st-status">Idle</div></div>
+      </div>
+      <div class="note" id="speedtest-note"></div>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-title">PIN for this control center</div>
+      <div class="note" id="pin-note">Checking PIN state…</div>
+      <div style="margin-top: 14px;">
+        <button class="btn" onclick="togglePinPrompt()">Set or change the PIN</button>
       </div>
     </div>
 
   </div>
 
   <!-- ═════════════════════════════════════════════════════════════════════ -->
-  <!-- TAB 2: LEVEL 2 MULTI-HOP MESH WAN SIMULATION (7-NODE TOPOLOGY)        -->
+  <!-- TAB 3: SIMULATION                                                     -->
   <!-- ═════════════════════════════════════════════════════════════════════ -->
   <div id="tab-carrier" class="tab-content">
 
-    <!-- Real-Time Byzantine & Security Alert Banner -->
     <div class="alert-banner" id="byzantine-banner">
-      <div style="display: flex; align-items: center; justify-content: space-between;">
-        <div style="font-weight: 700; color: var(--red); font-size: 13px;" id="alert-title">
-          SECURITY EVENT DETECTED
-        </div>
-        <span class="badge badge-red" id="alert-badge">ADVERSARY ISOLATED</span>
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+        <div style="font-size: 13px; font-weight: 600; color: var(--red);" id="alert-title">Security event detected</div>
+        <span class="badge badge-red" id="alert-badge">Adversary isolated</span>
       </div>
-      <div style="font-size: 12px; color: var(--text); margin-top: 4px;" id="byzantine-details">
-        Evaluating security layer state...
-      </div>
+      <div class="note" id="byzantine-details">Evaluating security layer state…</div>
     </div>
 
-    <div class="grid">
-      <div class="card">
-        <div class="card-title">Flight Cycle</div>
-        <div class="val" id="cycle-val">#0</div>
-        <div class="sub">Autonomous mesh flights</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Post-Quantum KEM</div>
-        <div class="val" id="kem-val" style="color: var(--cyan); font-size: 13px;">ML-KEM-512 + X25519</div>
-        <div class="sub" id="kem-sub">Quantum-resistant hybrid</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Session Hash & Rekey</div>
-        <div class="val" id="hash-val" style="color: var(--green); font-size: 13px;">00000000</div>
-        <div class="sub" id="hash-sub">Rekey count: 0 (500 cycle epoch)</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Peer Discovery</div>
-        <div class="val" id="disc-val" style="color: var(--yellow); font-size: 13px;">HYBRID DISCOVERY</div>
-        <div class="sub" id="disc-sub">DNS + Multicast + peers.cache</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Frame Standard</div>
-        <div class="val" id="frame-val" style="color: var(--purple); font-size: 13px;">GTF 512B INVARIANT</div>
-        <div class="sub" id="frame-sub">Deterministic constant size</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Byzantine Isolation</div>
-        <div class="val" id="tamper-val" style="color: var(--green); font-size: 13px;">AUTHENTICATED</div>
-        <div class="sub">Combinatorial RS(2,1) + Poly1305</div>
-      </div>
-      <div class="card">
-        <div class="card-title">L6 Anti-Replay Guard</div>
-        <div class="val" id="replay-val" style="color: var(--cyan); font-size: 13px;">WINDOW ACTIVE</div>
-        <div class="sub" id="replay-sub">128-bit sliding bitmask</div>
-      </div>
-      <div class="card">
-        <div class="card-title">L5 Traffic Shaping</div>
-        <div class="val" id="shaping-val" style="color: var(--purple); font-size: 13px;">RANDOM JITTER</div>
-        <div class="sub" id="shaping-sub">16-64B wire cover</div>
-      </div>
-      <div class="card">
-        <div class="card-title">Convergence Latency</div>
-        <div class="val" id="convergence-val" style="color: var(--yellow); font-size: 13px;">0 ms</div>
-        <div class="sub">Zero-stall failover recovery</div>
-      </div>
-      <div class="card">
-        <div class="card-title">SOCKS5 Proxy</div>
-        <div class="val" style="color: var(--green); font-size: 13px;">127.0.0.1:1080</div>
-        <div class="sub">Direct TCP tunnel active</div>
-      </div>
-    </div>
-
-    <div class="topology-container">
-      <div class="card-title">Carrier Relay Node Fleet (Linux tc netem WAN Constraints)</div>
-      
-      <div class="carriers" id="carriers-list">
-        <!-- Injected dynamically -->
-      </div>
-
-      <div style="margin-top: 18px;">
-        <div class="card-title">Disjoint Multi-Hop Paths & Failover Topology</div>
-        <div class="routes-box" id="routes-box">
-          Evaluating path topology...
-        </div>
+    <div class="card">
+      <div class="card-title">Simulated network state</div>
+      <div class="card-note">A local seven-node network runs here so you can watch the mesh cope with lossy, tampered links.</div>
+      <div class="detail-grid plain">
+        <div><div class="detail-label">Cycle</div><div class="detail-value" id="cycle-val">#0</div></div>
+        <div><div class="detail-label">Key exchange</div><div class="detail-value" id="kem-val">—</div><div class="detail-note" id="kem-sub"></div></div>
+        <div><div class="detail-label">Session</div><div class="detail-value" id="hash-val">—</div><div class="detail-note" id="hash-sub"></div></div>
+        <div><div class="detail-label">Peer discovery</div><div class="detail-value" id="disc-val">—</div><div class="detail-note" id="disc-sub"></div></div>
+        <div><div class="detail-label">Frame size</div><div class="detail-value" id="frame-val">—</div></div>
+        <div><div class="detail-label">Tamper check</div><div class="detail-value" id="tamper-val">—</div></div>
+        <div><div class="detail-label">Replay guard</div><div class="detail-value" id="replay-val">—</div><div class="detail-note" id="replay-sub"></div></div>
+        <div><div class="detail-label">Traffic shaping</div><div class="detail-value" id="shaping-val">—</div><div class="detail-note" id="shaping-sub"></div></div>
+        <div><div class="detail-label">Failover</div><div class="detail-value" id="convergence-val">—</div></div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title">Verified Public WAN Ingest (Live Google HTTP Payload via Mesh)</div>
-      <div class="headers-log" id="headers-log">Awaiting first flight...</div>
+      <div class="card-title">Carriers</div>
+      <div class="carriers" id="carriers-list">
+        <div class="peers-empty">This node is not reporting carrier data.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Active paths</div>
+      <div class="routes-box" id="routes-box">Evaluating path topology…</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Last data received through the mesh</div>
+      <div class="headers-log" id="headers-log">Waiting for the first cycle…</div>
     </div>
 
   </div>
 
   <!-- ═════════════════════════════════════════════════════════════════════ -->
-  <!-- ADD DEVICE / PAIR MODAL WITH INLINE SVG QR GENERATOR                 -->
+  <!-- PAIRING MODAL                                                        -->
   <!-- ═════════════════════════════════════════════════════════════════════ -->
   <div class="modal-overlay" id="pair-modal">
     <div class="modal-box">
       <button class="modal-close" onclick="closePairModal()">&times;</button>
-      <div style="font-size: 16px; font-weight: 700; color: var(--text);">Pair New Device</div>
-      <div style="font-size: 12px; color: var(--dim); margin-top: 4px;">
-        Scan this QR code from the Global Ghost Net mobile app or copy your node's Network Fingerprint ID to join the mesh.
+      <div class="modal-title">Pair a device</div>
+      <div class="card-note">
+        Point any phone camera at this code. It encodes a <span class="node-meta">ggn://pair</span> link, so nothing has
+        to be installed in order to read it.
       </div>
 
       <div class="qr-frame" id="qr-container">
-        <!-- Injected SVG QR -->
+        <!-- Generated ISO/IEC 18004 QR symbol -->
+      </div>
+      <div class="note" id="qr-meta" style="text-align: center; margin-top: 0;">Scan with your camera app</div>
+
+      <div class="field-label">Pairing link</div>
+      <div class="copy-input-row">
+        <input type="text" class="copy-input" id="pair-uri-input" readonly value="--">
+        <button class="btn" onclick="copyPairUri()">Copy</button>
       </div>
 
-      <div style="font-size: 11px; text-transform: uppercase; color: var(--dim); letter-spacing: 1px; margin-top: 14px;">
-        Node Network Fingerprint ID
-      </div>
+      <div class="field-label">Network ID</div>
       <div class="copy-input-row">
         <input type="text" class="copy-input" id="network-id-input" readonly value="--">
-        <button class="btn-action" onclick="copyNetworkId()">Copy</button>
+        <button class="btn" onclick="copyNetworkId()">Copy</button>
       </div>
     </div>
   </div>
 
+  </div><!-- /.shell -->
+
   <script>
     // Tab switching
     function switchTab(tab) {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      if (tab === 'consumer') {
-        document.querySelector('.tab-btn:nth-child(1)').classList.add('active');
-        document.getElementById('tab-consumer').classList.add('active');
-      } else {
-        document.querySelector('.tab-btn:nth-child(2)').classList.add('active');
-        document.getElementById('tab-carrier').classList.add('active');
-      }
+      const pane = document.getElementById('tab-' + tab);
+      if (pane) pane.classList.add('active');
+      if (tab === 'settings') loadSettings();
     }
 
     let isConnected = true;
     let currentMeshMode = 'public';
     let currentNetworkId = 'unknown';
+    let currentPairUri = '';
+    let currentHost = '127.0.0.1:2270';
+    let activeCarrierPaths = 0;
+    let routeMode = 'app_socks';
+    let routeModeActive = false;
+    let vpnAvailable = false;
+    let socksListening = false;
+    let socksPort = 1080;
+    let bypassRules = [];
+    let pinProtected = false;
+    let sessionPin = '';
+    let lastMeshOverheadMs = null;
+
+    // ── Small helpers ──────────────────────────────────────────────────
+    function escapeHtml(value) {
+      return String(value === null || value === undefined ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function escapeAttr(value) {
+      return String(value === null || value === undefined ? '' : value)
+        .replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Monochrome platform glyphs, inlined so the dashboard stays a single file.
+    const OS_ICONS = {
+      windows: '<svg viewBox="0 0 24 24"><path d="M3 5.6l7-1v7H3V5.6zm8-1.2l10-1.4v8.1H11V4.4zM3 12.6h7v7l-7-1v-6zm8 0h10v8.1l-10-1.4v-6.7z"/></svg>',
+      macos: '<svg viewBox="0 0 24 24"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.7.8-3.4.8s-1.8-.8-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.3 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.2 1.3-2.4 1.3-2.5-.1 0-2.6-1-2.6-3.9zM14.3 5.6c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3z"/></svg>',
+      ios: '<svg viewBox="0 0 24 24"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.7.8-3.4.8s-1.8-.8-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.3 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.2 1.3-2.4 1.3-2.5-.1 0-2.6-1-2.6-3.9zM14.3 5.6c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3z"/></svg>',
+      linux: '<svg viewBox="0 0 24 24"><path d="M12 2c-2 0-3 1.6-3 3.4 0 1.3-.3 2.3-1 3.3C6.9 10.2 6 11.8 6 13.6c0 .8.2 1.6.6 2.3-.4.3-.6.7-.6 1.1 0 1.2 1.4 2.1 3 2.4.6.9 1.8 1.6 3 1.6s2.4-.7 3-1.6c1.6-.3 3-1.2 3-2.4 0-.4-.2-.8-.6-1.1.4-.7.6-1.5.6-2.3 0-1.8-.9-3.4-2-4.9-.7-1-1-2-1-3.3C15 3.6 14 2 12 2zm-1.6 4.2a.9 1 0 110 1.8.9.9 0 010-1.8zm3.2 0a.9 1.9 0 110 1.8.9.9 0 010-1.8zM12 8.6c1.3 0 2.4.9 2.6 2.1h-5.2C9.6 9.5 10.7 8.6 12 8.6z"/></svg>',
+      android: '<svg viewBox="0 0 24 24"><path d="M7 9h10v8a1 1 0 01-1 1h-1v3h-2v-3h-2v3H9v-3H8a1 1 0 01-1-1V9zM5 9.6a1.5 1.5 0 013 0V16a1.5 1.5 0 01-3 0V9.6zm11 0a1.5 1.5 0 013 0V16a1.5 1.5 0 01-3 0V9.6zM7.7 7.4A5 5 0 0112 4.6a5 5 0 014.3 2.8H7.7zM9.4 5.9a.7.7 0 100 1.4.7.7 0 000-1.4zm5.2 0a.7.7 0 100 1.4.7.7 0 000-1.4z"/></svg>',
+      bsd: '<svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4-3 7.3-7 9-4-1.7-7-5-7-9V6l7-3z"/></svg>',
+      unknown: '<svg viewBox="0 0 24 24"><path d="M4 5h16v10H4V5zm0 12h16v2H4v-2zm5-8v4h6V9H9z"/></svg>'
+    };
+    function osIconSvg(os) {
+      return OS_ICONS[os] || OS_ICONS.unknown;
+    }
+    function osIcon(os) {
+      const key = OS_ICONS[os] ? os : 'unknown';
+      return '<span class="os-icon os-' + key + '">' + OS_ICONS[key] + '</span>';
+    }
+
+    /// POST JSON, attaching the console PIN when the user has supplied one, and
+    /// asking for it once on a 401 instead of silently failing.
+    async function apiPost(path, payload, retried) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (sessionPin) headers['X-Pin'] = sessionPin;
+      let res;
+      try {
+        res = await fetch(path, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(payload || {})
+        });
+      } catch (e) {
+        return { ok: false, status: 0, data: null, error: String(e) };
+      }
+      let data = null;
+      try { data = await res.json(); } catch (e) { data = null; }
+      if (res.status === 401 && !retried) {
+        const entered = prompt('This console is PIN-protected. Enter the PIN:');
+        if (entered) {
+          sessionPin = entered;
+          return apiPost(path, payload, true);
+        }
+      }
+      return { ok: res.ok, status: res.status, data: data, error: (data && data.error) || null };
+    }
 
     // Format bytes
     function formatBytes(bytes) {
@@ -761,104 +862,651 @@
       const subText = document.getElementById('hero-status-sub');
       const pulse = document.getElementById('header-pulse');
       const tag = document.getElementById('status-tag');
-      const latVal = document.getElementById('c-latency-val');
       const pathsVal = document.getElementById('c-paths-val');
 
       if (isConnected) {
         hero.classList.remove('disconnected');
         btn.classList.remove('disconnected');
-        btnLabel.innerText = 'ACTIVE';
-        statusText.innerText = 'PROTECTED BY QUANTUM MESH';
+        btnLabel.innerText = 'Disconnect';
+        statusText.innerText = 'Connected';
         statusText.classList.remove('disconnected');
-        subText.innerText = 'All outbound traffic routed across post-quantum carrier paths';
+        subText.innerText = 'Your traffic is going through the mesh.';
         pulse.classList.remove('offline');
         tag.className = 'badge badge-green';
-        tag.innerText = 'SYSTEM PROTECTED';
-        latVal.innerText = '24 ms';
-        pathsVal.innerText = '3 Carrier Paths';
+        tag.innerText = 'Connected';
+        pathsVal.innerText = String(activeCarrierPaths);
       } else {
         hero.classList.add('disconnected');
         btn.classList.add('disconnected');
-        btnLabel.innerText = 'OFFLINE';
-        statusText.innerText = 'MESH DISCONNECTED';
+        btnLabel.innerText = 'Connect';
+        statusText.innerText = 'Not connected';
         statusText.classList.add('disconnected');
-        subText.innerText = 'Traffic is not being routed through the secure multi-hop mesh';
+        subText.innerText = 'Your traffic is going out over your normal connection.';
         pulse.classList.add('offline');
         tag.className = 'badge badge-red';
-        tag.innerText = 'DISCONNECTED';
-        latVal.innerText = '--';
-        pathsVal.innerText = '0 Paths';
+        tag.innerText = 'Not connected';
+        pathsVal.innerText = '0';
       }
     }
 
     // Modal & QR Code generator
     function openPairModal() {
+      const uri = buildPairUri();
+      document.getElementById('pair-uri-input').value = uri;
+      document.getElementById('network-id-input').value = currentNetworkId;
       document.getElementById('pair-modal').classList.add('active');
-      generateSvgQr(currentNetworkId);
+      generateSvgQr(uri);
     }
     function closePairModal() {
       document.getElementById('pair-modal').classList.remove('active');
     }
     function copyNetworkId() {
-      const el = document.getElementById('network-id-input');
-      el.select();
-      document.execCommand('copy');
-      alert('Network ID copied to clipboard');
+      copyText(currentNetworkId, 'Network ID copied to clipboard');
+    }
+    function copyPairUri() {
+      copyText(document.getElementById('pair-uri-input').value, 'Pairing link copied to clipboard');
+    }
+    function copyText(text, message) {
+      const done = () => { if (message) alert(message); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+      } else {
+        fallbackCopy(text, done);
+      }
+    }
+    function fallbackCopy(text, done) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) { /* clipboard unavailable */ }
+      document.body.removeChild(ta);
+      done();
+    }
+
+    // ggn://pair?nid=<NETWORK_ID>&fp=<FINGERPRINT>&host=<HOST_IP>:2270
+    // The backend hands us an authoritative `pair_uri`; this is the fallback
+    // when talking to an older node that does not report one.
+    function buildPairUri() {
+      if (currentPairUri) return currentPairUri;
+      const host = currentHost || '127.0.0.1:2270';
+      const id = encodeURIComponent(currentNetworkId || 'unknown');
+      return 'ggn://pair?nid=' + id + '&fp=' + id + '&host=' + encodeURIComponent(host);
     }
 
     function togglePinPrompt() {
-      const pin = prompt('Enter a 4-to-6 digit PIN to lock this control console (leave blank to unlock):');
-      if (pin !== null) {
-        alert(pin.length > 0 ? 'Console PIN protection enabled.' : 'Console PIN protection cleared.');
+      if (pinProtected) {
+        const entered = prompt('Console PIN is active. Enter it to unlock protected actions for this session:');
+        if (entered) {
+          sessionPin = entered;
+          loadSettings();
+        }
+        return;
+      }
+      alert(
+        'No console PIN is set.\n\n' +
+        'Restart the node with GHOST_PIN=<your pin> to require a PIN before anyone can rename devices or change ' +
+        'routing. This control center listens on your whole LAN, so a PIN is strongly recommended.'
+      );
+    }
+
+    // ── Device naming ──────────────────────────────────────────────────
+    function startRename(fingerprint, currentName) {
+      const row = document.getElementById('peer-name-' + fingerprint);
+      if (!row) return;
+      row.innerHTML = '<input class="rename-input" id="rename-in-' + fingerprint + '" value="' + escapeAttr(currentName) + '">' +
+        '<button class="icon-btn" onclick="saveRename(\'' + fingerprint + '\')">Save</button>' +
+        '<button class="icon-btn" onclick="updateConsumerStatus()">Cancel</button>';
+      const input = document.getElementById('rename-in-' + fingerprint);
+      if (input) {
+        input.focus();
+        input.select();
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') saveRename(fingerprint);
+          if (e.key === 'Escape') updateConsumerStatus();
+        });
       }
     }
 
-    // Lightweight Deterministic SVG QR Matrix Generator
-    function generateSvgQr(text) {
-      const container = document.getElementById('qr-container');
-      const size = 21;
-      let hash = 0;
-      for (let i = 0; i < text.length; i++) {
-        hash = ((hash << 5) - hash) + text.charCodeAt(i);
-        hash |= 0;
+    async function saveRename(fingerprint) {
+      const input = document.getElementById('rename-in-' + fingerprint);
+      if (!input) return;
+      const res = await apiPost('/api/peers/rename', { fingerprint: fingerprint, name: input.value });
+      if (!res.ok || !res.data || !res.data.success) {
+        alert('Could not rename this device: ' + (res.error || ('HTTP ' + res.status)));
+        return;
       }
-      let svg = `<svg viewBox="0 0 ${size} ${size}" width="160" height="160" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">`;
-      svg += `<rect width="${size}" height="${size}" fill="#ffffff"/>`;
+      updateConsumerStatus();
+    }
 
-      function isFinder(x, y) {
-        if (x < 7 && y < 7) return true;
-        if (x >= size - 7 && y < 7) return true;
-        if (x < 7 && y >= size - 7) return true;
-        return false;
+    // ── Egress mode + split tunnel ─────────────────────────────────────
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) return;
+        const d = await res.json();
+        routeMode = d.route_mode || 'app_socks';
+        routeModeActive = !!d.route_mode_active;
+        vpnAvailable = !!d.vpn_available;
+        socksListening = !!d.socks_listening;
+        socksPort = d.socks_port || 1080;
+        bypassRules = d.bypass || [];
+        pinProtected = !!d.pin_protected;
+        document.getElementById('socks-port-label').innerText = socksPort;
+        renderEgress();
+        renderBypass();
+      } catch (e) {
+        console.warn('Settings load failed:', e);
       }
-      function drawFinder(ox, oy) {
-        let f = '';
-        for (let y = 0; y < 7; y++) {
-          for (let x = 0; x < 7; x++) {
-            if (x === 0 || x === 6 || y === 0 || y === 6 || (x >= 2 && x <= 4 && y >= 2 && y <= 4)) {
-              f += `<rect x="${ox + x}" y="${oy + y}" width="1" height="1" fill="#000000"/>`;
+    }
+
+    function renderEgress() {
+      document.getElementById('mode-opt-vpn').classList.toggle('selected', routeMode === 'system_vpn');
+      document.getElementById('mode-opt-socks').classList.toggle('selected', routeMode === 'app_socks');
+      const line = document.getElementById('egress-status-line');
+      const inEffect = routeMode === 'system_vpn' ? vpnAvailable : socksListening;
+      if (inEffect) {
+        line.innerHTML = '<span class="ok-note">In effect:</span> ' +
+          (routeMode === 'system_vpn'
+            ? 'the system-wide adapter (ggn0 / Wintun) is up and everything routes through the mesh.'
+            : 'the local SOCKS5 listener is up on 127.0.0.1:' + socksPort + '.');
+      } else {
+        line.innerHTML = '<span class="warn-note">Selected, but not in effect here.</span> ' +
+          (routeMode === 'system_vpn'
+            ? 'This node has no TUN subsystem available (built without the vpn feature, or GHOST_VPN unset).'
+            : 'The SOCKS5 listener is off — start the node with GHOST_SOCKS5=1.');
+      }
+      const warn = document.getElementById('egress-warning');
+      if (routeMode === 'system_vpn' && !vpnAvailable) {
+        warn.style.display = 'block';
+        warn.innerText = 'System-wide mode needs a build with the `vpn` feature and a node started with ' +
+          'GHOST_VPN=client (administrator rights are required once, to bind the adapter). Your choice is saved and ' +
+          'takes effect on such a node.';
+      } else {
+        warn.style.display = 'none';
+      }
+    }
+
+    async function setEgressMode(mode) {
+      const res = await apiPost('/api/settings', { route_mode: mode });
+      if (!res.ok || !res.data) {
+        alert('Could not change the routing mode: ' + (res.error || ('HTTP ' + res.status)));
+        return;
+      }
+      routeMode = res.data.route_mode;
+      routeModeActive = !!res.data.route_mode_active;
+      bypassRules = res.data.bypass || bypassRules;
+      renderEgress();
+      renderBypass();
+    }
+
+    function renderBypass() {
+      const box = document.getElementById('bypass-list');
+      if (!bypassRules.length) {
+        box.innerHTML = '<div class="note">No exceptions yet — everything follows the routing mode above.</div>';
+        return;
+      }
+      box.innerHTML = '<div class="note">' + bypassRules.length +
+        ' destination(s) skip the mesh and use your normal internet connection:</div>' +
+        bypassRules.map(rule =>
+          '<div class="rule-row"><code>' + escapeHtml(rule) + '</code>' +
+          '<button class="icon-btn" onclick="removeBypassRule(\'' + escapeAttr(rule) + '\')">Remove</button></div>'
+        ).join('');
+    }
+
+    async function addBypassRule() {
+      const input = document.getElementById('bypass-input');
+      const rule = (input.value || '').trim();
+      if (!rule) {
+        input.focus();
+        return;
+      }
+      const res = await apiPost('/api/settings', { bypass_add: rule });
+      if (!res.ok || !res.data) {
+        alert('Could not add that rule: ' + (res.error || ('HTTP ' + res.status)));
+        return;
+      }
+      bypassRules = res.data.bypass || bypassRules;
+      input.value = '';
+      renderBypass();
+    }
+
+    async function quickAddBypass(rule) {
+      const res = await apiPost('/api/settings', { bypass_add: rule });
+      if (res.ok && res.data) {
+        bypassRules = res.data.bypass || bypassRules;
+        renderBypass();
+      }
+    }
+
+    async function removeBypassRule(rule) {
+      const res = await apiPost('/api/settings', { bypass_remove: rule });
+      if (res.ok && res.data) {
+        bypassRules = res.data.bypass || [];
+        renderBypass();
+      }
+    }
+
+    // ── Multi-path speedtest ───────────────────────────────────────────
+    function renderOverheadCard() {
+      const val = document.getElementById('c-latency-val');
+      const sub = document.getElementById('c-latency-sub');
+      if (lastMeshOverheadMs === null) {
+        val.innerText = '—';
+        sub.innerText = 'Run the speed test to measure';
+      } else {
+        val.innerText = lastMeshOverheadMs < 1
+          ? Math.round(lastMeshOverheadMs * 1000) + ' µs'
+          : lastMeshOverheadMs + ' ms';
+        sub.innerText = 'Measured on this device';
+      }
+    }
+
+    async function runSpeedtest() {
+      const btn = document.getElementById('speedtest-btn');
+      btn.disabled = true;
+      btn.innerText = 'Measuring…';
+      try {
+        const wantIsp = document.getElementById('speedtest-isp').checked;
+        const res = await apiPost('/api/speedtest', { isp_probe: wantIsp, bytes: 256 * 1024 });
+        if (!res.ok || !res.data) {
+          document.getElementById('speedtest-note').innerText =
+            (res.status === 401 ? 'This endpoint needs the console PIN. ' : '') +
+            (res.error || ('HTTP ' + res.status));
+          return;
+        }
+        renderSpeedtest(res.data);
+      } finally {
+        btn.disabled = false;
+        btn.innerText = 'Run test';
+      }
+    }
+
+    function renderSpeedtest(d) {
+      const p = d.pipeline || {};
+      const live = d.live || {};
+      const fmt = (v, unit) => (v === null || v === undefined) ? '—' : (v + ' ' + unit);
+      // Per-packet stages are usually well under a millisecond; showing "0 ms"
+      // would look broken, so switch to microseconds below 1 ms.
+      const fmtMs = (v) => (v === null || v === undefined) ? '—'
+        : (v < 1 ? Math.round(v * 1000) + ' µs' : v + ' ms');
+      const tiles = [
+        ['Through the mesh', fmt(p.upload_mbps, 'Mbps'), 'encrypt, split, send'],
+        ['Back to this device', fmt(p.download_mbps, 'Mbps'), 'rebuild, verify, decrypt'],
+        ['Added overhead', fmtMs(p.mesh_overhead_ms), 'per ' + (p.chunk_bytes || 900) + '-byte packet'],
+        ['Slowest path', fmtMs(p.shard_transport_p95_ms), '1 in 20 worst case'],
+        ['Rebuild time', fmtMs(p.reconstruction_ms), 'from any two of three'],
+        ['Recovered', (p.recovered_chunks || 0) + '/' + (p.chunks || 0), 'packets, one path cut every time'],
+        ['Sent now', fmt(live.tx_mbps, 'Mbps'), 'over the last ' + (live.window_ms || 1000) + ' ms'],
+        ['Received now', fmt(live.rx_mbps, 'Mbps'), (live.active_sessions || 0) + ' active session(s)'],
+        ['Internet round-trip', d.isp_rtt_ms !== null && d.isp_rtt_ms !== undefined
+          ? d.isp_rtt_ms + ' ms'
+          : (d.isp_probe_requested ? 'no answer' : 'not measured'), 'to 1.1.1.1, outside the mesh']
+      ];
+      document.getElementById('speedtest-results').innerHTML = tiles.map(t =>
+        '<div class="st-tile"><div class="st-label">' + t[0] + '</div>' +
+        '<div class="st-value">' + t[1] + '</div>' +
+        '<div class="st-note">' + t[2] + '</div></div>'
+      ).join('');
+      lastMeshOverheadMs = (p.mesh_overhead_ms === undefined) ? null : p.mesh_overhead_ms;
+      renderOverheadCard();
+      const payloadKiB = p.payload_bytes ? Math.round(p.payload_bytes / 1024) : 0;
+      document.getElementById('speedtest-note').innerText =
+        (payloadKiB ? payloadKiB + ' KiB pushed through ' + p.chunks + ' packets with carrier A cut every time. ' : '') +
+        (p.note || '');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ISO/IEC 18004 QR CODE ENCODER — zero-dependency, byte mode, ECC level M.
+    // Versions 1..10 hold up to 216 payload bytes, more than a ggn://pair URI
+    // needs. Implements GF(256) Reed-Solomon(error correction), the eight data
+    // masks with the standard penalty scoring, and BCH(15,5) format /
+    // BCH(18,6) version information, so off-the-shelf cameras (iOS Camera,
+    // Google Lens, zbar/ZBar, Android ML Kit) decode it without special-casing.
+    // ── BEGIN QR ENCODER ──
+    const QrEncoder = (function () {
+      // Per version: [totalCodewords, ecPerBlock, g1Blocks, g1DataWords, g2Blocks, g2DataWords]
+      // ECC level M block structure (ISO/IEC 18004 table 9).
+      const SPEC = [
+        null,
+        [26, 10, 1, 16, 0, 0],
+        [44, 16, 1, 28, 0, 0],
+        [70, 26, 1, 44, 0, 0],
+        [100, 18, 2, 32, 0, 0],
+        [134, 24, 2, 43, 0, 0],
+        [172, 16, 4, 27, 0, 0],
+        [196, 18, 4, 31, 0, 0],
+        [242, 22, 2, 38, 2, 39],
+        [292, 22, 3, 36, 2, 37],
+        [346, 26, 4, 43, 1, 44]
+      ];
+      // Alignment pattern centre coordinates, indexed by version.
+      const ALIGN = [
+        [], [], [6, 18], [6, 22], [6, 26], [6, 30],
+        [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]
+      ];
+      // Data masks (ISO/IEC 18004 table 10), row/column based.
+      const MASK_FN = [
+        (r, c) => (r + c) % 2 === 0,
+        (r) => r % 2 === 0,
+        (r, c) => c % 3 === 0,
+        (r, c) => (r + c) % 3 === 0,
+        (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+        (r, c) => ((r * c) % 2) + ((r * c) % 3) === 0,
+        (r, c) => (((r * c) % 2) + ((r * c) % 3)) % 2 === 0,
+        (r, c) => (((r + c) % 2) + ((r * c) % 3)) % 2 === 0
+      ];
+
+      // GF(256) log/antilog tables, primitive polynomial x^8+x^4+x^3+x^2+1 (0x11D).
+      const EXP = new Uint8Array(512);
+      const LOG = new Uint8Array(256);
+      for (let i = 0, x = 1; i < 255; i++) {
+        EXP[i] = x;
+        LOG[x] = i;
+        x = (x << 1) ^ ((x & 0x80) ? 0x11d : 0);
+      }
+      for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+
+      function gfMul(a, b) {
+        if (a === 0 || b === 0) return 0;
+        return EXP[LOG[a] + LOG[b]];
+      }
+
+      function rsGenerator(degree) {
+        let poly = [1];
+        for (let i = 0; i < degree; i++) {
+          const next = new Array(poly.length + 1).fill(0);
+          for (let j = 0; j < poly.length; j++) {
+            next[j] ^= poly[j];
+            next[j + 1] ^= gfMul(poly[j], EXP[i]);
+          }
+          poly = next;
+        }
+        return poly;
+      }
+
+      function rsRemainder(block, ecLen, gen) {
+        const rem = new Uint8Array(ecLen);
+        for (let i = 0; i < block.length; i++) {
+          const factor = block[i] ^ rem[0];
+          rem.copyWithin(0, 1);
+          rem[ecLen - 1] = 0;
+          if (factor !== 0) {
+            for (let j = 0; j < ecLen; j++) rem[j] ^= gfMul(gen[j + 1], factor);
+          }
+        }
+        return rem;
+      }
+
+      function utf8Bytes(text) {
+        const out = [];
+        for (const ch of text) {
+          const cp = ch.codePointAt(0);
+          if (cp < 0x80) out.push(cp);
+          else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 63));
+          else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+          else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+        }
+        return out;
+      }
+
+      function dataWords(version) {
+        const s = SPEC[version];
+        return s[2] * s[3] + s[4] * s[5];
+      }
+
+      function chooseVersion(byteLen) {
+        for (let v = 1; v < SPEC.length; v++) {
+          const ccBits = v >= 10 ? 16 : 8;
+          if (4 + ccBits + 8 * byteLen <= dataWords(v) * 8) return v;
+        }
+        return 0;
+      }
+
+      // Produce the final interleaved codeword sequence (data + RS parity).
+      function buildCodewords(bytes, version) {
+        const spec = SPEC[version];
+        const totalData = dataWords(version);
+        const bits = [];
+        const pushBits = (value, len) => {
+          for (let i = len - 1; i >= 0; i--) bits.push((value >>> i) & 1);
+        };
+        pushBits(0b0100, 4);
+        pushBits(bytes.length, version >= 10 ? 16 : 8);
+        for (const b of bytes) pushBits(b, 8);
+        const capBits = totalData * 8;
+        for (let i = 0; i < 4 && bits.length < capBits; i++) bits.push(0);
+        while (bits.length % 8 !== 0) bits.push(0);
+
+        const words = [];
+        for (let i = 0; i < bits.length; i += 8) {
+          let w = 0;
+          for (let j = 0; j < 8; j++) w = (w << 1) | bits[i + j];
+          words.push(w);
+        }
+        for (let i = 0; words.length < totalData; i++) words.push(i % 2 === 0 ? 0xec : 0x11);
+
+        const ecLen = spec[1];
+        const gen = rsGenerator(ecLen);
+        const blocks = [];
+        let off = 0;
+        for (let i = 0; i < spec[2]; i++) { blocks.push(words.slice(off, off + spec[3])); off += spec[3]; }
+        for (let i = 0; i < spec[4]; i++) { blocks.push(words.slice(off, off + spec[5])); off += spec[5]; }
+        const parity = blocks.map((b) => rsRemainder(Uint8Array.from(b), ecLen, gen));
+
+        const out = [];
+        const maxData = Math.max(spec[3], spec[5]);
+        for (let i = 0; i < maxData; i++) {
+          for (const b of blocks) if (i < b.length) out.push(b[i]);
+        }
+        for (let i = 0; i < ecLen; i++) for (const p of parity) out.push(p[i]);
+        return out;
+      }
+
+      function drawFunctionPatterns(version, size, mod, fn) {
+        const set = (r, c, dark) => { mod[r][c] = dark ? 1 : 0; fn[r][c] = 1; };
+        // Finder patterns plus their separators.
+        for (const [fr, fc] of [[0, 0], [0, size - 7], [size - 7, 0]]) {
+          for (let r = -1; r <= 7; r++) {
+            for (let c = -1; c <= 7; c++) {
+              const rr = fr + r;
+              const cc = fc + c;
+              if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
+              const hRing = (r === 0 || r === 6) && c >= 0 && c <= 6;
+              const vRing = (c === 0 || c === 6) && r >= 0 && r <= 6;
+              set(rr, cc, hRing || vRing || (r >= 2 && r <= 4 && c >= 2 && c <= 4));
             }
           }
         }
-        return f;
+        // Timing patterns.
+        for (let i = 8; i <= size - 9; i++) {
+          set(6, i, i % 2 === 0);
+          set(i, 6, i % 2 === 0);
+        }
+        // Alignment patterns (skipping the three finder corners; they may
+        // legitimately overlap the timing patterns).
+        const centers = ALIGN[version];
+        const last = centers.length - 1;
+        centers.forEach((cr, i) => {
+          centers.forEach((cc, j) => {
+            const corner = (i === 0 && j === 0) || (i === 0 && j === last) || (i === last && j === 0);
+            if (corner) return;
+            for (let dr = -2; dr <= 2; dr++) {
+              for (let dc = -2; dc <= 2; dc++) {
+                set(cr + dr, cc + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
+              }
+            }
+          });
+        });
       }
 
-      svg += drawFinder(0, 0);
-      svg += drawFinder(size - 7, 0);
-      svg += drawFinder(0, size - 7);
+      // Write both copies of the 15-bit format information (masked with 0x5412)
+      // plus the always-dark module. Also used to reserve the area early.
+      function drawFormat(size, mask, mod, fn) {
+        const data = (0b00 << 3) | mask; // ECC level M = 0b00
+        let rem = data;
+        for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+        const bits = ((data << 10) | rem) ^ 0x5412;
+        const bit = (i) => (bits >>> i) & 1;
+        const put = (r, c, dark) => { mod[r][c] = dark ? 1 : 0; fn[r][c] = 1; };
+        for (let i = 0; i <= 5; i++) put(i, 8, bit(i));
+        put(7, 8, bit(6));
+        put(8, 8, bit(7));
+        put(8, 7, bit(8));
+        for (let i = 9; i < 15; i++) put(8, 14 - i, bit(i));
+        for (let i = 0; i < 8; i++) put(8, size - 1 - i, bit(i));
+        for (let i = 8; i < 15; i++) put(size - 15 + i, 8, bit(i));
+        put(size - 8, 8, true);
+      }
 
-      for (let y = 0; y < size; y++) {
-        for (let x = 0; x < size; x++) {
-          if (isFinder(x, y)) continue;
-          let seed = (x * 37 + y * 73 + hash);
-          let on = ((seed ^ (seed >> 3)) % 2) === 0;
-          if (on) {
-            svg += `<rect x="${x}" y="${y}" width="1" height="1" fill="#000000"/>`;
-          }
+      // 18-bit version information for versions 7 and above.
+      function drawVersion(version, size, mod, fn) {
+        let rem = version;
+        for (let i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1f25);
+        const bits = (version << 12) | rem;
+        for (let i = 0; i < 18; i++) {
+          const dark = ((bits >>> i) & 1) !== 0;
+          const a = size - 11 + (i % 3);
+          const b = Math.floor(i / 3);
+          mod[a][b] = dark ? 1 : 0; fn[a][b] = 1;
+          mod[b][a] = dark ? 1 : 0; fn[b][a] = 1;
         }
       }
-      svg += `</svg>`;
-      container.innerHTML = svg;
+
+      function bitAt(words, index) {
+        if (index >= words.length * 8) return 0;
+        return (words[index >> 3] >> (7 - (index & 7))) & 1;
+      }
+
+      function buildMatrix(version, mask, words) {
+        const size = version * 4 + 17;
+        const mod = Array.from({ length: size }, () => new Uint8Array(size));
+        const fn = Array.from({ length: size }, () => new Uint8Array(size));
+        drawFunctionPatterns(version, size, mod, fn);
+        drawFormat(size, 0, mod, fn);
+        if (version >= 7) drawVersion(version, size, mod, fn);
+
+        // Zig-zag codeword placement, skipping function modules.
+        let idx = 0;
+        let upward = true;
+        for (let right = size - 1; right >= 1; right -= 2) {
+          if (right === 6) right = 5;
+          for (let vert = 0; vert < size; vert++) {
+            const r = upward ? size - 1 - vert : vert;
+            for (let j = 0; j < 2; j++) {
+              const c = right - j;
+              if (fn[r][c]) continue;
+              mod[r][c] = bitAt(words, idx++);
+            }
+          }
+          upward = !upward;
+        }
+
+        // Apply the data mask to non-function modules.
+        const maskFn = MASK_FN[mask];
+        for (let r = 0; r < size; r++) {
+          for (let c = 0; c < size; c++) {
+            if (!fn[r][c] && maskFn(r, c)) mod[r][c] ^= 1;
+          }
+        }
+        drawFormat(size, mask, mod, fn);
+        return mod;
+      }
+
+      // Standard four-rule mask penalty scoring (ISO/IEC 18004 table 11).
+      function penalty(mod, size) {
+        let score = 0;
+        const runs = (get) => {
+          let run = 1;
+          for (let i = 1; i < size; i++) {
+            if (get(i) === get(i - 1)) run++;
+            else { if (run >= 5) score += 3 + (run - 5); run = 1; }
+          }
+          if (run >= 5) score += 3 + (run - 5);
+        };
+        for (let r = 0; r < size; r++) runs((c) => mod[r][c]);
+        for (let c = 0; c < size; c++) runs((r) => mod[r][c]);
+
+        for (let r = 0; r < size - 1; r++) {
+          for (let c = 0; c < size - 1; c++) {
+            const v = mod[r][c];
+            if (v === mod[r][c + 1] && v === mod[r + 1][c] && v === mod[r + 1][c + 1]) score += 3;
+          }
+        }
+
+        const P1 = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0];
+        const P2 = [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1];
+        const matches = (line, at, pat) => {
+          for (let k = 0; k < 11; k++) if (line[at + k] !== pat[k]) return false;
+          return true;
+        };
+        const scanLine = (line) => {
+          for (let i = 0; i + 11 <= size; i++) {
+            if (matches(line, i, P1) || matches(line, i, P2)) score += 40;
+          }
+        };
+        for (let r = 0; r < size; r++) scanLine(mod[r]);
+        for (let c = 0; c < size; c++) scanLine(Array.from({ length: size }, (_, r) => mod[r][c]));
+
+        let dark = 0;
+        for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) dark += mod[r][c];
+        const total = size * size;
+        score += (Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1) * 10;
+        return score;
+      }
+
+      function encode(text) {
+        const bytes = utf8Bytes(text);
+        const version = chooseVersion(bytes.length);
+        if (!version) return null;
+        const words = buildCodewords(bytes, version);
+        const size = version * 4 + 17;
+        let best = null;
+        for (let mask = 0; mask < 8; mask++) {
+          const mod = buildMatrix(version, mask, words);
+          const score = penalty(mod, size);
+          if (!best || score < best.score) best = { score, mask, mod };
+        }
+        return { version, mask: best.mask, size, modules: best.mod };
+      }
+
+      // Render as crisp SVG with a 4-module quiet zone (mandatory for scanners).
+      function toSvg(matrix, quiet) {
+        const q = quiet === undefined ? 4 : quiet;
+        const dim = matrix.size + q * 2;
+        let rects = '';
+        for (let r = 0; r < matrix.size; r++) {
+          let c = 0;
+          while (c < matrix.size) {
+            if (!matrix.modules[r][c]) { c++; continue; }
+            let run = 1;
+            while (c + run < matrix.size && matrix.modules[r][c + run]) run++;
+            rects += '<rect x="' + (c + q) + '" y="' + (r + q) + '" width="' + run + '" height="1"/>';
+            c += run;
+          }
+        }
+        return '<svg viewBox="0 0 ' + dim + ' ' + dim + '" width="100%" height="100%" role="img" ' +
+          'aria-label="Device pairing QR code" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">' +
+          '<rect width="' + dim + '" height="' + dim + '" fill="#ffffff"/>' +
+          '<g fill="#000000">' + rects + '</g></svg>';
+      }
+
+      return { encode: encode, toSvg: toSvg };
+    })();
+    // ── END QR ENCODER ──
+
+    // Paint the pairing QR into the modal. Falls back to a readable message if
+    // the payload cannot fit in a version-10 symbol.
+    function generateSvgQr(text) {
+      const container = document.getElementById('qr-container');
+      const matrix = QrEncoder.encode(text);
+      if (!matrix) {
+        container.innerHTML = '<div style="font-size:11px;color:#333;text-align:center;line-height:1.4;">Pairing payload is too long to encode as a QR code.</div>';
+        return;
+      }
+      container.innerHTML = QrEncoder.toSvg(matrix, 4);
+      container.setAttribute('data-qr-version', String(matrix.version));
+      container.setAttribute('data-qr-size', String(matrix.size));
     }
 
     // Update Status from Consumer Endpoint
@@ -870,39 +1518,77 @@
           isConnected = d.connected;
           currentMeshMode = d.mode || 'public';
           currentNetworkId = d.network_id || '--';
+          currentPairUri = d.pair_uri || '';
+          currentHost = d.host || currentHost;
+          activeCarrierPaths = d.active_carrier_paths || 0;
+          if (d.route_mode) routeMode = d.route_mode;
+          routeModeActive = !!d.route_mode_active;
+          vpnAvailable = !!d.vpn_available;
+          socksListening = !!d.socks_listening;
+          if (d.socks_port) socksPort = d.socks_port;
+          if (Array.isArray(d.bypass)) bypassRules = d.bypass;
+          pinProtected = !!d.pin_protected;
 
-          document.getElementById('network-id-badge').innerText = 'ID: ' + currentNetworkId;
           document.getElementById('network-id-input').value = currentNetworkId;
+
+          // "This device", in words a person recognises.
+          document.getElementById('this-device-name').innerText = d.device_name || '—';
+          document.getElementById('this-device-host').innerText = currentHost;
+          const thisIcon = document.getElementById('this-device-icon');
+          const myOs = d.device_os || 'unknown';
+          thisIcon.className = 'os-icon os-' + (OS_ICONS[myOs] ? myOs : 'unknown');
+          thisIcon.innerHTML = osIconSvg(myOs);
+          document.getElementById('pin-note').innerText = pinProtected
+            ? 'Console PIN is ON. Renaming devices and changing routing require it; this page asks once per session.'
+            : 'Console PIN is OFF. Anyone who can reach this page on your network can rename devices and change routing. Start the node with GHOST_PIN=<pin> to require one.';
 
           renderConnectionState();
           renderModeState();
+          renderOverheadCard();
+          if (document.getElementById('tab-settings').classList.contains('active')) {
+            renderEgress();
+            renderBypass();
+          }
 
           if (d.throughput) {
             const tx = formatBytes(d.throughput.bytes_sent);
             const rx = formatBytes(d.throughput.bytes_recv);
-            document.getElementById('c-traffic-val').innerText = `TX: ${tx} | RX: ${rx}`;
-            document.getElementById('c-pkts-sub').innerText = `${d.throughput.packets_sent || 0} pkts sent / ${d.throughput.packets_recv || 0} pkts recv`;
+            document.getElementById('c-traffic-val').innerText = `${tx} · ${rx}`;
+            document.getElementById('c-pkts-sub').innerText = `${d.throughput.packets_sent || 0} sent · ${d.throughput.packets_recv || 0} received`;
           }
 
           if (d.peers) {
-            document.getElementById('peers-summary-txt').innerText = `${d.peers.length} active device(s) discovered on mesh`;
+            const n = d.peers.length;
+            // With no devices the empty-state line below already says it.
+            document.getElementById('peers-summary-txt').innerText =
+              n === 0 ? '' : `${n} device${n === 1 ? '' : 's'} on this network`;
             let ph = '';
             if (d.peers.length === 0) {
-              ph = '<div style="font-size: 12px; color: var(--dim); padding: 12px;">No remote peers active. Click "Add Device" to pair via QR.</div>';
+              ph = '<div class="peers-empty">No other devices yet. Pair one and it shows up here.</div>';
             } else {
               d.peers.forEach(p => {
+                const os = p.os || 'unknown';
+                const status = p.status || (p.connected ? 'online' : 'idle');
+                const displayName = p.name || (p.fingerprint ? p.fingerprint.substring(0, 12) : 'Peer');
+                // Never invent a latency figure: only show one that was measured.
+                const latency = (p.latency_ms === null || p.latency_ms === undefined)
+                  ? '' : `<div class="peer-ping">${p.latency_ms} ms</div>`;
                 ph += `
                   <div class="peer-card">
                     <div class="peer-info">
-                      <div class="peer-name">
-                        <span class="pulse-dot" style="width: 8px; height: 8px;"></span>
-                        <span>${p.fingerprint ? p.fingerprint.substring(0, 12) : 'Peer'}</span>
+                      <div class="peer-name" id="peer-name-${p.fingerprint}">
+                        ${osIcon(os)}
+                        <span>${escapeHtml(displayName)}</span>
                       </div>
-                      <div class="peer-sub">${p.address || 'Mesh Socket'} &bull; ${p.role || 'Active Peer'}</div>
+                      <div class="peer-sub">
+                        <span class="status-dot status-${escapeHtml(status)}"></span>
+                        <span>${escapeHtml(status)}${p.address ? ' · ' + escapeHtml(p.address) : ''}</span>
+                      </div>
                     </div>
                     <div class="peer-meta">
-                      <div class="peer-ping">${p.latency_ms || 28} ms</div>
-                      <span class="badge badge-green">SYNCED</span>
+                      ${latency}
+                      <button class="icon-btn"
+                        onclick="startRename('${p.fingerprint}', '${escapeAttr(displayName)}')">Rename</button>
                     </div>
                   </div>
                 `;
@@ -976,36 +1662,33 @@
           }
 
           // Carrier fleet cards
-          if (data.carriers) {
+          if (data.carriers && data.carriers.length > 0) {
             let ch = '';
             data.carriers.forEach((c) => {
               let cl = 'carrier-box';
-              let badge = '<span class="badge badge-green">ACTIVE</span>';
+              let badge = '<span class="badge badge-green">Active</span>';
               if (c.status.includes('SEVERED')) {
                 cl += ' severed';
-                badge = '<span class="badge badge-red">SEVERED</span>';
+                badge = '<span class="badge badge-red">Cut</span>';
               } else if (c.status.includes('TAMPER')) {
                 cl += ' tampered';
-                badge = '<span class="badge badge-red">FORGERY REJECTED</span>';
+                badge = '<span class="badge badge-red">Tampered</span>';
               } else if (c.status.includes('FAILOVER')) {
                 cl += ' active';
-                badge = '<span class="badge badge-yellow">HOT FAILOVER</span>';
+                badge = '<span class="badge badge-yellow">Failover</span>';
               } else if (c.status.includes('HOT STANDBY')) {
                 cl += ' reserve';
-                badge = '<span class="badge badge-yellow">HOT STANDBY</span>';
+                badge = '<span class="badge badge-yellow">Standby</span>';
               }
 
               ch += `
                 <div class="${cl}">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                    <div style="font-weight: 700; color: var(--cyan);">${c.name}</div>
+                  <div class="carrier-head">
+                    <div class="carrier-name">${c.name}</div>
                     ${badge}
                   </div>
-                  <div style="font-size: 11px; color: var(--dim);">${c.role} (${c.ip})</div>
-                  <div style="font-size: 11px; color: var(--dim); margin-top: 2px;">Netem: ${c.netem}</div>
-                  <div style="font-size: 18px; font-weight: 700; margin-top: 8px; color: ${c.status.includes('SEVERED') || c.status.includes('TAMPER') ? 'var(--red)' : 'var(--text)'};">
-                    ${c.rtt_ms > 0 ? c.rtt_ms + ' ms' : '--'}
-                  </div>
+                  <div class="carrier-meta">${c.role} · ${c.ip} · ${c.netem}</div>
+                  <div class="carrier-rtt">${c.rtt_ms > 0 ? c.rtt_ms + ' ms' : '—'}</div>
                   <div class="sub">${c.status}</div>
                 </div>
               `;
@@ -1026,10 +1709,39 @@
       }
     }
 
+    // ── Native desktop window bridge (see src/webview.rs) ───────────────
+    // wry injects `window.ipc.postMessage`; we only use it when the page was
+    // loaded by the desktop shell, which appends ?native=1 to the URL.
+    function nativeSend(message) {
+      try {
+        if (window.ipc && typeof window.ipc.postMessage === 'function') {
+          window.ipc.postMessage(message);
+        }
+      } catch (e) {
+        console.warn('Native window bridge unavailable:', e);
+      }
+    }
+
+    (function initNativeChrome() {
+      const isNative = new URLSearchParams(location.search).get('native') === '1';
+      if (!isNative) return;
+      document.body.classList.add('native');
+      const drag = document.getElementById('native-drag');
+      if (drag) {
+        drag.addEventListener('mousedown', event => {
+          // Buttons inside the strip must stay clickable, not start a drag.
+          if (event.button !== 0 || event.target.closest('button')) return;
+          nativeSend('drag');
+          event.preventDefault();
+        });
+      }
+    })();
+
     setInterval(updateConsumerStatus, 2000);
     setInterval(updateTelemetry, 1500);
     updateConsumerStatus();
     updateTelemetry();
+    loadSettings();
   </script>
 </body>
 </html>

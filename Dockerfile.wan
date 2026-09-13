@@ -4,7 +4,9 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY assets ./assets
-RUN cargo build --release --bin wan_mesh
+# Containers are headless: skip the default desktop-window feature so the
+# image needs no GTK/WebKit stack and no display.
+RUN cargo build --release --bin wan_mesh --no-default-features
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates iproute2 iptables && rm -rf /var/lib/apt/lists/*

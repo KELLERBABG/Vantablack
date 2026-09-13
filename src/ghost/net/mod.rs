@@ -8,6 +8,7 @@
 ///
 /// Also implements a lightweight ACK engine for reliable delivery over UDP,
 /// and an adaptive token-bucket flow controller.
+pub mod consumer;
 pub mod dispatcher;
 pub mod mesh;
 pub mod orbit;

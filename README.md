@@ -167,44 +167,93 @@ docker compose -f docker-compose.wan.yml down
 
 ## Quick Start (Standalone Binary)
 
-### Option 1: Running the Node Locally
+### Option 1: Running the Desktop App
 
-Run the pre-compiled binary or build with cargo:
+Global Ghost Net is a desktop application. A plain `cargo build --release` produces it:
 
-1. **Client Node (Protected User):**
+1. **Launch the app:**
    ```bash
    cargo run --release
-   # Or run target/release/ggn (aliased to target/release/vantablack)
+   # Or run the built binary directly: target/release/ggn (same program as target/release/vantablack)
    ```
    - Binds its mesh data socket per `GHOST_BIND` (default: ephemeral port). Port `2270/UDP` is used for discovery beacons.
    - Starts local SOCKS5 proxy on `127.0.0.1:1080`.
-   - Starts Consumer Desktop & Remote Web Control Center on `http://localhost:2270` (`GHOST_WEB_PORT` / `GHOST_METRICS_PORT`).
+   - Opens its **own window** (frameless, with a tray icon) hosting the full control center. Closing the window hides it to the tray; use the tray menu to quit.
+   - Starts the HTTP control center on `http://localhost:2270` (`GHOST_WEB_PORT` / `GHOST_METRICS_PORT`) at the same time, so the same UI is reachable from a browser or a phone on your network.
+   - Mirrors logs to `ghost.log` (`GHOST_LOG=off` disables, `GHOST_LOG=<path>` moves it), because the Windows build is a GUI process with no console.
    - Automatically queries DNS seeds and connects to active mesh peers.
 
-2. **Remote Web Control Center & REST API (`http://localhost:2270`):**
-   - **Dashboard UI (`GET /` or `GET /dashboard`):** Sleek, dark-mode cyber-minimalist responsive interface. Features a massive 1-click connect/disconnect switch, mode selector ("Public Stealth Mesh" vs "Private Home Mesh"), real-time latency & throughput counters, dynamic peer card list, 1-click pairing modal with pure SVG QR code generator, PIN protection toggle, and an embedded Level 2 WAN Simulation viewer.
-   - **`GET /api/status`:** Returns live node status JSON:
+   The executable is relocatable — copy it anywhere, to a USB stick or `C:\Program Files`; its identity and settings do not move with it. Everything persistent is kept in one per-user directory:
+
+   | Platform | Location |
+   |---|---|
+   | Windows | `%APPDATA%\GlobalGhostNet` |
+   | macOS | `~/Library/Application Support/GlobalGhostNet` |
+   | Linux | `~/.local/share/global-ghost-net` (`$XDG_DATA_HOME`) |
+
+   That directory holds `identity.key`, `peers.cache`, `ghost-consumer.json` (device names, egress mode, bypass list), `ghost-topology.json` and `ghost.log`. `GHOST_DATA_DIR` moves the whole directory; the older `GHOST_IDENTITY_FILE` / `GHOST_CONSUMER_CONFIG` / `GHOST_LOG` overrides still work. If an older build left a state file in the working directory, it is copied into the new location on first use — the original is never deleted.
+
+   On Linux the desktop build needs GTK/WebKit development headers:
+   ```bash
+   # Debian / Ubuntu
+   sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+   # Fedora
+   sudo dnf install webkit2gtk4.1-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel
+   ```
+   Servers and containers should skip all of that with the headless build, which is HTTP-only:
+   ```bash
+   cargo build --release --no-default-features
+   GHOST_NO_GUI=1 ./target/release/ggn      # no window; browser control center only
+   ```
+
+2. **The control center (also available in a browser at `http://localhost:2270`):**
+   - **Dashboard UI (`GET /` or `GET /dashboard`):** A single-column, dark-mode interface in the same visual language as the landing page — Space Grotesk for text, JetBrains Mono only for values. One card connects or disconnects and picks who may join ("Open mesh" vs "Only my devices"), the next shows this device and how to pair it, then the device list with friendly names, platform icons, presence and rename-in-place. Measured figures (paths in use, per-packet overhead, bytes sent/received) stay behind a collapsed **Mesh details** disclosure instead of four shouting tiles, so the default screen is just the connection state. Tabs: **Connect**, **Settings** (egress mode, split-tunnel bypass list, speed test, console PIN) and **Simulation** (the seven-node WAN viewer). The pairing modal shows a real ISO/IEC 18004 QR symbol (versions 1–10, error correction level M) encoding a `ggn://pair` link. Appending `?native=1` turns the top row into the drag strip and adds Hide/Quit, which is what the desktop window loads; it is a normal page, so the browser remains a complete way in.
+   - **`GET /api/status`:** Returns live node status JSON. Every field is either measured or explicitly `null` — nothing is a placeholder constant:
      ```json
      {
        "connected": true,
        "mode": "public",
        "network_id": "a9c7482f1b0e457d",
+       "device_name": "amber-otter-457d",
+       "device_os": "linux",
+       "host": "192.168.1.42:2270",
+       "pair_uri": "ggn://pair?nid=a9c7482f1b0e457d&fp=a9c7482f1b0e457d&host=192.168.1.42:2270",
+       "route_mode": "app_socks",
+       "route_mode_active": true,
+       "bypass_count": 1,
+       "socks_listening": true,
+       "socks_port": 1080,
+       "vpn_available": false,
        "pin_protected": false,
        "uptime_seconds": 124,
        "peers_count": 2,
        "active_sessions": 2,
-       "latency_ms": 24,
+       "latency_ms": null,
        "active_carrier_paths": 3,
        "reed_solomon_active": true,
        "throughput": { "bytes_sent": 4096, "bytes_recv": 8192, "packets_sent": 8, "packets_recv": 16 },
        "peers": [...]
      }
      ```
+     `latency_ms` is `null` because this build runs no per-peer RTT probe; `active_carrier_paths` counts the primary route plus up to two additional live sessions.
    - **`POST /api/connect`:** Toggles or sets connection state (`{"connected": bool}`).
    - **`POST /api/mode`:** Updates operating mesh mode (`{"mode": "public" | "private"}`).
-   - **`GET /api/peers`:** Returns JSON list of all discovered and active peers.
+   - **`GET /api/peers`:** Returns JSON list of all discovered and active peers, each with `name`, `custom_name`, `os`, `status` (`online` / `idle` / `offline`) and fingerprint.
+   - **`POST /api/peers/rename`:** Sets or clears a device's friendly name (`{"fingerprint": "...", "name": "LivingRoom-PC", "os": "linux"}`). An empty name restores the deterministic default.
+   - **`GET /api/settings`:** Returns the consumer control-plane state: `route_mode` (`system_vpn` / `app_socks`), `route_mode_active` (whether that choice is genuinely in force), `bypass` rules, SOCKS5 listener state and TUN availability.
+   - **`POST /api/settings`:** Applies `route_mode`, `bypass_add`, `bypass_remove` (or a replacement `bypass` array). Rules accept hosts (`banking.example.de`), wildcards (`*.netflix.com`), IPv4 addresses and CIDR blocks (`192.168.1.0/24`); anything that could never match is rejected with HTTP 400. Persisted to `ghost-consumer.json` (override path with `GHOST_CONSUMER_CONFIG`).
+   - **`POST /api/speedtest`:** Pushes a real payload through encrypt → 3-carrier shard → rebuild-from-two-shards → decrypt (one carrier is cut every packet) and returns measured per-stage timings, plus live TX/RX from this node's real byte counters over a 1 s window. `{"isp_probe": true}` additionally measures the internet round-trip by TCP-connecting to `1.1.1.1:443`.
    - **`GET /api/telemetry`:** Returns full Level 2 WAN carrier simulation metrics.
    - **`GET /healthz` & `GET /metrics`:** Health check and Prometheus metrics exposition.
+
+   Setting `GHOST_PIN=<pin>` now *enforces* the console PIN: every `POST` endpoint rejects requests that do not carry a matching `X-Pin` header with HTTP 401. The control center binds `0.0.0.0`, so set a PIN if the machine is on a shared network.
+
+   Split tunneling is enforced in the SOCKS5 initiator: destinations matching a bypass rule are dialed directly over the local ISP instead of being tunnelled through the mesh. Set the egress mode with `GHOST_EGRESS_MODE=system_vpn|app_socks` for the first run, then the saved choice wins.
+
+   The tray-only build (a tray icon that opens the browser, no native window) is still available:
+   ```bash
+   cargo build --release --no-default-features --features tray
+   ```
 
 3. **Exit Node (Transit Provider):**
    ```bash
@@ -316,18 +365,23 @@ For engineers, cryptographers, and contributors wishing to inspect the mathemati
 
 ## Building from Source
 
-Global Ghost Net is written in pure Rust with zero C toolchain dependencies:
+Global Ghost Net is written in pure Rust. `cargo build --release` produces the desktop
+application (native window + tray); the headless server build needs no C toolchain,
+no GTK/WebKit and no display:
 
 ```bash
-# Build optimized release binary (~1.1 MB)
+# Desktop application (default features)
 cargo build --release
+
+# Headless server / container build
+cargo build --release --no-default-features
 
 # Run comprehensive unit & integration test suite
 cargo test --lib
 cargo test --test simulation
 
-# Build and run the Level 2 Multi-Hop WAN binary
-cargo run --bin wan_mesh
+# Build and run the Level 2 Multi-Hop WAN binary (headless)
+cargo run --bin wan_mesh --no-default-features
 ```
 
 ---

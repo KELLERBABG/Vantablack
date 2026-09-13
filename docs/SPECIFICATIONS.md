@@ -245,36 +245,104 @@ The carrier simulation runs four continuous autonomous test scenarios verifying 
 
 ---
 
-## 10. Remote Web Control Center & Live Telemetry Dashboard Architecture
+## 10. Desktop Application, Control Center & Live Telemetry Dashboard Architecture
+
+### 10.1 Delivery model
+
+Global Ghost Net ships as a **desktop application**. The default cargo feature set is
+`webview`, so `cargo build --release` produces a single executable that:
+
+- opens a **frameless native window** (tao + `wry`, i.e. WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) hosting the control center — no browser tab is involved;
+- adds a **system-tray icon** whose menu can re-show the window, toggle beacon discovery, or quit;
+- treats **closing the window as "hide to tray"**, so the tunnel survives the close button (tao only reports `WM_CLOSE`; we never destroy the window);
+- supports a **drag strip** inside the page (`window.ipc.postMessage("drag")` → `Window::drag_window()`), because a frameless window has no title bar to grab;
+- runs as a **GUI-subsystem process on Windows** (`windows_subsystem = "windows"`), so no console window appears, and mirrors its log to `ghost.log` (`GHOST_LOG=<path>` / `GHOST_LOG=off`) because there is no console left to read;
+- carries a **real application icon**, so Explorer, the taskbar, Alt-Tab and the tray all show the product mark rather than the generic `.exe` glyph. Two distinct pieces make that work, and both are needed: the multi-resolution `assets/icon.ico` (16/24/32/48/64/128/256 px) is compiled into the PE image's `RT_ICON` / `RT_GROUP_ICON` resources by `build.rs` via `embed-resource`, and the *running* window is given an `HICON` at construction time (`WindowBuilder::with_window_icon`), because Windows resolves a window's taskbar icon from `WM_SETICON` — falling back to the executable's resources only if the window never asks. The window/tray pixels come from `assets/icon-ui.ico` (32 and 64 px) through a small dependency-free ICO decoder in `src/ghost/icon.rs` — classic DIB entries only, PNG-compressed entries are rejected with a log line rather than half-parsed. Regenerate both files with `python scripts/make_icon.py`.
+
+### 10.1.1 Where the app keeps its files
+
+All persistent state lives in **one per-user application-data directory**, so the location of
+the executable — or the shell's current working directory — has no effect on the node's
+identity:
+
+| Platform | Directory |
+|---|---|
+| Windows | `%APPDATA%\GlobalGhostNet` (falls back to `%LOCALAPPDATA%`, then `%USERPROFILE%\AppData\Roaming`) |
+| macOS | `~/Library/Application Support/GlobalGhostNet` |
+| Linux | `$XDG_DATA_HOME/global-ghost-net` (or `~/.local/share/global-ghost-net`) |
+
+The files are `identity.key` (the Ed25519 node key), `peers.cache`, `ghost-consumer.json`
+(device names, egress mode, bypass list), `ghost-topology.json` and `ghost.log`.
+
+`GHOST_DATA_DIR` overrides the whole directory; the older per-file overrides
+(`GHOST_IDENTITY_FILE`, `GHOST_CONSUMER_CONFIG`, `GHOST_LOG`, `GHOST_PEERS_CACHE`) still
+win over the default, so existing service units and harnesses are unaffected.
+
+Earlier builds resolved these names against the *current working directory*, which made the
+binary behave differently depending on where it was launched from: **double-clicking a copy
+of the executable somewhere else silently generated a brand-new identity**, so the node
+"forgot" its fingerprint and every existing pairing the moment the file moved — and
+launching from a read-only directory such as `C:\Program Files` could not persist anything
+at all. A bare filename is now placed in the data directory; a path the caller spelled out
+(absolute, or containing a separator) is returned untouched. On first use, if a legacy file
+is still sitting in the working directory and no data-directory copy exists, it is **copied**
+(never moved, so a failed migration cannot destroy an identity key) and the migration is
+logged.
+
+Headless deployments keep working unchanged: `cargo build --release --no-default-features`
+compiles out the window, the tray and the WebKit dependency entirely, and `GHOST_NO_GUI=1`
+disables the window at runtime while still starting the HTTP control center. That HTTP
+interface — the "sidenote" path used by servers and by phones on the LAN — is what the
+rest of this section documents. The dashboard HTML is compiled into the binary with
+`include_str!`, so editing it requires a rebuild.
+
+### 10.2 Control center and telemetry API
 
 A real-time observability and remote control engine is embedded directly within the node daemon, exposing metrics via JSON REST APIs and a high-contrast cyber-minimalist single-page dashboard:
 
 - **HTTP Server:** Default port `2270` (configurable via `GHOST_WEB_PORT` or `GHOST_METRICS_PORT`; port `8080` in `wan_mesh` Docker simulation).
 - **Interface Modes:**
-  - **Consumer Remote Control View:** Features 1-click connect/disconnect power switch with luminous state indicators, mesh mode switcher ("Public Stealth Mesh" vs "Private Home Mesh"), real-time latency and throughput counters, active peer cards, 1-click pairing modal with deterministic inline SVG QR generator, and console PIN protection.
+  - **Consumer Connect View:** A single-column card layout that mirrors the landing page's visual language (Space Grotesk for prose, JetBrains Mono reserved for values). A connection card carries the one-click connect/disconnect action and the mesh mode switch ("Open mesh" vs "Only my devices"), followed by a this-device card (friendly name, platform icon, reachable address) and the device list — friendly names, platform icons, presence, in-place renaming. Measured counters are deliberately *not* on the default screen: paths in use, per-packet overhead, fault tolerance and bytes sent/received live inside a collapsed **Mesh details** disclosure. The pairing modal renders a genuine ISO/IEC 18004 encoder (versions 1–10, ECC level M, GF(256) Reed–Solomon parity, penalty-scored data masks, BCH format/version information) encoding `ggn://pair?nid=…&fp=…&host=…`, and console PIN protection is enforced (not merely reported).
+  - **Settings View:** Egress-mode picker (`system_vpn` vs `app_socks`) with an explicit "selected but not in effect" state, a split-tunnel bypass list (hosts, `*.wildcard`, IPv4, CIDR) enforced by the SOCKS5 initiator, and a multi-path speedtest that measures the real per-packet pipeline (see `POST /api/speedtest`).
   - **Level 2 Carrier WAN Simulation View:** Real-time 7-node carrier fleet topology monitor, active route latency bars, autonomous Chaos Monkey failover metrics, Byzantine tamper isolation alert banner, and live public WAN egress header ingestion logs.
 - **REST Endpoints:**
-  - `GET /` and `GET /dashboard`: Serves the single-file reactive HTML dashboard ([`assets/wan_dashboard.html`](file:///g:/Global-Ghost-Net-main/assets/wan_dashboard.html)) supporting tabbed switching between Consumer Remote Control and Carrier WAN Simulation.
+  - `GET /`, `GET /?…` and `GET /dashboard`: Serves the single-file reactive HTML dashboard ([`assets/wan_dashboard.html`](file:///g:/Global-Ghost-Net-main/assets/wan_dashboard.html)) supporting tabbed switching between **Connect**, **Settings** (egress mode, split-tunnel bypass list, speed test, console PIN) and **Simulation** (the seven-node carrier WAN viewer). The HTML is compiled into the binary with `include_str!`, so editing the dashboard requires a rebuild. `?native=1` adds the `native` body class: the top row becomes the window drag strip and Hide/Quit appear beside the status pill, which is the chrome the frameless desktop window relies on.
   - `GET /api/status`: Returns JSON status:
     ```json
     {
       "connected": true,
       "mode": "public",
       "network_id": "<fingerprint>",
+      "device_name": "amber-otter-457d",
+      "device_os": "linux",
+      "host": "192.168.1.42:2270",
+      "pair_uri": "ggn://pair?nid=<fingerprint>&fp=<fingerprint>&host=192.168.1.42:2270",
+      "route_mode": "app_socks",
+      "route_mode_active": true,
+      "bypass_count": 1,
+      "socks_listening": true,
+      "socks_port": 1080,
+      "vpn_available": false,
       "pin_protected": false,
       "uptime_seconds": 124,
       "peers_count": 2,
       "active_sessions": 2,
-      "latency_ms": 24,
+      "latency_ms": null,
       "active_carrier_paths": 3,
       "reed_solomon_active": true,
       "throughput": { "bytes_sent": 4096, "bytes_recv": 8192, "packets_sent": 8, "packets_recv": 16 },
       "peers": [...]
     }
     ```
+    Honesty invariant: every numeric field is measured on this node, and anything this build does not measure is `null` rather than a plausible-looking constant. `latency_ms` is `null` (no per-peer RTT probe runs) and `active_carrier_paths` is derived from live session count, not hard-coded.
   - `POST /api/connect`: Toggles or updates mesh connection status (`{"connected": true|false}`).
   - `POST /api/mode`: Sets operating mode (`{"mode": "public"|"private"}`).
-  - `GET /api/peers`: Returns array of discovered and connected peer objects.
+  - `GET /api/peers`: Returns array of discovered and connected peer objects, each carrying `name`, `custom_name`, `os` and `status` (`online` if a session is established, `idle` if only discovered, `offline` otherwise).
+  - `POST /api/peers/rename`: Sets or clears a friendly device name (`{"fingerprint": "…", "name": "LivingRoom-PC", "os": "linux"}`). Names are capped at 253 chars with control characters stripped; an empty name restores the deterministic `adjective-noun-hex` default derived from the fingerprint (FNV-1a, so every node agrees).
+  - `GET /api/settings` / `POST /api/settings`: Reads and mutates the persisted consumer control plane — `route_mode` (`system_vpn` | `app_socks`), `bypass` rules, plus `route_mode_active`, `socks_listening`, `vpn_available` so the UI can distinguish "selected" from "in effect". Mutations accept `route_mode`, `bypass_add`, `bypass_remove` or a whole `bypass` array. Rules are normalised (schemes, paths and ports stripped) and validated: a rule that could never match a host or network is rejected with HTTP 400 instead of being stored as a silent no-op. State is persisted to `ghost-consumer.json` (`GHOST_CONSUMER_CONFIG`) via temp-file + rename.
+  - `POST /api/speedtest`: Runs the real data path in process — `enc_split` (XChaCha-style AEAD with direction-bound nonces) → `l4_rs::encode` (3 shards) → per-carrier unframe → RS reconstruct from **two** shards with one data shard deliberately dropped → decrypt → payload compare — and reports measured `upload_mbps`, `download_mbps`, `shard_jitter_ms`, `shard_transport_p95_ms`, `reconstruction_ms`, `mesh_overhead_ms`, and `recovered_chunks`. It also samples this node's real byte counters over 1 s for `live.tx_mbps` / `live.rx_mbps`. `{"isp_probe": true}` (opt-in, off by default) measures the internet round-trip via a TCP connect to `1.1.1.1:443`. These are pipeline/CPU figures for this node, explicitly not a broadband speed measurement.
+  - `POST /api/pin`-less PIN model: `GHOST_PIN=<pin>` is enforced, not advisory — any `POST` without a matching `X-Pin` header gets HTTP 401 `{"success": false, "error": "PIN required", "pin_required": true}`. The dashboard prompts once per session and resends the header.
+  - Split-tunnel enforcement: the SOCKS5 initiator consults the bypass list for every `CONNECT`. Matching destinations are dialed directly (local DNS + local ISP socket) and relayed, so banking apps and geo-checked streaming keep working; everything else is tunnelled through the mesh.
   - `GET /api/telemetry`: Returns full JSON status object (`TelemetryState`), including cycle count, active routes, carrier latency/loss matrix, security alerts (Byzantine tamper isolation events, replay attacks blocked), traffic shaping jitter stats, and convergence latency.
   - `GET /healthz`: Health check endpoint returning HTTP 200 JSON with node version, fingerprint, and uptime.
   - `GET /metrics`: Prometheus-compatible exposition format for integration with Grafana / Prometheus scrapers.

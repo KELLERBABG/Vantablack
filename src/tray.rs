@@ -5,6 +5,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use vantablack::ghost::icon;
 use vantablack::ghost::GhostNode;
 
 pub fn run_tray(nc: Arc<GhostNode>) {
@@ -12,22 +13,10 @@ pub fn run_tray(nc: Arc<GhostNode>) {
         use tray_icon::menu::{CheckMenuItem, Menu, MenuItem};
         use tray_icon::{Icon, TrayIconBuilder};
 
-        // Simple 32x32 RGBA icon (filled disc) — no image asset needed.
-        let mut rgba = vec![0u8; 32 * 32 * 4];
-        for y in 0..32 {
-            for x in 0..32 {
-                let dx = x as f32 - 15.5;
-                let dy = y as f32 - 15.5;
-                if dx * dx + dy * dy <= 13.5 * 13.5 {
-                    let i = (y * 32 + x) * 4;
-                    rgba[i] = 24;
-                    rgba[i + 1] = 200;
-                    rgba[i + 2] = 120;
-                    rgba[i + 3] = 255;
-                }
-            }
-        }
-        let Ok(icon) = Icon::from_rgba(rgba, 32, 32) else {
+        // The real application icon, embedded in the binary.
+        let Some(icon) =
+            icon::ui_icon(32).and_then(|i| Icon::from_rgba(i.rgba, i.width, i.height).ok())
+        else {
             return;
         };
 
@@ -50,8 +39,16 @@ pub fn run_tray(nc: Arc<GhostNode>) {
 
         let menu_rx = tray_icon::menu::MenuEvent::receiver();
         let tray_rx = tray_icon::TrayIconEvent::receiver();
-        let evt_loop: tao::event_loop::EventLoop<()> =
-            tao::event_loop::EventLoopBuilder::new().build();
+        // This loop lives on a spawned thread, which tao rejects on Windows
+        // unless we opt in explicitly. Without this the tray build panicked at
+        // startup and never showed an icon.
+        let mut builder = tao::event_loop::EventLoopBuilder::new();
+        #[cfg(target_os = "windows")]
+        {
+            use tao::platform::windows::EventLoopBuilderExtWindows;
+            builder.with_any_thread(true);
+        }
+        let evt_loop: tao::event_loop::EventLoop<()> = builder.build();
 
         evt_loop.run(move |_event, _el, control| {
             use tao::event_loop::ControlFlow;

@@ -1,3 +1,8 @@
+// The desktop build is a GUI application, so on Windows it must not spawn a
+// console window next to the app. Diagnostics are not lost: the log writer
+// below mirrors every line into ghost.log.
+#![cfg_attr(all(windows, feature = "webview"), windows_subsystem = "windows")]
+
 use rand::RngCore;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -13,8 +18,10 @@ use tokio::time::sleep;
 
 use ml_kem::kem::Decapsulate;
 use ml_kem::{Ciphertext, DecapsulationKey512, MlKem512};
-#[cfg(feature = "tray")]
+#[cfg(all(feature = "tray", not(feature = "webview")))]
 mod tray;
+#[cfg(feature = "webview")]
+mod webview;
 #[cfg(feature = "vpn")]
 use vantablack::ghost::net::vpn::{
     self,
@@ -37,6 +44,7 @@ use vantablack::ghost::{
     },
     net::{
         self,
+        consumer::{self, ConsumerSettings},
         mesh::{ExitIpRotator, TitForTatEnforcer},
         parse_packet_counter,
         relay::{build_relay_packet, parse_relay_header, spawn_store_forward_task, BundleBuffer},
@@ -1197,17 +1205,471 @@ async fn handle_exit_connect(
     });
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+// ═══════════════════════════════════════════════════════════════════
+// CONSUMER CONTROL PLANE HELPERS
+// ═══════════════════════════════════════════════════════════════════
+
+/// Where the consumer settings document lives (device names, egress mode,
+/// split-tunnel list). It sits in the per-user application-data directory so
+/// that moving or re-launching the binary never loses someone's device names;
+/// override the file itself with `GHOST_CONSUMER_CONFIG`, or the whole
+/// directory with `GHOST_DATA_DIR`.
+fn consumer_config_path() -> String {
+    std::env::var("GHOST_CONSUMER_CONFIG")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| vantablack::ghost::paths::data_file_string("ghost-consumer.json"))
+}
+
+/// Load consumer settings. Returns `None` when the file is absent, so the
+/// caller can fall back to env-derived defaults.
+fn load_consumer_settings(path: &str) -> Option<ConsumerSettings> {
+    let data = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str::<ConsumerSettings>(&data) {
+        Ok(settings) => Some(settings),
+        Err(e) => {
+            tracing::warn!("Ignoring unreadable consumer config {path}: {e}");
+            None
+        }
+    }
+}
+
+/// Persist consumer settings via a temp file + rename, so a crash mid-write
+/// cannot leave a truncated document behind.
+fn save_consumer_settings(path: &str, settings: &ConsumerSettings) {
+    let Ok(json) = serde_json::to_string_pretty(settings) else {
+        return;
+    };
+    let tmp = format!("{path}.tmp");
+    if std::fs::write(&tmp, json).is_err() {
+        tracing::warn!("Could not write {tmp}");
+        return;
+    }
+    if std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        tracing::warn!("Could not replace {path}");
+    }
+}
+
+/// Best-effort LAN address of this machine, used to build the pairing URI.
+/// A UDP `connect` transmits nothing — it only asks the kernel which local
+/// address it would use to reach a public target.
+fn detect_lan_ip() -> String {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|sock| {
+            sock.connect("1.1.1.1:80")?;
+            sock.local_addr()
+        })
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+/// Parse the JSON body of a request (everything after the header block).
+fn json_body(req: &str) -> serde_json::Value {
+    req.find("\r\n\r\n")
+        .and_then(|i| serde_json::from_str::<serde_json::Value>(req[i + 4..].trim()).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// The `X-Pin` header value, when the client sent one.
+fn header_pin(req: &str) -> Option<&str> {
+    req.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("x-pin") {
+            Some(value.trim())
+        } else {
+            None
+        }
+    })
+}
+
+/// Writes every log line to stderr *and* to `ghost.log`.
+///
+/// The desktop build runs as a Windows GUI-subsystem process, which has no
+/// console attached, so without the file mirror a user could not report what
+/// went wrong. `GHOST_LOG=off` disables the mirror; `GHOST_LOG=<path>` moves it.
+#[cfg(feature = "webview")]
+#[derive(Clone)]
+struct TeeWriter {
+    file: Option<Arc<std::sync::Mutex<std::fs::File>>>,
+}
+
+#[cfg(feature = "webview")]
+struct TeeGuard<'a> {
+    file: Option<std::sync::MutexGuard<'a, std::fs::File>>,
+}
+
+#[cfg(feature = "webview")]
+impl std::io::Write for TeeGuard<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = std::io::Write::write(&mut std::io::stderr(), buf)?;
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.write_all(buf);
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.flush();
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "webview")]
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TeeWriter {
+    type Writer = TeeGuard<'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        TeeGuard {
+            file: self.file.as_ref().and_then(|f| f.lock().ok()),
+        }
+    }
+}
+
+/// Port the HTTP control center listens on (`GHOST_WEB_PORT`, else the legacy
+/// `GHOST_METRICS_PORT`, else 2270). Shared by the node and the desktop window,
+/// which are now separate threads and must agree without a back-channel.
+fn control_port_from_env() -> u16 {
+    std::env::var("GHOST_WEB_PORT")
+        .or_else(|_| std::env::var("GHOST_METRICS_PORT"))
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2270)
+}
+
+/// True when this process should present a native desktop window. Headless
+/// builds (`--no-default-features`) and `GHOST_NO_GUI=1` fall back to the HTTP
+/// control center, which is the server/sidenote path.
+#[cfg_attr(not(feature = "webview"), allow(dead_code))]
+fn gui_enabled() -> bool {
+    if !cfg!(feature = "webview") {
+        return false;
+    }
+    std::env::var("GHOST_NO_GUI")
+        .map(|v| v != "1" && !v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true)
+}
+
+/// Round to `places` decimals for stable JSON output.
+fn round(value: f64, places: i32) -> f64 {
+    let factor = 10f64.powi(places);
+    (value * factor).round() / factor
+}
+
+/// Nearest-rank percentile of an unsorted sample set.
+fn percentile(samples: &[f64], p: f64) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn mean(samples: &[f64]) -> f64 {
+    if samples.is_empty() {
+        0.0
+    } else {
+        samples.iter().sum::<f64>() / samples.len() as f64
+    }
+}
+
+/// Measure the node's own multi-path data path in process: encrypt and split a
+/// payload exactly as the sender does, Reed-Solomon encode it across three
+/// carrier shards, then rebuild it from TWO shards (one data shard is
+/// deliberately cut) and decrypt — the code the receiver actually runs.
+///
+/// Every figure returned is measured on this machine; none is synthetic. It is
+/// a *pipeline* benchmark (the node's own CPU cost), not a measurement of the
+/// user's internet link — that is what the live-counter figure is for.
+fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
+    // Throwaway key: per-packet cost is key-independent, and this keeps the
+    // probe away from live session material.
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    let session_hash = [0x9au8, 0x11, 0x7c, 0x5e];
+    let direction = NonceDirection::InitiatorToResponder;
+
+    const CHUNK: usize = 900; // matches the production SOCKS5 read buffer
+    let payload = vec![0x5au8; CHUNK];
+    let chunks = (total_bytes / CHUNK).max(1);
+
+    let mut send_ms: Vec<f64> = Vec::with_capacity(chunks);
+    let mut shard_ms: Vec<f64> = Vec::with_capacity(chunks * 3);
+    let mut rebuild_ms: Vec<f64> = Vec::with_capacity(chunks);
+    let mut recovered = 0usize;
+
+    let started = std::time::Instant::now();
+    for i in 0..chunks {
+        let ctr = 2 + i as u32;
+
+        let t0 = std::time::Instant::now();
+        let (carrier_frames, _tag) = enc_split(&key, ctr, &session_hash, direction, &payload);
+        send_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
+
+        // Receive side: strip each carrier's length prefix, as the node does.
+        let mut shards: Vec<Option<Vec<u8>>> = Vec::with_capacity(3);
+        for carrier in &carrier_frames {
+            let t1 = std::time::Instant::now();
+            shards.push(net::unframe(carrier));
+            shard_ms.push(t1.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        // Cut carrier A's data shard and rebuild it from carriers B + C.
+        let t2 = std::time::Instant::now();
+        if let Some(slot) = shards.get_mut(0) {
+            *slot = None;
+        }
+        let widest = shards
+            .iter()
+            .filter_map(|s| s.as_ref().map(|v| v.len()))
+            .max()
+            .unwrap_or(0);
+        for shard in shards.iter_mut().flatten() {
+            while shard.len() < widest {
+                shard.push(0);
+            }
+        }
+        if l4_rs::reconstruct(&mut shards).is_ok() {
+            if let (Some(a), Some(b)) = (shards[0].as_ref(), shards[1].as_ref()) {
+                let mut merged = [a.as_slice(), b.as_slice()].concat();
+                if decrypt_in_place_with_context(&key, ctr, &session_hash, direction, &mut merged)
+                    .is_ok()
+                    && merged.len() >= 2
+                {
+                    let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
+                    if 2 + len <= merged.len() && merged[2..2 + len] == payload[..] {
+                        recovered += 1;
+                    }
+                }
+            }
+        }
+        rebuild_ms.push(t2.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    let moved = (chunks * CHUNK) as f64;
+    let send_secs = (send_ms.iter().sum::<f64>() / 1000.0).max(1e-9);
+    let rebuild_secs = (rebuild_ms.iter().sum::<f64>() / 1000.0).max(1e-9);
+    let shard_mean = mean(&shard_ms);
+    let jitter = if shard_ms.is_empty() {
+        0.0
+    } else {
+        (shard_ms
+            .iter()
+            .map(|x| (x - shard_mean).powi(2))
+            .sum::<f64>()
+            / shard_ms.len() as f64)
+            .sqrt()
+    };
+
+    serde_json::json!({
+        "probe": "in-process multi-path pipeline (CPU)",
+        "chunk_bytes": CHUNK,
+        "chunks": chunks,
+        "payload_bytes": chunks * CHUNK,
+        "upload_mbps": round(moved * 8.0 / 1_000_000.0 / send_secs, 1),
+        "download_mbps": round(moved * 8.0 / 1_000_000.0 / rebuild_secs, 1),
+        // Per-packet stages are routinely sub-millisecond, so keep four
+        // decimals: rounding these to 3 would report a flat "0 ms" and look
+        // like a broken probe rather than a fast pipeline.
+        "shard_jitter_ms": round(jitter, 4),
+        "shard_transport_p95_ms": round(percentile(&shard_ms, 0.95), 4),
+        "shard_recovery_mean_ms": round(mean(&rebuild_ms), 4),
+        "reconstruction_ms": round(mean(&rebuild_ms), 4),
+        "mesh_overhead_ms": round(mean(&send_ms) + mean(&rebuild_ms), 4),
+        "recovered_chunks": recovered,
+        "lost_carriers_per_chunk": 1,
+        "elapsed_ms": round(started.elapsed().as_secs_f64() * 1000.0, 2),
+        "note": "Measures this node's own encrypt/shard/recover cost per packet. It is not your internet link speed."
+    })
+}
+
+/// Real observed throughput across the live mesh, from two counter snapshots a
+/// second apart. Reports zero when nothing is flowing, which is the truth.
+async fn measure_live_throughput(nc: &Arc<GhostNode>) -> serde_json::Value {
+    let tx0 = nc.stats.bytes_sent.load(Ordering::Relaxed);
+    let rx0 = nc.stats.bytes_recv.load(Ordering::Relaxed);
+    let started = std::time::Instant::now();
+    sleep(Duration::from_millis(1000)).await;
+    let tx1 = nc.stats.bytes_sent.load(Ordering::Relaxed);
+    let rx1 = nc.stats.bytes_recv.load(Ordering::Relaxed);
+    let secs = started.elapsed().as_secs_f64().max(1e-9);
+    let tx_bytes = tx1.saturating_sub(tx0);
+    let rx_bytes = rx1.saturating_sub(rx0);
+    serde_json::json!({
+        "window_ms": round(secs * 1000.0, 0),
+        "tx_bytes": tx_bytes,
+        "rx_bytes": rx_bytes,
+        "tx_mbps": round(tx_bytes as f64 * 8.0 / 1_000_000.0 / secs, 3),
+        "rx_mbps": round(rx_bytes as f64 * 8.0 / 1_000_000.0 / secs, 3),
+        "active_sessions": nc.sessions.len(),
+    })
+}
+
+/// Copy bytes from `r` to `w` until the reader closes.
+async fn pump<R, W>(mut r: R, mut w: W) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 8192];
+    loop {
+        let n = r.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        w.write_all(&buf[..n]).await?;
+        w.flush().await?;
+    }
+    Ok(())
+}
+
+/// Answer a SOCKS5 CONNECT with success and relay the client to an upstream
+/// socket we already opened locally. Used by split tunneling, where the target
+/// is deliberately *not* sent through the mesh.
+async fn socks_relay_direct(s: tokio::net::TcpStream, upstream: tokio::net::TcpStream) {
+    let mut s = s;
+    if s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_err() {
+        return;
+    }
+    let (client_r, client_w) = s.into_split();
+    let (up_r, up_w) = upstream.into_split();
+    let up = tokio::spawn(pump(client_r, up_w));
+    let down = tokio::spawn(pump(up_r, client_w));
+    let _ = tokio::join!(up, down);
+}
+
+/// Round-trip time to the public internet, from the fastest of three TCP
+/// connects. Only called when the caller explicitly opts in (`isp_probe`).
+async fn isp_rtt_ms() -> Option<f64> {
+    let mut best: Option<f64> = None;
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        let attempt = tokio::time::timeout(
+            Duration::from_millis(700),
+            tokio::net::TcpStream::connect("1.1.1.1:443"),
         )
-        // Write to stderr (unbuffered): line-flushed logs survive hard process
-        // kills, which matters for supervised/diagnostic runs and tests that
-        // parse the log tail.
-        .with_writer(std::io::stderr)
-        .init();
+        .await;
+        match attempt {
+            Ok(Ok(_stream)) => {
+                let ms = started.elapsed().as_secs_f64() * 1000.0;
+                best = Some(best.map_or(ms, |b: f64| b.min(ms)));
+            }
+            _ => break,
+        }
+    }
+    best.map(|v| round(v, 1))
+}
+
+/// One peer entry for `/api/status` and `/api/peers`, with the consumer-facing
+/// fields the dashboard renders: friendly name, platform, presence.
+fn peer_entry(
+    nc: &GhostNode,
+    settings: &ConsumerSettings,
+    fingerprint: &str,
+    addr: &SocketAddr,
+) -> serde_json::Value {
+    let has_session = nc.sessions.contains_key(fingerprint);
+    serde_json::json!({
+        "fingerprint": fingerprint,
+        "name": settings.device_name(fingerprint),
+        "custom_name": settings.has_custom_name(fingerprint),
+        "os": settings.device_os(fingerprint),
+        "address": addr.to_string(),
+        "connected": has_session,
+        "status": consumer::peer_status(has_session, true),
+        "role": if has_session { "Active Mesh Peer" } else { "Discovered Peer" },
+        // Per-peer RTT is not measured by this build; report null rather than
+        // inventing a number the UI would then present as fact.
+        "latency_ms": serde_json::Value::Null,
+    })
+}
+
+fn main() -> anyhow::Result<()> {
+    // The desktop window owns the main thread: tao refuses to build an
+    // EventLoop anywhere else on Windows, and macOS requires the main thread.
+    // The node therefore runs on its own thread and hands its handle back so
+    // the tray menu can read and toggle node state.
+    #[cfg(feature = "webview")]
+    if gui_enabled() {
+        let control_port = control_port_from_env();
+        let (node_tx, node_rx) = std::sync::mpsc::channel::<Arc<GhostNode>>();
+        std::thread::Builder::new()
+            .name("ggn-node".to_string())
+            .spawn(move || {
+                if let Err(e) = run_daemon(true, Some(node_tx)) {
+                    tracing::error!("Node stopped: {e:#}");
+                }
+            })?;
+        let node = match node_rx.recv_timeout(Duration::from_secs(15)) {
+            Ok(node) => Some(node),
+            Err(_) => {
+                tracing::warn!("Desktop window starting before the node reported readiness");
+                None
+            }
+        };
+        // `run_desktop` never returns; control leaves through `process::exit`.
+        webview::run_desktop(control_port, node);
+    }
+
+    // Headless / server: no window at all, the HTTP control center is the UI.
+    run_daemon(false, None)
+}
+
+/// Boot the node inside its own tokio runtime.
+fn run_daemon(
+    suppress_browser: bool,
+    node_tx: Option<std::sync::mpsc::Sender<Arc<GhostNode>>>,
+) -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()?
+        .block_on(run_node(suppress_browser, node_tx))
+}
+
+async fn run_node(
+    suppress_browser: bool,
+    node_tx: Option<std::sync::mpsc::Sender<Arc<GhostNode>>>,
+) -> anyhow::Result<()> {
+    let env_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    // stderr is still unbuffered: line-flushed logs survive hard process kills,
+    // which matters for supervised/diagnostic runs and tests that parse the log
+    // tail. The desktop build additionally appends to a file, because a Windows
+    // GUI-subsystem process has no console to show it in.
+    #[cfg(feature = "webview")]
+    {
+        let configured = std::env::var("GHOST_LOG")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| vantablack::ghost::paths::data_file_string("ghost.log"));
+        let file = if configured.eq_ignore_ascii_case("off") {
+            None
+        } else {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&configured)
+                .ok()
+                .map(|f| Arc::new(std::sync::Mutex::new(f)))
+        };
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(TeeWriter { file })
+            .init();
+    }
+    #[cfg(not(feature = "webview"))]
+    {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     // WIRED: Initialize subsystem state
     let revocation_list = Arc::new(RevocationList::new());
@@ -1427,6 +1889,10 @@ async fn main() -> anyhow::Result<()> {
     let connect_ok_ctrs: ConnectOkCtrs = Arc::new(DashMap::new());
     let default_exit: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let nc = Arc::new(node);
+    // Hand the node to the desktop window's tray, when one is coming.
+    if let Some(tx) = node_tx {
+        let _ = tx.send(Arc::clone(&nc));
+    }
 
     // WIRED: Category A - Fair-share transit enforcement (Tit-for-Tat)
     let tft = Arc::new(TitForTatEnforcer::new(
@@ -1465,10 +1931,6 @@ async fn main() -> anyhow::Result<()> {
             "LDPC Forward Error Correction (1024-bit IRA) active for long-stream encoding"
         );
     }
-
-    // Optional system-tray UI (feature "tray")
-    #[cfg(feature = "tray")]
-    tray::run_tray(Arc::clone(&nc));
 
     // ── BOOTSTRAP SEEDS & PEER DISCOVERY (DNS Seed + Peers Cache) ──
     // Automatically resolves DNS seed hostnames (e.g. seeds.vantablack.net) and
@@ -1512,7 +1974,8 @@ async fn main() -> anyhow::Result<()> {
                 };
             }
             // Load cached peers from local disk (peers.cache)
-            if let Ok(cache_str) = std::fs::read_to_string("peers.cache") {
+            let peers_cache = vantablack::ghost::paths::data_file("peers.cache");
+            if let Ok(cache_str) = std::fs::read_to_string(&peers_cache) {
                 for line in cache_str.lines().map(|l| l.trim()) {
                     if let Ok(sa) = line.parse::<SocketAddr>() {
                         if !seeds.contains(&sa) {
@@ -1585,7 +2048,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     peer_lines.sort();
                     peer_lines.dedup();
-                    let _ = std::fs::write("peers.cache", peer_lines.join("\n"));
+                    let _ = std::fs::write(&peers_cache, peer_lines.join("\n"));
                 }
             }
         });
@@ -1620,11 +2083,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── HTTP Metrics, Status & Consumer Web Control Center Endpoint ──
-    let metrics_port: u16 = std::env::var("GHOST_WEB_PORT")
-        .or_else(|_| std::env::var("GHOST_METRICS_PORT"))
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2270);
+    let metrics_port: u16 = control_port_from_env();
     let metrics_enabled = std::env::var("GHOST_METRICS_ENABLED")
         .map(|v| v != "0" && v.to_lowercase() != "false")
         .unwrap_or(true);
@@ -1638,6 +2097,29 @@ async fn main() -> anyhow::Result<()> {
             .ok()
             .filter(|s| !s.trim().is_empty()),
     ));
+    // Consumer control plane: friendly device names, the system-VPN vs SOCKS5
+    // egress choice and the split-tunnel bypass list. Persisted so a rename or
+    // a bypass rule survives a restart; GHOST_EGRESS_MODE only seeds the first
+    // run, after which the user's choice in the Web UI wins.
+    let consumer_config = consumer_config_path();
+    let consumer_settings = Arc::new(parking_lot::RwLock::new(
+        load_consumer_settings(&consumer_config).unwrap_or_else(|| {
+            ConsumerSettings::with_mode(std::env::var("GHOST_EGRESS_MODE").ok().as_deref())
+        }),
+    ));
+    // True when a desktop window is being shown by main(): the browser tab is
+    // then suppressed, because it is the secondary way in.
+    let gui_active = suppress_browser;
+
+    // Pairing target advertised in the QR code: this host's LAN address, the
+    // control-center port and the node fingerprint. The fingerprint is stable
+    // across runs because the Ed25519 identity is persisted in identity.key.
+    let lan_host = format!("{}:{}", detect_lan_ip(), metrics_port);
+    let pair_uri = format!(
+        "ggn://pair?nid={fp}&fp={fp}&host={host}",
+        fp = nc.fingerprint(),
+        host = lan_host
+    );
 
     if metrics_enabled {
         // VPN counters for `/metrics` and `/healthz`. Rendered by a helper so the
@@ -1725,6 +2207,14 @@ async fn main() -> anyhow::Result<()> {
         let c_conn_m = Arc::clone(&consumer_connected);
         let c_mode_m = Arc::clone(&consumer_mode);
         let c_pin_m = Arc::clone(&consumer_pin);
+        let c_settings_m = Arc::clone(&consumer_settings);
+        let c_path_m = consumer_config.clone();
+        let lan_host_m = lan_host.clone();
+        let pair_uri_m = pair_uri.clone();
+        // Whether the local SOCKS5 listener is actually up in this process, and
+        // whether a TUN/VPN subsystem exists at all. Reported so the UI can say
+        // "selected" versus "in effect" instead of pretending.
+        let socks_listening = socks;
         // Same cfg dance the receiver uses: `vpn_mode` only exists when the
         // feature is on, so the non-vpn build needs its own binding.
         #[cfg(feature = "vpn")]
@@ -1741,10 +2231,13 @@ async fn main() -> anyhow::Result<()> {
                         mp,
                         mp
                     );
-                    // Automatically pop open the Web Control Center in default browser unless headless/disabled
-                    if std::env::var("GHOST_NO_BROWSER")
-                        .map(|v| v != "1")
-                        .unwrap_or(true)
+                    // Pop the control center open in a browser tab only when no
+                    // native window is coming — that page is the secondary way
+                    // in, not the default experience.
+                    if !gui_active
+                        && std::env::var("GHOST_NO_BROWSER")
+                            .map(|v| v != "1")
+                            .unwrap_or(true)
                     {
                         tokio::spawn(async move {
                             tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
@@ -1767,11 +2260,25 @@ async fn main() -> anyhow::Result<()> {
                             let conn_ref = Arc::clone(&c_conn_m);
                             let mode_ref = Arc::clone(&c_mode_m);
                             let pin_ref = Arc::clone(&c_pin_m);
+                            let cs_ref = Arc::clone(&c_settings_m);
+                            let cp_ref = c_path_m.clone();
+                            let lan_host_ref = lan_host_m.clone();
+                            let pair_uri_ref = pair_uri_m.clone();
                             tokio::spawn(async move {
                                 let mut buf = [0u8; 4096];
                                 if let Ok(n) = stream.read(&mut buf).await {
                                     let req = String::from_utf8_lossy(&buf[..n]);
                                     let (vpn_role, vpn_prom, vpn_json) = vpn_export(&vpn_ref);
+                                    let vpn_available = vpn_ref.is_some();
+                                    // The control center binds 0.0.0.0, so it is
+                                    // reachable from the whole LAN. When GHOST_PIN
+                                    // is set, mutating endpoints demand it.
+                                    let configured_pin = pin_ref.read().clone();
+                                    let pin_ok = match configured_pin.as_deref() {
+                                        None => true,
+                                        Some(expected) => header_pin(&req) == Some(expected),
+                                    };
+                                    let is_mutation = req.starts_with("POST ");
 
                                     // Handle CORS preflight
                                     if req.starts_with("OPTIONS ") {
@@ -1780,9 +2287,20 @@ async fn main() -> anyhow::Result<()> {
                                         return;
                                     }
 
-                                    let (status_line, body, content_type) = if req
-                                        .starts_with("GET /api/status")
+                                    let (status_line, body, content_type) = if is_mutation
+                                        && !pin_ok
                                     {
+                                        (
+                                            "HTTP/1.1 401 Unauthorized",
+                                            serde_json::json!({
+                                                "success": false,
+                                                "error": "PIN required",
+                                                "pin_required": true
+                                            })
+                                            .to_string(),
+                                            "application/json",
+                                        )
+                                    } else if req.starts_with("GET /api/status") {
                                         let is_conn = conn_ref.load(Ordering::Relaxed);
                                         let current_mode = mode_ref.read().clone();
                                         let has_pin = pin_ref.read().is_some();
@@ -1798,26 +2316,52 @@ async fn main() -> anyhow::Result<()> {
                                         let peers_count = addrs_ref.len();
                                         let sessions_count = nc_ref.sessions.len();
 
-                                        let peer_entries: Vec<serde_json::Value> = addrs_ref.iter().map(|entry| {
-                                            serde_json::json!({
-                                                "fingerprint": entry.key(),
-                                                "address": entry.value().to_string(),
-                                                "connected": nc_ref.sessions.contains_key(entry.key()),
-                                                "role": if nc_ref.sessions.contains_key(entry.key()) { "Active Mesh Peer" } else { "Discovered Peer" },
-                                                "latency_ms": 28
+                                        let settings_now = cs_ref.read().clone();
+                                        let peer_entries: Vec<serde_json::Value> = addrs_ref
+                                            .iter()
+                                            .map(|entry| {
+                                                peer_entry(
+                                                    &nc_ref,
+                                                    &settings_now,
+                                                    entry.key(),
+                                                    entry.value(),
+                                                )
                                             })
-                                        }).collect();
+                                            .collect();
 
+                                        let route_mode_active =
+                                            match settings_now.route_mode.as_str() {
+                                                consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
+                                                _ => socks_listening,
+                                            };
                                         let body = serde_json::json!({
                                             "connected": is_conn,
                                             "mode": current_mode,
                                             "network_id": nc_ref.fingerprint(),
+                                            "device_name": settings_now.device_name(&nc_ref.fingerprint()),
+                                            "device_os": consumer::local_os(),
+                                            "host": lan_host_ref,
+                                            "pair_uri": pair_uri_ref,
+                                            "route_mode": settings_now.route_mode,
+                                            "route_mode_active": route_mode_active,
+                                            "bypass_count": settings_now.bypass.len(),
+                                            "socks_listening": socks_listening,
+                                            "socks_port": socks_port,
+                                            "vpn_available": vpn_available,
                                             "pin_protected": has_pin,
                                             "uptime_seconds": uptime,
                                             "peers_count": peers_count,
                                             "active_sessions": sessions_count,
-                                            "latency_ms": if is_conn { 24 } else { 0 },
-                                            "active_carrier_paths": if is_conn { 3 } else { 0 },
+                                            // No RTT probe runs against peers in this build, so
+                                            // report null rather than a hard-coded number.
+                                            "latency_ms": serde_json::Value::Null,
+                                            // Shards fan out over the primary route plus up to
+                                            // two additional live peers.
+                                            "active_carrier_paths": if is_conn {
+                                                std::cmp::min(3, 1 + nc_ref.sessions.len().min(2))
+                                            } else {
+                                                0
+                                            },
                                             "reed_solomon_active": true,
                                             "throughput": {
                                                 "bytes_sent": sent_bytes,
@@ -1886,18 +2430,212 @@ async fn main() -> anyhow::Result<()> {
                                         .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /api/peers") {
-                                        let peer_entries: Vec<serde_json::Value> = addrs_ref.iter().map(|entry| {
-                                            serde_json::json!({
-                                                "fingerprint": entry.key(),
-                                                "address": entry.value().to_string(),
-                                                "connected": nc_ref.sessions.contains_key(entry.key()),
-                                                "role": if nc_ref.sessions.contains_key(entry.key()) { "Active Mesh Peer" } else { "Discovered Peer" },
-                                                "latency_ms": 28
+                                        let settings_now = cs_ref.read().clone();
+                                        let peer_entries: Vec<serde_json::Value> = addrs_ref
+                                            .iter()
+                                            .map(|entry| {
+                                                peer_entry(
+                                                    &nc_ref,
+                                                    &settings_now,
+                                                    entry.key(),
+                                                    entry.value(),
+                                                )
                                             })
-                                        }).collect();
+                                            .collect();
                                         let body = serde_json::json!({
                                             "peers": peer_entries,
                                             "count": peer_entries.len()
+                                        })
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("GET /api/settings") {
+                                        let s = cs_ref.read().clone();
+                                        let route_mode_active = match s.route_mode.as_str() {
+                                            consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
+                                            _ => socks_listening,
+                                        };
+                                        let body = serde_json::json!({
+                                            "route_mode": s.route_mode,
+                                            "route_mode_active": route_mode_active,
+                                            "route_modes": [consumer::ROUTE_MODE_SYSTEM_VPN, consumer::ROUTE_MODE_APP_SOCKS],
+                                            "bypass": s.bypass,
+                                            "bypass_count": s.bypass.len(),
+                                            "socks_listening": socks_listening,
+                                            "socks_port": socks_port,
+                                            "vpn_available": vpn_available,
+                                            "device_name": s.device_name(&nc_ref.fingerprint()),
+                                            "device_os": consumer::local_os(),
+                                            "pin_protected": pin_ref.read().is_some(),
+                                            "note": if vpn_available {
+                                                "System-wide mode binds the TUN adapter when the node starts with GHOST_VPN=client."
+                                            } else {
+                                                "This binary was built without the `vpn` feature, so system-wide TUN mode cannot be enabled yet. App-only SOCKS5 still works."
+                                            }
+                                        })
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/settings") {
+                                        let val = json_body(&req);
+                                        let mut changed: Vec<String> = Vec::new();
+                                        let mut error: Option<String> = None;
+                                        let mut s = cs_ref.write();
+                                        if let Some(mode) =
+                                            val.get("route_mode").and_then(|v| v.as_str())
+                                        {
+                                            if s.set_route_mode(mode) {
+                                                changed
+                                                    .push(format!("route_mode={}", s.route_mode));
+                                            } else {
+                                                error =
+                                                    Some(format!("unknown route mode '{mode}'"));
+                                            }
+                                        }
+                                        if error.is_none() {
+                                            if let Some(rule) =
+                                                val.get("bypass_add").and_then(|v| v.as_str())
+                                            {
+                                                match s.add_bypass(rule) {
+                                                    Ok(true) => {
+                                                        changed.push(format!("bypass+{rule}"))
+                                                    }
+                                                    Ok(false) => {}
+                                                    Err(e) => error = Some(e),
+                                                }
+                                            }
+                                        }
+                                        if error.is_none() {
+                                            if let Some(rule) =
+                                                val.get("bypass_remove").and_then(|v| v.as_str())
+                                            {
+                                                if s.remove_bypass(rule) {
+                                                    changed.push(format!("bypass-{rule}"));
+                                                }
+                                            }
+                                        }
+                                        if error.is_none() {
+                                            if let Some(list) =
+                                                val.get("bypass").and_then(|v| v.as_array())
+                                            {
+                                                s.bypass.clear();
+                                                for entry in list.iter().filter_map(|v| v.as_str())
+                                                {
+                                                    if let Err(e) = s.add_bypass(entry) {
+                                                        error = Some(e);
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        let response = match error {
+                                            Some(e) => (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({"success": false, "error": e})
+                                                    .to_string(),
+                                            ),
+                                            None => {
+                                                save_consumer_settings(&cp_ref, &s);
+                                                let route_mode_active = match s.route_mode.as_str()
+                                                {
+                                                    consumer::ROUTE_MODE_SYSTEM_VPN => {
+                                                        vpn_available
+                                                    }
+                                                    _ => socks_listening,
+                                                };
+                                                (
+                                                    "HTTP/1.1 200 OK",
+                                                    serde_json::json!({
+                                                        "success": true,
+                                                        "changed": changed,
+                                                        "route_mode": s.route_mode,
+                                                        "route_mode_active": route_mode_active,
+                                                        "bypass": s.bypass,
+                                                        "bypass_count": s.bypass.len(),
+                                                        "vpn_available": vpn_available,
+                                                        "socks_listening": socks_listening
+                                                    })
+                                                    .to_string(),
+                                                )
+                                            }
+                                        };
+                                        drop(s);
+                                        (response.0, response.1, "application/json")
+                                    } else if req.starts_with("POST /api/peers/rename") {
+                                        let val = json_body(&req);
+                                        let fp = val
+                                            .get("fingerprint")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        if fp.is_empty() {
+                                            (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({
+                                                    "success": false,
+                                                    "error": "fingerprint is required"
+                                                })
+                                                .to_string(),
+                                                "application/json",
+                                            )
+                                        } else {
+                                            let mut s = cs_ref.write();
+                                            if let Some(os) = val.get("os").and_then(|v| v.as_str())
+                                            {
+                                                s.set_device_os(&fp, Some(os));
+                                            }
+                                            let new_name = val
+                                                .get("name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let response = match s.set_device_name(&fp, new_name) {
+                                                Err(e) => (
+                                                    "HTTP/1.1 400 Bad Request",
+                                                    serde_json::json!({"success": false, "error": e})
+                                                        .to_string(),
+                                                ),
+                                                Ok(display) => {
+                                                    save_consumer_settings(&cp_ref, &s);
+                                                    (
+                                                        "HTTP/1.1 200 OK",
+                                                        serde_json::json!({
+                                                            "success": true,
+                                                            "fingerprint": fp,
+                                                            "name": display,
+                                                            "custom_name": s.has_custom_name(&fp),
+                                                            "os": s.device_os(&fp)
+                                                        })
+                                                        .to_string(),
+                                                    )
+                                                }
+                                            };
+                                            drop(s);
+                                            (response.0, response.1, "application/json")
+                                        }
+                                    } else if req.starts_with("POST /api/speedtest") {
+                                        let val = json_body(&req);
+                                        let want_isp = val
+                                            .get("isp_probe")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false);
+                                        let payload_bytes = val
+                                            .get("bytes")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(256 * 1024)
+                                            .clamp(900, 4 * 1024 * 1024)
+                                            as usize;
+                                        let nc_probe = Arc::clone(&nc_ref);
+                                        let pipeline = tokio::task::spawn_blocking(move || {
+                                            run_pipeline_probe(payload_bytes)
+                                        })
+                                        .await
+                                        .unwrap_or(serde_json::Value::Null);
+                                        let live = measure_live_throughput(&nc_probe).await;
+                                        let isp = if want_isp { isp_rtt_ms().await } else { None };
+                                        let body = serde_json::json!({
+                                            "success": true,
+                                            "pipeline": pipeline,
+                                            "live": live,
+                                            "isp_rtt_ms": isp,
+                                            "isp_probe_requested": want_isp
                                         })
                                         .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
@@ -1952,6 +2690,7 @@ async fn main() -> anyhow::Result<()> {
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /dashboard")
                                         || req.starts_with("GET / ")
+                                        || req.starts_with("GET /?")
                                     {
                                         let html = include_str!("../assets/wan_dashboard.html");
                                         (
@@ -2014,6 +2753,12 @@ async fn main() -> anyhow::Result<()> {
             }
         });
     }
+    // A build with only the `tray` feature keeps the lighter tray icon that
+    // opens the browser. The full desktop window is started by main(), because
+    // it has to own the main thread.
+    #[cfg(all(feature = "tray", not(feature = "webview")))]
+    tray::run_tray(Arc::clone(&nc));
+
     // ── SOCKS5 PROXY (initiator mode) ──
     if socks {
         let n2 = Arc::clone(&nc);
@@ -2023,6 +2768,7 @@ async fn main() -> anyhow::Result<()> {
         let ak = Arc::clone(&connect_acks);
         let de = Arc::clone(&default_exit);
         let srouter_socks = Arc::clone(&shard_router);
+        let cs_socks = Arc::clone(&consumer_settings);
         let sp = socks_port;
         tokio::spawn(async move {
             let lis = tokio::net::TcpListener::bind(("127.0.0.1", sp))
@@ -2038,6 +2784,7 @@ async fn main() -> anyhow::Result<()> {
                     let ak2 = Arc::clone(&ak);
                     let de2 = Arc::clone(&de);
                     let shard_router_proxy = Arc::clone(&srouter_socks);
+                    let cs2 = Arc::clone(&cs_socks);
                     tokio::spawn(async move {
                         let mut b = [0u8; 2];
                         if s.read_exact(&mut b).await.is_err() || b[0] != 5 {
@@ -2080,6 +2827,23 @@ async fn main() -> anyhow::Result<()> {
                             return;
                         }
                         let port = u16::from_be_bytes(pb);
+
+                        // ── Split tunneling ──────────────────────────────────
+                        // Hosts the user exempted leave through the local ISP,
+                        // exactly as if the mesh were not installed. This is what
+                        // keeps banking apps and geo-checked streaming working.
+                        if cs2.read().should_bypass(&addr) {
+                            let dest_direct = format!("{addr}:{port}");
+                            tracing::info!(dest = %dest_direct, "SOCKS5: bypassing mesh (split tunnel)");
+                            match tokio::net::TcpStream::connect((addr.as_str(), port)).await {
+                                Ok(upstream) => socks_relay_direct(s, upstream).await,
+                                Err(e) => {
+                                    tracing::warn!(dest = %dest_direct, error = %e, "SOCKS5: split-tunnel dial failed");
+                                    let _ = s.write_all(&[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+                                }
+                            }
+                            return;
+                        }
 
                         // Prefer the explicitly configured exit node (EXIT <fp>);
                         // fall back to the first established session.
@@ -2873,7 +3637,10 @@ async fn main() -> anyhow::Result<()> {
                     .find(' ')
                     .map(|i| inp[i + 1..].trim())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or("ghost-topology.json");
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        vantablack::ghost::paths::data_file_string("ghost-topology.json")
+                    });
                 let local_fp = nc.fingerprint();
                 let mut nodes = vec![serde_json::json!({
                     "fingerprint": local_fp,
@@ -2902,7 +3669,7 @@ async fn main() -> anyhow::Result<()> {
                     "nodes": nodes,
                     "links": links,
                 });
-                match std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()) {
+                match std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()) {
                     Ok(_) => println!(
                         "Exported {} nodes, {} links to {path}",
                         nodes.len(),

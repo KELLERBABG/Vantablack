@@ -10,6 +10,12 @@ identity_*.key
 peers.cache
 revocations.json
 ghost-topology.json
+# Consumer control-plane state written by the Web Control Center:
+# device names, egress mode and split-tunnel bypass rules.
+ghost-consumer.json
+ghost-consumer.json.tmp
+# Desktop-build log mirror (the GUI process has no console on Windows).
+ghost.log
 .venv/
 __pycache__/
 .pytest_cache/

@@ -13,8 +13,10 @@
 ///
 /// plus the networking layer including the Ghost Transport Frame (GTF),
 /// Contact Graph Routing (CGR), and the ACK-based reliable transport.
+pub mod icon;
 pub mod layers;
 pub mod net;
+pub mod paths;
 pub mod session;
 
 use std::net::SocketAddr;

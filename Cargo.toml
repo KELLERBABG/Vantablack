@@ -25,9 +25,17 @@ name = "vantablack"
 crate-type = ["rlib", "cdylib"] # cdylib: Android JNI surface (cargo-ndk)
 
 [features]
-default = []
+# The product IS a desktop application: a plain `cargo build` produces the
+# native window (frameless tao + wry webview, tray icon). The HTTP control
+# center still runs underneath, so the browser page keeps working as a
+# secondary way in — and as the only way in for headless/server nodes built
+# with `--no-default-features`.
+default = ["webview"]
 # Optional system-tray UI: `cargo build --features tray`.
 tray = ["dep:tray-icon", "dep:tao"]
+# Native frameless desktop window hosting the control center (implies `tray`).
+# `cargo build --features webview`.
+webview = ["tray", "dep:wry"]
 # VPN (LAN-over-WAN): hub smoltcp netstack + client TUN transport.
 vpn = ["dep:smoltcp"]
 # Enable fuzz targets (fuzz/Cargo.toml)
@@ -35,6 +43,12 @@ fuzzing = []
 # Hardware TPM 2.0 and PKCS#11 HSM integration stubs
 hardware-tpm = []
 pkcs11 = []
+
+# Embeds the application icon and version block into the Windows binaries
+# (see build.rs and assets/app.rc). Harmless everywhere else: the build script
+# returns early on non-Windows targets.
+[build-dependencies]
+embed-resource = "2.5"
 
 [profile.release]
 opt-level = "z"     # Optimize for size
@@ -76,4 +90,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tray-icon = { version = "0.24.2", optional = true }
 tao = { version = "0.36.0", optional = true }
+wry = { version = "0.56.0", optional = true }
 smoltcp = { version = "0.14.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"], optional = true }

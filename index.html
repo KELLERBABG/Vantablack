@@ -645,23 +645,24 @@
       <div class="section-head">
         <span class="section-tag">Quickstart</span>
         <h2>Up and running in a few minutes</h2>
-        <p>Built as sovereign infrastructure for developers, operators, and homelab users. Graphical 1-click desktop &amp; mobile clients are currently on the roadmap.</p>
+        <p>Built as sovereign infrastructure for developers, operators, and homelab users. It ships as a desktop app that opens its own window, and the same control panel is always reachable from a browser or your phone on the local network.</p>
       </div>
 
       <div class="route">
 
         <div class="route-step">
-          <h3><span>01</span> Download or compile the node daemon</h3>
-          <p>Global Ghost Net runs via its high-performance routing daemon (available as both <code>ggn</code> and <code>vantablack</code>). Single self-contained binary with zero external dependencies. Grab a pre-built binary for Windows, Linux, or macOS from <a href="https://github.com/KELLERBABG/Global-Ghost-Net/releases" target="_blank" rel="noopener" style="color: var(--accent); text-decoration: underline;">GitHub Releases &nearr;</a>, or build from source:</p>
+          <h3><span>01</span> Download or build the app</h3>
+          <p>Global Ghost Net is a desktop application: launching it opens its own window with the full control panel and a tray icon, and closing the window hides it to the tray instead of stopping your connection. Grab a pre-built binary for Windows, Linux, or macOS from <a href="https://github.com/KELLERBABG/Global-Ghost-Net/releases" target="_blank" rel="noopener" style="color: var(--accent); text-decoration: underline;">GitHub Releases &nearr;</a>, or build it from source:</p>
           <div class="term">
             <span class="c"># Install from source via cargo (Rust)</span><br>
             <span class="p">cargo install --git https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br><br>
-            <span class="c"># Or clone and compile release binaries (produces both 'ggn' and 'vantablack')</span><br>
+            <span class="c"># Or clone and compile the app</span><br>
             <span class="p">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br>
             <span class="p">cd Global-Ghost-Net &amp;&amp; cargo build --release</span><br><br>
-            <span class="c"># Start node daemon</span><br>
-            <span class="p">ggn</span> <span class="c"># (or: ./target/release/vantablack)</span>
+            <span class="c"># Start it &mdash; the window opens by itself</span><br>
+            <span class="p">./target/release/ggn</span>
           </div>
+          <p class="alt">On Linux the window needs the usual GTK/WebKit packages. Servers, containers and remote boxes that have no desktop can build the headless version instead (<code>cargo build --release --no-default-features</code>), which serves the identical control panel over HTTP and never tries to open a window.</p>
         </div>
 
         <div class="route-step">
@@ -678,11 +679,13 @@
         </div>
 
         <div class="route-step">
-          <h3><span>03</span> Send your traffic through it &mdash; or try the full demo</h3>
-          <p>Point your browser or apps at the built-in local proxy. Or, if you want to watch the whole thing work under simulated real-world network conditions, start the Docker demo.</p>
+          <h3><span>03</span> Send your traffic through it &mdash; or just use the window</h3>
+          <p>The app window is the control panel: flip the Connect switch and your traffic is protected. Apps that speak SOCKS can also point at the built-in local proxy (on by default), and if you would rather use a browser, the same panel is served at <code>http://localhost:2270</code>. To watch the whole thing work under simulated real-world network conditions, start the Docker demo.</p>
           <div class="term">
             <span class="c"># Route a request through the encrypted network</span><br>
             <span class="p">curl --socks5 127.0.0.1:1080 https://checkip.amazonaws.com</span><br><br>
+            <span class="c"># Browser control panel (same UI as the desktop window)</span><br>
+            <span class="p">open</span> http://localhost:2270<br><br>
             <span class="c"># Or run the multi-hop network demo with a live dashboard</span><br>
             <span class="p">docker compose -f docker-compose.wan.yml up -d</span><br>
             <span class="p">open</span> http://localhost:8080

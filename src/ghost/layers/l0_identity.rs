@@ -22,16 +22,23 @@ pub const IDENTITY_FILE_ENV: &str = "GHOST_IDENTITY_FILE";
 
 /// Resolve the identity-key path for this process.
 ///
-/// `GHOST_IDENTITY_FILE` overrides the default. Without an override, two nodes
-/// launched from the same working directory load the same key and therefore
-/// advertise the same fingerprint — an operational trap for the two-node smoke
-/// test (PROTOTYPE.md flaw #6), and the reason the test suite raced over a
-/// single `identity.key`.
+/// `GHOST_IDENTITY_FILE` overrides the default, which is what separate nodes of
+/// a two-node smoke test use so they do not advertise the same fingerprint
+/// (PROTOTYPE.md flaw #6).
+///
+/// Without an override the key lives in the per-user application-data
+/// directory (see [`crate::ghost::paths`]) rather than in the current working
+/// directory. A key that moved with the shell's cwd meant that launching the
+/// same binary from somewhere else silently produced a *different* node — and
+/// therefore broke every existing pairing.
 pub fn identity_file_path() -> String {
-    std::env::var(IDENTITY_FILE_ENV)
+    match std::env::var(IDENTITY_FILE_ENV)
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| IDENTITY_FILE.to_string())
+    {
+        Some(explicit) => explicit,
+        None => crate::ghost::paths::data_file_string(IDENTITY_FILE),
+    }
 }
 
 /// A GhostNet identity backed by an Ed25519 signing key.

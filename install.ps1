@@ -33,12 +33,20 @@ if (Test-Path $repoDir) {
     git clone https://github.com/KELLERBABG/Global-Ghost-Net.git $repoDir
 }
 
-Write-Host "[*] Compiling release binary..." -ForegroundColor Yellow
+Write-Host "[*] Compiling the desktop application (native window + tray icon)..." -ForegroundColor Yellow
 cargo build --release --manifest-path "$repoDir\Cargo.toml"
 
-$bin = "$repoDir\target\release\vantablack.exe"
+$bin = "$repoDir\target\release\ggn.exe"
 Write-Host "`n[+] Build complete: $bin" -ForegroundColor Green
 Write-Host "[+] The program takes no command-line arguments. Configure it with env vars:" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "    # Desktop app: opens its own window; closing it hides to the tray." -ForegroundColor White
+Write-Host "    # The control center also answers at http://127.0.0.1:2270 and the log" -ForegroundColor White
+Write-Host "    # is mirrored to ghost.log next to the executable." -ForegroundColor White
+Write-Host "    & '$bin'" -ForegroundColor White
+Write-Host ""
+Write-Host "    # Server / headless node, no window (control center in a browser tab)" -ForegroundColor White
+Write-Host "    `$env:GHOST_NO_GUI='1'; & '$bin'" -ForegroundColor White
 Write-Host ""
 Write-Host "    # SOCKS5 client node (proxy on 127.0.0.1:1080)" -ForegroundColor White
 Write-Host "    `$env:GHOST_SOCKS5='1'; & '$bin'" -ForegroundColor White
