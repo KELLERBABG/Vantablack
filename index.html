@@ -351,234 +351,70 @@
     }
     .section-head p { color: var(--text-muted); font-size: 16px; }
 
-    /* —— Use-Case / Scenario Cards ——————————————————————————————————— */
-    .scenario-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 16px;
-      margin-top: 24px;
-    }
-    .scenario-card {
-      background: var(--surface-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
+    /* —— Capabilities & Architecture (Editorial Rows) ——————————————— */
+    .feature-list {
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
-      transition: border-color .15s, transform .15s;
+      gap: 18px;
+      margin-top: 32px;
     }
-    .scenario-card:hover {
-      border-color: var(--border-glow);
-      transform: translateY(-2px);
-    }
-    .scenario-badge {
-      display: inline-block;
-      font-family: var(--font-mono);
-      font-size: 10.5px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 3px 8px;
-      border-radius: 4px;
-      margin-bottom: 12px;
-      width: fit-content;
-    }
-    .badge-amber { background: rgba(245, 158, 11, 0.12); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.3); }
-    .badge-cyan { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--accent-border); }
-    .badge-emerald { background: var(--emerald-subtle); color: var(--emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-rose { background: rgba(244, 63, 94, 0.12); color: var(--rose); border: 1px solid rgba(244, 63, 94, 0.3); }
-    .scenario-card h3 {
-      font-size: 16.5px;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 10px;
-      line-height: 1.35;
-    }
-    .scenario-card p {
-      font-size: 14px;
-      color: var(--text-muted);
-      line-height: 1.6;
-      margin-bottom: 14px;
-    }
-    .scenario-metric {
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      color: var(--text-dim);
-      border-top: 1px solid var(--border-subtle);
-      padding-top: 10px;
-    }
-    .scenario-metric strong { color: var(--accent); font-weight: 500; }
-
-    /* —— Protection Pillars ——————————————————————————————————————————— */
-    .pillar-grid {
+    .feature-row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 16px;
-      margin-top: 28px;
-    }
-    .pillar-card {
-      background: var(--surface-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
+      grid-template-columns: 280px 1fr;
+      gap: 36px;
+      padding: 32px 0;
+      border-bottom: 1px solid var(--border-subtle);
       transition: border-color .15s;
     }
-    .pillar-card:hover { border-color: var(--border-glow); }
-    .pillar-num {
+    .feature-row:last-child {
+      border-bottom: none;
+    }
+    .feature-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .feature-tag {
       font-family: var(--font-mono);
       font-size: 11px;
-      color: var(--text-dim);
-      letter-spacing: 0.1em;
-      margin-bottom: 12px;
-    }
-    .pillar-card h3 {
-      font-size: 17px;
-      font-weight: 600;
-      margin-bottom: 10px;
-      color: var(--text);
-    }
-    .pillar-card p {
-      font-size: 14.5px;
-      color: var(--text-muted);
-      line-height: 1.62;
-    }
-    .pillar-note {
-      margin-top: 20px;
-      font-size: 14px;
-      color: var(--text-dim);
-      border-left: 2px solid var(--accent-border);
-      padding-left: 14px;
-    }
-
-    /* —— Terminal & Steps ———————————————————————————————————————————— */
-    .route {
-      display: grid;
-      gap: 1px;
-      background: var(--border);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      overflow: hidden;
-    }
-    .route-step { background: var(--surface); padding: 26px 28px; }
-    .route-step h3 {
-      display: flex;
-      align-items: baseline;
-      gap: 12px;
-      font-size: 16px;
-      font-weight: 600;
-      margin-bottom: 10px;
-    }
-    .route-step h3 span {
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      font-weight: 500;
-      color: var(--text-dim);
-    }
-    .route-step p { font-size: 14.5px; color: var(--text-muted); max-width: 800px; }
-    .route-step p + p { margin-top: 10px; }
-    .route-step .alt { color: var(--text-dim); font-size: 13.5px; }
-
-    .term {
-      margin: 14px 0;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px 16px;
-      font-family: var(--font-mono);
-      font-size: 12.5px;
-      color: var(--text-muted);
-      overflow-x: auto;
-      line-height: 1.75;
-    }
-    .term .c { color: var(--text-dim); }
-    .term .p { color: var(--accent); }
-    .term .val { color: #facc15; }
-
-    /* —— Panels & Interactive Demo ———————————————————————————————————— */
-    .panel {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 26px;
-    }
-    .demo-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
-    .demo-controls input {
-      flex: 1 1 280px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 11px 14px;
-      color: var(--text);
-      font-family: var(--font-mono);
-      font-size: 13px;
-      outline: none;
-      transition: border-color .15s;
-    }
-    .demo-controls input:focus { border-color: var(--accent-border); }
-    .demo-controls button {
-      background: var(--surface-raised);
-      border: 1px solid var(--border-glow);
       color: var(--accent);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .feature-meta h3 {
+      font-size: 19px;
+      font-weight: 600;
+      color: #ffffff;
+      letter-spacing: -0.015em;
+      line-height: 1.35;
+    }
+    .feature-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .feature-body p {
+      font-size: 15px;
+      color: var(--text-muted);
+      line-height: 1.68;
+    }
+    .feature-detail {
       font-family: var(--font-mono);
       font-size: 12px;
-      font-weight: 500;
-      letter-spacing: 0.08em;
-      padding: 11px 20px;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all .15s;
-    }
-    .demo-controls button:hover { background: var(--accent); color: #04161a; border-color: var(--accent); }
-
-    .shards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
-    .shard {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 16px;
-      cursor: pointer;
-      transition: border-color .15s, opacity .15s;
-      user-select: none;
-    }
-    .shard:hover { border-color: var(--border-glow); }
-    .shard.dropped { opacity: 0.35; border-style: dashed; border-color: var(--rose); }
-    .shard-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 8px;
-      font-family: var(--font-mono);
-      font-size: 11.5px;
       color: var(--text-dim);
-      margin-bottom: 10px;
+      border-left: 2px solid var(--accent-border);
+      padding-left: 12px;
+      margin-top: 4px;
     }
-    .shard-hex {
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      color: var(--text-muted);
-      word-break: break-all;
-      line-height: 1.55;
-      min-height: 52px;
-    }
-    .shard-state { margin-top: 12px; font-family: var(--font-mono); font-size: 11px; }
-    .ok { color: var(--emerald); }
-    .gone { color: var(--rose); }
 
-    .demo-result {
-      margin-top: 18px;
-      padding: 16px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
+    @media (max-width: 780px) {
+      .feature-row {
+        grid-template-columns: 1fr;
+        gap: 14px;
+        padding: 24px 0;
+      }
     }
-    .demo-result .label {
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      color: var(--text-dim);
-      display: block;
-      margin-bottom: 8px;
-    }
-    .demo-result .value { font-family: var(--font-mono); font-size: 13.5px; color: var(--text); word-break: break-all; }
 
     /* —— Docs CTA Banner —————————————————————————————————————————————— */
     .docs-cta {
@@ -683,124 +519,61 @@
 
       <div class="cta-row">
         <a class="btn btn-primary" href="#deploy">Quickstart</a>
-        <a class="btn btn-ghost" href="#use-cases">See what it does</a>
+        <a class="btn btn-ghost" href="#capabilities">Capabilities</a>
         <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">Source Code &nearr;</a>
       </div>
     </header>
 
-    <!-- WHAT IT DOES FOR YOU -->
-    <section id="use-cases">
+    <!-- CAPABILITIES & ARCHITECTURE -->
+    <section id="capabilities">
       <div class="section-head">
-        <span class="section-tag">What it does for you</span>
-        <h2>Practical things you can do on day one</h2>
-        <p>No networking degree required. If you can run a program, you can use this.</p>
+        <h2>Designed for sovereignty, privacy, and durability</h2>
+        <p>A resilient foundation for personal infrastructure, remote operations, and secure networking.</p>
       </div>
 
-      <div class="scenario-grid">
-        <div class="scenario-card">
-          <div>
-            <span class="scenario-badge badge-cyan">Home lab &amp; media</span>
-            <h3>Reach your home files from anywhere</h3>
-            <p>Access your home files, your Plex or Jellyfin library, or Docker containers from a coffee shop or plain cellular data. No port forwarding and no exposing your router to the open internet.</p>
+      <div class="feature-list">
+        <div class="feature-row">
+          <div class="feature-meta">
+            <span class="feature-tag">Infrastructure</span>
+            <h3>Universal private interconnect</h3>
           </div>
-          <div class="scenario-metric">
-            Works from any network &bull; <strong>No router changes</strong>
-          </div>
-        </div>
-
-        <div class="scenario-card">
-          <div>
-            <span class="scenario-badge badge-emerald">Multi-cloud</span>
-            <h3>Link your servers together</h3>
-            <p>Tie a server on AWS, one on Hetzner, and the box under your desk into a single private network &mdash; as if they were plugged into the same switch.</p>
-          </div>
-          <div class="scenario-metric">
-            One flat private network &bull; <strong>Any provider, any hardware</strong>
+          <div class="feature-body">
+            <p>Connect home servers, workstations, edge hardware, and cloud VPS instances into a single flat private network. Devices find each other automatically across NAT firewalls, home routers, and changing IP addresses without opening router ports or exposing services to the public internet.</p>
+            <div class="feature-detail">Works across any carrier or provider &bull; Zero firewall reconfiguration required</div>
           </div>
         </div>
 
-        <div class="scenario-card">
-          <div>
-            <span class="scenario-badge badge-amber">Restricted networks</span>
-            <h3>Keep working when the network is locked down</h3>
-            <p>Works inside restrictive school, hotel, or country firewalls. Your connection automatically splits traffic across several routes and blends in as ordinary internet noise.</p>
+        <div class="feature-row">
+          <div class="feature-meta">
+            <span class="feature-tag">Resilience</span>
+            <h3>Multipath route dispersion</h3>
           </div>
-          <div class="scenario-metric">
-            Beats deep packet inspection &bull; <strong>Keeps going when a route dies</strong>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- HOW IT PROTECTS YOU -->
-    <section id="protection">
-      <div class="section-head">
-        <span class="section-tag">How it protects you</span>
-        <h2>Strong protection, explained plainly</h2>
-        <p>Here is what is actually happening to keep you safe &mdash; no jargon.</p>
-      </div>
-
-      <div class="pillar-grid">
-        <div class="pillar-card">
-          <div class="pillar-num">01 / SPLIT ACROSS ROUTES</div>
-          <h3>Multi-Path Traffic Splitting</h3>
-          <p>Think of tearing a secret letter into three pieces and sending each with a different courier. Anyone who intercepts one piece learns nothing useful, and if one courier never arrives, the other two still deliver the full message intact.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">02 / NOTHING TO HACK</div>
-          <h3>Zero Central Servers</h3>
-          <p>There is no company database to get hacked, no account to sign up for, and no single machine whose failure takes the whole network down. Your devices find each other on their own.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">03 / BUILT TO LAST</div>
-          <h3>Future-Proof Encryption</h3>
-          <p>Everything is scrambled with next-generation security designed to resist even quantum computers &mdash; including data someone copies today hoping to crack it years from now.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">04 / MEMORY ONLY</div>
-          <h3>Runs Purely in Memory</h3>
-          <p>Your encryption keys exist only in RAM while a session is running. They are never written to your hard drive or SSD, so a stolen laptop disk cannot leak them.</p>
-        </div>
-      </div>
-
-      <p class="pillar-note">There is nothing to log, either: the software has no telemetry, no analytics, and no usage tracking of any kind.</p>
-    </section>
-
-    <!-- INTERACTIVE DEMO -->
-    <section id="demo">
-      <div class="section-head">
-        <span class="section-tag">Try it in your browser</span>
-        <h2>Watch your message survive a cut route</h2>
-        <p>Your message is split into three pieces and sent down three different routes. Click any route to cut the wire. The other two routes automatically deliver your intact message without re-sending it.</p>
-      </div>
-
-      <div class="panel">
-        <div class="demo-controls">
-          <input id="demoInput" type="text" value="Hello from my home server" maxlength="96" aria-label="Message to send">
-          <button id="demoRun" type="button">RE-SPLIT &amp; SEND</button>
-        </div>
-
-        <div class="shards" id="shardList">
-          <div class="shard" data-idx="0">
-            <div class="shard-top"><span>Route A (Fiber)</span><span class="shard-state ok">&mdash;</span></div>
-            <div class="shard-hex"></div>
-          </div>
-          <div class="shard" data-idx="1">
-            <div class="shard-top"><span>Route B (Wireless)</span><span class="shard-state ok">&mdash;</span></div>
-            <div class="shard-hex"></div>
-          </div>
-          <div class="shard" data-idx="2">
-            <div class="shard-top"><span>Route C (Backup Link)</span><span class="shard-state ok">&mdash;</span></div>
-            <div class="shard-hex"></div>
+          <div class="feature-body">
+            <p>Outbound traffic is mathematically divided across multiple independent carrier paths simultaneously. A listener observing any single network link or tap sees only undecipherable random slices. Even if a link is completely severed or drops out mid-stream, remaining paths deliver the full message intact with zero retransmission delay.</p>
+            <div class="feature-detail">Survives carrier drops and transit failures automatically</div>
           </div>
         </div>
 
-        <div class="demo-result">
-          <span class="label">Delivered message</span>
-          <div class="value" id="demoOut">&mdash;</div>
+        <div class="feature-row">
+          <div class="feature-meta">
+            <span class="feature-tag">Cryptography</span>
+            <h3>Post-quantum security by default</h3>
+          </div>
+          <div class="feature-body">
+            <p>All sessions negotiate keys using hybrid post-quantum lattice cryptography combined with classical curve algorithms. Traffic captured today remains protected against future quantum decryption. Master keys exist only in volatile RAM while active and are never written to disk or swap storage.</p>
+            <div class="feature-detail">Defends against store-now-decrypt-later adversaries &bull; Zero disk key footprint</div>
+          </div>
+        </div>
+
+        <div class="feature-row">
+          <div class="feature-meta">
+            <span class="feature-tag">Integrity</span>
+            <h3>Zero central points of failure</h3>
+          </div>
+          <div class="feature-body">
+            <p>No central servers, user accounts, or company databases exist to be compromised, seized, or subjected to downtime. Nodes authenticate each other directly via cryptographic public keys, with no third-party coordinator or vendor middleman in the data path.</p>
+            <div class="feature-detail">Zero telemetry &bull; No analytics &bull; Self-organizing mesh operation</div>
+          </div>
         </div>
       </div>
     </section>
@@ -966,128 +739,6 @@
         lines.rotation.copy(globe.rotation);
         renderer.render(scene, camera);
       })();
-    })();
-
-    /* —— Erasure coding demo (3 pieces, any 2 reconstruct) ————————————— */
-    var RS_EXP = new Uint8Array(512), RS_LOG = new Uint8Array(256);
-    (function () {
-      var x = 1;
-      for (var i = 0; i < 255; i++) {
-        RS_EXP[i] = x;
-        RS_LOG[x] = i;
-        x <<= 1;
-        if (x & 0x100) x ^= 0x11d;
-      }
-      for (var j = 255; j < 512; j++) RS_EXP[j] = RS_EXP[j - 255];
-    })();
-
-    function gfMul(a, b) {
-      if (a === 0 || b === 0) return 0;
-      return RS_EXP[RS_LOG[a] + RS_LOG[b]];
-    }
-
-    function gfDiv(a, b) {
-      if (a === 0) return 0;
-      return RS_EXP[(RS_LOG[a] - RS_LOG[b] + 255) % 255];
-    }
-
-    function rsEncode(bytes) {
-      var padded = bytes.slice();
-      if (padded.length % 2) padded.push(0);
-      var half = padded.length / 2;
-      var s0 = padded.slice(0, half), s1 = padded.slice(half);
-      var parity = new Uint8Array(half);
-      for (var i = 0; i < half; i++) parity[i] = s0[i] ^ gfMul(2, s1[i]);
-      return [s0, s1, Array.from(parity)];
-    }
-
-    function rsReconstruct(shards) {
-      var s0 = shards[0], s1 = shards[1], par = shards[2], i, half;
-      if (s0 && s1) {
-        half = s0.length;
-      } else if (s0 && par) {
-        half = s0.length;
-        s1 = new Array(half);
-        for (i = 0; i < half; i++) s1[i] = gfDiv(par[i] ^ s0[i], 2);
-      } else if (s1 && par) {
-        half = s1.length;
-        s0 = new Array(half);
-        for (i = 0; i < half; i++) s0[i] = par[i] ^ gfMul(2, s1[i]);
-      } else {
-        return null;
-      }
-      return Array.prototype.slice.call(s0).concat(Array.prototype.slice.call(s1));
-    }
-
-    /* —— Interactive route demo bindings ————————————————————————————— */
-    (function () {
-      var input = document.getElementById('demoInput');
-      var runBtn = document.getElementById('demoRun');
-      var out = document.getElementById('demoOut');
-      var cards = document.querySelectorAll('#shardList .shard');
-
-      var shards = [null, null, null];
-      var dropped = [false, false, false];
-
-      function hex(bytes, max) {
-        var s = '', n = Math.min(bytes.length, max);
-        for (var i = 0; i < n; i++) s += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
-        return s + (bytes.length > n ? '&hellip;' : '');
-      }
-
-      function render() {
-        for (var i = 0; i < cards.length; i++) {
-          var card = cards[i];
-          var state = card.querySelector('.shard-state');
-          var hexEl = card.querySelector('.shard-hex');
-          if (dropped[i]) {
-            card.classList.add('dropped');
-            state.textContent = 'CUT — CLICK TO RESTORE';
-            state.className = 'shard-state gone';
-            hexEl.textContent = '—';
-          } else {
-            card.classList.remove('dropped');
-            state.textContent = 'ONLINE · ' + shards[i].length + ' BYTES';
-            state.className = 'shard-state ok';
-            hexEl.innerHTML = hex(shards[i], 36);
-          }
-        }
-
-        var live = shards.map(function (s, i) { return dropped[i] ? null : s; });
-        var rebuilt = rsReconstruct(live);
-        if (!rebuilt) {
-          out.innerHTML = '<span style="color:var(--rose)">At least two routes must stay open to deliver your message.</span>';
-          return;
-        }
-        var text = '';
-        try {
-          text = new TextDecoder().decode(new Uint8Array(rebuilt)).replace(/\u0000+$/, '');
-        } catch (e) {
-          text = '<binary>';
-        }
-        out.textContent = text === '' ? '(empty)' : text;
-      }
-
-      function run() {
-        var text = input.value || '';
-        var plain = Array.from(new TextEncoder().encode(text));
-        shards = rsEncode(plain);
-        dropped = [false, false, false];
-        render();
-      }
-
-      for (var i = 0; i < cards.length; i++) {
-        (function (idx) {
-          cards[idx].addEventListener('click', function () {
-            dropped[idx] = !dropped[idx];
-            render();
-          });
-        })(i);
-      }
-      runBtn.addEventListener('click', run);
-      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') run(); });
-      input.addEventListener('input', run);
-      run();
     })();
   </script>
 </body>
