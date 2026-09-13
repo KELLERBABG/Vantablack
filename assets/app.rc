@@ -8,7 +8,8 @@
 //      window's icon comes from src/ghost/icon.rs, which uses the small
 //      icon-ui.ico embedded in the binary.)
 //   2. A version block, so the Properties dialog shows a product name and a
-//      version instead of blank fields.
+//      version instead of blank fields, and so the installer and Add/Remove
+//      Programs can read a real version number.
 //
 // Compiled by build.rs through embed-resource (rc.exe / windres). Icon indices
 // are positional: 1 is the lowest application icon ID, which is what the shell
@@ -17,7 +18,14 @@
 
 1 ICON "assets/icon.ico"
 
-VS_VERSION_INFO VERSIONINFO
+// NOTE: the id must be written as the literal `1`, not the symbol
+// `VS_VERSION_INFO`. Without windows.h that symbol is undefined, so rc.exe
+// compiles it as the *string* name "VS_VERSION_INFO" — and Windows looks the
+// resource up by ordinal 1 (`FindResourceW(h, MAKEINTRESOURCE(1), RT_VERSION)`).
+// The block then exists in the file but every shell API reports empty version
+// fields, which is exactly what `Explorer -> Properties -> Details` would show.
+// `version_resource_is_readable_by_the_shell` in src/ghost/icon.rs guards this.
+1 VERSIONINFO
  FILEVERSION 0,4,1,0
  PRODUCTVERSION 0,4,1,0
  FILEFLAGSMASK 0x3fL

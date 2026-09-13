@@ -20,11 +20,20 @@
 //! the sandboxed CI runs use. The older per-file overrides
 //! (`GHOST_IDENTITY_FILE`, `GHOST_CONSUMER_CONFIG`, `GHOST_LOG`) still win over
 //! the default, so existing scripts and service units keep working.
+//!
+//! There is a second, deliberately *separate* location for regenerable data:
+//! [`cache_dir`]. The identity key and the device names are small and should
+//! follow a roaming profile between machines; the WebView2 user-data folder is
+//! a browser cache and must not, which is why it is not simply a subdirectory of
+//! [`data_dir`].
 
 use std::path::{Path, PathBuf};
 
 /// Overrides the application-data directory outright.
 pub const DATA_DIR_ENV: &str = "GHOST_DATA_DIR";
+
+/// Overrides the cache directory outright.
+pub const CACHE_DIR_ENV: &str = "GHOST_CACHE_DIR";
 
 /// Directory name used on Windows and macOS (Linux uses the XDG-style name).
 pub const APP_DIR_NAME: &str = "GlobalGhostNet";
@@ -89,6 +98,71 @@ pub fn data_dir() -> PathBuf {
     }
     platform_data_dir()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+/// The platform's per-user *non-roaming* directory for this app.
+///
+/// Regenerable data lives here. A Windows roaming profile is synchronised
+/// between machines, so a browser cache belongs in `%LOCALAPPDATA%` rather than
+/// in [`platform_data_dir`].
+fn platform_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(base) = non_empty_env("LOCALAPPDATA") {
+            return Some(Path::new(&base).join(APP_DIR_NAME));
+        }
+        non_empty_env("USERPROFILE").map(|home| {
+            Path::new(&home)
+                .join("AppData")
+                .join("Local")
+                .join(APP_DIR_NAME)
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        non_empty_env("HOME").map(|home| {
+            Path::new(&home)
+                .join("Library")
+                .join("Caches")
+                .join(APP_DIR_NAME)
+        })
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg) = non_empty_env("XDG_CACHE_HOME") {
+            return Some(Path::new(&xdg).join("global-ghost-net"));
+        }
+        non_empty_env("HOME").map(|home| Path::new(&home).join(".cache").join("global-ghost-net"))
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        None
+    }
+}
+
+/// Where regenerable data goes: the WebView2 user-data folder, caches, and the
+/// like. Falls back to [`data_dir`] where the platform has no separate location,
+/// so callers never have to handle an `Option`.
+pub fn cache_dir() -> PathBuf {
+    cache_dir_with(non_empty_env(CACHE_DIR_ENV))
+}
+
+/// Split out from [`cache_dir`] so the override branch can be asserted without
+/// mutating the process environment (which would race against other tests).
+fn cache_dir_with(explicit: Option<String>) -> PathBuf {
+    explicit
+        .map(PathBuf::from)
+        .unwrap_or_else(|| platform_cache_dir().unwrap_or_else(data_dir))
+}
+
+/// Create `dir` and any missing parents, so first-run writers do not each have
+/// to repeat the dance. A path that exists as a *file* is an error, not a
+/// success — that is exactly the case a caller needs to hear about.
+pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)
 }
 
 /// Resolve a state-file name to its real path inside [`data_dir`].
@@ -249,6 +323,63 @@ mod tests {
         let resolved = resolve(&cwd, &cwd, "identity.key");
         assert_eq!(resolved, path);
         assert_eq!(std::fs::read(&resolved).unwrap(), b"only-copy");
+    }
+
+    #[test]
+    fn an_explicit_cache_dir_is_used_verbatim() {
+        // Whatever the caller spelled out is honoured exactly, absolute or not —
+        // that is what makes GHOST_CACHE_DIR usable for sandboxed runs.
+        let abs = if cfg!(windows) {
+            "C:\\ggn-cache"
+        } else {
+            "/tmp/ggn-cache"
+        };
+        assert_eq!(cache_dir_with(Some(abs.to_string())), PathBuf::from(abs));
+        assert_eq!(
+            cache_dir_with(Some("relative/cache".to_string())),
+            PathBuf::from("relative/cache")
+        );
+    }
+
+    #[test]
+    fn the_cache_dir_is_separate_from_the_data_dir() {
+        // Overrides are someone else's contract; this is about the defaults.
+        if non_empty_env(DATA_DIR_ENV).is_some() || non_empty_env(CACHE_DIR_ENV).is_some() {
+            return;
+        }
+        let cache = cache_dir();
+        assert!(!cache.as_os_str().is_empty());
+        assert!(cache.is_absolute(), "{} is not absolute", cache.display());
+        let expected = if cfg!(windows) || cfg!(target_os = "macos") {
+            APP_DIR_NAME
+        } else {
+            "global-ghost-net"
+        };
+        assert!(
+            cache.ends_with(expected),
+            "{} does not end with {expected}",
+            cache.display()
+        );
+        // Keeping a browser cache out of a roaming profile is the entire reason
+        // this directory exists; if the two ever coincide the point is lost.
+        assert_ne!(
+            cache,
+            data_dir(),
+            "the cache must not live inside the roamed data directory"
+        );
+    }
+
+    #[test]
+    fn ensure_dir_creates_nested_paths_and_is_idempotent() {
+        let base = scratch("ensure");
+        let nested = base.join("a").join("b").join("c");
+        ensure_dir(&nested).expect("first create");
+        assert!(nested.is_dir());
+        ensure_dir(&nested).expect("second create is a no-op");
+        // A path that exists as a *file* is an error, not a silent success.
+        let file = base.join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(ensure_dir(&file).is_err());
     }
 
     #[test]

@@ -296,6 +296,37 @@ interface — the "sidenote" path used by servers and by phones on the LAN — i
 rest of this section documents. The dashboard HTML is compiled into the binary with
 `include_str!`, so editing it requires a rebuild.
 
+### 10.1.2 Packaging
+
+Windows users get a real application install rather than an archive. `installer/ggn.iss`
+(Inno Setup) compiles to `ggn-<version>-windows-setup.exe`, built by
+`scripts/build_installer.ps1`, which stages the payload in `dist/staging` and reads the
+version out of the compiled binary's own version resource — so the executable, the
+installer and Add/Remove Programs cannot disagree.
+
+Specific behavioural contracts, each of which the CI job `windows-installer` exercises by
+performing a real install, assertion and uninstall cycle:
+
+- **Per-user, never elevated.** `PrivilegesRequired=lowest` installs to
+  `%LOCALAPPDATA%\Programs\GlobalGhostNet` and writes the Add/Remove Programs entry under
+  `HKCU`. No UAC prompt appears, and the app id in the script is the product's permanent
+  identity for upgrades and uninstalls — changing it would orphan every existing install.
+- **The version resource must be findable by the shell.** Windows fetches `RT_VERSION`
+  with `FindResourceW(h, MAKEINTRESOURCE(1), RT_VERSION)`, so the block has to be compiled
+  under ordinal `1`. Writing the symbol `VS_VERSION_INFO` without `windows.h` silently
+  registers it under a *string* name instead, and then every shell API — Explorer's
+  Details tab, the installer, Add/Remove Programs — reports empty version fields. The
+  unit test `ghost::icon::version_resource_is_readable_by_the_shell` pins this.
+- **Regenerable data stays out of the install directory.** WebView2 otherwise drops its
+  user-data folder beside the executable, which leaves ~10 MB the uninstaller knows nothing
+  about and breaks outright in a non-writable directory. The window now points it at
+  [`cache_dir`](#1011-where-the-app-keeps-its-files) via `wry::WebContext::new`, and the
+  uninstaller removes both that location and the legacy one.
+- **Uninstalling never loses an identity key by default.** Setup removes what it installed;
+  the identity and settings live in the per-user data directory, which only the explicit
+  "also delete my data?" prompt touches — and an unattended uninstall (`/VERYSILENT`, where
+  `UninstallSilent` is true) skips even that, so a scripted removal can never destroy a key.
+
 ### 10.2 Control center and telemetry API
 
 A real-time observability and remote control engine is embedded directly within the node daemon, exposing metrics via JSON REST APIs and a high-contrast cyber-minimalist single-page dashboard:

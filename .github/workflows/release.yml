@@ -65,6 +65,30 @@ jobs:
           mkdir -p headless
           cp target/${{ matrix.target }}/release/ggn${{ matrix.binary_ext }} headless/ggn-headless${{ matrix.binary_ext }}
 
+      # Windows users get a real application install, not just an archive: a
+      # per-user setup.exe with a Start Menu entry, an "Apps & Features" entry
+      # and an uninstaller. Installers are built by Inno Setup; the runner image
+      # usually has it, and Chocolatey is the fallback.
+      - name: Ensure Inno Setup
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $found = @(
+            (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source,
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+          if ($found) {
+            Write-Host "Inno Setup already present: $($found[0])"
+          } else {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/build_installer.ps1 -BinDir "target/${{ matrix.target }}/release" -SkipBuild
+
       - name: Package Windows artifacts
         if: matrix.os == 'windows-latest'
         shell: bash
@@ -95,6 +119,7 @@ jobs:
           files: |
             ggn-*.zip
             ggn-*.tar.gz
+            dist/*.exe
           generate_release_notes: true
           draft: false
           prerelease: false

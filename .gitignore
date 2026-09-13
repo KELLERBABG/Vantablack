@@ -31,6 +31,11 @@ __pycache__/
 PROTOTYPE.md
 config.env
 
+# Windows installer build output (scripts/build_installer.ps1).
+# `installer/` and `scripts/build_installer.ps1` are source and stay tracked;
+# only the compiled setup.exe and its staging directory are ignored.
+dist/
+
 # Android build artifacts
 android/.gradle/
 android/app/build/

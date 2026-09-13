@@ -211,6 +211,81 @@ mod tests {
         assert_eq!(best_for(&images, 512).unwrap().width, 64);
     }
 
+    // ── the Windows resource script (assets/app.rc) ─────────────────────────
+
+    /// The whole text of the resource script, compiled by `build.rs`.
+    const APP_RC: &str = include_str!("../../assets/app.rc");
+
+    /// The rest of the line that starts with `name` (after `VALUE`-style keys).
+    fn rc_directive(rc: &str, name: &str) -> Option<String> {
+        rc.lines()
+            .map(str::trim)
+            .find_map(|line| Some(line.strip_prefix(name)?.trim().to_string()))
+    }
+
+    /// The value of a `VALUE "key", ...` line, unquoted.
+    fn rc_value(rc: &str, key: &str) -> Option<String> {
+        rc.lines().map(str::trim).find_map(|line| {
+            let rest = line.strip_prefix("VALUE")?.trim();
+            let (k, v) = rest.split_once(',')?;
+            (k.trim().trim_matches('"') == key).then(|| v.trim().trim_matches('"').to_string())
+        })
+    }
+
+    /// The resource *id* matters as much as the contents: Windows fetches the
+    /// version block with `FindResourceW(h, MAKEINTRESOURCE(1), RT_VERSION)`.
+    /// Writing the symbol `VS_VERSION_INFO` instead of the literal `1` (which is
+    /// what happens without `windows.h`) compiles the block under a string name
+    /// that no shell API ever looks up, so Explorer's Details tab and the
+    /// installer both see an unversioned file. This test is why that cannot
+    /// come back unnoticed.
+    #[test]
+    fn version_resource_is_readable_by_the_shell() {
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(
+            APP_RC.lines().any(|l| l.trim() == "1 VERSIONINFO"),
+            "the version block must be compiled under ordinal 1, not a string name"
+        );
+        assert!(
+            !APP_RC.contains("VS_VERSION_INFO VERSIONINFO"),
+            "`VS_VERSION_INFO` is undefined without windows.h, so rc.exe would treat it as a name"
+        );
+
+        // FILEVERSION / PRODUCTVERSION are four comma-separated u16s.
+        let mut quad: Vec<&str> = version.split('.').collect();
+        while quad.len() < 4 {
+            quad.push("0");
+        }
+        let quad = quad.join(",");
+        for directive in ["FILEVERSION", "PRODUCTVERSION"] {
+            assert_eq!(
+                rc_directive(APP_RC, directive).as_deref(),
+                Some(quad.as_str()),
+                "{directive} must track Cargo.toml's version"
+            );
+        }
+        for key in ["FileVersion", "ProductVersion"] {
+            assert_eq!(
+                rc_value(APP_RC, key).as_deref(),
+                Some(version),
+                "{key} must track Cargo.toml's version"
+            );
+        }
+
+        // The strings the installer and the shell show for the product.
+        for key in ["ProductName", "FileDescription", "CompanyName"] {
+            assert_eq!(
+                rc_value(APP_RC, key).as_deref(),
+                Some("Global Ghost Net"),
+                "{key} should name the product"
+            );
+        }
+        assert_eq!(
+            rc_value(APP_RC, "OriginalFilename").as_deref(),
+            Some("ggn.exe")
+        );
+    }
+
     #[test]
     fn malformed_input_is_rejected_instead_of_panicking() {
         assert!(decode_ico(&[]).is_empty());

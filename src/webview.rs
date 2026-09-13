@@ -23,9 +23,9 @@ use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::window::{Icon, Window, WindowBuilder};
-use vantablack::ghost::icon;
 use vantablack::ghost::GhostNode;
-use wry::WebViewBuilder;
+use vantablack::ghost::{icon, paths};
+use wry::{WebContext, WebViewBuilder};
 
 /// Block until the control-center HTTP listener answers. The node starts that
 /// listener on its own thread, so the window can otherwise race it.
@@ -168,12 +168,35 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
     let ipc_node = nc.clone();
     let url = format!("http://127.0.0.1:{control_port}/?native=1");
 
+    // Left to itself, WebView2 puts its user-data folder (cache, cookies, GPU
+    // shaders) next to the executable. Two reasons that is wrong here: the
+    // uninstaller knows nothing about a folder it did not create, and an install
+    // directory the user cannot write to — anything under `Program Files` —
+    // makes the window fail outright. Point it at the per-user cache directory
+    // instead, and fall back to the default rather than refusing to open.
+    let webview_data_dir = paths::cache_dir().join("webview2");
+    let webview_data = match paths::ensure_dir(&webview_data_dir) {
+        Ok(()) => Some(webview_data_dir.clone()),
+        Err(e) => {
+            tracing::warn!(
+                dir = %webview_data_dir.display(),
+                error = %e,
+                "Could not create the WebView2 data directory; using the default location"
+            );
+            None
+        }
+    };
+    if webview_data.is_some() {
+        tracing::info!(dir = %webview_data_dir.display(), "WebView2 data directory");
+    }
+    let mut web_context = WebContext::new(webview_data);
+
     let built = {
         let borrowed = slot.borrow();
         let Some(win) = borrowed.as_ref() else {
             std::process::exit(1);
         };
-        WebViewBuilder::new()
+        WebViewBuilder::new_with_web_context(&mut web_context)
             .with_url(url)
             .with_ipc_handler(move |request: wry::http::Request<String>| {
                 match request.body().as_str() {

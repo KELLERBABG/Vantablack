@@ -64,6 +64,130 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets -- -D warnings || true
 
+  windows-installer:
+    name: Windows Installer (build, install, verify, uninstall)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-installer
+
+      # Inno Setup turns the staged payload into a real application install.
+      # Present on most runner images; Chocolatey is the fallback.
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $found = @(
+            (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source,
+            (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+          if ($found) {
+            Write-Host "Inno Setup already present: $($found[0])"
+          } else {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: ./scripts/build_installer.ps1
+
+      # Compiling is not the same as working. Run the real install cycle and
+      # assert on the artefacts Windows itself reads, then uninstall and check
+      # that user data survives — the identity key must never be collateral.
+      - name: Install, verify and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $setup = (Get-ChildItem dist\*-windows-setup.exe | Select-Object -First 1).FullName
+          if (-not $setup) { throw 'the build produced no installer' }
+
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\GlobalGhostNet'
+          $startMenu  = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Global Ghost Net.lnk'
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+          $appPathKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\ggn.exe'
+
+          Write-Host "Installing $setup"
+          $p = Start-Process -FilePath $setup `
+            -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "setup.exe exited $($p.ExitCode)" }
+
+          $ggnExe = Join-Path $installDir 'ggn.exe'
+          $checks = [ordered]@{
+            'ggn.exe installed'   = Test-Path -LiteralPath $ggnExe
+            'uninstaller present' = Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe')
+            'Start Menu shortcut' = Test-Path -LiteralPath $startMenu
+            'Add/Remove entry'    = [bool](Get-ChildItem $uninstallKey |
+                                      Where-Object { $_.PSChildName -like '{8CF92C03*' })
+            'App Paths entry'     = [bool](Get-ItemProperty $appPathKey -ErrorAction SilentlyContinue)
+            'version readable'    = -not [string]::IsNullOrWhiteSpace(
+                                      (Get-Item -LiteralPath $ggnExe).VersionInfo.ProductVersion)
+          }
+          $failed = 0
+          foreach ($name in $checks.Keys) {
+            $state = if ($checks[$name]) { 'ok  ' } else { 'FAIL'; $failed++ }
+            Write-Host "  $state $name"
+          }
+          if ($failed -gt 0) { throw "$failed installer check(s) failed" }
+
+          # The installed binary has to actually run, keep its state out of the
+          # install directory, and answer its control center. GHOST_NO_GUI keeps
+          # this independent of whether the runner has a desktop session.
+          $env:GHOST_NO_GUI = '1'
+          $env:GHOST_WEB_PORT = '8231'
+          $proc = Start-Process -FilePath $ggnExe -WorkingDirectory $installDir -PassThru
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                if ((Invoke-WebRequest 'http://127.0.0.1:8231/api/status' -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw 'the installed application never answered its control center' }
+
+            $dataDir = Join-Path $env:APPDATA 'GlobalGhostNet'
+            if (-not (Test-Path -LiteralPath (Join-Path $dataDir 'identity.key'))) {
+              throw 'no identity was written to the per-user data directory'
+            }
+            $strays = @(Get-ChildItem $installDir -File |
+              Where-Object { $_.Name -in @('identity.key','peers.cache','ghost-consumer.json','ghost.log') })
+            if ($strays.Count -gt 0) {
+              throw "state leaked into the install directory: $($strays.Name -join ', ')"
+            }
+            Write-Host '  ok   installed app ran and used the per-user data directory'
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+          Write-Host 'Uninstalling'
+          $u = Start-Process -FilePath (Join-Path $installDir 'unins000.exe') `
+            -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "uninstaller exited $($u.ExitCode)" }
+          Start-Sleep -Seconds 5
+
+          $after = [ordered]@{
+            'install files removed'  = -not (Test-Path -LiteralPath $ggnExe)
+            'Start Menu entry'       = -not (Test-Path -LiteralPath $startMenu)
+            'Add/Remove entry'       = -not [bool](Get-ChildItem $uninstallKey |
+                                        Where-Object { $_.PSChildName -like '{8CF92C03*' })
+            'App Paths entry'        = -not [bool](Get-ItemProperty $appPathKey -ErrorAction SilentlyContinue)
+            'user data preserved'    = Test-Path -LiteralPath (Join-Path $env:APPDATA 'GlobalGhostNet\identity.key')
+          }
+          $failed = 0
+          foreach ($name in $after.Keys) {
+            $state = if ($after[$name]) { 'ok  ' } else { 'FAIL'; $failed++ }
+            Write-Host "  $state $name"
+          }
+          if ($failed -gt 0) { throw "$failed uninstall check(s) failed" }
+
   docker-wan:
     name: Level 1 Kernel Netem Multi-Container Mesh
     runs-on: ubuntu-latest

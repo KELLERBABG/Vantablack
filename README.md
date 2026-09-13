@@ -165,6 +165,51 @@ docker compose -f docker-compose.wan.yml down
 
 ---
 
+## Install on Windows
+
+The recommended way to install on Windows is the setup file attached to every
+[release](https://github.com/KELLERBABG/Global-Ghost-Net/releases):
+
+```
+ggn-<version>-windows-setup.exe
+```
+
+It installs **for the current user only**, so it never asks for administrator
+rights:
+
+| What | Where |
+|---|---|
+| Program | `%LOCALAPPDATA%\Programs\GlobalGhostNet` |
+| Start Menu | `Global Ghost Net` |
+| Uninstall | *Settings → Apps → Installed apps* (or *Programs and Features*) |
+| Your data | `%APPDATA%\GlobalGhostNet` — untouched by upgrades and uninstalls |
+
+Uninstalling removes the program, the Start Menu entry, the registry entry and
+the WebView2 cache, and then **asks** whether to delete your identity key and
+settings. Answer *No* and a later reinstall comes back as the same device, with
+the same name and pairings. An unattended uninstall (`/VERYSILENT`) always keeps
+the data.
+
+<details>
+<summary>Unattended install / uninstall, and building the installer yourself</summary>
+
+```powershell
+# Silent install
+.\ggn-0.4.1-windows-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+
+# Silent uninstall (keeps your data)
+"$env:LOCALAPPDATA\Programs\GlobalGhostNet\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+
+# Build it from a checkout (needs Inno Setup 6: winget install JRSoftware.InnoSetup)
+.\scripts\build_installer.ps1
+```
+
+On Linux and macOS, and for servers or containers, use the archive from the same
+release instead — it needs no installer.
+</details>
+
+---
+
 ## Quick Start (Standalone Binary)
 
 ### Option 1: Running the Desktop App
