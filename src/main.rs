@@ -2115,8 +2115,6 @@ async fn main() -> anyhow::Result<()> {
                     Some(socket2::Protocol::UDP),
                 )?;
                 let _ = s2.set_reuse_address(true);
-                #[cfg(not(windows))]
-                let _ = s2.set_reuse_port(true);
                 let sa: std::net::SocketAddr = format!("0.0.0.0:{}", BEACON_PORT).parse().unwrap();
                 s2.bind(&sa.into())?;
                 s2.set_nonblocking(true)?;
