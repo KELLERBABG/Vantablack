@@ -1,0 +1,83 @@
+name: Release Build & Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_ext: .exe
+            archive_format: zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_ext: ""
+            archive_format: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_ext: ""
+            archive_format: tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Windows artifacts
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/ggn.exe staging/
+          cp target/${{ matrix.target }}/release/vantablack.exe staging/
+          if [ -f wintun.dll ]; then cp wintun.dll staging/; fi
+          cp README.md staging/
+          cp LICENSE staging/ 2>/dev/null || true
+          cd staging
+          7z a ../ggn-${{ github.ref_name }}-${{ matrix.target }}.zip *
+          cd ..
+
+      - name: Package Unix artifacts (Linux / macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/ggn staging/
+          cp target/${{ matrix.target }}/release/vantablack staging/
+          cp README.md staging/
+          cp LICENSE staging/ 2>/dev/null || true
+          tar -czvf ggn-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C staging .
+
+      - name: Upload artifact to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ggn-*.zip
+            ggn-*.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
