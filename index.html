@@ -537,7 +537,7 @@
           <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
           Repository
         </a>
-        <a href="#deploy" class="btn-action">Quickstart &rarr;</a>
+        <a href="#deploy" class="btn-action">Get the App &rarr;</a>
       </div>
     </div>
   </header>
@@ -580,7 +580,7 @@
       </div>
 
       <div class="cta-row">
-        <a class="btn btn-primary" href="#deploy">Quickstart</a>
+        <a class="btn btn-primary" href="#deploy">Download App &darr;</a>
         <a class="btn btn-ghost" href="#capabilities">Capabilities</a>
         <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">Source Code &nearr;</a>
       </div>
@@ -643,26 +643,46 @@
     <!-- QUICKSTART -->
     <section id="deploy">
       <div class="section-head">
-        <span class="section-tag">Quickstart</span>
-        <h2>Up and running in a few minutes</h2>
-        <p>Built as sovereign infrastructure for developers, operators, and homelab users. It ships as a desktop app that opens its own window, and the same control panel is always reachable from a browser or your phone on the local network.</p>
+        <span class="section-tag">Get the App</span>
+        <h2>Download Global Ghost Net</h2>
+        <p>Global Ghost Net is a native desktop app with a built-in control window and system tray icon. Download the installer, run it, and flip the connect switch &mdash; no terminal, no account, and no setup wizard required.</p>
+      </div>
+
+      <div class="app-download-box" style="background: var(--surface-card); border: 1px solid var(--accent-border); border-radius: var(--radius); padding: 28px; margin-bottom: 32px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 16px;">
+        <div style="font-size: 20px; font-weight: 700; color: var(--text);">Ready-to-run Desktop Application</div>
+        <p style="max-width: 600px; color: var(--text-muted); margin: 0;">Flipping the connect switch secures your traffic immediately. The native app lives in your system tray and serves a responsive control panel you can also open from any phone or device on your network.</p>
+        <div style="display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-top: 8px;">
+          <a class="btn btn-primary" href="https://github.com/KELLERBABG/Global-Ghost-Net/releases/latest" target="_blank" rel="noopener" style="font-size: 16px; padding: 14px 28px;">
+            Download for Windows (.exe) &darr;
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Global-Ghost-Net/releases/latest" target="_blank" rel="noopener" style="font-size: 15px; padding: 14px 22px;">
+            macOS &bull; Linux Releases &nearr;
+          </a>
+        </div>
+        <div style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">Zero admin privileges needed &bull; Per-user install &bull; Portable &bull; Open Source</div>
+      </div>
+
+      <div class="section-head" style="margin-top: 48px;">
+        <span class="section-tag">Advanced / Developers</span>
+        <h3>Prefer building from source or running headless?</h3>
+        <p>If you are deploying to a server, Docker container, or want to compile the pure Rust engine yourself:</p>
       </div>
 
       <div class="route">
 
         <div class="route-step">
-          <h3><span>01</span> Download or build the app</h3>
-          <p>Global Ghost Net is a desktop application: launching it opens its own window with the full control panel and a tray icon, and closing the window hides it to the tray instead of stopping your connection. Grab a pre-built binary for Windows, Linux, or macOS from <a href="https://github.com/KELLERBABG/Global-Ghost-Net/releases" target="_blank" rel="noopener" style="color: var(--accent); text-decoration: underline;">GitHub Releases &nearr;</a>, or build it from source:</p>
+          <h3><span>01</span> Build from source with Cargo</h3>
+          <p>Global Ghost Net compiles in seconds with zero system dependencies:</p>
           <div class="term">
-            <span class="c"># Install from source via cargo (Rust)</span><br>
-            <span class="p">cargo install --git https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br><br>
-            <span class="c"># Or clone and compile the app</span><br>
+            <span class="c"># Clone repository</span><br>
             <span class="p">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br>
-            <span class="p">cd Global-Ghost-Net &amp;&amp; cargo build --release</span><br><br>
-            <span class="c"># Start it &mdash; the window opens by itself</span><br>
-            <span class="p">./target/release/ggn</span>
+            <span class="p">cd Global-Ghost-Net</span><br><br>
+            <span class="c"># Build and run the desktop app (window opens automatically)</span><br>
+            <span class="p">cargo run --release</span><br><br>
+            <span class="c"># Or build headless for remote servers and Docker</span><br>
+            <span class="p">cargo build --release --no-default-features</span>
           </div>
-          <p class="alt">On Linux the window needs the usual GTK/WebKit packages. Servers, containers and remote boxes that have no desktop can build the headless version instead (<code>cargo build --release --no-default-features</code>), which serves the identical control panel over HTTP and never tries to open a window.</p>
+          <p class="alt">On Linux the window uses system GTK/WebKit. Servers, containers and remote boxes without a display can run the headless build, which serves the identical control panel over HTTP at <code>http://localhost:2270</code>.</p>
         </div>
 
         <div class="route-step">
