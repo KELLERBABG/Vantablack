@@ -1,4 +1,4 @@
-package dev.globalghost.net
+﻿package dev.globalghost.net
 
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -13,8 +13,8 @@ import java.nio.channels.DatagramChannel
 /**
  * The Android VPN service. Wires the Rust core (GhostCore) to VpnService:
  * configures the TUN, creates + protects the outer UDP socket, and restarts
- * the pumps on network changes (Wi-Fi → LTE handover) without dropping the
- * tunnel state — the hub-side re-anchor ladder makes the 5-tuple change
+ * the pumps on network changes (Wi-Fi â†’ LTE handover) without dropping the
+ * tunnel state â€” the hub-side re-anchor ladder makes the 5-tuple change
  * invisible to the session.
  */
 class GhostVpnService : VpnService() {
@@ -79,7 +79,7 @@ class GhostVpnService : VpnService() {
             .establish()
         val tunFd = tun?.fd ?: run { stopSelf(); return }
 
-        // 2. Outer socket: create, PROTECT (mandatory — without it the mesh
+        // 2. Outer socket: create, PROTECT (mandatory â€” without it the mesh
         //    traffic loops back into the TUN), connect to the hub.
         val ch = DatagramChannel.open()
         ch.configureBlocking(true)
@@ -97,7 +97,7 @@ class GhostVpnService : VpnService() {
             stopSelf(); return
         }
 
-        // 4. Pumps: TUN→mesh and mesh→TUN (map the desktop binary's pumps).
+        // 4. Pumps: TUNâ†’mesh and meshâ†’TUN (map the desktop binary's pumps).
         running = true
         pumpThread = Thread {
             while (running) {
@@ -148,95 +148,6 @@ class GhostVpnService : VpnService() {
     companion object {
         const val EXTRA_HUB_FP = "hub_fp"
         const val EXTRA_HUB_ADDR = "hub_addr"
-    }
-}
-
-class MainActivity : android.app.Activity() {
-    private val VPN_REQUEST_CODE = 1001
-    private lateinit var editHubFp: android.widget.EditText
-    private lateinit var editHubAddr: android.widget.EditText
-    private lateinit var btnConnect: android.widget.Button
-    private lateinit var txtStatus: android.widget.TextView
-
-    override fun onCreate(savedInstanceState: android.os.Bundle?) {
-        super.onCreate(savedInstanceState)
-        val layout = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(48, 80, 48, 48)
-        }
-        val title = android.widget.TextView(this).apply {
-            text = "Global Ghost Net"
-            textSize = 22f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 0, 32)
-        }
-        layout.addView(title)
-
-        val lblAddr = android.widget.TextView(this).apply { text = "Hub Endpoint (IP:Port):" }
-        layout.addView(lblAddr)
-        editHubAddr = android.widget.EditText(this).apply {
-            hint = "192.168.1.x:2271"
-            setText("192.168.1.47:2271")
-        }
-        layout.addView(editHubAddr)
-
-        val lblFp = android.widget.TextView(this).apply { 
-            text = "Hub Fingerprint (Hex):"
-            setPadding(0, 24, 0, 0)
-        }
-        layout.addView(lblFp)
-        editHubFp = android.widget.EditText(this).apply {
-            hint = "e.g. 7b6d5f59a42e77f7"
-            setText("a53cbc3f05ce6ddc")
-        }
-        layout.addView(editHubFp)
-
-        btnConnect = android.widget.Button(this).apply {
-            text = "Connect VPN"
-            setPadding(0, 32, 0, 0)
-            setOnClickListener { startVpn() }
-        }
-        layout.addView(btnConnect)
-
-        txtStatus = android.widget.TextView(this).apply {
-            text = "Status: Ready"
-            textSize = 16f
-            setPadding(0, 48, 0, 0)
-        }
-        layout.addView(txtStatus)
-
-        setContentView(layout)
-    }
-
-    private fun startVpn() {
-        val hubFp = editHubFp.text.toString().trim()
-        val hubAddr = editHubAddr.text.toString().trim()
-        if (hubFp.isEmpty() || hubAddr.isEmpty()) {
-            android.widget.Toast.makeText(this, "Enter both Hub address and fingerprint", android.widget.Toast.LENGTH_LONG).show()
-            return
-        }
-        val vpnIntent = android.net.VpnService.prepare(this)
-        if (vpnIntent != null) {
-            startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
-        } else {
-            onActivityResult(VPN_REQUEST_CODE, android.app.Activity.RESULT_OK, null)
-        }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQUEST_CODE && resultCode == android.app.Activity.RESULT_OK) {
-            val hubFp = editHubFp.text.toString().trim()
-            val hubAddr = editHubAddr.text.toString().trim()
-            val serviceIntent = android.content.Intent(this, GhostVpnService::class.java).apply {
-                putExtra(GhostVpnService.EXTRA_HUB_FP, hubFp)
-                putExtra(GhostVpnService.EXTRA_HUB_ADDR, hubAddr)
-            }
-            startService(serviceIntent)
-            txtStatus.text = "Status: Connected / Running"
-            btnConnect.isEnabled = false
-        } else {
-            android.widget.Toast.makeText(this, "VPN permission rejected", android.widget.Toast.LENGTH_SHORT).show()
-        }
+        @Volatile var isRunning = false
     }
 }
