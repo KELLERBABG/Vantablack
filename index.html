@@ -78,11 +78,12 @@
       height: 100vh;
       z-index: 0;
       pointer-events: none;
+      opacity: 0.18;
     }
     .vignette {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 50% 38%, transparent 30%, rgba(5, 7, 10, 0.72) 62%, var(--bg) 92%);
+      background: radial-gradient(ellipse at 50% 25%, rgba(5, 7, 10, 0.4) 0%, rgba(5, 7, 10, 0.88) 55%, var(--bg) 90%);
       pointer-events: none;
       z-index: 1;
     }
@@ -355,19 +356,23 @@
     .feature-list {
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      gap: 16px;
       margin-top: 32px;
     }
     .feature-row {
       display: grid;
-      grid-template-columns: 280px 1fr;
-      gap: 36px;
-      padding: 32px 0;
-      border-bottom: 1px solid var(--border-subtle);
-      transition: border-color .15s;
+      grid-template-columns: 260px 1fr;
+      gap: 32px;
+      padding: 28px 30px;
+      background: rgba(11, 15, 22, 0.7);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      transition: border-color .2s;
     }
-    .feature-row:last-child {
-      border-bottom: none;
+    .feature-row:hover {
+      border-color: var(--border-glow);
     }
     .feature-meta {
       display: flex;
@@ -383,7 +388,7 @@
       font-weight: 600;
     }
     .feature-meta h3 {
-      font-size: 19px;
+      font-size: 18px;
       font-weight: 600;
       color: #ffffff;
       letter-spacing: -0.015em;
@@ -396,7 +401,7 @@
     }
     .feature-body p {
       font-size: 15px;
-      color: var(--text-muted);
+      color: #cbd5e1;
       line-height: 1.68;
     }
     .feature-detail {
@@ -405,16 +410,75 @@
       color: var(--text-dim);
       border-left: 2px solid var(--accent-border);
       padding-left: 12px;
-      margin-top: 4px;
+      margin-top: 2px;
     }
 
     @media (max-width: 780px) {
       .feature-row {
         grid-template-columns: 1fr;
         gap: 14px;
-        padding: 24px 0;
+        padding: 22px 20px;
       }
     }
+
+    /* —— Terminal & Steps (Quickstart) ———————————————————————————————— */
+    .route {
+      display: grid;
+      gap: 1px;
+      background: var(--border);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-top: 28px;
+    }
+    .route-step {
+      background: var(--surface);
+      padding: 26px 28px;
+    }
+    .route-step h3 {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #ffffff;
+      margin-bottom: 10px;
+    }
+    .route-step h3 span {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 500;
+      color: var(--accent);
+    }
+    .route-step p {
+      font-size: 14.5px;
+      color: var(--text-muted);
+      max-width: 800px;
+      line-height: 1.6;
+    }
+    .route-step p + p {
+      margin-top: 10px;
+    }
+    .route-step .alt {
+      color: var(--text-dim);
+      font-size: 13px;
+    }
+
+    .term {
+      margin: 14px 0;
+      background: #030508;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      color: var(--text-muted);
+      overflow-x: auto;
+      line-height: 1.75;
+    }
+    .term .c { color: var(--text-dim); }
+    .term .p { color: var(--accent); }
+    .term .val { color: #facc15; }
 
     /* —— Docs CTA Banner —————————————————————————————————————————————— */
     .docs-cta {
