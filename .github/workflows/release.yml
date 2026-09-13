@@ -52,7 +52,6 @@ jobs:
         run: |
           mkdir -p staging
           cp target/${{ matrix.target }}/release/ggn.exe staging/
-          cp target/${{ matrix.target }}/release/vantablack.exe staging/
           if [ -f wintun.dll ]; then cp wintun.dll staging/; fi
           cp README.md staging/
           cp LICENSE staging/ 2>/dev/null || true
@@ -65,7 +64,6 @@ jobs:
         run: |
           mkdir -p staging
           cp target/${{ matrix.target }}/release/ggn staging/
-          cp target/${{ matrix.target }}/release/vantablack staging/
           cp README.md staging/
           cp LICENSE staging/ 2>/dev/null || true
           tar -czvf ggn-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C staging .

@@ -31,15 +31,17 @@ pub fn run_tray(nc: Arc<GhostNode>) {
             return;
         };
 
+        let open_item = MenuItem::new("Open Web Control Center", true, None);
         let beacon_item = CheckMenuItem::new("Beacon discovery", true, true, None);
-        let quit_item = MenuItem::new("Quit", true, None);
+        let quit_item = MenuItem::new("Quit Global Ghost Net", true, None);
         let menu = Menu::new();
+        let _ = menu.append(&open_item);
         let _ = menu.append(&beacon_item);
         let _ = menu.append(&quit_item);
         if TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_icon(icon)
-            .with_tooltip("Vantablack Mesh")
+            .with_tooltip("Global Ghost Net")
             .build()
             .is_err()
         {
@@ -55,7 +57,17 @@ pub fn run_tray(nc: Arc<GhostNode>) {
             use tao::event_loop::ControlFlow;
             *control = ControlFlow::Poll;
             while let Ok(ev) = menu_rx.try_recv() {
-                if ev.id == beacon_item.id() {
+                if ev.id == open_item.id() {
+                    let url = "http://127.0.0.1:2270";
+                    #[cfg(target_os = "windows")]
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", url])
+                        .spawn();
+                    #[cfg(target_os = "macos")]
+                    let _ = std::process::Command::new("open").arg(url).spawn();
+                    #[cfg(target_os = "linux")]
+                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                } else if ev.id == beacon_item.id() {
                     let on = !nc.beacon_enabled.load(Ordering::Relaxed);
                     nc.beacon_enabled.store(on, Ordering::Relaxed);
                     tracing::info!("Tray: beacon discovery {}", if on { "ON" } else { "OFF" });

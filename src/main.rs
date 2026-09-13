@@ -1737,9 +1737,28 @@ async fn main() -> anyhow::Result<()> {
             match tokio::net::TcpListener::bind(&bind_addr).await {
                 Ok(listener) => {
                     tracing::info!(
-                        "Ghost Web Control Center & Telemetry listening on http://0.0.0.0:{}",
+                        "Ghost Web Control Center & Telemetry listening on http://127.0.0.1:{} (LAN: http://0.0.0.0:{})",
+                        mp,
                         mp
                     );
+                    // Automatically pop open the Web Control Center in default browser unless headless/disabled
+                    if std::env::var("GHOST_NO_BROWSER")
+                        .map(|v| v != "1")
+                        .unwrap_or(true)
+                    {
+                        tokio::spawn(async move {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+                            let url = format!("http://127.0.0.1:{}", mp);
+                            #[cfg(target_os = "windows")]
+                            let _ = std::process::Command::new("cmd")
+                                .args(["/C", "start", &url])
+                                .spawn();
+                            #[cfg(target_os = "macos")]
+                            let _ = std::process::Command::new("open").arg(&url).spawn();
+                            #[cfg(target_os = "linux")]
+                            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                        });
+                    }
                     loop {
                         if let Ok((mut stream, _)) = listener.accept().await {
                             let nc_ref = Arc::clone(&nc_m);
