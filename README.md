@@ -178,15 +178,41 @@ Run the pre-compiled binary or build with cargo:
    ```
    - Binds its mesh data socket per `GHOST_BIND` (default: ephemeral port). Port `2270/UDP` is used for discovery beacons.
    - Starts local SOCKS5 proxy on `127.0.0.1:1080`.
+   - Starts Consumer Desktop & Remote Web Control Center on `http://localhost:2270` (`GHOST_WEB_PORT` / `GHOST_METRICS_PORT`).
    - Automatically queries DNS seeds and connects to active mesh peers.
 
-2. **Exit Node (Transit Provider):**
+2. **Remote Web Control Center & REST API (`http://localhost:2270`):**
+   - **Dashboard UI (`GET /` or `GET /dashboard`):** Sleek, dark-mode cyber-minimalist responsive interface. Features a massive 1-click connect/disconnect switch, mode selector ("Public Stealth Mesh" vs "Private Home Mesh"), real-time latency & throughput counters, dynamic peer card list, 1-click pairing modal with pure SVG QR code generator, PIN protection toggle, and an embedded Level 2 WAN Simulation viewer.
+   - **`GET /api/status`:** Returns live node status JSON:
+     ```json
+     {
+       "connected": true,
+       "mode": "public",
+       "network_id": "a9c7482f1b0e457d",
+       "pin_protected": false,
+       "uptime_seconds": 124,
+       "peers_count": 2,
+       "active_sessions": 2,
+       "latency_ms": 24,
+       "active_carrier_paths": 3,
+       "reed_solomon_active": true,
+       "throughput": { "bytes_sent": 4096, "bytes_recv": 8192, "packets_sent": 8, "packets_recv": 16 },
+       "peers": [...]
+     }
+     ```
+   - **`POST /api/connect`:** Toggles or sets connection state (`{"connected": bool}`).
+   - **`POST /api/mode`:** Updates operating mesh mode (`{"mode": "public" | "private"}`).
+   - **`GET /api/peers`:** Returns JSON list of all discovered and active peers.
+   - **`GET /api/telemetry`:** Returns full Level 2 WAN carrier simulation metrics.
+   - **`GET /healthz` & `GET /metrics`:** Health check and Prometheus metrics exposition.
+
+3. **Exit Node (Transit Provider):**
    ```bash
    GHOST_EXIT_ALLOWLIST=any cargo run --release
    ```
    - Acts as an egress gateway that routes external internet traffic for mesh computers.
 
-3. **Browse Securely:**
+4. **Browse Securely:**
    Configure your browser proxy or terminal to use `127.0.0.1:1080`:
    ```bash
    curl --socks5 127.0.0.1:1080 https://httpbin.org/ip

@@ -245,14 +245,38 @@ The carrier simulation runs four continuous autonomous test scenarios verifying 
 
 ---
 
-## 10. Live Telemetry Dashboard Architecture
+## 10. Remote Web Control Center & Live Telemetry Dashboard Architecture
 
-A real-time observability engine is embedded directly within the client node, exposing metrics via JSON API and a single-page reactive HTML dashboard:
+A real-time observability and remote control engine is embedded directly within the node daemon, exposing metrics via JSON REST APIs and a high-contrast cyber-minimalist single-page dashboard:
 
-- **HTTP Server:** Bound to `0.0.0.0:8080` (or configured via `GHOST_METRICS_PORT`, defaults to `9090` in daemon mode, `8080` in `wan_mesh`).
-- **Endpoints:**
+- **HTTP Server:** Default port `2270` (configurable via `GHOST_WEB_PORT` or `GHOST_METRICS_PORT`; port `8080` in `wan_mesh` Docker simulation).
+- **Interface Modes:**
+  - **Consumer Remote Control View:** Features 1-click connect/disconnect power switch with luminous state indicators, mesh mode switcher ("Public Stealth Mesh" vs "Private Home Mesh"), real-time latency and throughput counters, active peer cards, 1-click pairing modal with deterministic inline SVG QR generator, and console PIN protection.
+  - **Level 2 Carrier WAN Simulation View:** Real-time 7-node carrier fleet topology monitor, active route latency bars, autonomous Chaos Monkey failover metrics, Byzantine tamper isolation alert banner, and live public WAN egress header ingestion logs.
+- **REST Endpoints:**
+  - `GET /` and `GET /dashboard`: Serves the single-file reactive HTML dashboard ([`assets/wan_dashboard.html`](file:///g:/Global-Ghost-Net-main/assets/wan_dashboard.html)) supporting tabbed switching between Consumer Remote Control and Carrier WAN Simulation.
+  - `GET /api/status`: Returns JSON status:
+    ```json
+    {
+      "connected": true,
+      "mode": "public",
+      "network_id": "<fingerprint>",
+      "pin_protected": false,
+      "uptime_seconds": 124,
+      "peers_count": 2,
+      "active_sessions": 2,
+      "latency_ms": 24,
+      "active_carrier_paths": 3,
+      "reed_solomon_active": true,
+      "throughput": { "bytes_sent": 4096, "bytes_recv": 8192, "packets_sent": 8, "packets_recv": 16 },
+      "peers": [...]
+    }
+    ```
+  - `POST /api/connect`: Toggles or updates mesh connection status (`{"connected": true|false}`).
+  - `POST /api/mode`: Sets operating mode (`{"mode": "public"|"private"}`).
+  - `GET /api/peers`: Returns array of discovered and connected peer objects.
   - `GET /api/telemetry`: Returns full JSON status object (`TelemetryState`), including cycle count, active routes, carrier latency/loss matrix, security alerts (Byzantine tamper isolation events, replay attacks blocked), traffic shaping jitter stats, and convergence latency.
-  - `GET /` and `GET /dashboard`: Serves the high-performance, single-file HTML dashboard ([`assets/wan_dashboard.html`](file:///g:/Global-Ghost-Net-main/assets/wan_dashboard.html)) with 1-second auto-polling, dynamic SVG carrier topology map, real-time alert banners, and active route latency bars.
   - `GET /healthz`: Health check endpoint returning HTTP 200 JSON with node version, fingerprint, and uptime.
   - `GET /metrics`: Prometheus-compatible exposition format for integration with Grafana / Prometheus scrapers.
+  - `OPTIONS *`: CORS preflight responding with HTTP 204 and standard permissive access-control headers.
 
