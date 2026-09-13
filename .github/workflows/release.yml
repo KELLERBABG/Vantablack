@@ -51,19 +51,26 @@ jobs:
           key: ${{ matrix.target }}
 
       # Default features build the desktop application (native window + tray).
-      - name: Build release binaries
+      - name: Build release binaries (desktop GUI)
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage desktop binary
+        shell: bash
+        run: |
+          mkdir -p desktop-bin
+          cp target/${{ matrix.target }}/release/ggn${{ matrix.binary_ext }} desktop-bin/
 
       # Server operators still get a dependency-free binary: no GTK/WebKit, no
       # display, HTTP control center only.
       - name: Build release binaries (headless)
         run: cargo build --release --no-default-features --target ${{ matrix.target }} --bin ggn
 
-      - name: Stage headless binary
+      - name: Stage headless binary and restore desktop binary
         shell: bash
         run: |
           mkdir -p headless
           cp target/${{ matrix.target }}/release/ggn${{ matrix.binary_ext }} headless/ggn-headless${{ matrix.binary_ext }}
+          cp desktop-bin/ggn${{ matrix.binary_ext }} target/${{ matrix.target }}/release/ggn${{ matrix.binary_ext }}
 
       # Windows users get a real application install, not just an archive: a
       # per-user setup.exe with a Start Menu entry, an "Apps & Features" entry

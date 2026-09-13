@@ -196,38 +196,60 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
         let Some(win) = borrowed.as_ref() else {
             std::process::exit(1);
         };
-        WebViewBuilder::new_with_web_context(&mut web_context)
-            .with_url(url)
-            .with_ipc_handler(move |request: wry::http::Request<String>| {
-                match request.body().as_str() {
-                    "drag" => {
-                        if let Some(win) = ipc_slot.borrow().as_ref() {
-                            let _ = win.drag_window();
+        let build_on = |ctx: &mut WebContext| {
+            let slot_clone = Rc::clone(&ipc_slot);
+            let node_clone = ipc_node.clone();
+            WebViewBuilder::new_with_web_context(ctx)
+                .with_url(&url)
+                .with_ipc_handler(move |request: wry::http::Request<String>| {
+                    match request.body().as_str() {
+                        "drag" => {
+                            if let Some(win) = slot_clone.borrow().as_ref() {
+                                let _ = win.drag_window();
+                            }
                         }
-                    }
-                    "hide" => {
-                        if let Some(win) = ipc_slot.borrow().as_ref() {
-                            win.set_visible(false);
+                        "hide" => {
+                            if let Some(win) = slot_clone.borrow().as_ref() {
+                                win.set_visible(false);
+                            }
                         }
-                    }
-                    "quit" => {
-                        tracing::info!("Desktop window: quit requested");
-                        if let Some(node) = &ipc_node {
-                            node.running.store(false, Ordering::Relaxed);
+                        "quit" => {
+                            tracing::info!("Desktop window: quit requested");
+                            if let Some(node) = &node_clone {
+                                node.running.store(false, Ordering::Relaxed);
+                            }
+                            std::process::exit(0);
                         }
-                        std::process::exit(0);
+                        other => tracing::debug!("Desktop window: unhandled ipc message '{other}'"),
                     }
-                    other => tracing::debug!("Desktop window: unhandled ipc message '{other}'"),
-                }
-            })
-            .build(win)
+                })
+                .build(win)
+        };
+
+        match build_on(&mut web_context) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                tracing::warn!(
+                    "Primary WebView context failed ({e}); retrying with instance profile..."
+                );
+                let alt_dir = paths::cache_dir().join(format!("webview2_{}", std::process::id()));
+                let _ = paths::ensure_dir(&alt_dir);
+                let mut alt_context = WebContext::new(Some(alt_dir));
+                build_on(&mut alt_context)
+            }
+        }
     };
 
     let webview = match built {
         Ok(view) => view,
         Err(e) => {
-            tracing::warn!("WebView unavailable ({e}); opening a browser tab instead");
-            open_in_browser(control_port);
+            tracing::error!("Native WebView failed to launch: {e}");
+            if std::env::var("GHOST_NO_BROWSER")
+                .map(|v| v != "1")
+                .unwrap_or(false)
+            {
+                open_in_browser(control_port);
+            }
             std::process::exit(1);
         }
     };
