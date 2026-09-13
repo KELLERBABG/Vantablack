@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Global Ghost Net — Zero-SaaS, Post-Quantum P2P Mesh &amp; LAN-over-WAN Tunnel</title>
-  <meta name="description" content="A zero-coordinator Rust daemon linking servers, homelabs, and mobile devices into a sovereign post-quantum mesh. Hybrid ML-KEM-512 + X25519, Reed-Solomon RS(2,1) multi-path sharding, RAM-locked secrets, 512-byte invariant frames.">
+  <title>Global Ghost Net — Connect your computers directly, without companies or logins</title>
+  <meta name="description" content="Link your home server, laptop, and cloud machines into one private network that works anywhere. No accounts, no central servers, no surveillance.">
   <meta name="theme-color" content="#05070a">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="canonical" href="https://ggn.kellersystems.dev/">
@@ -12,8 +12,8 @@
   <!-- OpenGraph / Social Embeds -->
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://ggn.kellersystems.dev/">
-  <meta property="og:title" content="Global Ghost Net // Zero-SaaS Post-Quantum P2P WAN Fabric">
-  <meta property="og:description" content="Autonomous cryptographic mesh establishing quantum-resistant LAN-over-WAN tunnels. Hybrid ML-KEM-512 + X25519, Reed-Solomon RS(2,1) multi-path dispersion, and physical RAM secret locking.">
+  <meta property="og:title" content="Global Ghost Net — Connect your computers directly.">
+  <meta property="og:description" content="One private network for your home server, laptop, and cloud machines. No accounts, no central servers, no surveillance.">
   <meta property="og:image" content="https://ggn.kellersystems.dev/assets/og-image.png?v=3">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -21,8 +21,8 @@
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Global Ghost Net // Zero-SaaS Post-Quantum P2P WAN Fabric">
-  <meta name="twitter:description" content="Autonomous cryptographic mesh establishing quantum-resistant LAN-over-WAN tunnels. Hybrid ML-KEM-512 + X25519, Reed-Solomon RS(2,1) multi-path dispersion, and physical RAM secret locking.">
+  <meta name="twitter:title" content="Global Ghost Net — Connect your computers directly.">
+  <meta name="twitter:description" content="One private network for your home server, laptop, and cloud machines. No accounts, no central servers, no surveillance.">
   <meta name="twitter:image" content="https://ggn.kellersystems.dev/assets/og-image.png?v=3">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,6 +41,7 @@
       --accent: #22d3ee;
       --accent-subtle: rgba(34, 211, 238, 0.08);
       --accent-border: rgba(34, 211, 238, 0.28);
+      --violet: #a78bfa;
       --emerald: #10b981;
       --emerald-subtle: rgba(16, 185, 129, 0.10);
       --amber: #f59e0b;
@@ -106,7 +107,7 @@
       white-space: nowrap;
     }
 
-    /* —— Aureal Sticky Header & Topbar —————————————————————————————— */
+    /* —— Sticky Header & Topbar —————————————————————————————————————— */
     .top-header {
       border-bottom: 1px solid var(--border);
       background: rgba(5, 7, 10, 0.85);
@@ -179,7 +180,7 @@
     .nav-links {
       display: flex;
       align-items: center;
-      gap: 1.5rem;
+      gap: 1.15rem;
     }
     .nav-link {
       color: var(--text-muted);
@@ -189,7 +190,7 @@
       cursor: pointer;
       transition: color 0.15s;
     }
-    .nav-link:hover, .nav-link.active { color: var(--accent); }
+    .nav-link:hover { color: var(--accent); }
     .btn-repo {
       display: inline-flex;
       align-items: center;
@@ -227,10 +228,10 @@
       transform: translateY(-1px);
       box-shadow: 0 6px 20px rgba(34, 211, 238, 0.3);
     }
-    @media (max-width: 840px) { .nav-link { display: none; } }
+    @media (max-width: 1120px) { .nav-link { display: none; } }
 
     /* —— Hero ———————————————————————————————————————————————————————— */
-    .hero { padding: 120px 0 60px; max-width: 820px; }
+    .hero { padding: 112px 0 40px; max-width: 900px; }
     .hero-pretitle {
       font-family: var(--font-mono);
       font-size: 12px;
@@ -240,11 +241,12 @@
       margin-bottom: 20px;
     }
     h1 {
-      font-size: clamp(40px, 6vw, 70px);
+      font-size: clamp(38px, 5.6vw, 66px);
       font-weight: 600;
-      line-height: 1.06;
+      line-height: 1.08;
       letter-spacing: -0.035em;
       margin-bottom: 24px;
+      max-width: 900px;
     }
     h1 em {
       font-style: normal;
@@ -254,19 +256,20 @@
       -webkit-text-fill-color: transparent;
     }
     .lead {
-      font-size: 20px;
+      font-size: 19px;
       font-weight: 300;
       color: var(--text-muted);
-      max-width: 640px;
+      max-width: 700px;
       line-height: 1.62;
       margin-bottom: 24px;
     }
+    .lead strong { color: var(--text); font-weight: 500; }
     .mode-spec-box {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 14px;
-      max-width: 680px;
-      margin: 24px 0 32px;
+      max-width: 720px;
+      margin: 26px 0 32px;
     }
     @media (max-width: 680px) { .mode-spec-box { grid-template-columns: 1fr; } }
     .mode-card {
@@ -275,17 +278,20 @@
       -webkit-backdrop-filter: blur(10px);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 16px 18px;
+      padding: 18px 20px;
+      transition: border-color .15s;
     }
+    .mode-card:hover { border-color: var(--border-glow); }
     .mode-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 10px;
       margin-bottom: 8px;
     }
     .mode-title {
       font-family: var(--font-mono);
-      font-size: 11.5px;
+      font-size: 12px;
       font-weight: 600;
       letter-spacing: 0.05em;
       color: var(--accent);
@@ -299,14 +305,15 @@
       border: 1px solid var(--border);
       padding: 2px 6px;
       border-radius: 4px;
+      white-space: nowrap;
     }
     .mode-desc {
-      font-size: 13px;
+      font-size: 13.5px;
       line-height: 1.55;
       color: var(--text-muted);
     }
-    .mode-desc strong { color: var(--text); }
-    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+    .mode-desc strong { color: var(--text); font-weight: 500; }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
     .btn {
       display: inline-flex;
       align-items: center;
@@ -324,14 +331,34 @@
     .btn-ghost { border: 1px solid var(--border); color: var(--text); background: var(--surface); }
     .btn-ghost:hover { border-color: var(--border-glow); }
 
-    /* —— Audience / Persona Matrix ——————————————————————————————————— */
-    .persona-grid {
+    /* —— Sections ———————————————————————————————————————————————————— */
+    section { padding-top: 100px; }
+    .section-head { max-width: 720px; margin-bottom: 30px; }
+    .section-tag {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--accent);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+      display: block;
+    }
+    h2 {
+      font-size: clamp(26px, 3.2vw, 36px);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 10px;
+    }
+    .section-head p { color: var(--text-muted); font-size: 16px; }
+
+    /* —— Use-Case / Scenario Cards ——————————————————————————————————— */
+    .scenario-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 16px;
       margin-top: 24px;
     }
-    .persona-card {
+    .scenario-card {
       background: var(--surface-card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -339,36 +366,51 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
+      transition: border-color .15s, transform .15s;
     }
-    .persona-tag {
+    .scenario-card:hover {
+      border-color: var(--border-glow);
+      transform: translateY(-2px);
+    }
+    .scenario-badge {
+      display: inline-block;
       font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--accent);
+      font-size: 10.5px;
+      font-weight: 600;
       letter-spacing: 0.08em;
-      margin-bottom: 10px;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      width: fit-content;
     }
-    .persona-card h3 {
-      font-size: 17px;
+    .badge-amber { background: rgba(245, 158, 11, 0.12); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-cyan { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--accent-border); }
+    .badge-emerald { background: var(--emerald-subtle); color: var(--emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-rose { background: rgba(244, 63, 94, 0.12); color: var(--rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+    .scenario-card h3 {
+      font-size: 16.5px;
       font-weight: 600;
       color: var(--text);
-      margin-bottom: 12px;
+      margin-bottom: 10px;
+      line-height: 1.35;
     }
-    .persona-card p {
+    .scenario-card p {
       font-size: 14px;
       color: var(--text-muted);
       line-height: 1.6;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
-    .persona-takeaway {
+    .scenario-metric {
       font-family: var(--font-mono);
-      font-size: 12px;
+      font-size: 11.5px;
       color: var(--text-dim);
       border-top: 1px solid var(--border-subtle);
-      padding-top: 12px;
+      padding-top: 10px;
     }
-    .persona-takeaway strong { color: var(--text); }
+    .scenario-metric strong { color: var(--accent); font-weight: 500; }
 
-    /* —— Architecture Pillars ———————————————————————————————————————— */
+    /* —— Protection Pillars ——————————————————————————————————————————— */
     .pillar-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -397,65 +439,17 @@
       color: var(--text);
     }
     .pillar-card p {
+      font-size: 14.5px;
+      color: var(--text-muted);
+      line-height: 1.62;
+    }
+    .pillar-note {
+      margin-top: 20px;
       font-size: 14px;
-      color: var(--text-muted);
-      line-height: 1.6;
-    }
-
-    /* —— Sections ———————————————————————————————————————————————————— */
-    section { padding-top: 100px; }
-    .section-head { max-width: 720px; margin-bottom: 30px; }
-    .section-tag {
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      color: var(--accent);
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      margin-bottom: 8px;
-      display: block;
-    }
-    h2 {
-      font-size: clamp(26px, 3.2vw, 36px);
-      font-weight: 600;
-      letter-spacing: -0.02em;
-      margin-bottom: 10px;
-    }
-    .section-head p { color: var(--text-muted); font-size: 16px; }
-
-    /* —— Wire Format Spec (Monospace Spec Table) ————————————————————— */
-    .spec-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-family: var(--font-mono);
-      font-size: 12.5px;
-      margin-bottom: 16px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      overflow: hidden;
-    }
-    .spec-table th {
-      text-align: left;
-      padding: 12px 16px;
-      background: var(--surface-raised);
       color: var(--text-dim);
-      font-weight: 500;
-      border-bottom: 1px solid var(--border);
-      font-size: 11px;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
+      border-left: 2px solid var(--accent-border);
+      padding-left: 14px;
     }
-    .spec-table td {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border-subtle);
-      color: var(--text-muted);
-      vertical-align: top;
-    }
-    .spec-table tr:last-child td { border-bottom: none; }
-    .spec-table tr:hover td { background: rgba(34, 211, 238, 0.02); }
-    .spec-offset { color: var(--accent); font-weight: 500; }
-    .spec-field { color: var(--text); font-weight: 500; }
-    .spec-desc { font-family: var(--font-heading); font-size: 13.5px; line-height: 1.5; color: var(--text-muted); }
 
     /* —— Terminal & Steps ———————————————————————————————————————————— */
     .route {
@@ -481,7 +475,7 @@
       font-weight: 500;
       color: var(--text-dim);
     }
-    .route-step p { font-size: 14.5px; color: var(--text-muted); max-width: 780px; }
+    .route-step p { font-size: 14.5px; color: var(--text-muted); max-width: 800px; }
     .route-step p + p { margin-top: 10px; }
     .route-step .alt { color: var(--text-dim); font-size: 13.5px; }
 
@@ -501,7 +495,7 @@
     .term .p { color: var(--accent); }
     .term .val { color: #facc15; }
 
-    /* —— Panels & Controls ——————————————————————————————————————————— */
+    /* —— Panels & Interactive Demo ———————————————————————————————————— */
     .panel {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -586,6 +580,26 @@
     }
     .demo-result .value { font-family: var(--font-mono); font-size: 13.5px; color: var(--text); word-break: break-all; }
 
+    /* —— Docs CTA Banner —————————————————————————————————————————————— */
+    .docs-cta {
+      background:
+        radial-gradient(ellipse at 12% 0%, rgba(34, 211, 238, 0.14), transparent 55%),
+        radial-gradient(ellipse at 92% 100%, rgba(167, 139, 250, 0.14), transparent 55%),
+        var(--surface-card);
+      border: 1px solid var(--accent-border);
+      border-radius: var(--radius);
+      padding: 34px 32px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 22px;
+    }
+    .docs-cta-copy { max-width: 640px; }
+    .docs-cta h2 { margin-bottom: 8px; }
+    .docs-cta p { color: var(--text-muted); font-size: 15.5px; }
+    .docs-cta-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+
     /* —— Footer ————————————————————————————————————————————————————— */
     footer {
       margin-top: 110px;
@@ -602,110 +616,12 @@
     }
     footer a { color: var(--text-muted); text-decoration: none; transition: color .15s; }
     footer a:hover { color: var(--text); }
-    /* —— Level 2 WAN & Scenario Cards ——————————————————————————————— */
-    .scenario-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 16px;
-      margin-top: 24px;
-    }
-    .scenario-card {
-      background: var(--surface-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 22px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      transition: border-color .15s, transform .15s;
-    }
-    .scenario-card:hover {
-      border-color: var(--border-glow);
-      transform: translateY(-2px);
-    }
-    .scenario-badge {
-      display: inline-block;
-      font-family: var(--font-mono);
-      font-size: 10.5px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 3px 8px;
-      border-radius: 4px;
-      margin-bottom: 12px;
-      width: fit-content;
-    }
-    .badge-amber { background: rgba(245, 158, 11, 0.12); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.3); }
-    .badge-cyan { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--accent-border); }
-    .badge-emerald { background: var(--emerald-subtle); color: var(--emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
-    .badge-rose { background: rgba(244, 63, 94, 0.12); color: var(--rose); border: 1px solid rgba(244, 63, 94, 0.3); }
-
-    .scenario-card h3 {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 10px;
-      line-height: 1.35;
-    }
-    .scenario-card p {
-      font-size: 13.5px;
-      color: var(--text-muted);
-      line-height: 1.55;
-      margin-bottom: 14px;
-    }
-    .scenario-metric {
-      font-family: var(--font-mono);
-      font-size: 11.5px;
-      color: var(--text-dim);
-      border-top: 1px solid var(--border-subtle);
-      padding-top: 10px;
-    }
-    .scenario-metric strong { color: var(--accent); }
-
-    .wan-box {
-      background: var(--surface-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 26px;
-      margin-top: 24px;
-    }
-    .wan-links-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
-      margin-top: 18px;
-      margin-bottom: 20px;
-    }
-    .wan-link-item {
-      background: var(--bg);
-      border: 1px solid var(--border-subtle);
-      border-radius: 6px;
-      padding: 14px;
-      font-family: var(--font-mono);
-      font-size: 12px;
-    }
-    .wan-link-item .title {
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 4px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .wan-link-item .cond {
-      color: var(--accent);
-      font-size: 11px;
-    }
-    .wan-link-item .desc {
-      color: var(--text-dim);
-      font-size: 11px;
-      margin-top: 4px;
-    }
+    .footer-right { display: flex; flex-wrap: wrap; gap: 18px; }
   </style>
 </head>
 <body>
 
-  <!-- Aureal-Styled Sticky Header -->
+  <!-- Sticky Header -->
   <header class="top-header">
     <div class="header-inner">
       <a href="/" class="brand">
@@ -718,7 +634,9 @@
         </div>
       </a>
       <div class="nav-links">
-        <a href="#wan-mesh" class="nav-link">Level 2 WAN</a>
+        <a href="#use-cases" class="nav-link">What It Does</a>
+        <a href="#protection" class="nav-link">How It Protects You</a>
+        <a href="#demo" class="nav-link">Live Demo</a>
         <a href="/docs" class="nav-link">Documentation</a>
         <a href="/roadmap" class="nav-link">Roadmap</a>
         <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener" class="btn-repo">
@@ -735,428 +653,227 @@
 
   <div class="shell">
 
+    <!-- HERO -->
     <header class="hero">
-      <div class="hero-pretitle">Post-Quantum P2P WAN Fabric &bull; Dual Operational Modes</div>
-      <h1>Route through a mesh, <em>not a company.</em></h1>
+      <div class="hero-pretitle">Direct device-to-device networking &bull; No accounts &bull; No servers</div>
+      <h1>Connect your computers <em>directly.</em> No companies. No logins. No surveillance.</h1>
       <p class="lead">
-        A self-organizing Rust daemon establishing quantum-resistant LAN-over-WAN tunnels. 
-        Zero centralized coordinators, zero telemetry, and zero single points of failure.
+        Global Ghost Net links your <strong>home server, laptop, and cloud machines</strong> into one private
+        network that works from anywhere. There is no account to create, no subscription, and no middleman
+        such as Tailscale or Cloudflare sitting in the path &mdash; your devices talk to each other,
+        encrypted end to end.
       </p>
 
       <div class="mode-spec-box">
         <div class="mode-card">
           <div class="mode-header">
-            <span class="mode-title">Global Public Swarm</span>
-            <span class="mode-badge">DEFAULT MODE</span>
+            <span class="mode-title">Private Network</span>
+            <span class="mode-badge">YOUR DEVICES ONLY</span>
           </div>
           <p class="mode-desc">
-            Traffic is fragmented into Reed-Solomon RS(2,1) shards dispersed across worldwide peers. <strong>Every participant increases routing entropy &mdash; rendering censorship and single-hop wiretapping mathematically impossible.</strong>
+            A closed network for your own machines, protected by your private key. <strong>Only devices you approve can join</strong> &mdash; everyone else is ignored.
           </p>
         </div>
 
         <div class="mode-card">
           <div class="mode-header">
-            <span class="mode-title">Private Overlay Mesh</span>
-            <span class="mode-badge">GHOST_PSK</span>
+            <span class="mode-title">Public Swarm</span>
+            <span class="mode-badge">OPEN MESH</span>
           </div>
           <p class="mode-desc">
-            Enforces a 256-bit symmetric pre-shared key. <strong>Cryptographically isolates your mesh exclusively to your authorized nodes, dropping unauthorized packets before consuming CPU cycles.</strong>
+            An open mesh where devices help bounce encrypted traffic for each other. <strong>More participants make it harder to block</strong> &mdash; a practical way around censorship.
           </p>
         </div>
       </div>
 
       <div class="cta-row">
         <a class="btn btn-primary" href="#deploy">Quickstart</a>
-        <a class="btn btn-ghost" href="#why">Operational Profiles</a>
+        <a class="btn btn-ghost" href="#use-cases">See what it does</a>
         <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">Source Code &nearr;</a>
       </div>
     </header>
 
-    <!-- WHO THIS IS FOR / USE CASES -->
-    <section id="why">
+    <!-- WHAT IT DOES FOR YOU -->
+    <section id="use-cases">
       <div class="section-head">
-        <span class="section-tag">BUILT FOR MISSION-CRITICAL ENVIRONMENTS</span>
-        <h2>Operational Profiles &amp; Deployment Targets</h2>
-        <p>Engineered for distributed infrastructure, adversarial network environments, and teams that refuse third-party coordination planes.</p>
-      </div>
-
-      <div class="persona-grid">
-        <div class="persona-card">
-          <div>
-            <div class="persona-tag">MULTI-REGION INFRASTRUCTURE &amp; HYBRID CLOUD</div>
-            <h3>Sovereign WAN Interconnect</h3>
-            <p>Interconnect distributed VPS instances, bare-metal servers, and edge nodes into a resilient L2/L3 overlay. Nodes discover peers autonomously via signed UDP multicasts and decentralized DNS round-robins with zero reliance on vendor infrastructure.</p>
-          </div>
-          <div class="persona-takeaway">
-            Profile: <strong>Zero third-party control plane. Network remains fully operational during upstream outages.</strong>
-          </div>
-        </div>
-
-        <div class="persona-card">
-          <div>
-            <div class="persona-tag">ADVERSARIAL &amp; RESTRICTED NETWORKS</div>
-            <h3>Stateful DPI &amp; Censorship Invariance</h3>
-            <p>Bypass deep packet inspection firewalls and state-sponsored Internet blockades. Payloads are divided into RS(2,1) shards dispatched concurrently across divergent IP paths; eavesdroppers at single transit taps observe only indecipherable random noise.</p>
-          </div>
-          <div class="persona-takeaway">
-            Profile: <strong>Normalized 512-byte frames with randomized jitter padding defeat statistical packet analysis.</strong>
-          </div>
-        </div>
-
-        <div class="persona-card">
-          <div>
-            <div class="persona-tag">DEFENSE, AIR-GAP &amp; SECURE WORKSTATIONS</div>
-            <h3>Post-Quantum Ephemeral Security</h3>
-            <p>Protect critical communications against "Harvest Now, Decrypt Later" adversaries with dual-layer ML-KEM-512 and X25519 key encapsulation. Master secrets are pinned into non-swappable physical RAM with volatile zeroization on drop.</p>
-          </div>
-          <div class="persona-takeaway">
-            Profile: <strong>Zero swap leakage, constant-time replay defense, and non-extractable in-memory keys.</strong>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ARCHITECTURAL PILLARS -->
-    <section id="architecture">
-      <div class="section-head">
-        <span class="section-tag">ENGINEERING CORE</span>
-        <h2>Architected for Uncompromising Secrecy</h2>
-        <p>Built from ground up in memory-safe Rust to resist adversary state machines, traffic correlation, and quantum factoring.</p>
-      </div>
-
-      <div class="pillar-grid">
-        <div class="pillar-card">
-          <div class="pillar-num">01 / CRYPTOGRAPHIC SUITE</div>
-          <h3>Hybrid Post-Quantum KEM</h3>
-          <p>Handshakes compute classical ECDH (X25519) and lattice-based ML-KEM-512 (FIPS 203) in tandem. Dual-phase HKDF-SHA256 derivation renders transit streams completely immune to quantum cryptanalysis.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">02 / PHYSICAL MEMORY HARDENING</div>
-          <h3>Physical RAM Secret Pinning</h3>
-          <p>Long-term private keys and ephemeral pre-shared secrets are pinned into non-pageable memory via <code>VirtualLock</code> (Windows) and <code>mlock</code> (POSIX), preventing page eviction to swap or crash dump files.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">03 / TRAFFIC NORMALIZATION</div>
-          <h3>512-Byte Frame Uniformity</h3>
-          <p>Ghost Transport Frames (GTF) maintain strict 512-byte boundaries with ChaCha20-Poly1305 AEAD and trailing cryptographic jitter padding (0&ndash;64 bytes), depriving passive observers of payload size fingerprints.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">04 / DISPATCH RESILIENCE</div>
-          <h3>Multipath RS(2,1) Sharding</h3>
-          <p>Stream payloads are segmented into Reed-Solomon RS(2,1) GF(256) shards routed across distinct peer paths. As long as any 2 of the 3 shards arrive, packets reconstruct instantaneously with zero retransmission delay.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">05 / BYZANTINE ISOLATION</div>
-          <h3>Poisson Anomaly Quarantine</h3>
-          <p>Nodes benchmark peer timing against expected Poisson inter-arrival models. Peers attempting out-of-order injection, replay window tampering, or malformed PDU floods are instantly isolated.</p>
-        </div>
-
-        <div class="pillar-card">
-          <div class="pillar-num">06 / IDENTITY ANCHORING</div>
-          <h3>Cryptographic Ed25519 Anchors</h3>
-          <p>Nodes possess no fixed IP addresses. Identity is permanently anchored to Ed25519 public key fingerprints with issuer-signed cryptographic revocation lists, maintaining authentication across dynamic IP roaming.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- LIVE RS SHARDING DEMO -->
-    <section id="sharding">
-      <div class="section-head">
-        <span class="section-tag">LIVE INTERACTIVE PROOF</span>
-        <h2>Reed-Solomon RS(2,1) over GF(256)</h2>
-        <p>Mathematical erasure coding running directly in your browser. Click any shard to drop it; observe the remaining two recover the exact payload.</p>
-      </div>
-
-      <div class="panel">
-        <div class="demo-controls">
-          <input id="demoInput" type="text" value="vantablack // post-quantum cryptographic mesh" maxlength="96" aria-label="Payload to shard">
-          <button id="demoRun" type="button">RE-ENCODE</button>
-        </div>
-
-        <div class="shards" id="shardList">
-          <div class="shard" data-idx="0">
-            <div class="shard-top"><span>Shard 0 &bull; Data 1</span><span class="shard-state ok">&mdash;</span></div>
-            <div class="shard-hex"></div>
-          </div>
-          <div class="shard" data-idx="1">
-            <div class="shard-top"><span>Shard 1 &bull; Data 2</span><span class="shard-state ok">&mdash;</span></div>
-            <div class="shard-hex"></div>
-          </div>
-          <div class="shard" data-idx="2">
-            <div class="shard-top"><span>Shard 2 &bull; GF Parity</span><span class="shard-state ok">&mdash;</span></div>
-            <div class="shard-hex"></div>
-          </div>
-        </div>
-
-        <div class="demo-result">
-          <span class="label">Reconstructed Payload (GF(256) Inversion)</span>
-          <div class="value" id="demoOut">&mdash;</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- WIRE FORMAT SPEC -->
-    <section id="wire-format">
-      <div class="section-head">
-        <span class="section-tag">PROTOCOL SPECIFICATION</span>
-        <h2>Global Tunnel Frame (GTF) Wire Layout</h2>
-        <p>Rigorous, fixed-width structure ensuring zero metadata leakage and constant-time parsing verification.</p>
-      </div>
-
-      <table class="spec-table">
-        <thead>
-          <tr>
-            <th style="width: 140px;">Offset (Bytes)</th>
-            <th style="width: 180px;">Field</th>
-            <th style="width: 120px;">Length</th>
-            <th>Cryptographic / Functional Purpose</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td class="spec-offset">0x00 &hellip; 0x03</td>
-            <td class="spec-field">Session Token</td>
-            <td>4 Bytes</td>
-            <td class="spec-desc">Truncated session identifier, also mixed into the ChaCha20-Poly1305 AEAD nonce to eliminate cross-session collision.</td>
-          </tr>
-          <tr>
-            <td class="spec-offset">0x04 &hellip; 0x07</td>
-            <td class="spec-field">Packet Counter</td>
-            <td>4 Bytes</td>
-            <td class="spec-desc">Monotonic sequence counter checked against an atomic sliding replay window. Duplicate or late datagrams are rejected in constant time.</td>
-          </tr>
-          <tr>
-            <td class="spec-offset">0x08 &hellip; 0x08</td>
-            <td class="spec-field">Shard Index</td>
-            <td>1 Byte</td>
-            <td class="spec-desc">Reed-Solomon shard index: <code>0x00</code> (Data 0), <code>0x01</code> (Data 1), or <code>0x02</code> (GF(256) parity shard).</td>
-          </tr>
-          <tr>
-            <td class="spec-offset">0x09 &hellip; 0x09</td>
-            <td class="spec-field">Control Flags</td>
-            <td>1 Byte</td>
-            <td class="spec-desc">Frame control flags: Bit 0 signals bulk 1472B frames, Bit 1 indicates unordered tunnel datagram routing.</td>
-          </tr>
-          <tr>
-            <td class="spec-offset">0x0A &hellip; 0x1F3</td>
-            <td class="spec-field">Encrypted Shard</td>
-            <td>486 Bytes</td>
-            <td class="spec-desc">Ciphertext carrying the payload shard framed with 2-byte big-endian length prefix (<code>[len u16 BE][shard]</code>), encrypted with ChaCha20-Poly1305.</td>
-          </tr>
-          <tr>
-            <td class="spec-offset">0x1F4 &hellip; 0x203</td>
-            <td class="spec-field">Poly1305 Tag</td>
-            <td>16 Bytes</td>
-            <td class="spec-desc">128-bit Poly1305 MAC. A single altered bit across header and payload fails constant-time authentication.</td>
-          </tr>
-          <tr>
-            <td class="spec-offset">0x204 &hellip; +</td>
-            <td class="spec-field">Jitter Padding</td>
-            <td>0 &ndash; 64 Bytes</td>
-            <td class="spec-desc">Cryptographically random trailing noise injected per-packet to frustrate downstream statistical packet length correlation.</td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <!-- LEVEL 2 MULTI-HOP MESH WAN & 4 SCENARIOS -->
-    <section id="wan-mesh">
-      <div class="section-head">
-        <span class="section-tag">CARRIER-SCALE RESILIENCE &bull; DOCKER TOPOLOGY</span>
-        <h2>Level 2 Multi-Hop Mesh WAN Architecture</h2>
-        <p>A 7-node carrier simulation environment replicating transcontinental WAN conditions with Linux kernel <code>tc netem</code> latency, jitter, packet loss, and Byzantine adversaries.</p>
-      </div>
-
-      <div class="wan-box">
-        <div style="display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:10px;">
-          <h3 style="font-size:18px; font-weight:600; color:var(--text);">7-Node Linux Kernel WAN Emulation Topology</h3>
-          <span style="font-family:var(--font-mono); font-size:12px; color:var(--accent);">Subnet: 172.28.0.0/16 &bull; Asymmetric RS(2,1) Dispersal</span>
-        </div>
-        <p style="font-size:14px; color:var(--text-muted); margin-top:8px; line-height:1.6;">
-          Traffic traverses multi-hop carrier networks where intermediary nodes parse explicit hop headers (<code>[hops_remaining][next_ip][next_port]</code>) without inspecting inner encrypted payloads. Corrupted, delayed, or severed carrier links are autonomously isolated and bypassed.
-        </p>
-
-        <div class="wan-links-grid">
-          <div class="wan-link-item">
-            <div class="title"><span>mesh-client</span> <span class="cond">172.28.1.10</span></div>
-            <div class="desc">Client ingress, SOCKS5 (:1080) &amp; Live Telemetry Dashboard (:8080)</div>
-          </div>
-          <div class="wan-link-item">
-            <div class="title"><span>Carrier 1</span> <span class="cond">45ms &plusmn;5ms (1% loss)</span></div>
-            <div class="desc">Transatlantic Fiber link &bull; Multi-hop chain hop 1 (172.28.1.11)</div>
-          </div>
-          <div class="wan-link-item">
-            <div class="title"><span>Carrier 2</span> <span class="cond" style="color:var(--amber);">85ms &plusmn;15ms (3% loss)</span></div>
-            <div class="desc">Transpacific Edge &bull; Byzantine adversary mode active (172.28.1.12)</div>
-          </div>
-          <div class="wan-link-item">
-            <div class="title"><span>Carrier 3</span> <span class="cond" style="color:var(--rose);">160ms &plusmn;25ms (8% loss)</span></div>
-            <div class="desc">Satellite Uplink &bull; Autonomous Chaos Monkey sever target (172.28.1.13)</div>
-          </div>
-          <div class="wan-link-item">
-            <div class="title"><span>Carrier 4</span> <span class="cond">25ms &plusmn;3ms (0.5% loss)</span></div>
-            <div class="desc">Continental Core Backbone &bull; Multi-hop chain hop 2 (172.28.1.14)</div>
-          </div>
-          <div class="wan-link-item">
-            <div class="title"><span>Carrier 5</span> <span class="cond" style="color:var(--emerald);">55ms &plusmn;8ms (1% loss)</span></div>
-            <div class="desc">Dynamic Failover Reserve &bull; Hot standby promotion (172.28.1.15)</div>
-          </div>
-          <div class="wan-link-item">
-            <div class="title"><span>mesh-exit</span> <span class="cond">172.28.1.20</span></div>
-            <div class="desc">Egress Gateway &bull; Outbound IP rotation (198.51.100.x) to public WAN</div>
-          </div>
-        </div>
-
-        <div class="term" style="margin-top:14px; margin-bottom:0;">
-          <span class="c"># Start the full 7-node carrier simulation stack</span><br>
-          <span class="p">docker compose -f docker-compose.wan.yml up --build -d</span><br><br>
-          <span class="c"># Open the live telemetry dashboard in your browser</span><br>
-          <span class="p">open</span> http://localhost:8080 <span class="c"># or query JSON via http://localhost:8080/api/telemetry</span>
-        </div>
+        <span class="section-tag">What it does for you</span>
+        <h2>Practical things you can do on day one</h2>
+        <p>No networking degree required. If you can run a program, you can use this.</p>
       </div>
 
       <div class="scenario-grid">
         <div class="scenario-card">
           <div>
-            <span class="scenario-badge badge-amber">SCENARIO 1 &bull; CRYPTOGRAPHIC INTEGRITY</span>
-            <h3>Byzantine Tamper Resistance</h3>
-            <p>Intermediary Carrier 2 injects 4-byte corruptions into in-flight payloads. Combinatorial pairwise RS(2,1) evaluation detects Poly1305 MAC failures, isolates the rogue carrier, and recovers pristine data.</p>
+            <span class="scenario-badge badge-cyan">Home lab &amp; media</span>
+            <h3>Reach your home files from anywhere</h3>
+            <p>Access your home files, your Plex or Jellyfin library, or Docker containers from a coffee shop or plain cellular data. No port forwarding and no exposing your router to the open internet.</p>
           </div>
           <div class="scenario-metric">
-            Defense: <strong>Combinatorial RS(2,1) + Poly1305 (Zero Data Loss)</strong>
+            Works from any network &bull; <strong>No router changes</strong>
           </div>
         </div>
 
         <div class="scenario-card">
           <div>
-            <span class="scenario-badge badge-rose">SCENARIO 2 &bull; ANTI-REPLAY DEFENSE</span>
-            <h3>L6 Sliding Window Bitmask</h3>
-            <p>Adversarial replay injections of duplicate frames with stale sequence counters are evaluated against <code>SessionGuard</code>. Bitmask inspection drops replayed datagrams before reaching decryption buffers.</p>
+            <span class="scenario-badge badge-emerald">Multi-cloud</span>
+            <h3>Link your servers together</h3>
+            <p>Tie a server on AWS, one on Hetzner, and the box under your desk into a single private network &mdash; as if they were plugged into the same switch.</p>
           </div>
           <div class="scenario-metric">
-            Defense: <strong>SessionGuard 64-bit / 128-bit Bitmap (Instant Drop)</strong>
+            One flat private network &bull; <strong>Any provider, any hardware</strong>
           </div>
         </div>
 
         <div class="scenario-card">
           <div>
-            <span class="scenario-badge badge-cyan">SCENARIO 3 &bull; TRAFFIC ANALYSIS DEFENSE</span>
-            <h3>L5 Traffic Shaping &amp; Jitter Cover</h3>
-            <p>Frames are dynamically encapsulated with 16 to 64 bytes of cryptographically randomized trailing jitter padding. Variable wire footprints frustrate deep packet inspection (DPI) and timing correlation.</p>
+            <span class="scenario-badge badge-amber">Restricted networks</span>
+            <h3>Keep working when the network is locked down</h3>
+            <p>Works inside restrictive school, hotel, or country firewalls. Your connection automatically splits traffic across several routes and blends in as ordinary internet noise.</p>
           </div>
           <div class="scenario-metric">
-            Defense: <strong>Randomized Jitter Padding [16&ndash;64B Cover]</strong>
-          </div>
-        </div>
-
-        <div class="scenario-card">
-          <div>
-            <span class="scenario-badge badge-emerald">SCENARIO 4 &bull; AUTONOMOUS FAILOVER</span>
-            <h3>Real-time Convergence Latency</h3>
-            <p>Chaos Monkey severs the primary Satellite carrier link every 5 of 10 cycles. <code>AdaptiveShardRouter</code> detects loss and dynamically reroutes shards through hot standby Carrier 5 with zero stream drops.</p>
-          </div>
-          <div class="scenario-metric">
-            Convergence: <strong>&le; 55 ms (Standby Carrier RTT)</strong>
-          </div>
-        </div>
-
-        <div class="scenario-card">
-          <div>
-            <span class="scenario-badge badge-cyan">PRODUCTION FEATURE &bull; POST-QUANTUM KEM</span>
-            <h3>ML-KEM-512 + X25519 Handshake</h3>
-            <p>True post-quantum key exchange combines lattice-based ML-KEM-512 (Kyber) with X25519 ECDH. Ephemeral secrets are derived via HKDF-SHA256 with live 4-byte session hash verification.</p>
-          </div>
-          <div class="scenario-metric">
-            Security: <strong>NIST FIPS 203 ML-KEM-512 Hybrid (Live Rekeying)</strong>
-          </div>
-        </div>
-
-        <div class="scenario-card">
-          <div>
-            <span class="scenario-badge badge-amber">PRODUCTION FEATURE &bull; APPLICATION EGRESS</span>
-            <h3>SOCKS5 Local Proxy (:1080)</h3>
-            <p>Integrated SOCKS5 engine binds <code>127.0.0.1:1080</code> for zero-config application routing. TCP streams are chunked, encrypted, sharded across the carrier mesh, and egress-rotated on public WAN.</p>
-          </div>
-          <div class="scenario-metric">
-            Egress: <strong>127.0.0.1:1080 SOCKS5 &bull; Rotating WAN IPs</strong>
+            Beats deep packet inspection &bull; <strong>Keeps going when a route dies</strong>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- DEPLOYMENT GUIDE -->
+    <!-- HOW IT PROTECTS YOU -->
+    <section id="protection">
+      <div class="section-head">
+        <span class="section-tag">How it protects you</span>
+        <h2>Strong protection, explained plainly</h2>
+        <p>Here is what is actually happening to keep you safe &mdash; no jargon.</p>
+      </div>
+
+      <div class="pillar-grid">
+        <div class="pillar-card">
+          <div class="pillar-num">01 / SPLIT ACROSS ROUTES</div>
+          <h3>Multi-Path Traffic Splitting</h3>
+          <p>Think of tearing a secret letter into three pieces and sending each with a different courier. Anyone who intercepts one piece learns nothing useful, and if one courier never arrives, the other two still deliver the full message intact.</p>
+        </div>
+
+        <div class="pillar-card">
+          <div class="pillar-num">02 / NOTHING TO HACK</div>
+          <h3>Zero Central Servers</h3>
+          <p>There is no company database to get hacked, no account to sign up for, and no single machine whose failure takes the whole network down. Your devices find each other on their own.</p>
+        </div>
+
+        <div class="pillar-card">
+          <div class="pillar-num">03 / BUILT TO LAST</div>
+          <h3>Future-Proof Encryption</h3>
+          <p>Everything is scrambled with next-generation security designed to resist even quantum computers &mdash; including data someone copies today hoping to crack it years from now.</p>
+        </div>
+
+        <div class="pillar-card">
+          <div class="pillar-num">04 / MEMORY ONLY</div>
+          <h3>Runs Purely in Memory</h3>
+          <p>Your encryption keys exist only in RAM while a session is running. They are never written to your hard drive or SSD, so a stolen laptop disk cannot leak them.</p>
+        </div>
+      </div>
+
+      <p class="pillar-note">There is nothing to log, either: the software has no telemetry, no analytics, and no usage tracking of any kind.</p>
+    </section>
+
+    <!-- INTERACTIVE DEMO -->
+    <section id="demo">
+      <div class="section-head">
+        <span class="section-tag">Try it in your browser</span>
+        <h2>Watch your message survive a cut route</h2>
+        <p>Your message is split into three pieces and sent down three different routes. Click any route to cut the wire. The other two routes automatically deliver your intact message without re-sending it.</p>
+      </div>
+
+      <div class="panel">
+        <div class="demo-controls">
+          <input id="demoInput" type="text" value="Hello from my home server" maxlength="96" aria-label="Message to send">
+          <button id="demoRun" type="button">RE-SPLIT &amp; SEND</button>
+        </div>
+
+        <div class="shards" id="shardList">
+          <div class="shard" data-idx="0">
+            <div class="shard-top"><span>Route A (Fiber)</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-hex"></div>
+          </div>
+          <div class="shard" data-idx="1">
+            <div class="shard-top"><span>Route B (Wireless)</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-hex"></div>
+          </div>
+          <div class="shard" data-idx="2">
+            <div class="shard-top"><span>Route C (Backup Link)</span><span class="shard-state ok">&mdash;</span></div>
+            <div class="shard-hex"></div>
+          </div>
+        </div>
+
+        <div class="demo-result">
+          <span class="label">Delivered message</span>
+          <div class="value" id="demoOut">&mdash;</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- QUICKSTART -->
     <section id="deploy">
       <div class="section-head">
-        <span class="section-tag">DEPLOYMENT &bull; GET STARTED</span>
-        <h2>Zero-Dependency Daemon Deployment</h2>
-        <p>No central account creation, no external coordinator dependencies, and zero CA trusts. Run directly as a native system daemon.</p>
+        <span class="section-tag">Quickstart</span>
+        <h2>Up and running in a few minutes</h2>
+        <p>One program, no account, no installer wizard. Run it and you are on the network.</p>
       </div>
 
       <div class="route">
 
         <div class="route-step">
-          <h3><span>01</span> Build or Download the Static Binary</h3>
-          <p>Global Ghost Net is self-contained with zero runtime dependencies. Install via Cargo or fetch the pre-compiled static binary:</p>
+          <h3><span>01</span> Download and run the program</h3>
+          <p>Global Ghost Net is a single self-contained program with no extra dependencies. Build it from source with Rust, or grab a ready-to-run release.</p>
           <div class="term">
-            <span class="c"># Install from source via Rust &amp; Cargo</span><br>
+            <span class="c"># Build and install from source (requires Rust)</span><br>
             <span class="p">cargo install --git https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br><br>
-            <span class="c"># Or clone and compile native release target</span><br>
+            <span class="c"># Or clone and compile a release build</span><br>
             <span class="p">git clone https://github.com/KELLERBABG/Global-Ghost-Net.git</span><br>
-            <span class="p">cd Global-Ghost-Net &amp;&amp; cargo build --release</span>
+            <span class="p">cd Global-Ghost-Net &amp;&amp; cargo build --release</span><br><br>
+            <span class="c"># Start it</span><br>
+            <span class="p">vantablack</span>
           </div>
         </div>
 
         <div class="route-step">
-          <h3><span>02</span> Launch Public Swarm Node (Default Mode)</h3>
-          <p>Binds UDP mesh listener and automatically discovers global participants via decentralized DNS seeds and LAN multicast:</p>
+          <h3><span>02</span> Optional: make the network private</h3>
+          <p>By default you join the open Public Swarm. To keep the network exclusive to your own devices, generate a private key and start the program with it. Devices without the key are dropped before they can connect.</p>
           <div class="term">
-            <span class="c"># Join worldwide swarm (RS(2,1) multi-hop dispersion)</span><br>
-            <span class="p">GHOST_BIND</span>=0.0.0.0:2271 vantablack
+            <span class="c"># Generate a private key (keep it secret)</span><br>
+            <span class="p">openssl rand -hex 32</span><br><br>
+            <span class="c"># Start your private network</span><br>
+            <span class="p">export GHOST_PSK</span>=<span class="val">&lt;paste-your-key&gt;</span><br>
+            <span class="p">vantablack</span>
           </div>
-          <p class="alt">Port 2271 handles encrypted GTF datagrams; port 2270 handles local Ed25519-signed multicast beacons.</p>
+          <p class="alt">Use the same key on every device you want in your network.</p>
         </div>
 
         <div class="route-step">
-          <h3><span>03</span> Isolate as a Private Overlay Mesh (Optional)</h3>
-          <p>Generate a 256-bit symmetric pre-shared key. Packets without a valid cryptographic PSK tag are dropped prior to decapsulation:</p>
+          <h3><span>03</span> Send your traffic through it &mdash; or try the full demo</h3>
+          <p>Point your browser or apps at the built-in local proxy. Or, if you want to watch the whole thing work under simulated real-world network conditions, start the Docker demo.</p>
           <div class="term">
-            <span class="c"># Generate 32-byte secret</span><br>
-            openssl rand -hex 32<br><br>
-            <span class="c"># Run private sovereign node</span><br>
-            <span class="p">export GHOST_PSK</span>=<span class="val">e7f9a204b18c5e032fa89b2c...09df</span><br>
-            <span class="p">GHOST_BIND</span>=0.0.0.0:2271 vantablack
+            <span class="c"># Route a request through the encrypted network</span><br>
+            <span class="p">curl --socks5 127.0.0.1:1080 https://checkip.amazonaws.com</span><br><br>
+            <span class="c"># Or run the multi-hop network demo with a live dashboard</span><br>
+            <span class="p">docker compose -f docker-compose.wan.yml up -d</span><br>
+            <span class="p">open</span> http://localhost:8080
           </div>
         </div>
 
-        <div class="route-step">
-          <h3><span>04</span> Route Client Traffic (SOCKS5 Proxy or Virtual TUN)</h3>
-          <p>Tunnel application traffic through the encrypted post-quantum mesh directly to designated exit nodes or peer subnets:</p>
-          <div class="term">
-            <span class="c"># Connect via local SOCKS5 proxy (127.0.0.1:1080)</span><br>
-            <span class="p">GHOST_SOCKS5</span>=1 <span class="p">GHOST_SEEDS</span>=node1.domain.com:2271 vantablack<br><br>
-            <span class="c"># Test proxy egress</span><br>
-            <span class="p">curl --socks5 127.0.0.1:1080 https://checkip.amazonaws.com</span>
-          </div>
-        </div>
+      </div>
+    </section>
 
-        <div class="route-step">
-          <h3><span>05</span> Run Level 2 Multi-Hop WAN Mesh Simulation (Docker Stack)</h3>
-          <p>Spin up the 7-node carrier mesh under Linux <code>tc netem</code> with live Web Dashboard and SOCKS5 proxy:</p>
-          <div class="term">
-            <span class="c"># Build and run the 7-node multi-hop carrier cluster in detached mode</span><br>
-            <span class="p">docker compose -f docker-compose.wan.yml up -d</span><br><br>
-            <span class="c"># Open the real-time topology &amp; convergence telemetry dashboard</span><br>
-            <span class="p">open</span> http://localhost:8080<br><br>
-            <span class="c"># Route traffic through the multi-hop WAN mesh via client SOCKS5 proxy</span><br>
-            <span class="p">curl --socks5 127.0.0.1:1080 https://httpbin.org/ip</span>
-          </div>
-          <p class="alt">Exports dashboard on <code>:8080</code> (HTML and <code>/api/telemetry</code>) and mesh client SOCKS5 proxy on <code>:1080</code>.</p>
+    <!-- DOCS CTA -->
+    <section id="docs-cta">
+      <div class="docs-cta">
+        <div class="docs-cta-copy">
+          <span class="section-tag">For engineers, cryptographers &amp; auditors</span>
+          <h2>Want the byte-level details?</h2>
+          <p>Packet formats and byte-offset tables, kernel-level network simulation benchmarks, and formal cryptographic proofs all live in the technical documentation.</p>
         </div>
-
+        <div class="docs-cta-actions">
+          <a class="btn btn-primary" href="/docs">Read the technical docs &rarr;</a>
+          <a class="btn btn-ghost" href="/roadmap">View the roadmap</a>
+        </div>
       </div>
     </section>
 
@@ -1166,8 +883,9 @@
         <span>&copy; 2026 Keller Systems &bull; Global Ghost Net</span>
       </div>
       <div class="footer-right">
+        <a href="/docs">Documentation</a>
         <a href="/roadmap">Roadmap</a>
-        <a href="https://kellersystems.dev" target="_blank" rel="noopener">Main Portal: kellersystems.dev</a>
+        <a href="https://kellersystems.dev" target="_blank" rel="noopener">kellersystems.dev</a>
         <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener">GitHub</a>
       </div>
     </footer>
@@ -1255,7 +973,7 @@
       })();
     })();
 
-    /* —— Reed-Solomon (2,1) GF(256) Pure Client-Side Implementation —— */
+    /* —— Erasure coding demo (3 pieces, any 2 reconstruct) ————————————— */
     var RS_EXP = new Uint8Array(512), RS_LOG = new Uint8Array(256);
     (function () {
       var x = 1;
@@ -1306,7 +1024,7 @@
       return Array.prototype.slice.call(s0).concat(Array.prototype.slice.call(s1));
     }
 
-    /* —— Live Sharding Interactive Bindings —————————————————————————— */
+    /* —— Interactive route demo bindings ————————————————————————————— */
     (function () {
       var input = document.getElementById('demoInput');
       var runBtn = document.getElementById('demoRun');
@@ -1329,12 +1047,12 @@
           var hexEl = card.querySelector('.shard-hex');
           if (dropped[i]) {
             card.classList.add('dropped');
-            state.textContent = 'DROPPED (CLICK TO RESTORE)';
+            state.textContent = 'CUT — CLICK TO RESTORE';
             state.className = 'shard-state gone';
             hexEl.textContent = '—';
           } else {
             card.classList.remove('dropped');
-            state.textContent = shards[i].length + ' BYTES (ONLINE)';
+            state.textContent = 'ONLINE · ' + shards[i].length + ' BYTES';
             state.className = 'shard-state ok';
             hexEl.innerHTML = hex(shards[i], 36);
           }
@@ -1343,7 +1061,7 @@
         var live = shards.map(function (s, i) { return dropped[i] ? null : s; });
         var rebuilt = rsReconstruct(live);
         if (!rebuilt) {
-          out.innerHTML = '<span style="color:var(--rose)">Insufficient shards remain (minimum 2 required to invert GF(256) matrix)</span>';
+          out.innerHTML = '<span style="color:var(--rose)">At least two routes must stay open to deliver your message.</span>';
           return;
         }
         var text = '';
