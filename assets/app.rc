@@ -38,10 +38,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "Global Ghost Net"
-            VALUE "FileDescription", "Global Ghost Net"
+            VALUE "CompanyName", "Keller Systems"
+            VALUE "FileDescription", "Global Ghost Net Desktop Client"
             VALUE "FileVersion", "0.4.1"
             VALUE "InternalName", "ggn"
+            VALUE "LegalCopyright", "Copyright (c) 2026 Keller Systems"
             VALUE "OriginalFilename", "ggn.exe"
             VALUE "ProductName", "Global Ghost Net"
             VALUE "ProductVersion", "0.4.1"

@@ -26,7 +26,7 @@
 #define MyAppExeName "ggn.exe"
 #define MyAppShortName "ggn"
 #define MyAppDirName "GlobalGhostNet"
-#define MyAppPublisher "Global Ghost Net"
+#define MyAppPublisher "Keller Systems"
 #define MyAppURL "https://ggn.kellersystems.dev/"
 #define MyAppRepoURL "https://github.com/KELLERBABG/Global-Ghost-Net"
 

@@ -273,13 +273,9 @@ mod tests {
         }
 
         // The strings the installer and the shell show for the product.
-        for key in ["ProductName", "FileDescription", "CompanyName"] {
-            assert_eq!(
-                rc_value(APP_RC, key).as_deref(),
-                Some("Global Ghost Net"),
-                "{key} should name the product"
-            );
-        }
+        assert_eq!(rc_value(APP_RC, "ProductName").as_deref(), Some("Global Ghost Net"));
+        assert_eq!(rc_value(APP_RC, "CompanyName").as_deref(), Some("Keller Systems"));
+        assert_eq!(rc_value(APP_RC, "LegalCopyright").as_deref(), Some("Copyright (c) 2026 Keller Systems"));
         assert_eq!(
             rc_value(APP_RC, "OriginalFilename").as_deref(),
             Some("ggn.exe")
