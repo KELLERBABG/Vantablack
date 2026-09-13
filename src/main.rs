@@ -1634,7 +1634,9 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("GHOST_MODE").unwrap_or_else(|_| "public".to_string()),
     ));
     let consumer_pin = Arc::new(parking_lot::RwLock::new(
-        std::env::var("GHOST_PIN").ok().filter(|s| !s.trim().is_empty()),
+        std::env::var("GHOST_PIN")
+            .ok()
+            .filter(|s| !s.trim().is_empty()),
     ));
 
     if metrics_enabled {
@@ -1734,7 +1736,10 @@ async fn main() -> anyhow::Result<()> {
             let bind_addr = format!("0.0.0.0:{}", mp);
             match tokio::net::TcpListener::bind(&bind_addr).await {
                 Ok(listener) => {
-                    tracing::info!("Ghost Web Control Center & Telemetry listening on http://0.0.0.0:{}", mp);
+                    tracing::info!(
+                        "Ghost Web Control Center & Telemetry listening on http://0.0.0.0:{}",
+                        mp
+                    );
                     loop {
                         if let Ok((mut stream, _)) = listener.accept().await {
                             let nc_ref = Arc::clone(&nc_m);
@@ -1756,14 +1761,20 @@ async fn main() -> anyhow::Result<()> {
                                         return;
                                     }
 
-                                    let (status_line, body, content_type) = if req.starts_with("GET /api/status") {
+                                    let (status_line, body, content_type) = if req
+                                        .starts_with("GET /api/status")
+                                    {
                                         let is_conn = conn_ref.load(Ordering::Relaxed);
                                         let current_mode = mode_ref.read().clone();
                                         let has_pin = pin_ref.read().is_some();
-                                        let sent_bytes = nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                        let recv_bytes = nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                        let sent_pkts = nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                        let recv_pkts = nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                        let sent_bytes =
+                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                        let recv_bytes =
+                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                        let sent_pkts =
+                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                        let recv_pkts =
+                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
                                         let uptime = nc_ref.created_at.elapsed().as_secs();
                                         let peers_count = addrs_ref.len();
                                         let sessions_count = nc_ref.sessions.len();
@@ -1798,15 +1809,21 @@ async fn main() -> anyhow::Result<()> {
                                             "peers": peer_entries,
                                             "vpn": vpn_role,
                                             "vpn_stats": vpn_json
-                                        }).to_string();
+                                        })
+                                        .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("POST /api/connect") {
                                         // Parse optional {"connected": bool} or toggle
                                         let current = conn_ref.load(Ordering::Relaxed);
-                                        let new_val = if let Some(body_start) = req.find("\r\n\r\n") {
+                                        let new_val = if let Some(body_start) = req.find("\r\n\r\n")
+                                        {
                                             let json_body = &req[body_start + 4..];
-                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_body.trim()) {
-                                                if let Some(c) = val.get("connected").and_then(|v| v.as_bool()) {
+                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(
+                                                json_body.trim(),
+                                            ) {
+                                                if let Some(c) =
+                                                    val.get("connected").and_then(|v| v.as_bool())
+                                                {
                                                     c
                                                 } else {
                                                     !current
@@ -1822,14 +1839,19 @@ async fn main() -> anyhow::Result<()> {
                                             "success": true,
                                             "connected": new_val,
                                             "mode": mode_ref.read().clone()
-                                        }).to_string();
+                                        })
+                                        .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("POST /api/mode") {
                                         let mut new_mode = None;
                                         if let Some(body_start) = req.find("\r\n\r\n") {
                                             let json_body = &req[body_start + 4..];
-                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_body.trim()) {
-                                                if let Some(m) = val.get("mode").and_then(|v| v.as_str()) {
+                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(
+                                                json_body.trim(),
+                                            ) {
+                                                if let Some(m) =
+                                                    val.get("mode").and_then(|v| v.as_str())
+                                                {
                                                     new_mode = Some(m.to_string());
                                                 }
                                             }
@@ -1841,7 +1863,8 @@ async fn main() -> anyhow::Result<()> {
                                         let body = serde_json::json!({
                                             "success": true,
                                             "mode": current_mode
-                                        }).to_string();
+                                        })
+                                        .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /api/peers") {
                                         let peer_entries: Vec<serde_json::Value> = addrs_ref.iter().map(|entry| {
@@ -1856,7 +1879,8 @@ async fn main() -> anyhow::Result<()> {
                                         let body = serde_json::json!({
                                             "peers": peer_entries,
                                             "count": peer_entries.len()
-                                        }).to_string();
+                                        })
+                                        .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /healthz") {
                                         let body = serde_json::json!({
@@ -1907,7 +1931,9 @@ async fn main() -> anyhow::Result<()> {
                                             "discovery_source": "DNS Seed + Multicast Beacon + peers.cache"
                                         }).to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("GET /dashboard") || req.starts_with("GET / ") {
+                                    } else if req.starts_with("GET /dashboard")
+                                        || req.starts_with("GET / ")
+                                    {
                                         let html = include_str!("../assets/wan_dashboard.html");
                                         (
                                             "HTTP/1.1 200 OK",
