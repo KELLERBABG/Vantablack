@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -239,22 +239,59 @@
       min-width: 32px;
     }
 
-    .item-body {
-      flex: 1;
+    .item-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
     }
 
     .item-title {
       font-size: 1.15rem;
       font-weight: 600;
       color: #ffffff;
-      margin-bottom: 8px;
       letter-spacing: -0.01em;
+      margin: 0;
     }
 
     .item-text {
       font-size: 0.95rem;
       color: var(--text-muted);
       line-height: 1.58;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 9px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .badge-delivered {
+      background: rgba(16, 185, 129, 0.12);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .badge-active {
+      background: rgba(34, 211, 238, 0.12);
+      color: #22d3ee;
+      border: 1px solid rgba(34, 211, 238, 0.35);
+    }
+    .badge-planned {
+      background: rgba(245, 158, 11, 0.12);
+      color: #f59e0b;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+    .roadmap-item.delivered {
+      border-color: rgba(16, 185, 129, 0.3);
     }
 
     /* Footer */
@@ -325,92 +362,158 @@
 
     <div class="roadmap-list">
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">1.</div>
         <div class="item-body">
-          <h2 class="item-title">Fair-share transit enforcement</h2>
+          <div class="item-header">
+            <h2 class="item-title">Fair-share transit enforcement</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            A built-in reciprocity mechanism that measures how much relay bandwidth each peer contributes versus consumes, prioritizing nodes that actively help route traffic for the network.
+            Reciprocity engine (TitForTatEnforcer) tracking contributed transit bandwidth versus consumption, evicting leecher peers and prioritizing nodes that actively relay traffic.
           </p>
         </div>
       </article>
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">2.</div>
         <div class="item-body">
-          <h2 class="item-title">Automated UDP hole punching</h2>
+          <div class="item-header">
+            <h2 class="item-title">Automated UDP hole punching &amp; Multi-Hop Routing</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            Enhanced direct traversal through strict home and cellular NAT firewalls without requiring manual port forwards or public relay intermediaries.
+            NAT hole puncher with keepalive heartbeat mapping combined with Level 2 multi-hop routing, hop decrements, and dynamic carrier relay chains.
           </p>
         </div>
       </article>
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">3.</div>
         <div class="item-body">
-          <h2 class="item-title">Egress IP rotation</h2>
+          <div class="item-header">
+            <h2 class="item-title">Egress IP rotation &amp; SOCKS5 Proxy</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            Allowing exit nodes to distribute outbound traffic across multiple public IP addresses, preventing destination servers from correlating or rate-limiting traffic to a single address.
+            Dynamic exit IP pool rotation (<code>ExitIpRotator</code>) paired with an integrated local SOCKS5 proxy (<code>127.0.0.1:1080</code>) for anonymous client egress onto public WAN.
           </p>
         </div>
       </article>
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">4.</div>
         <div class="item-body">
-          <h2 class="item-title">Zero-knowledge peer discovery</h2>
+          <div class="item-header">
+            <h2 class="item-title">Zero-knowledge peer discovery &amp; Signed Beacons</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            Cryptographic proof exchanges during discovery that allow peers to verify authorization to join a private mesh without revealing their public identity keys over the wire.
+            ZK proof vouchers (<code>ZkAuthenticator</code>), Ed25519-signed multicast beacons on <code>239.255.0.1:2270</code>, DNS seed resolution, and cold-boot <code>peers.cache</code> persistence.
           </p>
         </div>
       </article>
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">5.</div>
         <div class="item-body">
-          <h2 class="item-title">Long-stream forward error correction</h2>
+          <div class="item-header">
+            <h2 class="item-title">Post-Quantum KEM &amp; Strict GTF Wire Frames</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            Secondary LDPC error correction across sustained high-throughput streams, repairing packet bursts on severely unstable lossy networks beyond single-frame sharding.
+            NIST FIPS 203 ML-KEM-512 (Kyber) + X25519 hybrid key agreement with live session hash tracking, strict 512-byte Ghost Transport Frames (GTF), and L5 jitter noise padding.
           </p>
         </div>
       </article>
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">6.</div>
         <div class="item-body">
-          <h2 class="item-title">Encrypted runtime memory</h2>
+          <div class="item-header">
+            <h2 class="item-title">Long-stream forward error correction</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            Continuous in-memory encryption of volatile buffers to protect cryptographic session material against physical physical-memory dumping or cold-boot attacks.
+            1024-bit IRA LDPC codec (<code>LdpcCodec</code>) working alongside Reed-Solomon RS(2,1) erasure coding for secondary forward error correction on unstable lossy links.
           </p>
         </div>
       </article>
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">7.</div>
         <div class="item-body">
-          <h2 class="item-title">Hardware security key storage</h2>
+          <div class="item-header">
+            <h2 class="item-title">Encrypted runtime memory</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            Binding node identity keys directly into physical TPM 2.0 chips and YubiKey HSMs so master private keys can never be extracted from host storage.
+            AES-256-XTS memory defense (<code>LockedMemory</code>) with OS page pinning (mlock / VirtualLock) and compiler-barrier zeroization on drop to prevent cold-boot memory scraping.
           </p>
         </div>
       </article>
 
-      <article class="roadmap-item">
+      <article class="roadmap-item delivered">
         <div class="item-number">8.</div>
         <div class="item-body">
-          <h2 class="item-title">Kernel-bypass packet acceleration</h2>
+          <div class="item-header">
+            <h2 class="item-title">Hardware security key storage &amp; TPM Enclave</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
           <p class="item-text">
-            Direct network card packet ingestion via eBPF and XDP drivers on Linux, allowing multi-gigabit mesh routing without operating system kernel overhead.
+            Hardware TPM 2.0 enclave binding (<code>SoftwareTpm</code> / <code>HardwareTpm</code>) with tamper response and Network Time Security (NTS) multi-source voting.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item delivered">
+        <div class="item-number">9.</div>
+        <div class="item-body">
+          <div class="item-header">
+            <h2 class="item-title">Kernel-bypass packet acceleration</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
+          <p class="item-text">
+            Zero-copy lockless packet dispatcher (<code>LocklessDispatcher</code>) and AF_XDP ring-buffer kernel bypass for multi-gigabit throughput.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item delivered">
+        <div class="item-number">10.</div>
+        <div class="item-body">
+          <div class="item-header">
+            <h2 class="item-title">Satellite &amp; orbital mesh tracking</h2>
+            <span class="status-badge badge-delivered">&check; Implemented in Core (L0&ndash;L9)</span>
+          </div>
+          <p class="item-text">
+            Predictive orbit trajectory modeling (SGP4/TLE parser), Doppler shift simulation, and orbital line-of-sight transit calculations.
           </p>
         </div>
       </article>
 
       <article class="roadmap-item">
-        <div class="item-number">9.</div>
+        <div class="item-number">11.</div>
         <div class="item-body">
-          <h2 class="item-title">Satellite and orbital mesh tracking</h2>
+          <div class="item-header">
+            <h2 class="item-title">Native Mobile &amp; iOS NetworkExtension (M4)</h2>
+            <span class="status-badge badge-active">&bull; In Progress</span>
+          </div>
           <p class="item-text">
-            Predictive orbit trajectory modeling and Doppler frequency adjustment to route traffic across Low Earth Orbit satellite constellations and ground stations.
+            Packaging the pure Rust core for iOS NetworkExtension and Android JNI VPN, enabling seamless zero-config road-warrior mesh tunnels across cellular and Wi-Fi handovers.
+          </p>
+        </div>
+      </article>
+
+      <article class="roadmap-item">
+        <div class="item-number">12.</div>
+        <div class="item-body">
+          <div class="item-header">
+            <h2 class="item-title">Global Sovereign Seed Mesh (v1.0 Decentralized Network)</h2>
+            <span class="status-badge badge-planned">&bull; Next Phase</span>
+          </div>
+          <p class="item-text">
+            Expansion of volunteer-hosted zero-knowledge rendezvous seeds and public exit gateways across worldwide autonomous system numbers (ASNs).
           </p>
         </div>
       </article>
