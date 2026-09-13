@@ -1,4 +1,4 @@
-﻿name: Android APK Build
+name: Android APK Build
 
 on:
   push:
@@ -42,7 +42,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           mkdir -p android/app/src/main/jniLibs
-          cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build --release --features vpn --lib
+          cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build --release --no-default-features --features vpn --lib
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
