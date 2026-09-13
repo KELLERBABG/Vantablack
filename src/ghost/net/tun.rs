@@ -110,11 +110,48 @@ mod platform {
             match Self::find_wintun_dll() {
                 Some(dll_path) => {
                     info!("Found wintun.dll at: {}", dll_path.display());
-                    warn!("wintun.dll detected but runtime FFI requires running with elevated Administrator privileges.");
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        format!("wintun.dll found at {} - requires elevated Administrator privileges to initialize virtual TUN adapter \x27{}\x27", dll_path.display(), name),
-                    ))
+                    #[cfg(feature = "vpn")]
+                    {
+                        // Attempt real Wintun initialization via WintunTun
+                        use std::net::Ipv4Addr;
+                        use crate::ghost::net::vpn::tun::{TunDevice, WintunTun};
+
+                        // Default overlay IP 10.66.0.2 / 255.255.255.0 for the TUN adapter interface
+                        let addr = Ipv4Addr::new(10, 66, 0, 2);
+                        let mask = Ipv4Addr::new(255, 255, 255, 0);
+
+                        match WintunTun::new(name, addr, mask) {
+                            Ok(wintun_dev) => {
+                                info!("Successfully initialized Wintun adapter '{}'", name);
+                                struct WintunDeviceSession(WintunTun);
+                                impl TunSession for WintunDeviceSession {
+                                    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                                        self.0.read_packet(buf)
+                                    }
+                                    fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+                                        self.0.write_packet(buf)
+                                    }
+                                }
+                                Ok(Self {
+                                    running: Arc::new(AtomicBool::new(true)),
+                                    session: Some(Box::new(WintunDeviceSession(wintun_dev))),
+                                    name: name.to_string(),
+                                })
+                            }
+                            Err(e) => {
+                                warn!("Failed to initialize WintunTun adapter '{}': {}", name, e);
+                                Err(e)
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "vpn"))]
+                    {
+                        warn!("wintun.dll detected but build lacks --features vpn");
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            format!("wintun.dll found at {} - compile with --features vpn to enable Wintun adapter driver", dll_path.display()),
+                        ))
+                    }
                 }
                 None => {
                     warn!("wintun.dll not found in executable dir, working dir, System32, or PATH");

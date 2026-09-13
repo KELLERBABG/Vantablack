@@ -111,3 +111,15 @@ To prevent passive network observers from inferring packet contents via size or 
 
 - **Volatile Zeroization on Drop:** Sensitive cryptographic keys implement `Zeroize` and `ZeroizeOnDrop`. When a session terminates or a key is rotated, the operating system memory addresses are wiped with zero bytes through compiler-barrier memory fences.
 - **AES-256-XTS In-Memory Protection:** High-security session rings use AES-XTS memory encryption to protect transit frames while buffered in system RAM against unauthorized DMA reads or host memory dump exploits.
+
+---
+
+## 8. Multi-Hop Mesh Validation & Observability
+
+The cryptographic invariants are continually benchmarked across a 7-node Level 2 carrier mesh simulation topology under four explicit flight test scenarios:
+
+1. **Scenario 1 (Byzantine Tamper Resistance):** Pairwise combinatorial RS(2,1) and Poly1305 MAC tag verification isolates in-flight corrupted shards from compromised carriers without retransmission.
+2. **Scenario 2 (L6 Anti-Replay Defense):** Monotonic sequence tracking through `SessionGuard`'s sliding window rejects cloned packets and injected replay counters.
+3. **Scenario 3 (L5 Traffic Shaping & Analysis Resistance):** Trailing 16–64B randomized noise pads 512-byte canonical GTF frames, frustrating passive statistical timing and size analysis.
+4. **Scenario 4 (Real-time Convergence Latency):** Autonomous Chaos Monkey severing triggers sub-55ms failover to hot-standby carrier routes.
+5. **Telemetry Surface:** Real-time state metrics are exposed via JSON at `/api/telemetry` and displayed on the reactive dashboard (`assets/wan_dashboard.html`) on port 8080.

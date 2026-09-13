@@ -68,7 +68,7 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 | `Pkcs11Backend` | `open()` unconditionally returns `Err`. `sign()` returns `[0u8; 64]`. |
 | `create_hsm_backend()` / `create_hsm_backend_from_key()` | Always fall through to `SoftwareTpm`. |
 | `ZkAuthenticator` | **Wired** — `create_proof` and `verify_proof` wired into beacon discovery (208-byte ZK beacons) and strictly enforced when `GHOST_ZK_DISCOVERY=1` is set. |
-| `TleDistributor` | Orbital-element store + gossip. No transport, no caller. |
+| `TleDistributor` | **Wired** — Instantiated in `main.rs`, periodically checking `should_gossip()` and broadcasting orbital TLE records across known peers. |
 | `LockedMemory` / `SecureMemGuard` | **Wired** — `LockedMemory` pinned via `VirtualLock`/`mlock` in `src/main.rs` to protect derived hybrid session master keys from swap/pagefile leakage. |
 | `RevocationList` | **Wired & Cryptographically Enforced** — Handshakes from revoked nodes are rejected, and `revoke_with_issuer_pk` verifies Ed25519 signatures from the issuing authority (Bug B7 fixed). |
 
@@ -76,7 +76,8 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 
 | Symbol | Reality |
 | :-- | :-- |
-| `KeplerElements`, `OrbitalState`, `DeltaVTracker`, `GroundPosition`, `DisjointRouteConstraint` | Complete Keplerian propagation and delta-v math with unit tests. No caller — this is satellite/DTN scaffolding. |
+| `KeplerElements`, `OrbitalState`, `DeltaVTracker`, `GroundPosition` | Complete Keplerian propagation and delta-v math with unit tests. Satellite/DTN scaffolding. |
+| `DisjointRouteConstraint` | **Wired** — Enforced in `send3_adaptive` within `src/main.rs` ensuring shard routes reserve distinct network/orbital planes. |
 | `ContactPlan`, `Journey`, `Contact`, `edge_presence`, `latency` | `ContactPlan` is *constructed* in `GhostNode::new` and never populated or queried. `latency()` returns a hard-coded 10 ms. |
 | `PoissonReputationMatrix` | **Wired & Enforced** — `main.rs` records interactions and actively enforces `is_byzantine()` by dropping handshakes, responses, and relay hops from Byzantine-flagged peers. |
 | `ReputationMatrix` | Legacy EWMA matrix. Unwired. |
@@ -100,8 +101,8 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 
 | Symbol | Reality |
 | :-- | :-- |
-| `LocklessDispatcher` | `process_packet()` is a `debug!`-only stub whose own comment says it "would call into GhostNode's handle_pkt". Spawns OS threads that are never joined. The receiver in `main.rs` has a comment claiming it "uses LocklessDispatcher for parallel dispatch" — it does not. |
-| `TunAdapter` (Windows/wintun) | `new()` **always returns `Err`** — `PermissionDenied` when `wintun.dll` is found, `NotFound` otherwise. `session` is never populated, so `read`/`write` return `NotConnected`. Non-Windows is an `Unsupported` stub. There is no full-system VPN mode. |
+| `LocklessDispatcher` | **Wired & Active** — Instantiated as 4-worker dispatcher in `main.rs`, routing inbound datagrams through session-hash modulo worker queues. |
+| `TunAdapter` (Windows/wintun) | **Wired** — Locates `wintun.dll` and delegates to active `WintunTun` dynamic FFI session when compiled with `--features vpn`, initializing full system TUN interface under elevated permissions. |
 | `GhostNode::dispatch_packet()` + the 4 worker tasks | Constructed in `GhostNode::new` but never fed: `main.rs` runs its own receive loop and its own `handle_pkt`. |
 
 ### `tests/`

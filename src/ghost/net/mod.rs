@@ -15,9 +15,6 @@ pub mod orbit;
 pub mod relay;
 pub mod routing;
 pub mod security;
-// Superseded by net::vpn::tun (real wintun / /dev/net/tun backends). The old
-// stub was never wired into the binary; it stays compiled only for its tests.
-#[cfg(test)]
 pub mod tun;
 #[cfg(feature = "vpn")]
 pub mod vpn;

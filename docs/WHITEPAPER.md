@@ -72,3 +72,22 @@ Nodes feature an internal SOCKS5 proxy engine listening on `127.0.0.1:1080`:
 - Outbound TCP connections initiated by client applications are encapsulated into GHOST transport frames.
 - Payload streams are sharded across established peer paths to an authenticated Exit Node.
 - The Exit Node reassembles the shards, executes the outbound connection to the target WAN destination, and shards the inbound response back across the mesh.
+
+---
+
+### 6. Level 2 Multi-Hop Carrier Mesh & Active Validation Scenarios
+
+The architecture incorporates a 7-node carrier simulation topology (`vantablack-carrier-1..5`, `mesh-client`, `mesh-exit`) modeled under Linux kernel `tc netem` latency, jitter, and packet loss emulation. The deployment validates 4 continuous resilience invariants:
+
+1. **Scenario 1 (Byzantine Tamper Resistance):** Pairwise combinatorial RS(2,1) testing against Poly1305 authentication tags isolates actively corrupted shards from compromised carriers without packet retransmission.
+2. **Scenario 2 (Layer 6 Anti-Replay Defense):** The `SessionGuard` 64-bit sliding window bitmask detects and rejects duplicate clone transmissions and injected replay counters.
+3. **Scenario 3 (Layer 5 Traffic Shaping & Analysis Resistance):** Canonical 512-byte GTF frames are padded with 16–64 bytes of cryptographically randomized jitter, defeating statistical traffic classification and deep packet inspection (DPI).
+4. **Scenario 4 (Real-time Convergence Latency Measurement):** An autonomous Chaos Monkey periodically severs the high-latency satellite carrier (`Carrier 3`), triggering sub-55ms failover to hot-standby `Carrier 5` via the `AdaptiveShardRouter`.
+
+---
+
+### 7. Observability & Telemetry Surface
+
+The protocol core embeds a real-time observability engine:
+- **JSON Telemetry API:** Served at `/api/telemetry` detailing flight cycle metrics, carrier latency, Byzantine isolation events, and failover convergence.
+- **Reactive Dashboard:** Served on port 8080 (`assets/wan_dashboard.html`), providing dynamic SVG carrier topology visualization, live status indicators, and security alert feeds.

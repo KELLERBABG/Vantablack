@@ -199,3 +199,60 @@ Global Ghost Net implements an integrated SOCKS5 proxy engine listening locally 
 3. **Exit Node Relay:** The Exit Node (`172.28.1.20`) reassembles shards, verifies Poly1305 MAC authenticity, connects to the target destination, and proxies streams back across the carrier fleet.
 4. **Egress IP Rotation:** The exit node dynamically rotates outbound egress IP addresses (`198.51.100.x`) across successive requests to protect client privacy against destination tracking.
 
+---
+
+## 8. Level 2 Multi-Hop Mesh WAN Architecture (7-Node Carrier Simulation)
+
+Global Ghost Net includes a complete, containerized Level 2 multi-hop WAN carrier simulation topology executed under Docker Compose and shaped using Linux `tc netem`.
+
+### 8.1 7-Node Carrier Simulation Topology
+
+| Node Name | Container / Subnet IP | Listening Port | Simulated WAN Network Profile (`tc netem`) | Role & Path Assignment |
+|---|---|---|---|---|
+| `mesh-client` | `172.28.1.10` | `8000`, `1080` (SOCKS5), `8080` (HTTP) | Local / Endpoint | Mesh Initiator, SOCKS5 Ingress, Telemetry Server |
+| `vantablack-carrier-1` | `172.28.1.11` | `8000` | 45ms delay ±5ms jitter, 1% packet loss | Transatlantic Fiber: Hop 1 of Path 0 (Client $\rightarrow$ C1 $\rightarrow$ C4 $\rightarrow$ Exit) |
+| `vantablack-carrier-2` | `172.28.1.12` | `8000` | 85ms delay ±15ms jitter, 3% packet loss | Transpacific Edge: Direct 1-Hop Path 1; Byzantine adversary target |
+| `vantablack-carrier-3` | `172.28.1.13` | `8000` | 160ms delay ±25ms jitter, 8% packet loss | Satellite Uplink: Direct 1-Hop Path 2; Autonomous Chaos Monkey target |
+| `vantablack-carrier-4` | `172.28.1.14` | `8000` | 25ms delay ±3ms jitter, 0.5% packet loss | Continental Core: Hop 2 of Path 0 (C1 $\rightarrow$ C4 $\rightarrow$ Exit) |
+| `vantablack-carrier-5` | `172.28.1.15` | `8000` | 55ms delay ±8ms jitter, 1% packet loss | Dynamic Failover Reserve: Hot Standby for Path 2 |
+| `mesh-exit` | `172.28.1.20` | `8000` | Local / Internet Gateway | Egress Gateway, Poly1305 Verifier, IP Rotator (`198.51.100.x`) |
+
+---
+
+## 9. The Four Active Validation Scenarios
+
+The carrier simulation runs four continuous autonomous test scenarios verifying the fault-tolerance, cryptographic integrity, and privacy guarantees of the protocol stack:
+
+### Scenario 1: Byzantine Tamper Resistance
+- **Threat Model:** Carrier 2 (`172.28.1.12`) acts as an active in-path adversary, mutating 4 bytes of encrypted payload in transit (`payload[len - 4..len] ^= [0x33, 0x55, 0xAA, 0xFF]`) on every 3rd packet.
+- **Defense Mechanism:** Pairwise combinatorial Reed-Solomon evaluation in `dec_join_tamper_resistant()` tests pairs $(0,1)$, $(0,2)$, and $(1,2)$ against Poly1305 MAC tags.
+- **Result:** Pairs containing the corrupted shard fail Poly1305 authentication. The honest pair $(0,2)$ succeeds, perfectly reconstructing the original payload without retransmission. Carrier 2 is marked `TAMPER REJECTED (Poly1305 Tag Failed)`.
+
+### Scenario 2: Layer 6 Anti-Replay Defense
+- **Threat Model:** Every 4 flight cycles, an adversarial observer captures and re-injects a duplicate clone of Shard 0 with a stale sequence counter.
+- **Defense Mechanism:** `SessionGuard` maintains a 64-bit / 128-bit sliding window bitmask. Stale counters falling behind the window bound ($V_{\text{max}} - W$) or matching previously set bits in the mask are immediately rejected before cryptographic processing.
+- **Result:** Replayed frames are logged and discarded with zero CPU overhead for decryption (`REPLAY ATTACK BLOCKED (Counter N)`).
+
+### Scenario 3: Layer 5 Traffic Shaping & Analysis Resistance
+- **Threat Model:** Adversaries use passive Deep Packet Inspection (DPI) to identify application protocols by examining packet length distributions and timing intervals.
+- **Defense Mechanism:** `apply_l5_jitter_padding()` prepends a 2-byte length prefix and appends a uniform random byte buffer of 16 to 64 bytes (`rand::thread_rng().gen_range(16..=64)`) to each 512-byte canonical GTF frame.
+- **Result:** Outbound datagram lengths vary continuously across time ($528\text{ B} \dots 576\text{ B}$), preventing traffic fingerprinting and correlation.
+
+### Scenario 4: Real-time Convergence Latency Measurement (Chaos Monkey)
+- **Threat Model:** Physical infrastructure outage or link severing. Every 10 flight cycles, the autonomous Chaos Monkey severs Carrier 3 (`172.28.1.13`), simulating a total satellite uplink blackout.
+- **Defense Mechanism:** `AdaptiveShardRouter` registers unacknowledged loss on Carrier 3 (`record_loss`), updates its path fitness score, and dynamically promotes hot-standby Carrier 5 (`172.28.1.15`).
+- **Result:** Shard 2 routes over Carrier 5 with instantaneous convergence latency ($\le 55\text{ ms}$). The mesh survives uninterrupted with 0% data loss.
+
+---
+
+## 10. Live Telemetry Dashboard Architecture
+
+A real-time observability engine is embedded directly within the client node, exposing metrics via JSON API and a single-page reactive HTML dashboard:
+
+- **HTTP Server:** Bound to `0.0.0.0:8080` (or configured via `GHOST_METRICS_PORT`, defaults to `9090` in daemon mode, `8080` in `wan_mesh`).
+- **Endpoints:**
+  - `GET /api/telemetry`: Returns full JSON status object (`TelemetryState`), including cycle count, active routes, carrier latency/loss matrix, security alerts (Byzantine tamper isolation events, replay attacks blocked), traffic shaping jitter stats, and convergence latency.
+  - `GET /` and `GET /dashboard`: Serves the high-performance, single-file HTML dashboard ([`assets/wan_dashboard.html`](file:///g:/Global-Ghost-Net-main/assets/wan_dashboard.html)) with 1-second auto-polling, dynamic SVG carrier topology map, real-time alert banners, and active route latency bars.
+  - `GET /healthz`: Health check endpoint returning HTTP 200 JSON with node version, fingerprint, and uptime.
+  - `GET /metrics`: Prometheus-compatible exposition format for integration with Grafana / Prometheus scrapers.
+
