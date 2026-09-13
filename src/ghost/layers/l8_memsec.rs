@@ -15,7 +15,6 @@
 /// ## eBPF/XDP Network Acceleration Abstraction (line 32)
 /// Abstracted zero-copy packet path that bypasses the OS network stack
 /// for the 4-byte session hash lookup, enabling wire-speed routing decisions.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -46,7 +45,9 @@ impl XtsMemoryEncryptor {
     pub fn new(key1: &[u8; 32], key2: &[u8; 32]) -> Self {
         let enc_cipher = Aes256::new(GenericArray::from_slice(key1));
         let tweak_cipher = Aes256::new(GenericArray::from_slice(key2));
-        Self { xts: Xts128::<Aes256>::new(enc_cipher, tweak_cipher) }
+        Self {
+            xts: Xts128::<Aes256>::new(enc_cipher, tweak_cipher),
+        }
     }
 
     /// Encrypt a buffer in-place using XTS mode.
@@ -55,7 +56,9 @@ impl XtsMemoryEncryptor {
     /// data-unit index (sector_offset). The same plaintext at different
     /// addresses therefore produces different ciphertext.
     pub fn encrypt_buffer(&self, buffer: &mut [u8], sector_offset: u64) {
-        if buffer.is_empty() { return; }
+        if buffer.is_empty() {
+            return;
+        }
         let mut tweak = [0u8; 16];
         tweak[..8].copy_from_slice(&sector_offset.to_le_bytes());
         self.xts.encrypt_sector(buffer, tweak);
@@ -63,14 +66,14 @@ impl XtsMemoryEncryptor {
 
     /// Decrypt a buffer in-place using XTS mode.
     pub fn decrypt_buffer(&self, buffer: &mut [u8], sector_offset: u64) {
-        if buffer.is_empty() { return; }
+        if buffer.is_empty() {
+            return;
+        }
         let mut tweak = [0u8; 16];
         tweak[..8].copy_from_slice(&sector_offset.to_le_bytes());
         self.xts.decrypt_sector(buffer, tweak);
     }
 }
-
-
 
 /// A memory region protected by XTS encryption when not in active use.
 pub struct EncryptedMemoryRegion {
@@ -189,7 +192,8 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
             *self.slots[idx].get() = Some(item);
         }
 
-        self.write_idx.store(write.wrapping_add(1), Ordering::Release);
+        self.write_idx
+            .store(write.wrapping_add(1), Ordering::Release);
         true
     }
 
@@ -203,9 +207,7 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
         }
 
         let idx = read & (self.capacity - 1);
-        let item = unsafe {
-            (*self.slots[idx].get()).take()
-        };
+        let item = unsafe { (*self.slots[idx].get()).take() };
 
         if item.is_some() {
             self.read_idx.store(read.wrapping_add(1), Ordering::Release);
@@ -220,7 +222,8 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
 
     /// Check if the buffer is full.
     pub fn is_full(&self) -> bool {
-        self.write_idx.load(Ordering::Acquire)
+        self.write_idx
+            .load(Ordering::Acquire)
             .wrapping_sub(self.read_idx.load(Ordering::Acquire))
             >= self.capacity
     }
@@ -386,8 +389,7 @@ impl BundleProtocolHeader {
         if offset + dst_len + 8 + 8 + 8 > data.len() {
             return None;
         }
-        let destination_eid =
-            String::from_utf8_lossy(&data[offset..offset + dst_len]).to_string();
+        let destination_eid = String::from_utf8_lossy(&data[offset..offset + dst_len]).to_string();
         offset += dst_len;
         let mut ts_bytes = [0u8; 8];
         ts_bytes.copy_from_slice(&data[offset..offset + 8]);
@@ -525,7 +527,10 @@ mod tests {
         let mut buf2 = [0u8; 64];
         buf2[..8].copy_from_slice(b"SECRET!!");
         encryptor.encrypt_buffer(&mut buf2, 7);
-        assert_ne!(buf, buf2, "XTS tweak (sector offset) must change ciphertext");
+        assert_ne!(
+            buf, buf2,
+            "XTS tweak (sector offset) must change ciphertext"
+        );
         encryptor.decrypt_buffer(&mut buf, 0);
         assert_eq!(buf, plain, "XTS roundtrip must recover the original");
 
@@ -539,8 +544,11 @@ mod tests {
         region.lock();
         {
             let data = region.unlock();
-            assert_eq!(&data[..8], b"SECRET!!",
-                "unlock must return plaintext after lock");
+            assert_eq!(
+                &data[..8],
+                b"SECRET!!",
+                "unlock must return plaintext after lock"
+            );
         }
     }
 
@@ -602,7 +610,11 @@ mod tests {
         let sim = DopplerShiftSimulator::leo_typical();
         let shift_hz = sim.doppler_shift_hz();
         // At 7500 m/s and 193 THz: Δf ≈ 4.83 GHz
-        assert!(shift_hz > 1e9, "Doppler shift should be GHz, got {} Hz", shift_hz);
+        assert!(
+            shift_hz > 1e9,
+            "Doppler shift should be GHz, got {} Hz",
+            shift_hz
+        );
 
         let mut data = vec![0xABu8; 100];
         let errors = sim.apply_doppler_noise(&mut data);

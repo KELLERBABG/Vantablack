@@ -23,9 +23,8 @@ use super::tun::TunDevice;
 use super::VpnIngress;
 use crate::ghost::layers::l0_identity::GhostIdentity;
 use crate::ghost::layers::l1_kem::{
-    build_handshake_pdu, compute_session_hash, derive_hybrid_master_key,
-    generate_kyber_keypair, generate_x25519_keypair, parse_response_pdu,
-    RESPONSE_BLOB_LEN,
+    build_handshake_pdu, compute_session_hash, derive_hybrid_master_key, generate_kyber_keypair,
+    generate_x25519_keypair, parse_response_pdu, RESPONSE_BLOB_LEN,
 };
 use crate::ghost::layers::l2_aead::{
     decrypt_in_place_with_context, encrypt_in_place_with_context, NonceDirection,
@@ -65,7 +64,10 @@ unsafe impl Sync for AndroidTun {}
 
 impl AndroidTun {
     pub fn from_fd(fd: i32) -> Self {
-        Self { fd, running: Arc::new(AtomicBool::new(true)) }
+        Self {
+            fd,
+            running: Arc::new(AtomicBool::new(true)),
+        }
     }
 }
 
@@ -165,10 +167,22 @@ fn receiver_open(
         return None;
     }
     let mut msg = b[2..2 + l].to_vec();
-    let ok = decrypt_in_place_with_context(key, ctr, &sh, NonceDirection::InitiatorToResponder, &mut msg)
-        .is_ok()
-        || decrypt_in_place_with_context(key, ctr, &sh, NonceDirection::ResponderToInitiator, &mut msg)
-            .is_ok();
+    let ok = decrypt_in_place_with_context(
+        key,
+        ctr,
+        &sh,
+        NonceDirection::InitiatorToResponder,
+        &mut msg,
+    )
+    .is_ok()
+        || decrypt_in_place_with_context(
+            key,
+            ctr,
+            &sh,
+            NonceDirection::ResponderToInitiator,
+            &mut msg,
+        )
+        .is_ok();
     if !ok {
         return None;
     }
@@ -249,17 +263,25 @@ fn perform_handshake(
             }
 
             if shards.iter().filter(|s| s.is_some()).count() >= 2 {
-                let m = shards.iter().filter_map(|x| x.as_ref().map(|v| v.len())).max().unwrap_or(0);
+                let m = shards
+                    .iter()
+                    .filter_map(|x| x.as_ref().map(|v| v.len()))
+                    .max()
+                    .unwrap_or(0);
                 for ref mut v in shards.iter_mut().flatten() {
                     while v.len() < m {
                         v.push(0);
                     }
                 }
-                let mut w: Vec<_> = (0..3).map(|i| shards.get(i).and_then(|x| x.clone())).collect();
+                let mut w: Vec<_> = (0..3)
+                    .map(|i| shards.get(i).and_then(|x| x.clone()))
+                    .collect();
                 if l4_rs::reconstruct(&mut w).is_ok() {
                     if let (Some(a), Some(b)) = (w[0].as_ref(), w[1].as_ref()) {
                         let resp_data = [a.as_slice(), b.as_slice()].concat();
-                        if resp_data.len() >= RESPONSE_BLOB_LEN && resp_data.starts_with(b"GHOST_RESPONSE__") {
+                        if resp_data.len() >= RESPONSE_BLOB_LEN
+                            && resp_data.starts_with(b"GHOST_RESPONSE__")
+                        {
                             let mut rd = resp_data;
                             rd.truncate(RESPONSE_BLOB_LEN);
                             if let Some(resp) = parse_response_pdu(&rd) {
@@ -285,8 +307,7 @@ fn perform_handshake(
 /// One TUN→mesh step: read a packet from the TUN, seal it, wrap in GTF bulk frame,
 /// and send via the protected socket to the hub.
 pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
-    let (Some(tun), Some(sock), Some(hub)) =
-        (core.tun.as_mut(), core.sock.as_ref(), core.hub_addr)
+    let (Some(tun), Some(sock), Some(hub)) = (core.tun.as_mut(), core.sock.as_ref(), core.hub_addr)
     else {
         return;
     };
@@ -300,7 +321,13 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
         Ok(n) if n > 0 => {
             if let Some(wire) = seal_from_tun(&core.state, &buf[..n]) {
                 let ctr = core.tx_seq.fetch_add(1, Ordering::Relaxed);
-                let frame = tunnel_frame(&session_key, session_hash, ctr, NonceDirection::InitiatorToResponder, &wire);
+                let frame = tunnel_frame(
+                    &session_key,
+                    session_hash,
+                    ctr,
+                    NonceDirection::InitiatorToResponder,
+                    &wire,
+                );
                 core.tx_ctr.fetch_add(1, Ordering::Relaxed);
                 let _ = sock.send_to(&frame, hub);
             }
@@ -412,8 +439,12 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_setSessionKey(
     ptr: jlong,
     key: JByteArray,
 ) {
-    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else { return };
-    let Ok(k) = env.convert_byte_array(&key) else { return };
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else {
+        return;
+    };
+    let Ok(k) = env.convert_byte_array(&key) else {
+        return;
+    };
     if k.len() != 32 {
         throw(&mut env, "session key must be 32 bytes");
         return;
@@ -501,7 +532,9 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_pump(
     _class: JClass,
     ptr: jlong,
 ) {
-    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else { return };
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
+        return;
+    };
     if core.stop.load(Ordering::Relaxed) {
         return;
     }
@@ -516,7 +549,9 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_drain(
     _class: JClass,
     ptr: jlong,
 ) -> jboolean {
-    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else { return 0 };
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
+        return 0;
+    };
     if core.stop.load(Ordering::Relaxed) {
         return 0;
     }

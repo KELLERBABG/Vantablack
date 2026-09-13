@@ -6,7 +6,6 @@
 /// 3. Decentralized Two-Line Element Distribution (line 28)
 /// 4. Memory Guard & Secure Zeroing (line 23)
 /// 5. Fixed-Slot Temporal Isolation (line 26)
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -29,9 +28,7 @@ fn platform_lock_memory(ptr: *const u8, len: usize) -> bool {
         fn VirtualLock(lpAddress: *const std::ffi::c_void, dwSize: usize) -> i32;
     }
     // SAFETY: Caller guarantees the memory region is valid and page-aligned.
-    unsafe {
-        VirtualLock(ptr as *const std::ffi::c_void, len) != 0
-    }
+    unsafe { VirtualLock(ptr as *const std::ffi::c_void, len) != 0 }
 }
 
 #[cfg(target_os = "windows")]
@@ -40,9 +37,7 @@ fn platform_unlock_memory(ptr: *const u8, len: usize) -> bool {
         fn VirtualUnlock(lpAddress: *const std::ffi::c_void, dwSize: usize) -> i32;
     }
     // SAFETY: Caller guarantees the memory region is valid and page-aligned.
-    unsafe {
-        VirtualUnlock(ptr as *const std::ffi::c_void, len) != 0
-    }
+    unsafe { VirtualUnlock(ptr as *const std::ffi::c_void, len) != 0 }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -51,9 +46,7 @@ fn platform_lock_memory(ptr: *const u8, len: usize) -> bool {
         fn mlock(addr: *const std::ffi::c_void, len: usize) -> i32;
     }
     // SAFETY: Caller guarantees the memory region is valid and page-aligned.
-    unsafe {
-        mlock(ptr as *const std::ffi::c_void, len) == 0
-    }
+    unsafe { mlock(ptr as *const std::ffi::c_void, len) == 0 }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -62,9 +55,7 @@ fn platform_unlock_memory(ptr: *const u8, len: usize) -> bool {
         fn munlock(addr: *const std::ffi::c_void, len: usize) -> i32;
     }
     // SAFETY: Caller guarantees the memory region is valid and page-aligned.
-    unsafe {
-        munlock(ptr as *const std::ffi::c_void, len) == 0
-    }
+    unsafe { munlock(ptr as *const std::ffi::c_void, len) == 0 }
 }
 
 /// A memory region that is pinned to physical RAM via mlock/VirtualLock
@@ -110,7 +101,12 @@ impl LockedMemory {
             return None;
         }
 
-        Some(Self { ptr, len, capacity, locked })
+        Some(Self {
+            ptr,
+            len,
+            capacity,
+            locked,
+        })
     }
 
     /// Get a mutable reference to the locked memory buffer.
@@ -184,12 +180,17 @@ pub struct RevocationList {
 
 impl Default for RevocationList {
     fn default() -> Self {
-        Self { entries: Arc::new(Mutex::new(HashMap::new())), self_revoked: AtomicBool::new(false) }
+        Self {
+            entries: Arc::new(Mutex::new(HashMap::new())),
+            self_revoked: AtomicBool::new(false),
+        }
     }
 }
 
 impl RevocationList {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Revoke an identity. If entry.signature is non-empty, verifies the signature against issuer_pk_bytes.
     /// Returns true if revoked, false if expired, older timestamp, or signature invalid.
@@ -200,14 +201,30 @@ impl RevocationList {
     /// Revoke an identity with explicit issuer public key verification.
     /// If issuer_pk is provided and signature is present, verifies that the issuer signed
     /// the message: "REVOKE:" || fingerprint || ":" || timestamp || ":" || reason.as_str().
-    pub fn revoke_with_issuer_pk(&self, entry: RevocationEntry, issuer_pk: Option<&[u8; 32]>) -> bool {
+    pub fn revoke_with_issuer_pk(
+        &self,
+        entry: RevocationEntry,
+        issuer_pk: Option<&[u8; 32]>,
+    ) -> bool {
         if let Some(pk) = issuer_pk {
             if entry.signature.len() == 64 {
                 let mut sig_bytes = [0u8; 64];
                 sig_bytes.copy_from_slice(&entry.signature);
-                let msg = format!("REVOKE:{}:{}:{}", entry.fingerprint, entry.timestamp, entry.reason.as_str());
-                if !crate::ghost::layers::l0_identity::verify_peer_signature(pk, msg.as_bytes(), &sig_bytes) {
-                    warn!("Revocation signature verification failed for {}", entry.fingerprint);
+                let msg = format!(
+                    "REVOKE:{}:{}:{}",
+                    entry.fingerprint,
+                    entry.timestamp,
+                    entry.reason.as_str()
+                );
+                if !crate::ghost::layers::l0_identity::verify_peer_signature(
+                    pk,
+                    msg.as_bytes(),
+                    &sig_bytes,
+                ) {
+                    warn!(
+                        "Revocation signature verification failed for {}",
+                        entry.fingerprint
+                    );
                     return false;
                 }
             }
@@ -215,7 +232,9 @@ impl RevocationList {
         let mut entries = self.entries.lock().unwrap();
         let fp = entry.fingerprint.clone();
         if let Some(existing) = entries.get(&fp) {
-            if entry.timestamp <= existing.timestamp { return false; }
+            if entry.timestamp <= existing.timestamp {
+                return false;
+            }
         }
         debug!("Revoking identity: {} reason: {:?}", fp, entry.reason);
         entries.insert(fp, entry);
@@ -226,8 +245,12 @@ impl RevocationList {
         let entries = self.entries.lock().unwrap();
         if let Some(entry) = entries.get(fingerprint) {
             let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-            if now - entry.timestamp < REVOCATION_EXPIRY_SECS { return true; }
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now - entry.timestamp < REVOCATION_EXPIRY_SECS {
+                return true;
+            }
         }
         false
     }
@@ -235,7 +258,9 @@ impl RevocationList {
     pub fn prune_expired(&self) -> usize {
         let mut entries = self.entries.lock().unwrap();
         let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let before = entries.len();
         entries.retain(|_, e| now - e.timestamp < REVOCATION_EXPIRY_SECS);
         before - entries.len()
@@ -243,9 +268,14 @@ impl RevocationList {
 
     pub fn reject_handshake(&self, peer_fingerprint: &str) -> bool {
         if self.is_revoked(peer_fingerprint) {
-            warn!("Rejected handshake from revoked identity: {}", peer_fingerprint);
+            warn!(
+                "Rejected handshake from revoked identity: {}",
+                peer_fingerprint
+            );
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 }
 
@@ -274,15 +304,17 @@ impl ZkAuthenticator {
         (proof.to_vec(), commitment)
     }
 
-    pub fn verify_proof(
-        public_key_bytes: &[u8; 32],
-        proof: &[u8],
-        commitment: &[u8; 32],
-    ) -> bool {
-        if proof.len() != 64 { return false; }
+    pub fn verify_proof(public_key_bytes: &[u8; 32], proof: &[u8], commitment: &[u8; 32]) -> bool {
+        if proof.len() != 64 {
+            return false;
+        }
         let mut sig_bytes = [0u8; 64];
         sig_bytes.copy_from_slice(&proof[..64]);
-        crate::ghost::layers::l0_identity::verify_peer_signature(public_key_bytes, commitment, &sig_bytes)
+        crate::ghost::layers::l0_identity::verify_peer_signature(
+            public_key_bytes,
+            commitment,
+            &sig_bytes,
+        )
     }
 
     pub fn private_fingerprint_comparison(
@@ -333,13 +365,17 @@ impl Default for TleDistributor {
 }
 
 impl TleDistributor {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn store_tle(&self, tle: TleData) {
         let mut store = self.tle_store.lock().unwrap();
         let id = tle.norad_id;
         if let Some(existing) = store.get(&id) {
-            if tle.last_updated <= existing.last_updated { return; }
+            if tle.last_updated <= existing.last_updated {
+                return;
+            }
         }
         debug!("Stored TLE for {} (NORAD {})", tle.name, id);
         store.insert(id, tle);
@@ -364,21 +400,33 @@ impl TleDistributor {
     }
 
     pub fn from_orbital_elements(
-        name: &str, norad_id: u32,
+        name: &str,
+        norad_id: u32,
         elements: &crate::ghost::net::orbit::KeplerElements,
     ) -> Self {
         let _alt = elements.a - crate::ghost::net::orbit::EARTH_RADIUS;
         let period = elements.orbital_period();
         let mean_motion = 86400.0 / period;
         let mut store = HashMap::new();
-        store.insert(norad_id, TleData {
-            name: name.to_string(), norad_id,
-            epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
-            inclination: elements.i.to_degrees(), raan: elements.raan.to_degrees(),
-            eccentricity: elements.e, arg_perigee: elements.arg_perigee.to_degrees(),
-            mean_anomaly: elements.mean_anomaly.to_degrees(), mean_motion, bstar: 0.0,
-            last_updated: Instant::now(),
-        });
+        store.insert(
+            norad_id,
+            TleData {
+                name: name.to_string(),
+                norad_id,
+                epoch: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64(),
+                inclination: elements.i.to_degrees(),
+                raan: elements.raan.to_degrees(),
+                eccentricity: elements.e,
+                arg_perigee: elements.arg_perigee.to_degrees(),
+                mean_anomaly: elements.mean_anomaly.to_degrees(),
+                mean_motion,
+                bstar: 0.0,
+                last_updated: Instant::now(),
+            },
+        );
         Self {
             tle_store: Arc::new(Mutex::new(store)),
             requested_from: Arc::new(Mutex::new(Vec::new())),
@@ -438,9 +486,14 @@ impl<const N: usize> SecureMemGuard<N> {
     }
 
     pub fn access(&self) -> Option<&[u8; N]> {
-        if self.tripped.load(Ordering::SeqCst) { return None; }
+        if self.tripped.load(Ordering::SeqCst) {
+            return None;
+        }
         self.access_count.fetch_add(1, Ordering::Relaxed);
-        if self.detect_anomaly() { self.panic_zero(); return None; }
+        if self.detect_anomaly() {
+            self.panic_zero();
+            return None;
+        }
         unsafe { Some(&*self.data.get()) }
     }
 
@@ -453,15 +506,21 @@ impl<const N: usize> SecureMemGuard<N> {
     }
 
     pub fn panic_zero(&self) {
-        if self.tripped.swap(true, Ordering::SeqCst) { return; }
+        if self.tripped.swap(true, Ordering::SeqCst) {
+            return;
+        }
         unsafe {
             let ptr = self.data.get() as *mut u8;
-            for i in 0..N { std::ptr::write_volatile(ptr.add(i), 0u8); }
+            for i in 0..N {
+                std::ptr::write_volatile(ptr.add(i), 0u8);
+            }
         }
         info!("SecureMemGuard: zeroed {} bytes", N);
     }
 
-    pub fn is_tripped(&self) -> bool { self.tripped.load(Ordering::SeqCst) }
+    pub fn is_tripped(&self) -> bool {
+        self.tripped.load(Ordering::SeqCst)
+    }
 
     /// Attempt to lock the secret pages. Call this after the guard has been
     /// placed on the heap (e.g., inside an Arc) for maximum effect.
@@ -594,7 +653,8 @@ impl HsmBackend for SoftwareTpm {
         use sha2::Sha256;
         let hk = Hkdf::<Sha256>::new(Some(self.fingerprint.as_bytes()), context);
         let mut session_key = [0u8; 32];
-        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key).unwrap();
+        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key)
+            .unwrap();
         session_key
     }
 
@@ -639,8 +699,12 @@ mod tests {
         assert!(!rl.is_revoked(&fp));
         let entry = RevocationEntry {
             fingerprint: fp.clone(),
-            timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-            signature: vec![], issuer_id: "issuer".to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            signature: vec![],
+            issuer_id: "issuer".to_string(),
             reason: RevocationReason::KeyCompromise,
         };
         assert!(rl.revoke(entry));
@@ -651,7 +715,8 @@ mod tests {
     fn test_zk_proof_basic() {
         let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
         let pk = identity.public_key_bytes();
-        let (proof, commitment) = ZkAuthenticator::create_proof(&pk, |d| identity.sign(d).to_bytes());
+        let (proof, commitment) =
+            ZkAuthenticator::create_proof(&pk, |d| identity.sign(d).to_bytes());
         assert!(ZkAuthenticator::verify_proof(&pk, &proof, &commitment));
     }
 
@@ -659,8 +724,13 @@ mod tests {
     fn test_zk_proof_wrong_key() {
         let i1 = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
         let i2 = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
-        let (proof, commitment) = ZkAuthenticator::create_proof(&i1.public_key_bytes(), |d| i1.sign(d).to_bytes());
-        assert!(!ZkAuthenticator::verify_proof(&i2.public_key_bytes(), &proof, &commitment));
+        let (proof, commitment) =
+            ZkAuthenticator::create_proof(&i1.public_key_bytes(), |d| i1.sign(d).to_bytes());
+        assert!(!ZkAuthenticator::verify_proof(
+            &i2.public_key_bytes(),
+            &proof,
+            &commitment
+        ));
     }
 
     #[test]
@@ -686,10 +756,17 @@ mod tests {
     fn test_tle_storage() {
         let tle_dist = TleDistributor::new();
         let tle = TleData {
-            name: "TestSat".into(), norad_id: 12345, epoch: 0.0,
-            inclination: 53.0, raan: 0.0, eccentricity: 0.001,
-            arg_perigee: 0.0, mean_anomaly: 0.0, mean_motion: 15.5,
-            bstar: 0.0, last_updated: Instant::now(),
+            name: "TestSat".into(),
+            norad_id: 12345,
+            epoch: 0.0,
+            inclination: 53.0,
+            raan: 0.0,
+            eccentricity: 0.001,
+            arg_perigee: 0.0,
+            mean_anomaly: 0.0,
+            mean_motion: 15.5,
+            bstar: 0.0,
+            last_updated: Instant::now(),
         };
         tle_dist.store_tle(tle);
         let retrieved = tle_dist.get_tle(12345);

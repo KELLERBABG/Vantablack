@@ -11,10 +11,9 @@
 ///
 /// This avoids exposing plaintext at intermediate hops since each hop only
 /// strips its own encryption layer, while the end-to-end encryption is preserved.
-
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -24,8 +23,8 @@ use tracing::{debug, info, warn};
 
 use crate::ghost::layers::l2_aead::encrypt_in_place;
 use crate::ghost::layers::l4_rs;
-use crate::ghost::net::send_gtf;
 use crate::ghost::net::frame_shard;
+use crate::ghost::net::send_gtf;
 use crate::ghost::session::Session;
 
 /// Magic prefix for relay packets — distinguishes relay from direct data.
@@ -131,10 +130,7 @@ impl BundleBuffer {
     /// Enqueue a bundle for deferred delivery.
     pub fn enqueue(&self, bundle: Bundle) {
         let fp = bundle.target_fingerprint.clone();
-        self.bundles
-            .entry(fp.clone())
-            .or_default()
-            .push(bundle);
+        self.bundles.entry(fp.clone()).or_default().push(bundle);
         debug!(
             "Bundle enqueued for {}, buffer size: {}",
             fp,
@@ -183,7 +179,7 @@ pub async fn try_forward_relay(
     socket: &UdpSocket,
     sessions: &DashMap<String, Session>,
     peer_addrs: &DashMap<String, SocketAddr>,
-    relay_payload: &[u8],    // decrypted outer layer = relay header + inner encrypted
+    relay_payload: &[u8], // decrypted outer layer = relay header + inner encrypted
     bundle_buffer: &BundleBuffer,
 ) -> bool {
     let header = match parse_relay_header(relay_payload) {
@@ -204,10 +200,7 @@ pub async fn try_forward_relay(
         Some(e) => *e.value(),
         None => {
             // No route to next hop — buffer for later
-            debug!(
-                "No address for next hop {}, buffering bundle",
-                next_fp
-            );
+            debug!("No address for next hop {}, buffering bundle", next_fp);
             let bundle = Bundle {
                 target_fingerprint: next_fp.clone(),
                 encrypted_shards: vec![header.inner_payload.clone()],
@@ -272,9 +265,9 @@ pub async fn try_forward_relay(
     };
     let shards = l4_rs::encode(&mut framed);
 
-        // Send shards to next hop
-        for i in 0..3 {
-            let shard_data = frame_shard(&shards[i]);
+    // Send shards to next hop
+    for i in 0..3 {
+        let shard_data = frame_shard(&shards[i]);
         if let Err(e) = send_gtf(
             socket,
             &next_addr,

@@ -8,7 +8,6 @@
 ///
 /// Also implements a lightweight ACK engine for reliable delivery over UDP,
 /// and an adaptive token-bucket flow controller.
-
 pub mod dispatcher;
 pub mod mesh;
 pub mod orbit;
@@ -19,14 +18,14 @@ pub mod tun;
 #[cfg(feature = "vpn")]
 pub mod vpn;
 
+use bytes::Bytes;
+use rand::Rng;
 use std::{
     net::SocketAddr,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
-use rand::Rng;
 use tokio::net::UdpSocket;
-use bytes::Bytes;
 
 // ── Multicast Discovery Constants ─────────────────────────────────
 
@@ -59,7 +58,7 @@ pub const MIN_FRAME_SIZE: usize = 32;
 pub const OFFSET_SESSION_HASH: usize = 0;
 pub const OFFSET_PACKET_COUNTER: usize = 4;
 pub const OFFSET_SHARD_INDEX: usize = 8;
-pub const OFFSET_FLAGS: usize = 9;          // flags byte: bit 0 = bulk mode
+pub const OFFSET_FLAGS: usize = 9; // flags byte: bit 0 = bulk mode
 pub const OFFSET_PAYLOAD_START: usize = 10;
 pub const OFFSET_AUTH_TAG_START: usize = 496;
 
@@ -184,7 +183,10 @@ impl AckEngine {
 
     /// Collect expired packets with full metadata (auth_tag + session_hash) for retransmission.
     /// Used by the ACK retransmit engine to produce cryptographically valid packets.
-    pub fn collect_expired_full(&mut self, timeout: Duration) -> Vec<(u32, Bytes, [u8; 16], [u8; 4])> {
+    pub fn collect_expired_full(
+        &mut self,
+        timeout: Duration,
+    ) -> Vec<(u32, Bytes, [u8; 16], [u8; 4])> {
         let mut retransmit = Vec::new();
         let now = Instant::now();
         for slot in self.pending.iter_mut() {
@@ -192,7 +194,12 @@ impl AckEngine {
                 if now.duration_since(entry.sent_at) > timeout && entry.retries < 5 {
                     entry.retries += 1;
                     entry.sent_at = now;
-                    retransmit.push((entry.seq, entry.data.clone(), entry.auth_tag, entry.session_hash));
+                    retransmit.push((
+                        entry.seq,
+                        entry.data.clone(),
+                        entry.auth_tag,
+                        entry.session_hash,
+                    ));
                 } else if entry.retries >= 5 {
                     slot.take();
                 }
@@ -269,8 +276,10 @@ impl FlowController {
         let now = now_nanos();
         let last = self.last_replenish.load(Ordering::Relaxed);
         let elapsed = now.saturating_sub(last);
-        if elapsed > 1_000_000 { // only replenish if >1ms elapsed
-            let tokens = (self.transit_rate as u128).saturating_mul(elapsed as u128) / 1_000_000_000;
+        if elapsed > 1_000_000 {
+            // only replenish if >1ms elapsed
+            let tokens =
+                (self.transit_rate as u128).saturating_mul(elapsed as u128) / 1_000_000_000;
             let current = self.transit_bucket.load(Ordering::Relaxed) as u128;
             let new = (current + tokens).min(self.transit_burst as u128) as u64;
             self.transit_bucket.store(new, Ordering::Relaxed);
@@ -283,7 +292,8 @@ impl FlowController {
         self.replenish();
         let current = self.transit_bucket.load(Ordering::Relaxed);
         if current >= bytes as u64 {
-            self.transit_bucket.store(current - bytes as u64, Ordering::Relaxed);
+            self.transit_bucket
+                .store(current - bytes as u64, Ordering::Relaxed);
             true
         } else {
             false
@@ -341,12 +351,14 @@ fn build_privacy_frame(
     assert!(
         payload.len() <= MAX_PAYLOAD_LEN,
         "Payload ({} bytes) exceeds privacy frame capacity ({} bytes)",
-        payload.len(), MAX_PAYLOAD_LEN
+        payload.len(),
+        MAX_PAYLOAD_LEN
     );
 
     let mut packet = vec![0u8; GTF_BASE_SIZE];
     packet[OFFSET_SESSION_HASH..OFFSET_SESSION_HASH + 4].copy_from_slice(&session_hash);
-    packet[OFFSET_PACKET_COUNTER..OFFSET_PACKET_COUNTER + 4].copy_from_slice(&counter.to_be_bytes());
+    packet[OFFSET_PACKET_COUNTER..OFFSET_PACKET_COUNTER + 4]
+        .copy_from_slice(&counter.to_be_bytes());
     packet[OFFSET_SHARD_INDEX] = shard_index;
     packet[OFFSET_FLAGS] = 0; // privacy mode
     packet[OFFSET_PAYLOAD_START..OFFSET_PAYLOAD_START + payload.len()].copy_from_slice(payload);
@@ -372,15 +384,18 @@ fn build_bulk_frame(
     assert!(
         payload.len() <= MAX_BULK_PAYLOAD_LEN,
         "Payload ({} bytes) exceeds bulk frame capacity ({} bytes)",
-        payload.len(), MAX_BULK_PAYLOAD_LEN
+        payload.len(),
+        MAX_BULK_PAYLOAD_LEN
     );
 
     let mut packet = vec![0u8; GTF_BULK_SIZE];
     packet[OFFSET_SESSION_HASH..OFFSET_SESSION_HASH + 4].copy_from_slice(&session_hash);
-    packet[OFFSET_PACKET_COUNTER..OFFSET_PACKET_COUNTER + 4].copy_from_slice(&counter.to_be_bytes());
+    packet[OFFSET_PACKET_COUNTER..OFFSET_PACKET_COUNTER + 4]
+        .copy_from_slice(&counter.to_be_bytes());
     packet[OFFSET_SHARD_INDEX] = shard_index;
     packet[OFFSET_FLAGS] = 0x01; // bit 0 = bulk mode
-    packet[BULK_OFFSET_PAYLOAD_START..BULK_OFFSET_PAYLOAD_START + payload.len()].copy_from_slice(payload);
+    packet[BULK_OFFSET_PAYLOAD_START..BULK_OFFSET_PAYLOAD_START + payload.len()]
+        .copy_from_slice(payload);
     packet[BULK_OFFSET_AUTH_TAG_START..GTF_BULK_SIZE].copy_from_slice(auth_tag);
 
     packet

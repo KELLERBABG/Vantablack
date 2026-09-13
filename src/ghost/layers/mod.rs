@@ -14,7 +14,6 @@
 /// L7  LDPC FEC             — Low-density parity-check forward error correction
 /// L8  Memory Security      — AES-XTS RAM encryption, verified IPC buffers, XDP dispatch
 /// L9  Infrastructure       — Portable packaging, TPM/HSM enclave, NTS time sync
-
 pub mod l0_identity;
 pub mod l1_kem;
 pub mod l2_aead;

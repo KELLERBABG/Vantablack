@@ -1,9 +1,9 @@
+use rand::RngCore;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
-use rand::RngCore;
 
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -15,33 +15,38 @@ use ml_kem::kem::Decapsulate;
 use ml_kem::{Ciphertext, DecapsulationKey512, MlKem512};
 #[cfg(feature = "tray")]
 mod tray;
+#[cfg(feature = "vpn")]
+use vantablack::ghost::net::vpn::{
+    self,
+    hub::{VpnHub, VPN_PAYLOAD_MAGIC},
+    tun::TunDevice,
+    VpnConfig, VpnRole,
+};
 use vantablack::ghost::{
-    GhostNode,
     layers::{
         l0_identity,
-        l1_kem::{HANDSHAKE_BLOB_LEN, RESPONSE_BLOB_LEN, derive_hybrid_master_key_with_psk,
-                 build_handshake_pdu, build_response_pdu, parse_handshake_pdu, parse_response_pdu,
-                 generate_x25519_keypair, generate_kyber_keypair,
-                 kyber_encapsulate},
+        l1_kem::{
+            build_handshake_pdu, build_response_pdu, derive_hybrid_master_key_with_psk,
+            generate_kyber_keypair, generate_x25519_keypair, kyber_encapsulate,
+            parse_handshake_pdu, parse_response_pdu, HANDSHAKE_BLOB_LEN, RESPONSE_BLOB_LEN,
+        },
         l2_aead::{decrypt_in_place_with_context, encrypt_in_place_with_context, NonceDirection},
         l4_rs,
         l7_ldpc::LdpcCodec,
-        l8_memsec::{XtsMemoryEncryptor, VerifiedRingBuffer},
+        l8_memsec::{VerifiedRingBuffer, XtsMemoryEncryptor},
     },
-    net::{self, send_gtf, parse_packet_counter, GTF_BULK_SIZE, OFFSET_PAYLOAD_START,
-          BEACON_PREFIX, BEACON_MULTICAST_ADDR, BEACON_PORT,
-          relay::{spawn_store_forward_task, BundleBuffer,
-                  parse_relay_header, build_relay_packet},
-          routing::PoissonReputationMatrix,
-          mesh::{TitForTatEnforcer, ExitIpRotator},
-          security::{LockedMemory, RevocationList, RevocationReason, ZkAuthenticator}},
+    net::{
+        self,
+        mesh::{ExitIpRotator, TitForTatEnforcer},
+        parse_packet_counter,
+        relay::{build_relay_packet, parse_relay_header, spawn_store_forward_task, BundleBuffer},
+        routing::PoissonReputationMatrix,
+        security::{LockedMemory, RevocationList, RevocationReason, ZkAuthenticator},
+        send_gtf, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BULK_SIZE,
+        OFFSET_PAYLOAD_START,
+    },
     session::{Session, SessionRole},
-};
-#[cfg(feature = "vpn")]
-use vantablack::ghost::net::vpn::{
-    self, VpnConfig, VpnRole,
-    hub::{VpnHub, VPN_PAYLOAD_MAGIC},
-    tun::TunDevice,
+    GhostNode,
 };
 
 type PendingHandshakes = Arc<DashMap<String, (x25519_dalek::EphemeralSecret, DecapsulationKey512)>>;
@@ -62,7 +67,12 @@ const MAX_PENDING_HANDSHAKES: usize = 512;
 /// the node starts in listen-only mode (beacon + accept incoming handshakes).
 const EMBEDDED_SEEDS: &[&str] = &[];
 
-async fn assemble(pool: &DashMap<u32, Vec<Option<Vec<u8>>>>, ctr: u32, idx: usize, data: Vec<u8>) -> Option<Vec<u8>> {
+async fn assemble(
+    pool: &DashMap<u32, Vec<Option<Vec<u8>>>>,
+    ctr: u32,
+    idx: usize,
+    data: Vec<u8>,
+) -> Option<Vec<u8>> {
     // Cap the spool so a remote sender cannot grow it without bound with
     // single-shard garbage (entries with <2 shards are unrecoverable).
     if pool.len() > MAX_SPOOL_ENTRIES {
@@ -75,7 +85,9 @@ async fn assemble(pool: &DashMap<u32, Vec<Option<Vec<u8>>>>, ctr: u32, idx: usiz
     let should_assemble = {
         let mut entry = pool.entry(ctr).or_insert_with(|| vec![None, None, None]);
         let e = entry.value_mut();
-        while e.len() < 3 { e.push(None); }
+        while e.len() < 3 {
+            e.push(None);
+        }
         e[idx] = Some(data);
         if e.iter().filter(|s| s.is_some()).count() >= 2 && e.len() == 3 {
             e.push(None); // claim marker
@@ -84,8 +96,16 @@ async fn assemble(pool: &DashMap<u32, Vec<Option<Vec<u8>>>>, ctr: u32, idx: usiz
     };
     if should_assemble {
         let (_, mut s) = pool.remove(&ctr).unwrap_or_default();
-        let m = s.iter().filter_map(|x| x.as_ref().map(|v| v.len())).max().unwrap_or(0);
-        for ref mut v in s.iter_mut().flatten() { while v.len() < m { v.push(0); } }
+        let m = s
+            .iter()
+            .filter_map(|x| x.as_ref().map(|v| v.len()))
+            .max()
+            .unwrap_or(0);
+        for ref mut v in s.iter_mut().flatten() {
+            while v.len() < m {
+                v.push(0);
+            }
+        }
         let mut w: Vec<_> = (0..3).map(|i| s.get(i).and_then(|x| x.clone())).collect();
         if l4_rs::reconstruct(&mut w).is_ok() {
             let a = w[0].as_ref()?;
@@ -99,13 +119,21 @@ async fn assemble(pool: &DashMap<u32, Vec<Option<Vec<u8>>>>, ctr: u32, idx: usiz
 fn frame_shard(d: &[u8]) -> Vec<u8> {
     let l = (d.len() as u16).to_be_bytes();
     let mut f = Vec::with_capacity(d.len() + 2);
-    f.extend_from_slice(&l); f.extend_from_slice(d); f
+    f.extend_from_slice(&l);
+    f.extend_from_slice(d);
+    f
 }
 
 fn unframe(b: &[u8]) -> Option<Vec<u8>> {
-    if b.len() < 2 { return None; }
+    if b.len() < 2 {
+        return None;
+    }
     let l = u16::from_be_bytes([b[0], b[1]]) as usize;
-    if l == 0 || 2 + l > b.len() { None } else { Some(b[2..2+l].to_vec()) }
+    if l == 0 || 2 + l > b.len() {
+        None
+    } else {
+        Some(b[2..2 + l].to_vec())
+    }
 }
 
 fn enc_split(
@@ -118,17 +146,29 @@ fn enc_split(
     let pay_len = pay.len() as u16;
     let mut framed = pay_len.to_be_bytes().to_vec();
     framed.extend_from_slice(pay);
-    if !framed.len().is_multiple_of(2) { framed.push(0); }
+    if !framed.len().is_multiple_of(2) {
+        framed.push(0);
+    }
     encrypt_in_place_with_context(key, ctr, session_hash, direction, &mut framed);
     let t = if framed.len() >= 16 {
         let mut x = [0u8; 16];
-        x.copy_from_slice(&framed[framed.len()-16..]); x
-    } else { [0u8; 16] };
+        x.copy_from_slice(&framed[framed.len() - 16..]);
+        x
+    } else {
+        [0u8; 16]
+    };
     let raw = l4_rs::encode(&mut framed);
     (raw.iter().map(|s| frame_shard(s)).collect(), t)
 }
 
-async fn send3(sock: &UdpSocket, dst: &SocketAddr, sh: [u8; 4], ctr: u32, f: &[Vec<u8>], tag: &[u8; 16]) {
+async fn send3(
+    sock: &UdpSocket,
+    dst: &SocketAddr,
+    sh: [u8; 4],
+    ctr: u32,
+    f: &[Vec<u8>],
+    tag: &[u8; 16],
+) {
     for i in 0..3 {
         let _ = send_gtf(sock, dst, sh, ctr, i as u8, &f[i], tag, false).await;
     }
@@ -170,7 +210,17 @@ async fn send3_adaptive(
                     .find(|(fp, _, _)| *fp == route.peer_fingerprint)
                     .map(|(_, addr, _)| *addr)
                     .unwrap_or(*primary_dst);
-                let _ = send_gtf(sock, &target_addr, sh, ctr, route.shard_index, &f[idx], tag, false).await;
+                let _ = send_gtf(
+                    sock,
+                    &target_addr,
+                    sh,
+                    ctr,
+                    route.shard_index,
+                    &f[idx],
+                    tag,
+                    false,
+                )
+                .await;
             }
         }
     } else {
@@ -263,7 +313,7 @@ enum VpnMode {}
 /// bulk GTF frame with the tunnel flag set. Returns on missing session.
 async fn send_tunnel_frame(
     nc: &Arc<GhostNode>,
-        peer_fp: &str,
+    peer_fp: &str,
     endpoint: SocketAddr,
     tunnel_wire: &[u8],
 ) {
@@ -315,7 +365,9 @@ async fn send_tunnel_frame(
 
 /// Strip the 2-byte length prefix (plus optional parity pad) from a decrypted frame.
 fn frame_payload(pt: &[u8]) -> Option<&[u8]> {
-    if pt.len() < 2 { return None; }
+    if pt.len() < 2 {
+        return None;
+    }
     let n = u16::from_be_bytes([pt[0], pt[1]]) as usize;
     if 2 + n == pt.len() || 2 + n + 1 == pt.len() {
         Some(&pt[2..2 + n])
@@ -338,13 +390,24 @@ async fn initiate_handshake(
     let pdu = build_handshake_pdu(
         &nc.identity.public_key_bytes(),
         |d| nc.identity.sign(d).to_bytes(),
-        &xp, &kp,
+        &xp,
+        &kp,
     );
     let mut c = pdu;
     let raw = l4_rs::encode(&mut c);
     let tag = [0u8; 16];
     for i in 0..3 {
-        let _ = send_gtf(sock, &t, [0,0,0,0], 0, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+        let _ = send_gtf(
+            sock,
+            &t,
+            [0, 0, 0, 0],
+            0,
+            i as u8,
+            &frame_shard(&raw[i]),
+            &tag,
+            false,
+        )
+        .await;
     }
     if pending_hs.len() >= MAX_PENDING_HANDSHAKES {
         tracing::warn!("Pending-handshake table full — handshake skipped");
@@ -354,7 +417,6 @@ async fn initiate_handshake(
     tracing::info!(target = %t, "Handshake sent");
 }
 
-
 /// Insert a received frame into the reorder buffer; return frames that
 /// can be flushed in sequence order (duplicates/old frames are dropped).
 fn rx_push(state: &mut RxState, ctr: u32, payload: Vec<u8>) -> Vec<Vec<u8>> {
@@ -362,20 +424,29 @@ fn rx_push(state: &mut RxState, ctr: u32, payload: Vec<u8>) -> Vec<Vec<u8>> {
         state.next = Some(ctr + 1);
         return vec![payload];
     };
-    if ctr < next { return Vec::new(); }
+    if ctr < next {
+        return Vec::new();
+    }
     state.buf.insert(ctr, payload);
     let mut out = Vec::new();
     loop {
         let n = state.next.unwrap();
         match state.buf.remove(&n) {
-            Some(d) => { out.push(d); state.next = Some(n + 1); }
+            Some(d) => {
+                out.push(d);
+                state.next = Some(n + 1);
+            }
             None => break,
         }
     }
     out
 }
 
-fn build_beacon_packet(pk: &[u8; 32], signer: impl Fn(&[u8]) -> [u8; 64], with_zk: bool) -> Vec<u8> {
+fn build_beacon_packet(
+    pk: &[u8; 32],
+    signer: impl Fn(&[u8]) -> [u8; 64],
+    with_zk: bool,
+) -> Vec<u8> {
     // Signed beacon: [16 magic][32 full Ed25519 pk][64 signature over pk]
     // If with_zk: appends [32 commitment][64 zk_proof] (208 bytes total)
     let len = if with_zk { 208 } else { 112 };
@@ -432,7 +503,10 @@ async fn handle_pkt(
         }
         let hs = match parse_handshake_pdu(&b) {
             Some(h) => h,
-            None => { tracing::warn!(peer = %src, "Invalid handshake PDU"); return; }
+            None => {
+                tracing::warn!(peer = %src, "Invalid handshake PDU");
+                return;
+            }
         };
         let fp = hex::encode(&hs.identity_pk[..8]);
         if node.sessions.contains_key(&fp) {
@@ -467,36 +541,36 @@ async fn handle_pkt(
         }
 
         // WIRED: RevocationList check — reject known-compromised identities
-                if let Some(rl) = revocation_list {
-                    if rl.reject_handshake(&fp) {
-                        tracing::warn!(peer = %src, fingerprint = %fp, "Handshake rejected — identity revoked");
-                        if let Some(rep) = reputation_matrix {
-                            rep.record_interaction(&node.fingerprint(), &fp, false);
-                        }
-                        return;
-                    }
+        if let Some(rl) = revocation_list {
+            if rl.reject_handshake(&fp) {
+                tracing::warn!(peer = %src, fingerprint = %fp, "Handshake rejected — identity revoked");
+                if let Some(rep) = reputation_matrix {
+                    rep.record_interaction(&node.fingerprint(), &fp, false);
                 }
+                return;
+            }
+        }
 
-                let sm = [&hs.x25519_pub[..], &hs.kyber_pub[..]].concat();
-                if !l0_identity::verify_peer_signature(&hs.identity_pk, &sm, &hs.signature) {
-                    tracing::warn!(peer = %src, "Bad handshake signature");
-                    if let Some(rep) = reputation_matrix {
-                        rep.record_interaction(&node.fingerprint(), &fp, false);
-                    }
-                    return;
+        let sm = [&hs.x25519_pub[..], &hs.kyber_pub[..]].concat();
+        if !l0_identity::verify_peer_signature(&hs.identity_pk, &sm, &hs.signature) {
+            tracing::warn!(peer = %src, "Bad handshake signature");
+            if let Some(rep) = reputation_matrix {
+                rep.record_interaction(&node.fingerprint(), &fp, false);
+            }
+            return;
+        }
+        tracing::info!(fingerprint = %fp, peer = %src, "Verified peer");
+
+        let (ct, ks) = match kyber_encapsulate(&hs.kyber_pub) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(peer = %src, "Kyber encapsulate failed: {e}");
+                if let Some(rep) = reputation_matrix {
+                    rep.record_interaction(&node.fingerprint(), &fp, false);
                 }
-                tracing::info!(fingerprint = %fp, peer = %src, "Verified peer");
-
-                let (ct, ks) = match kyber_encapsulate(&hs.kyber_pub) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::error!(peer = %src, "Kyber encapsulate failed: {e}");
-                        if let Some(rep) = reputation_matrix {
-                            rep.record_interaction(&node.fingerprint(), &fp, false);
-                        }
-                        return;
-                    }
-                };
+                return;
+            }
+        };
         let bs = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
         let bp = x25519_dalek::PublicKey::from(&bs);
         let xs = bs.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
@@ -509,21 +583,36 @@ async fn handle_pkt(
             // Ephemeral locked buffer validated and pinned in RAM
         }
 
-        let mut bp_arr = [0u8; 32]; bp_arr.copy_from_slice(bp.as_bytes());
+        let mut bp_arr = [0u8; 32];
+        bp_arr.copy_from_slice(bp.as_bytes());
         let ct_arr = ct;
         let resp_pdu = build_response_pdu(
             &node.identity.public_key_bytes(),
             |d| node.identity.sign(d).to_bytes(),
-            &bp_arr, &ct_arr,
+            &bp_arr,
+            &ct_arr,
         );
         let mut rc = resp_pdu;
         let raw = l4_rs::encode(&mut rc);
         let tag = [0u8; 16];
         for i in 0..3 {
-            let _ = send_gtf(sock, src, [0,0,0,0], 1, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+            let _ = send_gtf(
+                sock,
+                src,
+                [0, 0, 0, 0],
+                1,
+                i as u8,
+                &frame_shard(&raw[i]),
+                &tag,
+                false,
+            )
+            .await;
         }
         peers.insert(fp.clone(), *src);
-        node.sessions.insert(fp.clone(), Session::new_with_role(d, fp.clone(), SessionRole::Responder));
+        node.sessions.insert(
+            fp.clone(),
+            Session::new_with_role(d, fp.clone(), SessionRole::Responder),
+        );
         // VPN: a fresh handshake re-anchors the client's lease (precedence 1)
         // and evicts all per-epoch tunnel state.
         #[cfg(feature = "vpn")]
@@ -546,9 +635,16 @@ async fn handle_pkt(
     // Handshake response (counter == 1)
     if ctr == 1 && data.len() >= 16 && &data[..16] == b"GHOST_RESPONSE__" {
         let mut rd = data.to_vec();
-        if rd.len() < RESPONSE_BLOB_LEN { return; }
+        if rd.len() < RESPONSE_BLOB_LEN {
+            return;
+        }
         rd.truncate(RESPONSE_BLOB_LEN);
-        let resp = match parse_response_pdu(&rd) { Some(r) => r, None => { return; }};
+        let resp = match parse_response_pdu(&rd) {
+            Some(r) => r,
+            None => {
+                return;
+            }
+        };
 
         let signed_material = {
             let mut m = vec![0u8; 800];
@@ -556,7 +652,8 @@ async fn handle_pkt(
             m[32..800].copy_from_slice(&resp.kyber_ct);
             m
         };
-        if !l0_identity::verify_peer_signature(&resp.identity_pk, &signed_material, &resp.signature) {
+        if !l0_identity::verify_peer_signature(&resp.identity_pk, &signed_material, &resp.signature)
+        {
             tracing::warn!(peer = %src, "Response signature verification failed");
             return;
         }
@@ -614,29 +711,48 @@ async fn handle_pkt(
     //
     // Collect candidate sessions FIRST: taking a write lock (get_mut for the
     // replay guard) while a DashMap iterator is alive deadlocks the task.
-    let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> =
-        node.sessions.iter()
-            .map(|e| (e.peer_fingerprint.clone(), e.master_key, e.session_hash, e.role))
-            .collect();
+    let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> = node
+        .sessions
+        .iter()
+        .map(|e| {
+            (
+                e.peer_fingerprint.clone(),
+                e.master_key,
+                e.session_hash,
+                e.role,
+            )
+        })
+        .collect();
     for (peer_fp, key, sh, role) in candidates {
         let mut msg = data.to_vec();
         let pt: Option<&[u8]> = {
             let r1 = decrypt_in_place_with_context(
-                &key, ctr, &sh, NonceDirection::InitiatorToResponder, &mut msg,
+                &key,
+                ctr,
+                &sh,
+                NonceDirection::InitiatorToResponder,
+                &mut msg,
             );
             if r1.is_ok() {
                 r1.ok()
             } else {
                 decrypt_in_place_with_context(
-                    &key, ctr, &sh, NonceDirection::ResponderToInitiator, &mut msg,
-                ).ok()
+                    &key,
+                    ctr,
+                    &sh,
+                    NonceDirection::ResponderToInitiator,
+                    &mut msg,
+                )
+                .ok()
             }
         };
         let Some(pt) = pt else { continue };
 
         // Replay protection: the per-session sliding-window guard must accept
         // the counter; otherwise the frame is a replay or too stale — drop it.
-        let accepted = node.sessions.get_mut(&peer_fp)
+        let accepted = node
+            .sessions
+            .get_mut(&peer_fp)
             .map(|mut s| s.guard.check_and_update(ctr))
             .unwrap_or(false);
         if !accepted {
@@ -676,7 +792,9 @@ async fn handle_pkt(
         // "CHAT!1.2.3.4:80" is never mistaken for a SOCKS5 destination.
         if let Some(payload) = frame_payload(pt) {
             if let Some(rest) = payload.strip_prefix(b"CHAT!") {
-                let msg = String::from_utf8_lossy(rest).trim_end_matches('\0').to_string();
+                let msg = String::from_utf8_lossy(rest)
+                    .trim_end_matches('\0')
+                    .to_string();
                 println!("\n[Chat from {}] {msg}", &peer_fp[..8.min(peer_fp.len())]);
                 tracing::info!(peer = %peer_fp, "Chat message delivered");
                 return;
@@ -687,97 +805,129 @@ async fn handle_pkt(
         // (parse the UNFRAMED payload — the length prefix precedes the header)
         if let Some(payload) = frame_payload(pt) {
             if let Some(relay) = parse_relay_header(payload) {
-            if relay.remaining_hops > 0 {
-                // WIRED: Tit-for-Tat enforcer - drop forwarding for evicted leechers
-                if let Some(enforcer) = tft {
-                    if enforcer.is_evicted(&peer_fp) {
-                        tracing::warn!(peer = %peer_fp, "TFT: relay request dropped — peer evicted for leeching");
-                        return;
+                if relay.remaining_hops > 0 {
+                    // WIRED: Tit-for-Tat enforcer - drop forwarding for evicted leechers
+                    if let Some(enforcer) = tft {
+                        if enforcer.is_evicted(&peer_fp) {
+                            tracing::warn!(peer = %peer_fp, "TFT: relay request dropped — peer evicted for leeching");
+                            return;
+                        }
                     }
-                }
 
-                // Forward: re-wrap the inner payload for the next hop and send
-                // it through our own session with that hop.
-                let next = &relay.next_hop_fingerprint;
-                // WIRED: Byzantine isolation check for relay path
-                if let Some(rep) = reputation_matrix {
-                    if rep.is_byzantine(&node.fingerprint(), next) {
-                        tracing::warn!(hop = %next, "Relay: next hop flagged Byzantine — dropping packet");
-                        return;
+                    // Forward: re-wrap the inner payload for the next hop and send
+                    // it through our own session with that hop.
+                    let next = &relay.next_hop_fingerprint;
+                    // WIRED: Byzantine isolation check for relay path
+                    if let Some(rep) = reputation_matrix {
+                        if rep.is_byzantine(&node.fingerprint(), next) {
+                            tracing::warn!(hop = %next, "Relay: next hop flagged Byzantine — dropping packet");
+                            return;
+                        }
                     }
-                }
-                let tgt = match peers.get(next).map(|v| *v.value()) {
-                    Some(addr) => addr,
-                    None => {
-                        tracing::warn!(hop = %next, "Relay: next hop address unknown");
+                    let tgt = match peers.get(next).map(|v| *v.value()) {
+                        Some(addr) => addr,
+                        None => {
+                            tracing::warn!(hop = %next, "Relay: next hop address unknown");
+                            return;
+                        }
+                    };
+                    let Some(sess) = node.sessions.get(next) else {
+                        tracing::warn!(hop = %next, "Relay: no session with next hop");
                         return;
+                    };
+                    let key = sess.master_key;
+                    let sh = sess.session_hash;
+                    let role = sess.role;
+                    drop(sess);
+                    let hop_ctr = node
+                        .sessions
+                        .get(next)
+                        .map(|s| s.next_tx_counter())
+                        .unwrap_or(2);
+                    let rewrap =
+                        build_relay_packet(next, relay.remaining_hops - 1, &relay.inner_payload);
+                    let (f, tag) = enc_split(&key, hop_ctr, &sh, dir_for(role), &rewrap);
+                    send3(sock, &tgt, sh, hop_ctr, &f, &tag).await;
+
+                    // WIRED: Record bytes forwarded for this peer in TFT enforcer
+                    if let Some(enforcer) = tft {
+                        enforcer.forwarded_for(&peer_fp, relay.inner_payload.len() as u64);
                     }
-                };
-                let Some(sess) = node.sessions.get(next) else {
-                    tracing::warn!(hop = %next, "Relay: no session with next hop");
+
+                    tracing::info!(via = %src, hop = %next, "Relay packet forwarded");
                     return;
-                };
-                let key = sess.master_key;
-                let sh = sess.session_hash;
-                let role = sess.role;
-                drop(sess);
-                let hop_ctr = node.sessions.get(next)
-                    .map(|s| s.next_tx_counter())
-                    .unwrap_or(2);
-                let rewrap = build_relay_packet(next, relay.remaining_hops - 1, &relay.inner_payload);
-                let (f, tag) = enc_split(&key, hop_ctr, &sh, dir_for(role), &rewrap);
-                send3(sock, &tgt, sh, hop_ctr, &f, &tag).await;
-
-                // WIRED: Record bytes forwarded for this peer in TFT enforcer
-                if let Some(enforcer) = tft {
-                    enforcer.forwarded_for(&peer_fp, relay.inner_payload.len() as u64);
                 }
+                // Final hop: the inner payload is [counter u32 BE][initiator→us
+                // encrypted blob]. Try each of our sessions to unwrap it.
+                let inner = &relay.inner_payload;
+                if inner.len() >= 4 {
+                    // WIRED: Record bytes forwarded by relay peer for us
+                    if let Some(enforcer) = tft {
+                        enforcer.forwarded_by(&peer_fp, inner.len() as u64);
+                    }
 
-                tracing::info!(via = %src, hop = %next, "Relay packet forwarded");
+                    let ic = u32::from_be_bytes([inner[0], inner[1], inner[2], inner[3]]);
+                    let blob = inner[4..].to_vec();
+                    let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> = node
+                        .sessions
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.peer_fingerprint.clone(),
+                                e.master_key,
+                                e.session_hash,
+                                e.role,
+                            )
+                        })
+                        .collect();
+                    for (fp2, key, sh, role) in candidates {
+                        let mut msg = blob.clone();
+                        let pt2 = match decrypt_in_place_with_context(
+                            &key,
+                            ic,
+                            &sh,
+                            NonceDirection::InitiatorToResponder,
+                            &mut msg,
+                        ) {
+                            Ok(p) => Some(p),
+                            Err(_) => decrypt_in_place_with_context(
+                                &key,
+                                ic,
+                                &sh,
+                                NonceDirection::ResponderToInitiator,
+                                &mut msg,
+                            )
+                            .ok(),
+                        };
+                        if let Some(pt2) = pt2 {
+                            tracing::info!(peer = %fp2, "Relay payload delivered (final hop)");
+                            let payload = pt2.to_vec();
+                            if let Some(payload) = frame_payload(&payload) {
+                                if role == SessionRole::Responder && looks_like_dest(payload) {
+                                    handle_exit_connect(
+                                        node,
+                                        sock,
+                                        src,
+                                        &key,
+                                        &sh,
+                                        &fp2,
+                                        payload,
+                                        exit_tunnels,
+                                        ic,
+                                        exit_rotator,
+                                    )
+                                    .await;
+                                    return;
+                                }
+                                tracing::info!("Relay data: {}", String::from_utf8_lossy(payload));
+                            }
+                            return;
+                        }
+                    }
+                    tracing::warn!("Relay final hop: could not unwrap inner payload");
+                }
                 return;
             }
-            // Final hop: the inner payload is [counter u32 BE][initiator→us
-            // encrypted blob]. Try each of our sessions to unwrap it.
-            let inner = &relay.inner_payload;
-            if inner.len() >= 4 {
-                // WIRED: Record bytes forwarded by relay peer for us
-                if let Some(enforcer) = tft {
-                    enforcer.forwarded_by(&peer_fp, inner.len() as u64);
-                }
-
-                let ic = u32::from_be_bytes([inner[0], inner[1], inner[2], inner[3]]);
-                let blob = inner[4..].to_vec();
-                let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> =
-                    node.sessions.iter()
-                        .map(|e| (e.peer_fingerprint.clone(), e.master_key, e.session_hash, e.role))
-                        .collect();
-                for (fp2, key, sh, role) in candidates {
-                    let mut msg = blob.clone();
-                    let pt2 = match decrypt_in_place_with_context(
-                        &key, ic, &sh, NonceDirection::InitiatorToResponder, &mut msg,
-                    ) {
-                        Ok(p) => Some(p),
-                        Err(_) => decrypt_in_place_with_context(
-                            &key, ic, &sh, NonceDirection::ResponderToInitiator, &mut msg,
-                        ).ok(),
-                    };
-                    if let Some(pt2) = pt2 {
-                        tracing::info!(peer = %fp2, "Relay payload delivered (final hop)");
-                        let payload = pt2.to_vec();
-                        if let Some(payload) = frame_payload(&payload) {
-                            if role == SessionRole::Responder && looks_like_dest(payload) {
-                                handle_exit_connect(node, sock, src, &key, &sh, &fp2, payload, exit_tunnels, ic, exit_rotator).await;
-                                return;
-                            }
-                            tracing::info!("Relay data: {}", String::from_utf8_lossy(payload));
-                        }
-                        return;
-                    }
-                }
-                tracing::warn!("Relay final hop: could not unwrap inner payload");
-            }
-            return;
-        }
         }
 
         // WIRED: Record successful data decryption in reputation
@@ -810,14 +960,27 @@ async fn handle_pkt(
             if role == SessionRole::Responder && looks_like_dest(payload) {
                 // Exit authorization: closed by default; the peer's fingerprint
                 // must be allowlisted (or the operator set "any").
-                let allowed = trusted_exits.read()
+                let allowed = trusted_exits
+                    .read()
                     .map(|s| s.contains("any") || s.contains(&peer_fp))
                     .unwrap_or(false);
                 if !allowed {
                     tracing::warn!(peer = %peer_fp, "Exit CONNECT denied — fingerprint not allowlisted (EXITAUTH)");
                     return;
                 }
-                handle_exit_connect(node, sock, src, &key, &sh, &peer_fp, payload, exit_tunnels, ctr, exit_rotator).await;
+                handle_exit_connect(
+                    node,
+                    sock,
+                    src,
+                    &key,
+                    &sh,
+                    &peer_fp,
+                    payload,
+                    exit_tunnels,
+                    ctr,
+                    exit_rotator,
+                )
+                .await;
                 return;
             }
             // We are the initiator: relayed remote data (counter >= 3).
@@ -878,7 +1041,8 @@ async fn handle_exit_connect(
                     let socket = tokio::net::TcpSocket::new_v4();
                     match socket {
                         Ok(s) => match s.bind(SocketAddr::V4(v4)) {
-                            Ok(()) => match tokio::net::lookup_host(format!("{host}:{port}")).await {
+                            Ok(()) => match tokio::net::lookup_host(format!("{host}:{port}")).await
+                            {
                                 Ok(mut addrs) => match addrs.next() {
                                     Some(target) => s.connect(target).await.ok(),
                                     None => None,
@@ -887,17 +1051,22 @@ async fn handle_exit_connect(
                             },
                             Err(e) => {
                                 tracing::debug!("Egress bind to {egress_addr} failed: {e}; falling back to default route");
-                                tokio::net::TcpStream::connect((host.as_str(), port)).await.ok()
+                                tokio::net::TcpStream::connect((host.as_str(), port))
+                                    .await
+                                    .ok()
                             }
                         },
-                        Err(_) => tokio::net::TcpStream::connect((host.as_str(), port)).await.ok(),
+                        Err(_) => tokio::net::TcpStream::connect((host.as_str(), port))
+                            .await
+                            .ok(),
                     }
                 }
                 SocketAddr::V6(v6) => {
                     let socket = tokio::net::TcpSocket::new_v6();
                     match socket {
                         Ok(s) => match s.bind(SocketAddr::V6(v6)) {
-                            Ok(()) => match tokio::net::lookup_host(format!("{host}:{port}")).await {
+                            Ok(()) => match tokio::net::lookup_host(format!("{host}:{port}")).await
+                            {
                                 Ok(mut addrs) => match addrs.next() {
                                     Some(target) => s.connect(target).await.ok(),
                                     None => None,
@@ -906,10 +1075,14 @@ async fn handle_exit_connect(
                             },
                             Err(e) => {
                                 tracing::debug!("Egress bind to {egress_addr} failed: {e}; falling back to default route");
-                                tokio::net::TcpStream::connect((host.as_str(), port)).await.ok()
+                                tokio::net::TcpStream::connect((host.as_str(), port))
+                                    .await
+                                    .ok()
                             }
                         },
-                        Err(_) => tokio::net::TcpStream::connect((host.as_str(), port)).await.ok(),
+                        Err(_) => tokio::net::TcpStream::connect((host.as_str(), port))
+                            .await
+                            .ok(),
                     }
                 }
             };
@@ -940,7 +1113,9 @@ async fn handle_exit_connect(
     };
 
     // Allocate our OK counter from the session's counter space.
-    let ok_ctr = node.sessions.get(peer_fp)
+    let ok_ctr = node
+        .sessions
+        .get(peer_fp)
         .map(|s| s.next_tx_counter())
         .unwrap_or(2);
     let (f, tag) = enc_split(key, ok_ctr, sh, NonceDirection::ResponderToInitiator, b"OK");
@@ -955,11 +1130,14 @@ async fn handle_exit_connect(
         next: Some(connect_ctr + 1),
         ..Default::default()
     };
-    tunnels.insert(tkey.clone(), ExitTunnel {
-        out_tx,
-        rx,
-        session_hash: *sh,
-    });
+    tunnels.insert(
+        tkey.clone(),
+        ExitTunnel {
+            out_tx,
+            rx,
+            session_hash: *sh,
+        },
+    );
     tracing::info!(dest = %dest, peer = %peer_fp, "Exit tunnel established");
 
     // Outbound relay: remote TCP → mesh (responder direction), and
@@ -984,11 +1162,16 @@ async fn handle_exit_connect(
                 match rd.read(&mut rbuf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let ctr = sessions2.get(&fp2)
+                        let ctr = sessions2
+                            .get(&fp2)
                             .map(|s| s.next_tx_counter())
                             .unwrap_or(2);
                         let (f, tag) = enc_split(
-                            &key2, ctr, &sh2, NonceDirection::ResponderToInitiator, &rbuf[..n],
+                            &key2,
+                            ctr,
+                            &sh2,
+                            NonceDirection::ResponderToInitiator,
+                            &rbuf[..n],
                         );
                         send3(&sock3, &addr2, sh2, ctr, &f, &tag).await;
                     }
@@ -1018,8 +1201,7 @@ async fn handle_exit_connect(
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into())
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         // Write to stderr (unbuffered): line-flushed logs survive hard process
         // kills, which matters for supervised/diagnostic runs and tests that
@@ -1046,20 +1228,28 @@ async fn main() -> anyhow::Result<()> {
     let verified_ring = Arc::new(VerifiedRingBuffer::<Vec<u8>>::new(1024));
 
     // WIRED: SecureTimeKeeper for NTS-secured time
-    let _time_keeper = Arc::new(vantablack::ghost::layers::l9_infra::SecureTimeKeeper::new(false));
+    let _time_keeper = Arc::new(vantablack::ghost::layers::l9_infra::SecureTimeKeeper::new(
+        false,
+    ));
     // WIRED: BuildInfo for hash verification
     let _build_info = vantablack::ghost::layers::l9_infra::BuildInfo::new();
 
     let ba = std::env::var("GHOST_BIND").unwrap_or_else(|_| "0.0.0.0:0".to_string());
     let socks = std::env::var("GHOST_SOCKS5").is_ok();
     let socks_port: u16 = std::env::var("GHOST_SOCKS5_PORT")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(1080);
-    let tm: u64 = std::env::var("GHOST_TRANSIT_MBPS").ok().and_then(|v| v.parse().ok()).unwrap_or(100);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1080);
+    let tm: u64 = std::env::var("GHOST_TRANSIT_MBPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
     let psk_hex = std::env::var("GHOST_PSK").ok().filter(|s| !s.is_empty());
     // GHOST_PSK is mixed into the HKDF salt of the hybrid master key, so only
     // nodes sharing the same 32-byte pre-shared key can establish a working
     // session (defense-in-depth against rogue nodes with valid identities).
-    let psk: Option<[u8; 32]> = psk_hex.as_ref()
+    let psk: Option<[u8; 32]> = psk_hex
+        .as_ref()
         .and_then(|h| hex::decode(h).ok())
         .and_then(|b| b.try_into().ok());
     // Exit-node authorization: peers allowed to use THIS node as a SOCKS5
@@ -1082,28 +1272,45 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "vpn")]
     let vpn_mode: Option<VpnMode> = match std::env::var("GHOST_VPN").as_deref() {
         Ok("hub") => {
-            let (subnet, prefix) = std::env::var("GHOST_VPN_LAN_SUBNET").ok()
+            let (subnet, prefix) = std::env::var("GHOST_VPN_LAN_SUBNET")
+                .ok()
                 .and_then(|s| {
                     let (a, pr) = s.split_once('/')?;
-                    Some((a.parse::<std::net::Ipv4Addr>().ok()?, pr.parse::<u8>().ok()?))
+                    Some((
+                        a.parse::<std::net::Ipv4Addr>().ok()?,
+                        pr.parse::<u8>().ok()?,
+                    ))
                 })
                 .unwrap_or((std::net::Ipv4Addr::new(192, 168, 1, 0), 24));
             let cfg = VpnConfig {
                 role: VpnRole::Hub,
                 lan_subnet: (subnet, prefix),
-                dns_server: std::env::var("GHOST_VPN_DNS").ok()
+                dns_server: std::env::var("GHOST_VPN_DNS")
+                    .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(std::net::Ipv4Addr::new(192, 168, 1, 1)),
-                search_domain: std::env::var("GHOST_VPN_SEARCH").ok().filter(|x| !x.is_empty()),
-                allowed_fingerprints: std::env::var("GHOST_VPN_CLIENTS").ok()
-                    .map(|v| v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+                search_domain: std::env::var("GHOST_VPN_SEARCH")
+                    .ok()
+                    .filter(|x| !x.is_empty()),
+                allowed_fingerprints: std::env::var("GHOST_VPN_CLIENTS")
+                    .ok()
+                    .map(|v| {
+                        v.split(',')
+                            .map(|x| x.trim().to_string())
+                            .filter(|x| !x.is_empty())
+                            .collect()
+                    })
                     .unwrap_or_default(),
-                lan_bind_addr: std::env::var("GHOST_VPN_BIND").ok()
+                lan_bind_addr: std::env::var("GHOST_VPN_BIND")
+                    .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
                 ..VpnConfig::default()
             };
-            tracing::info!("VPN: hub mode — allowlisted clients: {}", cfg.allowed_fingerprints.len());
+            tracing::info!(
+                "VPN: hub mode — allowlisted clients: {}",
+                cfg.allowed_fingerprints.len()
+            );
             Some(VpnMode::Hub(VpnHub::start(cfg)))
         }
         Ok("client") => {
@@ -1111,12 +1318,14 @@ async fn main() -> anyhow::Result<()> {
             if hub_fp.is_empty() {
                 anyhow::bail!("VPN client requires GHOST_VPN_HUB_FP (hub fingerprint)");
             }
-            let key: [u8; 32] = std::env::var("GHOST_VPN_KEY").ok()
+            let key: [u8; 32] = std::env::var("GHOST_VPN_KEY")
+                .ok()
                 .filter(|h| h.len() == 64)
                 .and_then(|h| hex::decode(h).ok())
                 .and_then(|b| b.try_into().ok())
                 .unwrap_or([0u8; 32]);
-            let local_ip: std::net::Ipv4Addr = std::env::var("GHOST_VPN_LOCAL_IP").ok()
+            let local_ip: std::net::Ipv4Addr = std::env::var("GHOST_VPN_LOCAL_IP")
+                .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(std::net::Ipv4Addr::new(10, 66, 0, 10));
             // GHOST_VPN_FAKE_TUN: run the client against the in-memory TUN so a
@@ -1137,7 +1346,10 @@ async fn main() -> anyhow::Result<()> {
                 // tunnel writes back. One echo reply proves the whole
                 // seal → mesh → hub → unseal round trip over real UDP sockets.
                 let hub_overlay = std::net::Ipv4Addr::new(
-                    vpn::OVERLAY_PREFIX, vpn::OVERLAY_SECOND_OCTET, 0, vpn::OVERLAY_HUB_HOST,
+                    vpn::OVERLAY_PREFIX,
+                    vpn::OVERLAY_SECOND_OCTET,
+                    0,
+                    vpn::OVERLAY_HUB_HOST,
                 );
                 tokio::spawn(async move {
                     let probe = vpn::client::build_keepalive(hub_overlay, local_ip);
@@ -1151,10 +1363,7 @@ async fn main() -> anyhow::Result<()> {
                         for pkt in handle.drain_outbound() {
                             // IPv4 (version nibble 4), protocol 1 (ICMP), type 0
                             // (echo reply) at the start of the ICMP header.
-                            if pkt.len() >= 21
-                                && (pkt[0] >> 4) == 4
-                                && pkt[9] == 1
-                                && pkt[20] == 0
+                            if pkt.len() >= 21 && (pkt[0] >> 4) == 4 && pkt[9] == 1 && pkt[20] == 0
                             {
                                 replies += 1;
                             }
@@ -1195,8 +1404,12 @@ async fn main() -> anyhow::Result<()> {
         "Global Ghost Net v{} starting — L0-L9 stack fully wired",
         env!("CARGO_PKG_VERSION")
     );
-    if socks { tracing::info!("Mode: SOCKS5 proxy on 127.0.0.1:{socks_port}"); }
-    if revocation_list.prune_expired() > 0 { tracing::info!("Revocation list initialized"); }
+    if socks {
+        tracing::info!("Mode: SOCKS5 proxy on 127.0.0.1:{socks_port}");
+    }
+    if revocation_list.prune_expired() > 0 {
+        tracing::info!("Revocation list initialized");
+    }
 
     let node = GhostNode::new(&ba).await?;
     node.flow_controller.set_transit_rate_mbps(tm);
@@ -1216,7 +1429,10 @@ async fn main() -> anyhow::Result<()> {
     let nc = Arc::new(node);
 
     // WIRED: Category A - Fair-share transit enforcement (Tit-for-Tat)
-    let tft = Arc::new(TitForTatEnforcer::new(nc.fingerprint(), Arc::clone(&reputation_matrix)));
+    let tft = Arc::new(TitForTatEnforcer::new(
+        nc.fingerprint(),
+        Arc::clone(&reputation_matrix),
+    ));
 
     // WIRED: Category A - Egress IP rotator
     let exit_rotator: Option<Arc<ExitIpRotator>> = std::env::var("GHOST_EXIT_IPS")
@@ -1230,7 +1446,10 @@ async fn main() -> anyhow::Result<()> {
         })
         .filter(|r| r.pool_size() > 0);
     if let Some(ref r) = exit_rotator {
-        tracing::info!("Exit IP Rotator initialized with {} egress IP(s)", r.pool_size());
+        tracing::info!(
+            "Exit IP Rotator initialized with {} egress IP(s)",
+            r.pool_size()
+        );
     }
 
     // WIRED: Category A - NAT hole puncher
@@ -1242,7 +1461,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(false);
     let _ldpc_codec = Arc::new(LdpcCodec::new());
     if ldpc_enabled {
-        tracing::info!("LDPC Forward Error Correction (1024-bit IRA) active for long-stream encoding");
+        tracing::info!(
+            "LDPC Forward Error Correction (1024-bit IRA) active for long-stream encoding"
+        );
     }
 
     // Optional system-tray UI (feature "tray")
@@ -1268,12 +1489,22 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             if let Ok(dns_seed) = std::env::var("GHOST_DNS_SEED") {
-                let host_port = if dns_seed.contains(':') { dns_seed } else { format!("{}:2270", dns_seed) };
+                let host_port = if dns_seed.contains(':') {
+                    dns_seed
+                } else {
+                    format!("{}:2270", dns_seed)
+                };
                 match tokio::net::lookup_host(&host_port).await {
                     Ok(iter) => {
                         let count_before = seeds.len();
-                        for sa in iter { seeds.push(sa); }
-                        tracing::info!("DNS seed {} resolved {} peer address(es)", host_port, seeds.len() - count_before);
+                        for sa in iter {
+                            seeds.push(sa);
+                        }
+                        tracing::info!(
+                            "DNS seed {} resolved {} peer address(es)",
+                            host_port,
+                            seeds.len() - count_before
+                        );
                     }
                     Err(e) => {
                         tracing::warn!("DNS seed lookup failed for {}: {}", host_port, e);
@@ -1284,14 +1515,18 @@ async fn main() -> anyhow::Result<()> {
             if let Ok(cache_str) = std::fs::read_to_string("peers.cache") {
                 for line in cache_str.lines().map(|l| l.trim()) {
                     if let Ok(sa) = line.parse::<SocketAddr>() {
-                        if !seeds.contains(&sa) { seeds.push(sa); }
+                        if !seeds.contains(&sa) {
+                            seeds.push(sa);
+                        }
                     }
                 }
                 tracing::info!("Loaded {} cached peer(s) from peers.cache", seeds.len());
             }
             for s in EMBEDDED_SEEDS {
                 if let Ok(sa) = s.parse::<SocketAddr>() {
-                    if !seeds.contains(&sa) { seeds.push(sa); }
+                    if !seeds.contains(&sa) {
+                        seeds.push(sa);
+                    }
                 }
             }
             if !seeds.is_empty() {
@@ -1302,10 +1537,13 @@ async fn main() -> anyhow::Result<()> {
                         break;
                     }
                     for t in &seeds {
-                        if pending_hs.len() >= MAX_PENDING_HANDSHAKES { continue; }
+                        if pending_hs.len() >= MAX_PENDING_HANDSHAKES {
+                            continue;
+                        }
                         let ident = nc.identity.public_key_bytes();
                         let (xs, xp) = {
-                            let xs = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
+                            let xs =
+                                x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
                             let xp = x25519_dalek::PublicKey::from(&xs);
                             (xs, xp)
                         };
@@ -1313,13 +1551,23 @@ async fn main() -> anyhow::Result<()> {
                         let mut pdu = build_handshake_pdu(
                             &ident,
                             |d| nc.identity.sign(d).to_bytes(),
-                            &xp, &kp,
+                            &xp,
+                            &kp,
                         );
                         let raw = l4_rs::encode(&mut pdu);
                         let tag = [0u8; 16];
                         for i in 0..3 {
-                            let _ = send_gtf(&nc.socket, t, [0,0,0,0], 0, i as u8,
-                                             &frame_shard(&raw[i]), &tag, false).await;
+                            let _ = send_gtf(
+                                &nc.socket,
+                                t,
+                                [0, 0, 0, 0],
+                                0,
+                                i as u8,
+                                &frame_shard(&raw[i]),
+                                &tag,
+                                false,
+                            )
+                            .await;
                         }
                         pending_hs.insert(t.to_string(), (xs, ks));
                         tracing::info!(seed = %t, "Bootstrap handshake sent");
@@ -1343,7 +1591,6 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-
     // WIRED: Start store-and-forward task for deferred bundle delivery
     let sf_socket = Arc::clone(&nc.socket);
     let sf_sessions = Arc::clone(&nc.sessions);
@@ -1361,7 +1608,11 @@ async fn main() -> anyhow::Result<()> {
             if tle_dist_task.should_gossip() {
                 let gossip_tles = tle_dist_task.build_gossip_message(5);
                 if !gossip_tles.is_empty() {
-                    tracing::info!("Gossiping {} orbital TLE records across {} known peers", gossip_tles.len(), tle_addrs.len());
+                    tracing::info!(
+                        "Gossiping {} orbital TLE records across {} known peers",
+                        gossip_tles.len(),
+                        tle_addrs.len()
+                    );
                 }
                 tle_dist_task.mark_gossiped();
             }
@@ -1370,7 +1621,9 @@ async fn main() -> anyhow::Result<()> {
 
     // ── HTTP Metrics and Health Endpoint (/healthz & /metrics) ──
     let metrics_port: u16 = std::env::var("GHOST_METRICS_PORT")
-        .ok().and_then(|v| v.parse().ok()).unwrap_or(9090);
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(9090);
     let metrics_enabled = std::env::var("GHOST_METRICS_ENABLED")
         .map(|v| v != "0" && v.to_lowercase() != "false")
         .unwrap_or(true);
@@ -1480,7 +1733,10 @@ async fn main() -> anyhow::Result<()> {
                                 if let Ok(n) = stream.read(&mut buf).await {
                                     let req = String::from_utf8_lossy(&buf[..n]);
                                     let (vpn_role, vpn_prom, vpn_json) = vpn_export(&vpn_ref);
-                                    let (status_line, body, content_type) = if req.starts_with("GET /healthz") || req.starts_with("GET / ") {
+                                    let (status_line, body, content_type) = if req
+                                        .starts_with("GET /healthz")
+                                        || req.starts_with("GET / ")
+                                    {
                                         let body = serde_json::json!({
                                             "status": "healthy",
                                             "version": "0.4.1",
@@ -1490,17 +1746,23 @@ async fn main() -> anyhow::Result<()> {
                                             "known_peers": addrs_ref.len(),
                                             "vpn": vpn_role,
                                             "vpn_stats": vpn_json
-                                        }).to_string();
+                                        })
+                                        .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /api/telemetry") {
                                         let sessions = nc_ref.sessions.len();
                                         let peers = addrs_ref.len();
                                         let uptime = nc_ref.created_at.elapsed().as_secs();
-                                        let sent_bytes = nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                        let recv_bytes = nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                        let sent_pkts = nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                        let recv_pkts = nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                        let retrans = nc_ref.stats.retransmits.load(Ordering::Relaxed);
+                                        let sent_bytes =
+                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                        let recv_bytes =
+                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                        let sent_pkts =
+                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                        let recv_pkts =
+                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                        let retrans =
+                                            nc_ref.stats.retransmits.load(Ordering::Relaxed);
                                         let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
                                         let body = serde_json::json!({
                                             "cycle": uptime / 5,
@@ -1525,24 +1787,41 @@ async fn main() -> anyhow::Result<()> {
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /dashboard") {
                                         let html = include_str!("../assets/wan_dashboard.html");
-                                        ("HTTP/1.1 200 OK", html.to_string(), "text/html; charset=utf-8")
+                                        (
+                                            "HTTP/1.1 200 OK",
+                                            html.to_string(),
+                                            "text/html; charset=utf-8",
+                                        )
                                     } else if req.starts_with("GET /metrics") {
                                         let sessions = nc_ref.sessions.len();
                                         let peers = addrs_ref.len();
                                         let uptime = nc_ref.created_at.elapsed().as_secs();
-                                        let sent_bytes = nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                        let recv_bytes = nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                        let sent_pkts = nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                        let recv_pkts = nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                        let retrans = nc_ref.stats.retransmits.load(Ordering::Relaxed);
+                                        let sent_bytes =
+                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                        let recv_bytes =
+                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                        let sent_pkts =
+                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                        let recv_pkts =
+                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                        let retrans =
+                                            nc_ref.stats.retransmits.load(Ordering::Relaxed);
                                         let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
                                         let body = format!(
                                             "# HELP ghost_sessions_total Active peer-to-peer sessions\n# TYPE ghost_sessions_total gauge\nghost_sessions_total {}\n# HELP ghost_known_peers_total Discovered mesh peers\n# TYPE ghost_known_peers_total gauge\nghost_known_peers_total {}\n# HELP ghost_uptime_seconds Process uptime in seconds\n# TYPE ghost_uptime_seconds counter\nghost_uptime_seconds {}\n# HELP ghost_bytes_sent_total Total bytes transmitted\n# TYPE ghost_bytes_sent_total counter\nghost_bytes_sent_total {}\n# HELP ghost_bytes_recv_total Total bytes received\n# TYPE ghost_bytes_recv_total counter\nghost_bytes_recv_total {}\n# HELP ghost_packets_sent_total Total packets sent\n# TYPE ghost_packets_sent_total counter\nghost_packets_sent_total {}\n# HELP ghost_packets_recv_total Total packets received\n# TYPE ghost_packets_recv_total counter\nghost_packets_recv_total {}\n# HELP ghost_retransmits_total Total retransmissions triggered\n# TYPE ghost_retransmits_total counter\nghost_retransmits_total {}\n# HELP ghost_drops_total Total dropped or replay-rejected frames\n# TYPE ghost_drops_total counter\nghost_drops_total {}\n",
                                             sessions, peers, uptime, sent_bytes, recv_bytes, sent_pkts, recv_pkts, retrans, drops
                                         );
-                                        ("HTTP/1.1 200 OK", body, "text/plain; version=0.0.4; charset=utf-8")
+                                        (
+                                            "HTTP/1.1 200 OK",
+                                            body,
+                                            "text/plain; version=0.0.4; charset=utf-8",
+                                        )
                                     } else {
-                                        ("HTTP/1.1 404 Not Found", "Not Found".to_string(), "text/plain")
+                                        (
+                                            "HTTP/1.1 404 Not Found",
+                                            "Not Found".to_string(),
+                                            "text/plain",
+                                        )
                                     };
                                     // VPN counters are appended rather than woven into
                                     // the base body, so the v0.4.0 metric set stays
@@ -1579,7 +1858,8 @@ async fn main() -> anyhow::Result<()> {
         let srouter_socks = Arc::clone(&shard_router);
         let sp = socks_port;
         tokio::spawn(async move {
-            let lis = tokio::net::TcpListener::bind(("127.0.0.1", sp)).await
+            let lis = tokio::net::TcpListener::bind(("127.0.0.1", sp))
+                .await
                 .expect("Failed to bind SOCKS5 proxy");
             tracing::info!("SOCKS5 proxy ready on 127.0.0.1:{sp}");
             loop {
@@ -1593,29 +1873,45 @@ async fn main() -> anyhow::Result<()> {
                     let shard_router_proxy = Arc::clone(&srouter_socks);
                     tokio::spawn(async move {
                         let mut b = [0u8; 2];
-                        if s.read_exact(&mut b).await.is_err() || b[0] != 5 { return; }
+                        if s.read_exact(&mut b).await.is_err() || b[0] != 5 {
+                            return;
+                        }
                         let mut m = vec![0u8; b[1] as usize];
-                        if s.read_exact(&mut m).await.is_err() { return; }
-                        if s.write_all(&[5, 0]).await.is_err() { return; }
+                        if s.read_exact(&mut m).await.is_err() {
+                            return;
+                        }
+                        if s.write_all(&[5, 0]).await.is_err() {
+                            return;
+                        }
                         let mut h = [0u8; 4];
-                        if s.read_exact(&mut h).await.is_err() || h[1] != 1 { return; }
+                        if s.read_exact(&mut h).await.is_err() || h[1] != 1 {
+                            return;
+                        }
                         let addr = match h[3] {
                             1 => {
                                 let mut ip = [0u8; 4];
-                                if s.read_exact(&mut ip).await.is_err() { return; }
+                                if s.read_exact(&mut ip).await.is_err() {
+                                    return;
+                                }
                                 format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
                             }
                             3 => {
                                 let mut l = [0u8; 1];
-                                if s.read_exact(&mut l).await.is_err() { return; }
+                                if s.read_exact(&mut l).await.is_err() {
+                                    return;
+                                }
                                 let mut d = vec![0u8; l[0] as usize];
-                                if s.read_exact(&mut d).await.is_err() { return; }
+                                if s.read_exact(&mut d).await.is_err() {
+                                    return;
+                                }
                                 String::from_utf8_lossy(&d).to_string()
                             }
                             _ => return,
                         };
                         let mut pb = [0u8; 2];
-                        if s.read_exact(&mut pb).await.is_err() { return; }
+                        if s.read_exact(&mut pb).await.is_err() {
+                            return;
+                        }
                         let port = u16::from_be_bytes(pb);
 
                         // Prefer the explicitly configured exit node (EXIT <fp>);
@@ -1626,14 +1922,18 @@ async fn main() -> anyhow::Result<()> {
                         };
                         let (fp, tgt) = match fp {
                             Some(fp) => {
-                                let addr = aa.get(&fp).map(|v| *v.value())
+                                let addr = aa
+                                    .get(&fp)
+                                    .map(|v| *v.value())
                                     .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
                                 (fp, addr)
                             }
                             None => match nn.sessions.iter().next() {
                                 Some(e) => {
                                     let fp = e.key().clone();
-                                    let addr = aa.get(&fp).map(|v| *v.value())
+                                    let addr = aa
+                                        .get(&fp)
+                                        .map(|v| *v.value())
                                         .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
                                     (fp, addr)
                                 }
@@ -1645,7 +1945,10 @@ async fn main() -> anyhow::Result<()> {
                         };
                         let ss = match nn.sessions.get(&fp) {
                             Some(s) => s,
-                            None => { tracing::warn!("SOCKS5: No session for {fp}"); return; }
+                            None => {
+                                tracing::warn!("SOCKS5: No session for {fp}");
+                                return;
+                            }
                         };
                         let key = ss.master_key;
                         let sh = ss.session_hash;
@@ -1653,18 +1956,23 @@ async fn main() -> anyhow::Result<()> {
                         drop(ss);
 
                         if chh.contains_key(&sh) {
-                            tracing::warn!("SOCKS5: another tunnel is already open on this session");
+                            tracing::warn!(
+                                "SOCKS5: another tunnel is already open on this session"
+                            );
                             return;
                         }
                         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
                         chh.insert(sh, tx);
 
-                        let connect_ctr = nn.sessions.get(&fp)
+                        let connect_ctr = nn
+                            .sessions
+                            .get(&fp)
                             .map(|s| s.next_tx_counter())
                             .unwrap_or(2);
                         let dest = format!("{}:{}", addr, port);
                         tracing::info!(dest = %dest, "SOCKS5 CONNECT");
-                        let (f, tag) = enc_split(&key, connect_ctr, &sh, dir_for(role), dest.as_bytes());
+                        let (f, tag) =
+                            enc_split(&key, connect_ctr, &sh, dir_for(role), dest.as_bytes());
                         send3(&nn.socket, &tgt, sh, connect_ctr, &f, &tag).await;
                         // Wait for the exit's framed "OK" (delivered via handle_pkt).
                         let mut connected = false;
@@ -1705,15 +2013,30 @@ async fn main() -> anyhow::Result<()> {
                                 match rd.read(&mut rbuf).await {
                                     Ok(0) | Err(_) => break,
                                     Ok(n) => {
-                                        let c = nn2.sessions.get(&fp_out)
+                                        let c = nn2
+                                            .sessions
+                                            .get(&fp_out)
                                             .map(|s| s.next_tx_counter())
                                             .unwrap_or(2);
                                         let (f, tag) = enc_split(
-                                            &key_out, c, &sh_out,
+                                            &key_out,
+                                            c,
+                                            &sh_out,
                                             NonceDirection::InitiatorToResponder,
                                             &rbuf[..n],
                                         );
-                                        send3_adaptive(&nn2.socket, &tgt_out, &fp_out, sh_out, c, &f, &tag, &srouter, &aa_proxy).await;
+                                        send3_adaptive(
+                                            &nn2.socket,
+                                            &tgt_out,
+                                            &fp_out,
+                                            sh_out,
+                                            c,
+                                            &f,
+                                            &tag,
+                                            &srouter,
+                                            &aa_proxy,
+                                        )
+                                        .await;
                                     }
                                 }
                             }
@@ -1725,7 +2048,9 @@ async fn main() -> anyhow::Result<()> {
 
                         // mesh → client: ordered decrypted data via the session channel
                         while let Some(chunk) = rx.recv().await {
-                            if wr.write_all(&chunk).await.is_err() { break; }
+                            if wr.write_all(&chunk).await.is_err() {
+                                break;
+                            }
                         }
                         chh.remove(&sh);
                     });
@@ -1740,10 +2065,14 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             let beacon_sock = match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,
-                Err(e) => { tracing::error!("Beacon socket: {e}"); return; }
+                Err(e) => {
+                    tracing::error!("Beacon socket: {e}");
+                    return;
+                }
             };
             let mc_addr: SocketAddr = format!("{}:{}", BEACON_MULTICAST_ADDR, BEACON_PORT)
-                .parse().expect("Invalid beacon address");
+                .parse()
+                .expect("Invalid beacon address");
             let zk_enabled = std::env::var("GHOST_ZK_DISCOVERY")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
@@ -1794,18 +2123,28 @@ async fn main() -> anyhow::Result<()> {
                 let std_sock: std::net::UdpSocket = s2.into();
                 UdpSocket::from_std(std_sock)
             })() {
-                Ok(s) => { let _ = s.join_multicast_v4(
-                    std::net::Ipv4Addr::new(239, 255, 0, 1),
-                    std::net::Ipv4Addr::UNSPECIFIED,
-                ); s }
-                Err(e) => { tracing::error!("Beacon listener: {e}"); return; }
+                Ok(s) => {
+                    let _ = s.join_multicast_v4(
+                        std::net::Ipv4Addr::new(239, 255, 0, 1),
+                        std::net::Ipv4Addr::UNSPECIFIED,
+                    );
+                    s
+                }
+                Err(e) => {
+                    tracing::error!("Beacon listener: {e}");
+                    return;
+                }
             };
             let mut buf = vec![0u8; 256]; // signed beacons are 112 bytes (or 208 with ZK proof)
             let local_fp = nc.fingerprint();
             while nc.running.load(Ordering::Relaxed) {
                 if let Ok((amt, src)) = listen_sock.recv_from(&mut buf).await {
-                    if amt < 112 { continue; }
-                    if &buf[..16] != BEACON_PREFIX { continue; }
+                    if amt < 112 {
+                        continue;
+                    }
+                    if &buf[..16] != BEACON_PREFIX {
+                        continue;
+                    }
                     // Verify the Ed25519 signature before trusting the beacon.
                     let mut pk = [0u8; 32];
                     pk.copy_from_slice(&buf[16..48]);
@@ -1830,7 +2169,9 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
                     let beacon_fp = hex::encode(&pk[..8]);
-                    if beacon_fp == local_fp { continue; }
+                    if beacon_fp == local_fp {
+                        continue;
+                    }
                     tracing::info!(peer = %src, fingerprint = %beacon_fp, "Discovered via beacon");
 
                     // WIRED: Register discovered peer with NatHolePuncher
@@ -1855,13 +2196,24 @@ async fn main() -> anyhow::Result<()> {
                         let pdu = build_handshake_pdu(
                             &nc.identity.public_key_bytes(),
                             |d| nc.identity.sign(d).to_bytes(),
-                            &xp, &kp,
+                            &xp,
+                            &kp,
                         );
                         let mut c = pdu;
                         let raw = l4_rs::encode(&mut c);
                         let tag = [0u8; 16];
                         for i in 0..3 {
-                            let _ = send_gtf(&nc.socket, &t, [0,0,0,0], 0, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+                            let _ = send_gtf(
+                                &nc.socket,
+                                &t,
+                                [0, 0, 0, 0],
+                                0,
+                                i as u8,
+                                &frame_shard(&raw[i]),
+                                &tag,
+                                false,
+                            )
+                            .await;
                         }
                         pending.insert(t.to_string(), (xs, ks));
                         tracing::info!(target = %t, fingerprint = %beacon_fp, "Auto-handshake sent");
@@ -1901,7 +2253,9 @@ async fn main() -> anyhow::Result<()> {
         let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
         while nr.running.load(Ordering::Relaxed) {
             if let Ok((amt, src)) = sock.recv_from(&mut buf).await {
-                if amt < net::MIN_FRAME_SIZE { continue; }
+                if amt < net::MIN_FRAME_SIZE {
+                    continue;
+                }
                 let _ = nr.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
                 let _ = nr.stats.bytes_recv.fetch_add(amt as u64, Ordering::Relaxed);
                 // Dispatch through lockless multi-worker session hash queue
@@ -1914,7 +2268,9 @@ async fn main() -> anyhow::Result<()> {
                 #[cfg(feature = "vpn")]
                 if net::parse_flags(&buf) & 0x02 != 0 {
                     let pe = net::BULK_OFFSET_AUTH_TAG_START.min(amt);
-                    if pe <= net::BULK_OFFSET_PAYLOAD_START { continue; }
+                    if pe <= net::BULK_OFFSET_PAYLOAD_START {
+                        continue;
+                    }
                     if let Some(sd) = unframe(&buf[net::BULK_OFFSET_PAYLOAD_START..pe]) {
                         let n2 = Arc::clone(&nr);
                         let pa2 = Arc::clone(&pa);
@@ -1934,19 +2290,45 @@ async fn main() -> anyhow::Result<()> {
                         let tft3 = Arc::clone(&tft_rx);
                         let rot3 = rotator_rx.clone();
                         tokio::spawn(async move {
-                            handle_pkt(&n2, &pa2, &phs2, &sock2, ctr, &sd, &src2,
-                                       Some(&rl3), Some(&*rep3), &et3, &sc3, &rsm3,
-                                       &ca3, &coc3, &te3, psk3, vpn_pkt.as_ref(),
-                                       Some(&*tft3), rot3.as_deref()).await;
+                            handle_pkt(
+                                &n2,
+                                &pa2,
+                                &phs2,
+                                &sock2,
+                                ctr,
+                                &sd,
+                                &src2,
+                                Some(&rl3),
+                                Some(&*rep3),
+                                &et3,
+                                &sc3,
+                                &rsm3,
+                                &ca3,
+                                &coc3,
+                                &te3,
+                                psk3,
+                                vpn_pkt.as_ref(),
+                                Some(&*tft3),
+                                rot3.as_deref(),
+                            )
+                            .await;
                         });
                     }
                     continue;
                 }
                 let si = buf[net::OFFSET_SHARD_INDEX] as usize;
-                if si > 2 { continue; }
-                let ats = if amt >= GTF_BULK_SIZE { net::BULK_OFFSET_AUTH_TAG_START } else { net::OFFSET_AUTH_TAG_START };
+                if si > 2 {
+                    continue;
+                }
+                let ats = if amt >= GTF_BULK_SIZE {
+                    net::BULK_OFFSET_AUTH_TAG_START
+                } else {
+                    net::OFFSET_AUTH_TAG_START
+                };
                 let pe = ats.min(amt);
-                if pe <= OFFSET_PAYLOAD_START { continue; }
+                if pe <= OFFSET_PAYLOAD_START {
+                    continue;
+                }
                 if let Some(sd) = unframe(&buf[OFFSET_PAYLOAD_START..pe]) {
                     let sp = Arc::clone(&sp2);
                     let phs2 = Arc::clone(&phs);
@@ -1971,10 +2353,28 @@ async fn main() -> anyhow::Result<()> {
                             if std::env::var("GGN_DEBUG_RX").is_ok() {
                                 tracing::info!("assembled frame ctr={ctr} si={si} len={}", r.len());
                             }
-                            handle_pkt(&n2, &pa2, &phs2, &sock2, ctr, &r, &src2,
-                                      Some(&rl3), Some(&*rep3),
-                                      &et3, &sc3, &rsm3, &ca3, &coc3, &te3, psk3,
-                                      vpn_pkt.as_ref(), Some(&*tft3), rot3.as_deref()).await;
+                            handle_pkt(
+                                &n2,
+                                &pa2,
+                                &phs2,
+                                &sock2,
+                                ctr,
+                                &r,
+                                &src2,
+                                Some(&rl3),
+                                Some(&*rep3),
+                                &et3,
+                                &sc3,
+                                &rsm3,
+                                &ca3,
+                                &coc3,
+                                &te3,
+                                psk3,
+                                vpn_pkt.as_ref(),
+                                Some(&*tft3),
+                                rot3.as_deref(),
+                            )
+                            .await;
                         } else if std::env::var("GGN_DEBUG_RX").is_ok() {
                             tracing::info!("assemble dropped ctr={ctr} si={si}");
                         }
@@ -1999,12 +2399,16 @@ async fn main() -> anyhow::Result<()> {
                     while let Some(u) = hub.poll_netstack_egress() {
                         send_tunnel_frame(&nc, &u.fingerprint, u.endpoint, &u.wire).await;
                         sent += 1;
-                        if sent > 64 { break; } // yield; stay responsive
+                        if sent > 64 {
+                            break;
+                        } // yield; stay responsive
                     }
                     while let Some(u) = hub.poll_egress() {
                         send_tunnel_frame(&nc, &u.fingerprint, u.endpoint, &u.wire).await;
                         sent += 1;
-                        if sent > 64 { break; }
+                        if sent > 64 {
+                            break;
+                        }
                     }
                     if last_sweep.elapsed() >= Duration::from_secs(1) {
                         let expired = hub.sweep();
@@ -2027,19 +2431,23 @@ async fn main() -> anyhow::Result<()> {
             let tun = Arc::clone(tun);
             let client2 = Arc::clone(&client);
             let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1024); // bounded (rule 3)
-            // ── Tunnel watchdog: keepalive → dead detection → re-handshake ───
-            // A sealed tunnel that silently dies (LTE blip, hub reboot,
-            // counter sentinel) must heal itself. Liveness = authenticated
-            // inbound datagrams (open_to_tun notes them); keepalive = ICMP
-            // echo to the hub overlay (the hub answers it); recovery = a
-            // fresh mesh handshake — the ctr==1 path rotates the epoch and
-            // adopts the new key, the hub re-anchors the lease.
+                                                               // ── Tunnel watchdog: keepalive → dead detection → re-handshake ───
+                                                               // A sealed tunnel that silently dies (LTE blip, hub reboot,
+                                                               // counter sentinel) must heal itself. Liveness = authenticated
+                                                               // inbound datagrams (open_to_tun notes them); keepalive = ICMP
+                                                               // echo to the hub overlay (the hub answers it); recovery = a
+                                                               // fresh mesh handshake — the ctr==1 path rotates the epoch and
+                                                               // adopts the new key, the hub re-anchors the lease.
             {
-                let client_ip: std::net::Ipv4Addr = std::env::var("GHOST_VPN_LOCAL_IP").ok()
+                let client_ip: std::net::Ipv4Addr = std::env::var("GHOST_VPN_LOCAL_IP")
+                    .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(std::net::Ipv4Addr::new(10, 66, 0, 10));
                 let hub_overlay = std::net::Ipv4Addr::new(
-                    vpn::OVERLAY_PREFIX, vpn::OVERLAY_SECOND_OCTET, 0, vpn::OVERLAY_HUB_HOST,
+                    vpn::OVERLAY_PREFIX,
+                    vpn::OVERLAY_SECOND_OCTET,
+                    0,
+                    vpn::OVERLAY_HUB_HOST,
                 );
                 let keep_tx = tx.clone();
                 let w_nc = Arc::clone(&nc);
@@ -2060,10 +2468,7 @@ async fn main() -> anyhow::Result<()> {
                             // Counter headroom is a second liveness trigger: a
                             // spent tunnel counter is unrecoverable without a
                             // new epoch (PROTOTYPE.md flaw #1).
-                            wd.poll_with_counter(
-                                std::time::Instant::now(),
-                                w_client.tx_counter(),
-                            )
+                            wd.poll_with_counter(std::time::Instant::now(), w_client.tx_counter())
                         };
                         match action {
                             vpn::client::Action::Nothing => {}
@@ -2141,15 +2546,29 @@ async fn main() -> anyhow::Result<()> {
         loop {
             sleep(Duration::from_millis(200)).await;
             for e in nr2.sessions.iter_mut() {
-                let x = e.ack_engine.lock().unwrap_or_else(|poison| poison.into_inner())
+                let x = e
+                    .ack_engine
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
                     .collect_expired_full(Duration::from_millis(200));
                 for (seq, d, auth_tag, session_hash) in x {
-                    let t = pa2.get(&e.peer_fingerprint)
+                    let t = pa2
+                        .get(&e.peer_fingerprint)
                         .map(|v| *v.value())
-                        .unwrap_or(SocketAddr::from(([127,0,0,1], 0)));
+                        .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
                     if t.port() != 0 {
                         nr2.stats.retransmits.fetch_add(1, Ordering::Relaxed);
-                        let _ = send_gtf(&nr2.socket, &t, session_hash, seq, 0, &d, &auth_tag, e.use_bulk).await;
+                        let _ = send_gtf(
+                            &nr2.socket,
+                            &t,
+                            session_hash,
+                            seq,
+                            0,
+                            &d,
+                            &auth_tag,
+                            e.use_bulk,
+                        )
+                        .await;
                     }
                 }
             }
@@ -2165,7 +2584,8 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(60)).await;
-                let idle_timeout = Duration::from_secs(nc.keepalive_interval_secs.load(Ordering::Relaxed));
+                let idle_timeout =
+                    Duration::from_secs(nc.keepalive_interval_secs.load(Ordering::Relaxed));
                 for mut e in nc.sessions.iter_mut() {
                     let idle = e.guard.last_activity.elapsed();
                     if idle > idle_timeout {
@@ -2185,11 +2605,17 @@ async fn main() -> anyhow::Result<()> {
                         let ctr = e.next_tx_counter();
                         let (f, tag) = enc_split(&e.master_key, ctr, &sh, dir_for(e.role), b"KA");
                         let tgt = e.peer_fingerprint.clone();
-                        let t = nc.sessions.iter().find_map(|entry| {
-                            if entry.key() == &tgt {
-                                pa2.get(&tgt).map(|v| *v.value())
-                            } else { None }
-                        }).unwrap_or(SocketAddr::from(([127,0,0,1], 0)));
+                        let t = nc
+                            .sessions
+                            .iter()
+                            .find_map(|entry| {
+                                if entry.key() == &tgt {
+                                    pa2.get(&tgt).map(|v| *v.value())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
                         send3(&nc.socket, &t, sh, ctr, &f, &tag).await;
                         e.guard.last_activity = std::time::Instant::now();
                     }
@@ -2244,18 +2670,18 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
         let inp = inp.trim();
-        if inp.is_empty() { continue; }
+        if inp.is_empty() {
+            continue;
+        }
         let p: Vec<&str> = inp.splitn(4, ' ').collect();
         match p[0].to_uppercase().as_str() {
-            "EXIT" => {
-                match p.get(1).copied() {
-                    Some(fp) if !fp.is_empty() => {
-                        *default_exit.lock().unwrap() = Some(fp.to_string());
-                        println!("Exit node set: {}", fp);
-                    }
-                    _ => println!("Usage: EXIT <fingerprint>"),
+            "EXIT" => match p.get(1).copied() {
+                Some(fp) if !fp.is_empty() => {
+                    *default_exit.lock().unwrap() = Some(fp.to_string());
+                    println!("Exit node set: {}", fp);
                 }
-            }
+                _ => println!("Usage: EXIT <fingerprint>"),
+            },
             "EXITAUTH" => {
                 // Manage the exit-node allowlist for THIS node.
                 match p.get(1).copied() {
@@ -2278,7 +2704,8 @@ async fn main() -> anyhow::Result<()> {
                 // Export the live mesh graph (real fingerprints/addrs/sessions)
                 // for the quantum-entanglement layer (quantumnet ghost-net).
                 // Take the raw remainder of the line (paths may contain spaces).
-                let path = inp.find(' ')
+                let path = inp
+                    .find(' ')
                     .map(|i| inp[i + 1..].trim())
                     .filter(|s| !s.is_empty())
                     .unwrap_or("ghost-topology.json");
@@ -2311,20 +2738,28 @@ async fn main() -> anyhow::Result<()> {
                     "links": links,
                 });
                 match std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap()) {
-                    Ok(_) => println!("Exported {} nodes, {} links to {path}",
-                                      nodes.len(), links.len()),
+                    Ok(_) => println!(
+                        "Exported {} nodes, {} links to {path}",
+                        nodes.len(),
+                        links.len()
+                    ),
                     Err(e) => println!("Export failed: {e}"),
                 }
             }
             "PEER" => {
                 let t: SocketAddr = match p.get(1).and_then(|x| x.parse().ok()) {
                     Some(a) => a,
-                    None => { tracing::warn!("Usage: PEER <ip:port>"); continue; }
+                    None => {
+                        tracing::warn!("Usage: PEER <ip:port>");
+                        continue;
+                    }
                 };
                 initiate_handshake(&nc, &nc.socket, t, &pending_hs).await;
                 for _ in 0..20 {
                     sleep(Duration::from_millis(500)).await;
-                    if !nc.sessions.is_empty() { break; }
+                    if !nc.sessions.is_empty() {
+                        break;
+                    }
                 }
                 tracing::info!("Sessions after wait: {}", nc.sessions.len());
             }
@@ -2345,20 +2780,34 @@ async fn main() -> anyhow::Result<()> {
                 println!("Reputation: active");
             }
             "STATS" => {
-                let (sent_bytes, recv_bytes, send_rate, recv_rate) =
-                    nc.throughput_report(1000);
-                println!("TX: {:.1} Mbps ({:.0} MB)", send_rate * 8.0 / 1_000_000.0, sent_bytes / 1_000_000.0);
-                println!("RX: {:.1} Mbps ({:.0} MB)", recv_rate * 8.0 / 1_000_000.0, recv_bytes / 1_000_000.0);
-                println!("Retransmits: {}", nc.stats.retransmits.load(Ordering::Relaxed));
+                let (sent_bytes, recv_bytes, send_rate, recv_rate) = nc.throughput_report(1000);
+                println!(
+                    "TX: {:.1} Mbps ({:.0} MB)",
+                    send_rate * 8.0 / 1_000_000.0,
+                    sent_bytes / 1_000_000.0
+                );
+                println!(
+                    "RX: {:.1} Mbps ({:.0} MB)",
+                    recv_rate * 8.0 / 1_000_000.0,
+                    recv_bytes / 1_000_000.0
+                );
+                println!(
+                    "Retransmits: {}",
+                    nc.stats.retransmits.load(Ordering::Relaxed)
+                );
                 println!("Drops: {}", nc.stats.drops.load(Ordering::Relaxed));
             }
-            "BEACON" => {
-                match p.get(1).copied() {
-                    Some("on" | "ON" | "1" | "true") => { nc.beacon_enabled.store(true, Ordering::Relaxed); println!("Beacon ON"); }
-                    Some("off" | "OFF" | "0" | "false") => { nc.beacon_enabled.store(false, Ordering::Relaxed); println!("Beacon OFF"); }
-                    _ => println!("Usage: BEACON on|off"),
+            "BEACON" => match p.get(1).copied() {
+                Some("on" | "ON" | "1" | "true") => {
+                    nc.beacon_enabled.store(true, Ordering::Relaxed);
+                    println!("Beacon ON");
                 }
-            }
+                Some("off" | "OFF" | "0" | "false") => {
+                    nc.beacon_enabled.store(false, Ordering::Relaxed);
+                    println!("Beacon OFF");
+                }
+                _ => println!("Usage: BEACON on|off"),
+            },
             "REVOKE" => {
                 let fp = p.get(1).copied().unwrap_or("");
                 if fp.is_empty() {
@@ -2403,11 +2852,17 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let (dkey, dsh, drole) = (ds.master_key, ds.session_hash, ds.role);
                 drop(ds);
-                let dctr = nc.sessions.get(dest).map(|s| s.next_tx_counter()).unwrap_or(2);
+                let dctr = nc
+                    .sessions
+                    .get(dest)
+                    .map(|s| s.next_tx_counter())
+                    .unwrap_or(2);
                 // End-to-end blob: [len u16][payload][pad][tag]
                 let mut blob = (payload.len() as u16).to_be_bytes().to_vec();
                 blob.extend_from_slice(payload.as_bytes());
-                if !blob.len().is_multiple_of(2) { blob.push(0); }
+                if !blob.len().is_multiple_of(2) {
+                    blob.push(0);
+                }
                 encrypt_in_place_with_context(&dkey, dctr, &dsh, dir_for(drole), &mut blob);
                 let mut inner = dctr.to_be_bytes().to_vec();
                 inner.extend_from_slice(&blob);
@@ -2418,9 +2873,15 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let (rkey, rsh, rrole) = (rs.master_key, rs.session_hash, rs.role);
                 drop(rs);
-                let rctr = nc.sessions.get(relay).map(|s| s.next_tx_counter()).unwrap_or(2);
+                let rctr = nc
+                    .sessions
+                    .get(relay)
+                    .map(|s| s.next_tx_counter())
+                    .unwrap_or(2);
                 let (f, tag) = enc_split(&rkey, rctr, &rsh, dir_for(rrole), &relay_pkt);
-                let tgt = addrs.get(relay).map(|v| *v.value())
+                let tgt = addrs
+                    .get(relay)
+                    .map(|v| *v.value())
                     .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
                 send3(&nc.socket, &tgt, rsh, rctr, &f, &tag).await;
                 println!("Relay sent: {payload} -> {dest} via {relay}");
@@ -2451,13 +2912,30 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let (key, sh, role) = (sess.master_key, sess.session_hash, sess.role);
                 drop(sess);
-                let ctr = nc.sessions.get(dest).map(|s| s.next_tx_counter()).unwrap_or(2);
+                let ctr = nc
+                    .sessions
+                    .get(dest)
+                    .map(|s| s.next_tx_counter())
+                    .unwrap_or(2);
                 let mut payload = b"CHAT!".to_vec();
                 payload.extend_from_slice(msg.as_bytes());
                 let (f, tag) = enc_split(&key, ctr, &sh, dir_for(role), &payload);
-                let tgt = addrs.get(dest).map(|v| *v.value())
+                let tgt = addrs
+                    .get(dest)
+                    .map(|v| *v.value())
                     .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                send3_adaptive(&nc.socket, &tgt, dest, sh, ctr, &f, &tag, &shard_router, &addrs).await;
+                send3_adaptive(
+                    &nc.socket,
+                    &tgt,
+                    dest,
+                    sh,
+                    ctr,
+                    &f,
+                    &tag,
+                    &shard_router,
+                    &addrs,
+                )
+                .await;
                 println!("Chat sent to {}: {}", &dest[..8.min(dest.len())], msg);
             }
             "REP" => {
@@ -2468,11 +2946,14 @@ async fn main() -> anyhow::Result<()> {
                     println!("Usage: REP <from_fp> <to_fp>");
                 } else {
                     let rep = &*reputation_matrix;
-                    println!("Reputation {}→{}: byzantine={}, error_rate={:.4}, p_value={:.6}",
-                        from, to,
+                    println!(
+                        "Reputation {}→{}: byzantine={}, error_rate={:.4}, p_value={:.6}",
+                        from,
+                        to,
                         rep.is_byzantine(from, to),
                         rep.observed_error_rate(from, to),
-                        rep.cosmic_consistency_p_value(from, to));
+                        rep.cosmic_consistency_p_value(from, to)
+                    );
                 }
             }
             #[cfg(feature = "vpn")]
@@ -2497,23 +2978,21 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             #[cfg(feature = "vpn")]
-            "VPNSTATS" => {
-                match vpn_mode.as_ref() {
-                    Some(VpnMode::Hub(hub)) => {
-                        let (i, o, dr, lc, tc) = hub.stats();
-                        println!("VPN hub: in={i} out={o} dropped={dr} leases={lc} tcp_flows={tc}");
-                    }
-                    Some(VpnMode::Client(c, _)) => {
-                        println!(
-                            "VPN client: hub={} epoch={} tx_ctr={}",
-                            c.fingerprint,
-                            c.current_epoch(),
-                            c.tx_counter()
-                        );
-                    }
-                    None => println!("VPN disabled (set GHOST_VPN=hub|client)"),
+            "VPNSTATS" => match vpn_mode.as_ref() {
+                Some(VpnMode::Hub(hub)) => {
+                    let (i, o, dr, lc, tc) = hub.stats();
+                    println!("VPN hub: in={i} out={o} dropped={dr} leases={lc} tcp_flows={tc}");
                 }
-            }
+                Some(VpnMode::Client(c, _)) => {
+                    println!(
+                        "VPN client: hub={} epoch={} tx_ctr={}",
+                        c.fingerprint,
+                        c.current_epoch(),
+                        c.tx_counter()
+                    );
+                }
+                None => println!("VPN disabled (set GHOST_VPN=hub|client)"),
+            },
             #[cfg(feature = "vpn")]
             "VPN" => match p.get(1).copied().map(str::to_uppercase).as_deref() {
                 Some("STATUS") => match vpn_mode.as_ref() {
@@ -2525,8 +3004,14 @@ async fn main() -> anyhow::Result<()> {
                         } else {
                             println!(
                                 "  {:<17} {:<13} {:<22} {:>5} {:>6} {:>6} {:>8} {:>10}",
-                                "fingerprint", "overlay", "endpoint", "epoch",
-                                "flows", "v_max", "idle", "headroom"
+                                "fingerprint",
+                                "overlay",
+                                "endpoint",
+                                "epoch",
+                                "flows",
+                                "v_max",
+                                "idle",
+                                "headroom"
                             );
                             for v in &views {
                                 println!(
@@ -2588,7 +3073,11 @@ async fn main() -> anyhow::Result<()> {
                         for (fp, for_us, for_them, ratio, evicted) in stats {
                             println!(
                                 "  Peer {}: for_us={} B, for_them={} B, ratio={:.2}, evicted={}",
-                                &fp[..8.min(fp.len())], for_us, for_them, ratio, evicted
+                                &fp[..8.min(fp.len())],
+                                for_us,
+                                for_them,
+                                ratio,
+                                evicted
                             );
                         }
                     }
@@ -2601,34 +3090,58 @@ async fn main() -> anyhow::Result<()> {
                     println!("  Transit evicted          : {}", evicted);
                 }
             }
-            "EXITS" => {
-                match exit_rotator.as_ref() {
-                    Some(r) => {
-                        let idx = r.current_idx.load(std::sync::atomic::Ordering::Relaxed);
-                        println!("Exit IP Rotator Pool ({} IP(s), current index: {}):", r.pool_size(), idx);
-                        for (i, ip) in r.egress_ips.iter().enumerate() {
-                            let marker = if i == (idx % r.pool_size()) { " -> [active]" } else { "" };
-                            println!("  [{}] {}{}", i, ip, marker);
-                        }
+            "EXITS" => match exit_rotator.as_ref() {
+                Some(r) => {
+                    let idx = r.current_idx.load(std::sync::atomic::Ordering::Relaxed);
+                    println!(
+                        "Exit IP Rotator Pool ({} IP(s), current index: {}):",
+                        r.pool_size(),
+                        idx
+                    );
+                    for (i, ip) in r.egress_ips.iter().enumerate() {
+                        let marker = if i == (idx % r.pool_size()) {
+                            " -> [active]"
+                        } else {
+                            ""
+                        };
+                        println!("  [{}] {}{}", i, ip, marker);
                     }
-                    None => println!("Exit IP Rotator disabled (set GHOST_EXIT_IPS=ip1,ip2,...)"),
                 }
-            }
+                None => println!("Exit IP Rotator disabled (set GHOST_EXIT_IPS=ip1,ip2,...)"),
+            },
             "FEC" => {
                 println!("Forward Error Correction Status:");
-                println!("  L4 Reed-Solomon (2,1)     : ALWAYS ACTIVE (per-packet erasure sharding)");
-                println!("  L7 LDPC IRA (1024,512)   : {}", if ldpc_enabled { "ENABLED (GHOST_LDPC_FEC=1)" } else { "STANDBY (set GHOST_LDPC_FEC=1)" });
-                println!("  Codeword block size       : {} bytes (data: {} bytes, parity: {} bytes)",
+                println!(
+                    "  L4 Reed-Solomon (2,1)     : ALWAYS ACTIVE (per-packet erasure sharding)"
+                );
+                println!(
+                    "  L7 LDPC IRA (1024,512)   : {}",
+                    if ldpc_enabled {
+                        "ENABLED (GHOST_LDPC_FEC=1)"
+                    } else {
+                        "STANDBY (set GHOST_LDPC_FEC=1)"
+                    }
+                );
+                println!(
+                    "  Codeword block size       : {} bytes (data: {} bytes, parity: {} bytes)",
                     vantablack::ghost::layers::l7_ldpc::LDPC_BLOCK_BYTES,
                     vantablack::ghost::layers::l7_ldpc::LDPC_DATA_BYTES,
-                    vantablack::ghost::layers::l7_ldpc::LDPC_BLOCK_BYTES - vantablack::ghost::layers::l7_ldpc::LDPC_DATA_BYTES
+                    vantablack::ghost::layers::l7_ldpc::LDPC_BLOCK_BYTES
+                        - vantablack::ghost::layers::l7_ldpc::LDPC_DATA_BYTES
                 );
             }
             "MEMSEC" => {
                 println!("Memory Security & Protection Status:");
-                println!("  L8 AES-256-XTS Engine     : ACTIVE (hardware-accelerated RAM encryption)");
-                println!("  L8 Verified Ring Buffer   : ACTIVE (capacity 1024 slots, drops: {})", verified_ring.drops());
-                println!("  L0/L1 LockedMemory Guard  : ACTIVE (mlock / VirtualLock RAM page pinning)");
+                println!(
+                    "  L8 AES-256-XTS Engine     : ACTIVE (hardware-accelerated RAM encryption)"
+                );
+                println!(
+                    "  L8 Verified Ring Buffer   : ACTIVE (capacity 1024 slots, drops: {})",
+                    verified_ring.drops()
+                );
+                println!(
+                    "  L0/L1 LockedMemory Guard  : ACTIVE (mlock / VirtualLock RAM page pinning)"
+                );
             }
             "HELP" => {
                 println!("Commands:");
@@ -2642,10 +3155,16 @@ async fn main() -> anyhow::Result<()> {
                 println!("  BEACON <on|off>     - Toggle beacon discovery");
                 println!("  REVOKE <fp>         - Revoke a compromised identity");
                 println!("  REP <from> <to>     - Show reputation between peers");
-                println!("  TFT [fp]            - Tit-for-Tat fair-share accounting and eviction status");
+                println!(
+                    "  TFT [fp]            - Tit-for-Tat fair-share accounting and eviction status"
+                );
                 println!("  EXITS               - Show configured egress IP rotation pool");
-                println!("  FEC                 - Show Forward Error Correction status (RS + LDPC)");
-                println!("  MEMSEC              - Show runtime memory encryption & ring buffer status");
+                println!(
+                    "  FEC                 - Show Forward Error Correction status (RS + LDPC)"
+                );
+                println!(
+                    "  MEMSEC              - Show runtime memory encryption & ring buffer status"
+                );
                 println!("  LEASES               - VPN hub: client leases (raw)");
                 println!("  VPNSTATS             - VPN in/out/flow totals");
                 println!("  VPN STATUS           - VPN per-lease detail (hub) / client state");

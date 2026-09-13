@@ -2,8 +2,8 @@
 //! (`cargo build --features tray`). Runs on its own thread with a tao event
 //! loop; menu clicks toggle node state directly.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use vantablack::ghost::GhostNode;
 
@@ -27,7 +27,9 @@ pub fn run_tray(nc: Arc<GhostNode>) {
                 }
             }
         }
-        let Ok(icon) = Icon::from_rgba(rgba, 32, 32) else { return; };
+        let Ok(icon) = Icon::from_rgba(rgba, 32, 32) else {
+            return;
+        };
 
         let beacon_item = CheckMenuItem::new("Beacon discovery", true, true, None);
         let quit_item = MenuItem::new("Quit", true, None);

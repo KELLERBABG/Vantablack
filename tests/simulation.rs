@@ -6,7 +6,6 @@
 /// - Uses the full encrypt-send-receive-decrypt pipeline with length-prefix framing
 ///   so binary data is preserved through the RS erasure coding layer
 /// - Deletes identity.key before each test to avoid cross-test identity conflict
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,8 +16,8 @@ use vantablack::ghost::layers::l0_identity;
 use vantablack::ghost::layers::l1_kem;
 use vantablack::ghost::layers::l2_aead;
 use vantablack::ghost::layers::l4_rs;
-use vantablack::ghost::net::{OFFSET_PAYLOAD_START, frame_shard, unframe};
 use vantablack::ghost::net::routing::ReputationMatrix;
+use vantablack::ghost::net::{frame_shard, unframe, OFFSET_PAYLOAD_START};
 use vantablack::ghost::session::{Session, SessionRole};
 
 use ml_kem::kem::Decapsulate;
@@ -26,8 +25,8 @@ use ml_kem::{Ciphertext, DecapsulationKey512, MlKem512};
 
 mod common;
 use common::virtual_net::{
-    VirtualNetHub, VirtualEndpoint, build_test_gtf_packet,
-    parse_virtual_counter, parse_virtual_shard_index,
+    build_test_gtf_packet, parse_virtual_counter, parse_virtual_shard_index, VirtualEndpoint,
+    VirtualNetHub,
 };
 
 const TIMEOUT_MS: u64 = 2000;
@@ -236,11 +235,7 @@ impl SimNode {
                 continue;
             }
 
-            let plen = pkt
-                .data
-                .len()
-                .min(512)
-                .saturating_sub(OFFSET_PAYLOAD_START);
+            let plen = pkt.data.len().min(512).saturating_sub(OFFSET_PAYLOAD_START);
             let payload = pkt.data[OFFSET_PAYLOAD_START..OFFSET_PAYLOAD_START + plen].to_vec();
 
             // Use production unframe() for binary-safe length-prefix decoding
@@ -258,13 +253,7 @@ impl SimNode {
             };
             if n >= 2 {
                 if ctr <= 1 || self.node.sessions.len() > 0 {
-                    let mut ws = {
-                        self.assembly_pool
-                            .write()
-                            .await
-                            .remove(&key)
-                            .unwrap()
-                    };
+                    let mut ws = { self.assembly_pool.write().await.remove(&key).unwrap() };
                     if l4_rs::reconstruct(&mut ws).is_ok() {
                         let rc: Vec<u8> = ws[0]
                             .as_ref()
@@ -349,9 +338,7 @@ impl SimNode {
         }
 
         // ── HANDLE HANDSHAKE RESPONSE (counter == 1) — signed 912-byte format ──
-        if counter == 1
-            && data.len() >= _RESPONSE_BLOB_LEN
-            && data.starts_with(b"GHOST_RESPONSE__")
+        if counter == 1 && data.len() >= _RESPONSE_BLOB_LEN && data.starts_with(b"GHOST_RESPONSE__")
         {
             let mut rd = data.to_vec();
             rd.truncate(_RESPONSE_BLOB_LEN);
@@ -380,15 +367,15 @@ impl SimNode {
             if let Some((ax, dk)) = self.pending_hs.write().await.remove(src) {
                 let ks = dk.decapsulate(&ct);
                 let ky_ss_32: Vec<u8> = ks.as_slice().to_vec();
-                    let xss = ax.diffie_hellman(&x25519_dalek::PublicKey::from(bp));
-                    let mk = l1_kem::derive_hybrid_master_key(xss.as_bytes(), &ky_ss_32);
-                    self.peer_addresses
-                        .write()
-                        .await
-                        .insert(fp.clone(), src.to_string());
-                    let session = Session::new_with_role(mk, fp.clone(), SessionRole::Responder);
-                    self.node.sessions.insert(fp.clone(), session);
-                    return Some(format!("CONFIRMED:{}", fp));
+                let xss = ax.diffie_hellman(&x25519_dalek::PublicKey::from(bp));
+                let mk = l1_kem::derive_hybrid_master_key(xss.as_bytes(), &ky_ss_32);
+                self.peer_addresses
+                    .write()
+                    .await
+                    .insert(fp.clone(), src.to_string());
+                let session = Session::new_with_role(mk, fp.clone(), SessionRole::Responder);
+                self.node.sessions.insert(fp.clone(), session);
+                return Some(format!("CONFIRMED:{}", fp));
             }
             return None;
         }
@@ -410,8 +397,9 @@ impl SimNode {
 
             match reconstruct_decrypt_binary_safe(&key, counter, &mut shards) {
                 Ok(payload) => {
-                    let trimmed =
-                        String::from_utf8_lossy(&payload).trim_end_matches('\0').to_string();
+                    let trimmed = String::from_utf8_lossy(&payload)
+                        .trim_end_matches('\0')
+                        .to_string();
                     return Some(format!("MSG:{}:{}", peer_fp, trimmed));
                 }
                 Err(_) => {
@@ -511,16 +499,31 @@ async fn test_sim_packet_loss_recovery() {
         if let Some(r) = b.recv(&mut hub).await {
             if r.starts_with("ESTABLISHED:") {
                 let r2 = a.recv(&mut hub).await;
-                if r2.as_ref().map(|s| s.starts_with("CONFIRMED:")).unwrap_or(false) {
+                if r2
+                    .as_ref()
+                    .map(|s| s.starts_with("CONFIRMED:"))
+                    .unwrap_or(false)
+                {
                     recovered = true;
                     break;
                 }
             }
         }
     }
-    assert!(recovered, "Handshake should successfully recover and establish under 20% packet loss");
-    assert_eq!(a.node.sessions.len(), 1, "Alice should hold established session");
-    assert_eq!(b.node.sessions.len(), 1, "Bob should hold established session");
+    assert!(
+        recovered,
+        "Handshake should successfully recover and establish under 20% packet loss"
+    );
+    assert_eq!(
+        a.node.sessions.len(),
+        1,
+        "Alice should hold established session"
+    );
+    assert_eq!(
+        b.node.sessions.len(),
+        1,
+        "Bob should hold established session"
+    );
 }
 
 #[tokio::test]
@@ -579,7 +582,11 @@ async fn test_sim_end_to_end_encrypt_decrypt() {
     // Test with binary data that could be corrupted by naive framing
     let test_messages = vec![
         "Hello World!".to_string(),
-        String::from_utf8_lossy(&[b'B', b'i', b'n', b'a', b'r', b'y', 0x00, b'd', b'a', b't', b'a', 0xFF, b't', b'e', b's', b't']).into_owned(),
+        String::from_utf8_lossy(&[
+            b'B', b'i', b'n', b'a', b'r', b'y', 0x00, b'd', b'a', b't', b'a', 0xFF, b't', b'e',
+            b's', b't',
+        ])
+        .into_owned(),
         String::new(),
         "A".to_string(),
         "X".repeat(100),

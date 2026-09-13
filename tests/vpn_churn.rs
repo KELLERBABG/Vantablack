@@ -99,18 +99,16 @@ fn phone_sends_query(
 
 /// Poll exactly one egress unit, open it on the phone, and return the TUN
 /// packet (asserting the DNS transaction id survived the round trip).
-fn relay_and_open(
-    hub: &Arc<VpnHub>,
-    phone: &ClientState,
-    ctr: u32,
-    want_id: u16,
-) -> Vec<u8> {
+fn relay_and_open(hub: &Arc<VpnHub>, phone: &ClientState, ctr: u32, want_id: u16) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let u = loop {
         if let Some(u) = hub.poll_egress() {
             break u;
         }
-        assert!(Instant::now() < deadline, "no relayed reply for id {want_id}");
+        assert!(
+            Instant::now() < deadline,
+            "no relayed reply for id {want_id}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     };
     assert_eq!(u.fingerprint, FP);
@@ -144,11 +142,7 @@ fn churn_after_full_idle_expiry_new_query_gets_served() {
     phone_sends_query(&mut tun, &phone, &hub, ep, server_addr, server_ip, 0x21, 2);
     let mut buf = [0u8; 1500];
     let (amt, src1) = server.recv_from(&mut buf).expect("query 1 at server");
-    assert_ne!(
-        &buf[..amt].len() + 1,
-        0,
-        "payload sanity"
-    );
+    assert_ne!(&buf[..amt].len() + 1, 0, "payload sanity");
     let resp1 = dns_response(0x21, "nas.home", NAS_IP);
     server.send_to(&resp1, src1).expect("reply 1");
     relay_and_open(&hub, &phone, 1001, 0x21);
@@ -160,7 +154,9 @@ fn churn_after_full_idle_expiry_new_query_gets_served() {
 
     // ── (3) SAME tuple again (same client port → same FlowKey). ──
     phone_sends_query(&mut tun, &phone, &hub, ep, server_addr, server_ip, 0x22, 4);
-    let (amt2, src2) = server.recv_from(&mut buf).expect("query 2 at server AFTER idle expiry");
+    let (amt2, src2) = server
+        .recv_from(&mut buf)
+        .expect("query 2 at server AFTER idle expiry");
     let src2_ip: [u8; 4] = match src2.ip() {
         std::net::IpAddr::V4(ip) => ip.octets(),
         _ => panic!("v4"),
@@ -193,7 +189,9 @@ fn churn_racy_window_reader_gone_flow_alive_serves_same_socket() {
     phone_sends_query(&mut tun, &phone, &hub, ep, server_addr, server_ip, 0x31, 2);
     let mut buf = [0u8; 1500];
     let (amt, src1) = server.recv_from(&mut buf).expect("query 1 at server");
-    server.send_to(&dns_response(0x31, "nas.home", NAS_IP), src1).expect("reply 1");
+    server
+        .send_to(&dns_response(0x31, "nas.home", NAS_IP), src1)
+        .expect("reply 1");
     relay_and_open(&hub, &phone, 1001, 0x31);
 
     // Cross the READER clock only: reader exits, flow stays live.
@@ -203,11 +201,15 @@ fn churn_racy_window_reader_gone_flow_alive_serves_same_socket() {
     // Same tuple: get_or_create returns the SAME live socket (same NAT'd
     // port); the absent dedup key lets a reader re-attach to it.
     phone_sends_query(&mut tun, &phone, &hub, ep, server_addr, server_ip, 0x32, 4);
-    let (amt2, src2) = server.recv_from(&mut buf).expect("query 2 at server (racy window)");
+    let (amt2, src2) = server
+        .recv_from(&mut buf)
+        .expect("query 2 at server (racy window)");
     assert_eq!(src2, src1, "same live flow socket → same NAT'd port");
     let _ = amt;
     let _ = amt2;
-    server.send_to(&dns_response(0x32, "nas.home", NAS_IP), src2).expect("reply 2");
+    server
+        .send_to(&dns_response(0x32, "nas.home", NAS_IP), src2)
+        .expect("reply 2");
     relay_and_open(&hub, &phone, 1002, 0x32);
 
     let (_in, _out, dropped, _tcp, _udp) = hub.stats();

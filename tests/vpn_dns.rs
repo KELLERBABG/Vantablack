@@ -41,7 +41,8 @@ const NAS_IP: [u8; 4] = [192, 168, 1, 50];
 /// taken on this machine (netstat) and the tuple logic is port-agnostic.
 fn dns_server() -> (UdpSocket, std::net::SocketAddr) {
     let sock = UdpSocket::bind("127.0.0.1:0").expect("bind stand-in DNS server");
-    sock.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     let addr = sock.local_addr().unwrap();
     (sock, addr)
 }
@@ -84,7 +85,11 @@ fn phone_sends_query(
 }
 
 /// Poll egress for up to `secs`, collecting up to `want` tunnel units.
-fn poll_units(hub: &VpnHub, want: usize, secs: u64) -> Vec<vantablack::ghost::net::vpn::hub::EgressUnit> {
+fn poll_units(
+    hub: &VpnHub,
+    want: usize,
+    secs: u64,
+) -> Vec<vantablack::ghost::net::vpn::hub::EgressUnit> {
     let mut out = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(secs);
     while out.len() < want && Instant::now() < deadline {
@@ -127,7 +132,9 @@ fn dns_query_reaches_home_server_and_reply_lands_in_tun() {
 
     // ── The home DNS server receives the query, NAT'd off the overlay. ──
     let mut buf = [0u8; 1500];
-    let (amt, src) = server.recv_from(&mut buf).expect("query must reach the server");
+    let (amt, src) = server
+        .recv_from(&mut buf)
+        .expect("query must reach the server");
     let got = &buf[..amt];
     assert_eq!(&got[..2], &[0x12, 0x34], "DNS transaction id intact");
     let src_ip: [u8; 4] = match src.ip() {
@@ -147,10 +154,15 @@ fn dns_query_reaches_home_server_and_reply_lands_in_tun() {
     assert_eq!(u.endpoint, phone_addr);
 
     // ── The phone opens the reply frame → sealed datagram → TUN. ──
-    let reply_frame =
-        tunnel_frame(&KEY, SH, 1003, NonceDirection::ResponderToInitiator, &u.wire);
-    let reply = receiver_open(&reply_frame, reply_frame.len(), &KEY, SH, 1003)
-        .expect("reply frame intact");
+    let reply_frame = tunnel_frame(
+        &KEY,
+        SH,
+        1003,
+        NonceDirection::ResponderToInitiator,
+        &u.wire,
+    );
+    let reply =
+        receiver_open(&reply_frame, reply_frame.len(), &KEY, SH, 1003).expect("reply frame intact");
     let tun2 = FakeTun::new();
     let (accepted, _adv) = open_to_tun(&phone, &reply, &tun2);
     assert!(accepted, "phone must accept the hub's relayed reply");
@@ -226,7 +238,10 @@ fn dns_second_query_reuses_flow_and_reader() {
         "both queries arrived, in order"
     );
     // Same flow: both queries must carry the same NAT'd source port.
-    assert_eq!(got[0].1, got[1].1, "same client port → same flow socket port");
+    assert_eq!(
+        got[0].1, got[1].1,
+        "same client port → same flow socket port"
+    );
 
     // Answer both, to the exact source of each query.
     for (id, src) in &got {
@@ -242,7 +257,13 @@ fn dns_second_query_reuses_flow_and_reader() {
     // Open both on the phone side; both land in the TUN byte-correct.
     let tun2 = FakeTun::new();
     for (i, u) in units.iter().enumerate() {
-        let f = tunnel_frame(&KEY, SH, 2000 + i as u32, NonceDirection::ResponderToInitiator, &u.wire);
+        let f = tunnel_frame(
+            &KEY,
+            SH,
+            2000 + i as u32,
+            NonceDirection::ResponderToInitiator,
+            &u.wire,
+        );
         let reply = receiver_open(&f, f.len(), &KEY, SH, 2000 + i as u32).expect("reply intact");
         let (accepted, _) = open_to_tun(&phone, &reply, &tun2);
         assert!(accepted, "reply {i} accepted");

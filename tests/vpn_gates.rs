@@ -62,7 +62,8 @@ impl LossyVirtualLink {
         if keep {
             self.queue.lock().push(Some(wire));
         } else {
-            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.queue.lock().push(None); // tombstone keeps the schedule fixed
         }
     }
@@ -85,7 +86,8 @@ impl LossyVirtualLink {
             .drain(..)
             .filter_map(|x| {
                 if x.is_some() {
-                    self.delivered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.delivered
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 x
             })
@@ -132,14 +134,18 @@ fn m1_lossy_link_tunnel_survives() {
         match hub_ing.open(&key, "phone_fp", 1, &w) {
             OpenOutcome::Accepted { ip_packet, .. } => {
                 accepted += 1;
-                let seq = u32::from_be_bytes([ip_packet[4], ip_packet[5], ip_packet[6], ip_packet[7]]);
+                let seq =
+                    u32::from_be_bytes([ip_packet[4], ip_packet[5], ip_packet[6], ip_packet[7]]);
                 inner_seqs.push(seq);
             }
             _ => {}
         }
     }
     let drop_rate = 1.0 - (accepted as f64 / 40.0);
-    assert!(drop_rate > 0.03 && drop_rate < 0.30, "drop rate implausible: {drop_rate}");
+    assert!(
+        drop_rate > 0.03 && drop_rate < 0.30,
+        "drop rate implausible: {drop_rate}"
+    );
     // accepted packets may arrive out of order — that is fine for L3.
     // The invariant: the sequence space is NOT re-sequenced by the mesh,
     // and no accepted packet was held back (delivery set == arrival set).
@@ -159,7 +165,10 @@ fn m1_no_retransmit_structurally() {
     let phone = ClientState::new("fp", key);
     let w1 = seal_from_tun(&phone, &[9u8; 64]).unwrap();
     let ing = VpnIngress::new();
-    assert!(matches!(ing.open(&key, "fp", 1, &w1), OpenOutcome::Accepted { .. }));
+    assert!(matches!(
+        ing.open(&key, "fp", 1, &w1),
+        OpenOutcome::Accepted { .. }
+    ));
     assert!(matches!(ing.open(&key, "fp", 1, &w1), OpenOutcome::Replay));
     // counters are strictly monotonic per epoch (no reuse → no retransmit)
     let c1 = phone.tx_counter();
@@ -188,7 +197,10 @@ fn m2_migration_race_egress_locked_to_ip_b() {
     assert!(ok && matches!(ev, vantablack::ghost::net::vpn::AnchorEvent::WindowAdvance));
     // late N (150) from IP_A: valid data, endpoint unchanged
     let (_ok, ev2) = lt.observe_tunnel_packet(fp, 1, 150, ip_a);
-    assert!(matches!(ev2, vantablack::ghost::net::vpn::AnchorEvent::NoChange));
+    assert!(matches!(
+        ev2,
+        vantablack::ghost::net::vpn::AnchorEvent::NoChange
+    ));
     let lease_ip = lt.lease_for(fp).unwrap();
     assert_eq!(lt.endpoint_for_ip(lease_ip).unwrap(), ip_b);
 }
@@ -209,7 +221,12 @@ fn m2_udp_flood_caps_hold() {
         let fp = peers[(q % 2) as usize];
         let key = FlowKey {
             fp: fp.to_string(),
-            overlay_src: std::net::Ipv4Addr::new(10, 66, 0, if fp.starts_with('a') { 10 } else { 11 }),
+            overlay_src: std::net::Ipv4Addr::new(
+                10,
+                66,
+                0,
+                if fp.starts_with('a') { 10 } else { 11 },
+            ),
             overlay_port: 4000 + (q % 64) as u16,
             dst: std::net::SocketAddr::from(([192, 168, 1, 1], 53)),
         };
@@ -222,7 +239,7 @@ fn m2_udp_flood_caps_hold() {
     }
     assert_eq!(created, 2000 - ft_dropped(&ft)); // every non-dropped call OK
     assert!(ft.len() <= UDP_FLOWS_PER_FP * 2); // per-fp caps hold
-    // final sweep: nothing expired yet except by TTL — table stays bounded
+                                               // final sweep: nothing expired yet except by TTL — table stays bounded
     assert!(ft.len() <= UDP_FLOWS_PER_FP * 2);
 }
 
@@ -267,7 +284,10 @@ fn m2_backpressure_probe() {
     std::thread::sleep(Duration::from_millis(40));
     done.set();
     let pauses = reader.join().unwrap();
-    assert!(pauses >= 2, "reader must have paused at least twice, got {pauses}");
+    assert!(
+        pauses >= 2,
+        "reader must have paused at least twice, got {pauses}"
+    );
 }
 
 // ── E2E: phone TUN → lossy mesh → hub lease → (hub reply) → phone TUN ──
@@ -301,12 +321,17 @@ fn m2_end_to_end_phone_to_hub_and_back() {
     // 2. hub receives: auth + replay + lease observe (real pipeline order)
     let mut hub_saw = 0usize;
     for w in link.drain() {
-        if let OpenOutcome::Accepted { ip_packet, advanced } =
-            hub_ing.open(&key, fp, 1, &w)
+        if let OpenOutcome::Accepted {
+            ip_packet,
+            advanced,
+        } = hub_ing.open(&key, fp, 1, &w)
         {
-            let (ok, _ev) = lt.observe_tunnel_packet(fp, 1, u32::from_be_bytes([
-                w[4], w[5], w[6], w[7],
-            ]), phone_addr);
+            let (ok, _ev) = lt.observe_tunnel_packet(
+                fp,
+                1,
+                u32::from_be_bytes([w[4], w[5], w[6], w[7]]),
+                phone_addr,
+            );
             assert!(ok);
             let _ = (ip_packet, advanced);
             hub_saw += 1;
@@ -322,8 +347,10 @@ fn m2_end_to_end_phone_to_hub_and_back() {
     let mut replies = 0usize;
     for ctr in 1..=hub_saw as u32 {
         let wire = vantablack::ghost::net::vpn::seal_datagram(&key, 1, ctr, &[0x45u8; 100]);
-        if let OpenOutcome::Accepted { ip_packet, advanced } =
-            phone_ing.open(&key, fp, 1, &wire)
+        if let OpenOutcome::Accepted {
+            ip_packet,
+            advanced,
+        } = phone_ing.open(&key, fp, 1, &wire)
         {
             let (accepted, _) = open_to_tun(&phone, &wire, &tun2);
             assert!(accepted);
@@ -335,6 +362,9 @@ fn m2_end_to_end_phone_to_hub_and_back() {
     assert_eq!(tun2.drain_outbound().len(), replies);
     assert_eq!(replies, hub_saw);
     // final: phone-side lease endpoint is stable
-    assert_eq!(lt.endpoint_for_ip(lt.lease_for(fp).unwrap()).unwrap(), phone_addr);
+    assert_eq!(
+        lt.endpoint_for_ip(lt.lease_for(fp).unwrap()).unwrap(),
+        phone_addr
+    );
     drop(tun2);
 }

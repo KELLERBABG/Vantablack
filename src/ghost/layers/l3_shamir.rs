@@ -8,7 +8,6 @@
 /// This means no single intercepted GTF packet exposes the key material.
 /// An adversary must capture at least 2 correctly paired shards to
 /// recover the master key.
-
 use gf256::shamir::shamir;
 
 /// Split a 32-byte secret into 3 shares using (2,3) Shamir SSS.

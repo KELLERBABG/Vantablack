@@ -6,7 +6,6 @@
 ///
 /// The jitter is appended after the auth tag and filled with random bytes,
 /// making it indistinguishable from legitimate payload to a passive observer.
-
 use rand::Rng;
 
 /// Maximum number of jitter bytes appended to a base-size GTF packet.

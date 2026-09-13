@@ -15,7 +15,6 @@
 ///
 /// This ensures unique nonces even if directional counters align across different sessions
 /// under the same master key, and prevents nonce reuse after session re-keying.
-
 use chacha20poly1305::aead::{AeadInPlace, Error as AeadError};
 use chacha20poly1305::KeyInit;
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
@@ -36,7 +35,11 @@ pub enum NonceDirection {
 /// This design guarantees uniqueness across sessions (via session hash prefix),
 /// across directions (via direction byte), and across time (via full 64-bit monotonic counter).
 /// Spanning the full remaining 8 bytes eliminates counter exhaustion on high-throughput links.
-pub fn nonce_from_counter_u64(counter: u64, session_hash: &[u8; 4], direction: NonceDirection) -> [u8; 12] {
+pub fn nonce_from_counter_u64(
+    counter: u64,
+    session_hash: &[u8; 4],
+    direction: NonceDirection,
+) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce[0..2].copy_from_slice(&session_hash[0..2]);
     nonce[2] = direction as u8;
@@ -51,7 +54,11 @@ pub fn nonce_from_counter_u64(counter: u64, session_hash: &[u8; 4], direction: N
 ///
 /// This design guarantees uniqueness across sessions (via session hash prefix),
 /// across directions (via direction byte), and across time (via monotonic counter).
-pub fn nonce_from_counter(counter: u32, session_hash: &[u8; 4], direction: NonceDirection) -> [u8; 12] {
+pub fn nonce_from_counter(
+    counter: u32,
+    session_hash: &[u8; 4],
+    direction: NonceDirection,
+) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce[0..2].copy_from_slice(&session_hash[0..2]);
     nonce[2] = direction as u8;
@@ -79,7 +86,11 @@ pub fn encrypt_in_place(key: &[u8; 32], counter: u32, data: &mut Vec<u8>) {
     let sh = [0u8; 4];
     cipher
         .encrypt_in_place(
-            Nonce::from_slice(&nonce_from_counter(counter, &sh, NonceDirection::InitiatorToResponder)),
+            Nonce::from_slice(&nonce_from_counter(
+                counter,
+                &sh,
+                NonceDirection::InitiatorToResponder,
+            )),
             &[],
             data,
         )
@@ -118,12 +129,15 @@ pub fn decrypt_in_place<'a>(
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     // Use session_hash = [0u8; 4] and direction = Initiator as fallback
     let sh = [0u8; 4];
-    cipher
-        .decrypt_in_place(
-            Nonce::from_slice(&nonce_from_counter(counter, &sh, NonceDirection::InitiatorToResponder)),
-            &[],
-            data,
-        )?;
+    cipher.decrypt_in_place(
+        Nonce::from_slice(&nonce_from_counter(
+            counter,
+            &sh,
+            NonceDirection::InitiatorToResponder,
+        )),
+        &[],
+        data,
+    )?;
     Ok(data as &[u8])
 }
 
@@ -137,12 +151,11 @@ pub fn decrypt_in_place_with_context<'a>(
     data: &'a mut Vec<u8>,
 ) -> Result<&'a [u8], AeadError> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    cipher
-        .decrypt_in_place(
-            Nonce::from_slice(&nonce_from_counter(counter, session_hash, direction)),
-            &[],
-            data,
-        )?;
+    cipher.decrypt_in_place(
+        Nonce::from_slice(&nonce_from_counter(counter, session_hash, direction)),
+        &[],
+        data,
+    )?;
     Ok(data as &[u8])
 }
 
@@ -167,7 +180,10 @@ mod tests {
         let nonce_init = nonce_from_counter(42, &sh, NonceDirection::InitiatorToResponder);
         let nonce_resp = nonce_from_counter(42, &sh, NonceDirection::ResponderToInitiator);
         // Nonces should differ in the direction byte
-        assert_ne!(nonce_init, nonce_resp, "Direction should produce different nonces");
+        assert_ne!(
+            nonce_init, nonce_resp,
+            "Direction should produce different nonces"
+        );
         assert_eq!(nonce_init[2], 0x00);
         assert_eq!(nonce_resp[2], 0x01);
     }
@@ -178,7 +194,10 @@ mod tests {
         let sh2 = [0xCA, 0xFE, 0xBA, 0xBE];
         let nonce1 = nonce_from_counter(42, &sh1, NonceDirection::InitiatorToResponder);
         let nonce2 = nonce_from_counter(42, &sh2, NonceDirection::InitiatorToResponder);
-        assert_ne!(nonce1, nonce2, "Different session hashes should produce different nonces");
+        assert_ne!(
+            nonce1, nonce2,
+            "Different session hashes should produce different nonces"
+        );
     }
 
     #[test]
@@ -186,7 +205,10 @@ mod tests {
         let sh = [0xDE, 0xAD, 0xBE, 0xEF];
         let nonce1 = nonce_from_counter(42, &sh, NonceDirection::InitiatorToResponder);
         let nonce2 = nonce_from_counter(43, &sh, NonceDirection::InitiatorToResponder);
-        assert_ne!(nonce1, nonce2, "Different counters should produce different nonces");
+        assert_ne!(
+            nonce1, nonce2,
+            "Different counters should produce different nonces"
+        );
     }
 
     #[test]
@@ -201,8 +223,14 @@ mod tests {
             nonce_from_counter(counter, &sh_a, NonceDirection::ResponderToInitiator),
             nonce_from_counter(counter, &sh_b, NonceDirection::InitiatorToResponder),
             nonce_from_counter(counter, &sh_b, NonceDirection::ResponderToInitiator),
-        ].into_iter().collect();
-        assert_eq!(nonces.len(), 4, "All four combinations should produce unique nonces");
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            nonces.len(),
+            4,
+            "All four combinations should produce unique nonces"
+        );
     }
 
     #[test]
@@ -211,10 +239,22 @@ mod tests {
         let sh = [0xDE, 0xAD, 0xBE, 0xEF];
         let mut data = b"HELLO GHOSTNET".to_vec();
         let original = data.clone();
-        encrypt_in_place_with_context(&key, 0, &sh, NonceDirection::InitiatorToResponder, &mut data);
+        encrypt_in_place_with_context(
+            &key,
+            0,
+            &sh,
+            NonceDirection::InitiatorToResponder,
+            &mut data,
+        );
         assert_ne!(data, original, "Ciphertext should differ from plaintext");
-        let pt = decrypt_in_place_with_context(&key, 0, &sh, NonceDirection::InitiatorToResponder, &mut data)
-            .expect("Decryption should succeed");
+        let pt = decrypt_in_place_with_context(
+            &key,
+            0,
+            &sh,
+            NonceDirection::InitiatorToResponder,
+            &mut data,
+        )
+        .expect("Decryption should succeed");
         assert_eq!(pt, original.as_slice(), "Roundtrip should recover original");
     }
 
@@ -223,10 +263,25 @@ mod tests {
         let key = [0x42u8; 32];
         let sh = [0xDE, 0xAD, 0xBE, 0xEF];
         let mut data = b"HELLO GHOSTNET".to_vec();
-        encrypt_in_place_with_context(&key, 0, &sh, NonceDirection::InitiatorToResponder, &mut data);
+        encrypt_in_place_with_context(
+            &key,
+            0,
+            &sh,
+            NonceDirection::InitiatorToResponder,
+            &mut data,
+        );
         // Decrypt with wrong direction — should fail
-        let result = decrypt_in_place_with_context(&key, 0, &sh, NonceDirection::ResponderToInitiator, &mut data);
-        assert!(result.is_err(), "Decryption with wrong direction should fail");
+        let result = decrypt_in_place_with_context(
+            &key,
+            0,
+            &sh,
+            NonceDirection::ResponderToInitiator,
+            &mut data,
+        );
+        assert!(
+            result.is_err(),
+            "Decryption with wrong direction should fail"
+        );
     }
 
     #[test]

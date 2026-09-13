@@ -1,3 +1,4 @@
+use ml_kem::kem::KeyExport;
 /// Layer-by-Layer Cryptographic Unit Tests for Global Ghost Net
 ///
 /// Tests each protocol layer independently, verifying:
@@ -6,13 +7,11 @@
 /// - L2: ChaCha20-Poly1305 encrypt/decrypt, tamper detection
 /// - L4: Reed-Solomon encode/reconstruct with all shard loss combinations
 /// - L6: Session guard replay window (all 4 scenarios), timeout behavior
-
 use vantablack::ghost::layers::l0_identity;
 use vantablack::ghost::layers::l1_kem;
 use vantablack::ghost::layers::l2_aead;
 use vantablack::ghost::layers::l4_rs;
 use vantablack::ghost::layers::l6_session::SessionGuard;
-use ml_kem::kem::KeyExport;
 
 // ─────────────────────────────────────────────────────────
 // L0 — Ed25519 Identity Tests
@@ -24,7 +23,10 @@ fn test_l0_generate_fresh_identity() {
     let fp = id.fingerprint();
     // Fingerprint should be 16 hex characters (first 8 bytes)
     assert_eq!(fp.len(), 16, "Fingerprint should be 16 hex chars");
-    assert!(fp.chars().all(|c| c.is_ascii_hexdigit()), "Fingerprint should be hex");
+    assert!(
+        fp.chars().all(|c| c.is_ascii_hexdigit()),
+        "Fingerprint should be hex"
+    );
 }
 
 #[test]
@@ -37,7 +39,10 @@ fn test_l0_sign_and_verify() {
 
     let pk = id.public_key_bytes();
     let verify_result = l0_identity::verify_peer_signature(&pk, message, &sig_bytes);
-    assert!(verify_result, "Signature should verify for the same message");
+    assert!(
+        verify_result,
+        "Signature should verify for the same message"
+    );
 }
 
 #[test]
@@ -72,7 +77,11 @@ fn test_l0_verify_rejects_wrong_key() {
 fn test_l0_unique_fingerprints() {
     let id1 = l0_identity::GhostIdentity::generate_fresh();
     let id2 = l0_identity::GhostIdentity::generate_fresh();
-    assert_ne!(id1.fingerprint(), id2.fingerprint(), "Two fresh identities should have different fingerprints");
+    assert_ne!(
+        id1.fingerprint(),
+        id2.fingerprint(),
+        "Two fresh identities should have different fingerprints"
+    );
 }
 
 #[test]
@@ -103,10 +112,19 @@ fn test_l1_kyber_keypair_generation() {
 fn test_l1_kyber_encapsulate() {
     let (pk, _sk) = l1_kem::generate_kyber_keypair();
     let pk_bytes = pk.to_bytes().to_vec();
-    assert_eq!(pk_bytes.len(), 800, "Kyber-512 public key should be 800 bytes");
+    assert_eq!(
+        pk_bytes.len(),
+        800,
+        "Kyber-512 public key should be 800 bytes"
+    );
 
-    let (ct_array, ss) = l1_kem::kyber_encapsulate(&pk_bytes).expect("Encapsulation should succeed");
-    assert_eq!(ct_array.len(), 768, "Kyber-512 ciphertext should be 768 bytes");
+    let (ct_array, ss) =
+        l1_kem::kyber_encapsulate(&pk_bytes).expect("Encapsulation should succeed");
+    assert_eq!(
+        ct_array.len(),
+        768,
+        "Kyber-512 ciphertext should be 768 bytes"
+    );
     // The shared secret Vec<u8> length depends on pqcrypto implementation;
     // it should be a non-empty Vec representing the shared secret bytes
     assert!(!ss.is_empty(), "Shared secret should not be empty");
@@ -121,7 +139,10 @@ fn test_l1_hybrid_master_key_derivation() {
     let mk2 = l1_kem::derive_hybrid_master_key(&x_ss, &ky_ss);
 
     assert_eq!(mk1.len(), 32, "Master key should be 32 bytes");
-    assert_eq!(mk1, mk2, "Same input should produce same master key (deterministic)");
+    assert_eq!(
+        mk1, mk2,
+        "Same input should produce same master key (deterministic)"
+    );
 }
 
 #[test]
@@ -133,7 +154,10 @@ fn test_l1_different_x25519_produces_different_master_key() {
     let mk_a = l1_kem::derive_hybrid_master_key(&x_ss_a, &ky_ss);
     let mk_b = l1_kem::derive_hybrid_master_key(&x_ss_b, &ky_ss);
 
-    assert_ne!(mk_a, mk_b, "Different X25519 SS should produce different master key");
+    assert_ne!(
+        mk_a, mk_b,
+        "Different X25519 SS should produce different master key"
+    );
 }
 
 #[test]
@@ -145,14 +169,21 @@ fn test_l1_different_kyber_produces_different_master_key() {
     let mk_a = l1_kem::derive_hybrid_master_key(&x_ss, &ky_ss_a);
     let mk_b = l1_kem::derive_hybrid_master_key(&x_ss, &ky_ss_b);
 
-    assert_ne!(mk_a, mk_b, "Different Kyber SS should produce different master key");
+    assert_ne!(
+        mk_a, mk_b,
+        "Different Kyber SS should produce different master key"
+    );
 }
 
 #[test]
 fn test_l1_generate_x25519_keypair_is_random() {
     let (_, pk1) = l1_kem::generate_x25519_keypair();
     let (_, pk2) = l1_kem::generate_x25519_keypair();
-    assert_ne!(pk1.as_bytes(), pk2.as_bytes(), "Two X25519 keypairs should be different");
+    assert_ne!(
+        pk1.as_bytes(),
+        pk2.as_bytes(),
+        "Two X25519 keypairs should be different"
+    );
 }
 
 #[test]
@@ -164,7 +195,10 @@ fn test_l1_compute_session_hash() {
     // Must be deterministic and match first 4 bytes of SHA-256(key)
     use sha2::{Digest, Sha256};
     let expected = &Sha256::digest(key)[..4];
-    assert_eq!(hash, expected, "Session hash must match SHA-256 digest prefix");
+    assert_eq!(
+        hash, expected,
+        "Session hash must match SHA-256 digest prefix"
+    );
 }
 
 #[test]
@@ -181,14 +215,33 @@ fn test_l1_build_and_parse_handshake_pdu() {
         &ky_pub,
     );
 
-    assert_eq!(pdu.len(), l1_kem::HANDSHAKE_BLOB_LEN, "Handshake PDU should be exactly 944 bytes");
-    assert!(pdu.starts_with(b"GHOST_HANDSHAKE_"), "PDU should start with magic bytes");
+    assert_eq!(
+        pdu.len(),
+        l1_kem::HANDSHAKE_BLOB_LEN,
+        "Handshake PDU should be exactly 944 bytes"
+    );
+    assert!(
+        pdu.starts_with(b"GHOST_HANDSHAKE_"),
+        "PDU should start with magic bytes"
+    );
 
     // Parse it back
     let parsed = l1_kem::parse_handshake_pdu(&pdu).expect("Should parse successfully");
-    assert_eq!(parsed.x25519_pub.as_slice(), x_pub.as_bytes(), "X25519 pub should match");
-    assert_eq!(parsed.kyber_pub.as_slice(), ky_pub.to_bytes().as_slice(), "Kyber pub should match");
-    assert_eq!(parsed.identity_pk.as_slice(), identity_pk.as_slice(), "Identity PK should match");
+    assert_eq!(
+        parsed.x25519_pub.as_slice(),
+        x_pub.as_bytes(),
+        "X25519 pub should match"
+    );
+    assert_eq!(
+        parsed.kyber_pub.as_slice(),
+        ky_pub.to_bytes().as_slice(),
+        "Kyber pub should match"
+    );
+    assert_eq!(
+        parsed.identity_pk.as_slice(),
+        identity_pk.as_slice(),
+        "Identity PK should match"
+    );
 
     // Verify the signature inside the PDU
     let signed_material = {
@@ -230,14 +283,22 @@ fn test_l2_encrypt_decrypt_roundtrip() {
 
     // Encrypt (appends 16-byte auth tag)
     l2_aead::encrypt_in_place(&key, 1, &mut data);
-    assert_eq!(data.len(), plaintext.len() + 16, "AEAD should append 16-byte tag");
+    assert_eq!(
+        data.len(),
+        plaintext.len() + 16,
+        "AEAD should append 16-byte tag"
+    );
 
     // Decrypt
     let decrypted = l2_aead::decrypt_in_place(&key, 1, &mut data)
         .expect("Decryption should succeed")
         .to_vec();
 
-    assert_eq!(decrypted.as_slice(), plaintext, "Decrypted text should match original");
+    assert_eq!(
+        decrypted.as_slice(),
+        plaintext,
+        "Decrypted text should match original"
+    );
 }
 
 #[test]
@@ -251,7 +312,10 @@ fn test_l2_encrypt_different_counter_different_ciphertext() {
     l2_aead::encrypt_in_place(&key, 1, &mut data1);
     l2_aead::encrypt_in_place(&key, 2, &mut data2);
 
-    assert_ne!(data1, data2, "Different counters should produce different ciphertext");
+    assert_ne!(
+        data1, data2,
+        "Different counters should produce different ciphertext"
+    );
 }
 
 #[test]
@@ -264,7 +328,10 @@ fn test_l2_wrong_counter_fails_decryption() {
 
     // Decrypt with wrong counter
     let result = l2_aead::decrypt_in_place(&key, 99, &mut data);
-    assert!(result.is_err(), "Wrong counter should cause decryption failure");
+    assert!(
+        result.is_err(),
+        "Wrong counter should cause decryption failure"
+    );
 }
 
 #[test]
@@ -294,7 +361,10 @@ fn test_l2_tampered_ciphertext_fails_decryption() {
     }
 
     let result = l2_aead::decrypt_in_place(&key, 1, &mut data);
-    assert!(result.is_err(), "Tampered ciphertext should cause decryption failure");
+    assert!(
+        result.is_err(),
+        "Tampered ciphertext should cause decryption failure"
+    );
 }
 
 #[test]
@@ -311,7 +381,10 @@ fn test_l2_tampered_auth_tag_fails_decryption() {
     }
 
     let result = l2_aead::decrypt_in_place(&key, 1, &mut data);
-    assert!(result.is_err(), "Tampered auth tag should cause decryption failure");
+    assert!(
+        result.is_err(),
+        "Tampered auth tag should cause decryption failure"
+    );
 }
 
 #[test]
@@ -320,11 +393,18 @@ fn test_l2_empty_message_roundtrip() {
     let mut data: Vec<u8> = vec![];
 
     l2_aead::encrypt_in_place(&key, 1, &mut data);
-    assert_eq!(data.len(), 16, "Empty message encrypted should be just the 16-byte tag");
+    assert_eq!(
+        data.len(),
+        16,
+        "Empty message encrypted should be just the 16-byte tag"
+    );
 
     let decrypted = l2_aead::decrypt_in_place(&key, 1, &mut data)
         .expect("Empty message decrypt should succeed");
-    assert!(decrypted.is_empty(), "Decrypted empty message should be empty");
+    assert!(
+        decrypted.is_empty(),
+        "Decrypted empty message should be empty"
+    );
 }
 
 // ─────────────────────────────────────────────────────────
@@ -354,9 +434,12 @@ fn test_l4_encode_and_reconstruct_all_shards() {
     let reconstructed = [
         to_reconstruct[0].as_ref().unwrap().as_slice(),
         to_reconstruct[1].as_ref().unwrap().as_slice(),
-    ].concat();
+    ]
+    .concat();
 
-    let reconstructed_str = std::str::from_utf8(&reconstructed).unwrap().trim_end_matches('\0');
+    let reconstructed_str = std::str::from_utf8(&reconstructed)
+        .unwrap()
+        .trim_end_matches('\0');
     assert_eq!(
         reconstructed_str.as_bytes(),
         original,
@@ -389,9 +472,12 @@ fn test_l4_reconstruct_with_two_shards_all_combinations() {
         let reconstructed = [
             to_reconstruct[0].as_ref().unwrap().as_slice(),
             to_reconstruct[1].as_ref().unwrap().as_slice(),
-        ].concat();
+        ]
+        .concat();
 
-        let recon_str = std::str::from_utf8(&reconstructed).unwrap().trim_end_matches('\0');
+        let recon_str = std::str::from_utf8(&reconstructed)
+            .unwrap()
+            .trim_end_matches('\0');
         assert_eq!(
             recon_str.as_bytes(),
             original,
@@ -423,13 +509,19 @@ fn test_l4_reconstruct_with_two_correct_shards_despite_corrupted() {
     // Use two uncorrupted shards (ignore the corrupted one)
     let mut alt_reconstruct = vec![None, Some(shards[1].clone()), Some(shards[2].clone())];
     let result = l4_rs::reconstruct(&mut alt_reconstruct);
-    assert!(result.is_ok(), "2 uncorrupted shards should reconstruct despite 1 corrupted");
+    assert!(
+        result.is_ok(),
+        "2 uncorrupted shards should reconstruct despite 1 corrupted"
+    );
 
     let reconstructed = [
         alt_reconstruct[0].as_ref().unwrap().as_slice(),
         alt_reconstruct[1].as_ref().unwrap().as_slice(),
-    ].concat();
-    let recon_str = std::str::from_utf8(&reconstructed).unwrap().trim_end_matches('\0');
+    ]
+    .concat();
+    let recon_str = std::str::from_utf8(&reconstructed)
+        .unwrap()
+        .trim_end_matches('\0');
     assert_eq!(
         recon_str.as_bytes(),
         original,
@@ -465,7 +557,8 @@ fn test_l4_odd_length_data() {
     let reconstructed = [
         to_reconstruct[0].as_ref().unwrap().as_slice(),
         to_reconstruct[1].as_ref().unwrap().as_slice(),
-    ].concat();
+    ]
+    .concat();
 
     assert_eq!(
         reconstructed[..original_len],
@@ -510,7 +603,10 @@ fn test_l6_session_guard_scenario_c_newer_counter() {
 fn test_l6_session_guard_scenario_b_replay_within_window() {
     let mut guard = SessionGuard::new();
 
-    assert!(guard.check_and_update(10), "First arrival of 10 should be accepted");
+    assert!(
+        guard.check_and_update(10),
+        "First arrival of 10 should be accepted"
+    );
     let result = guard.check_and_update(10);
     assert!(!result, "Replay of counter 10 should be rejected");
 }
@@ -520,7 +616,10 @@ fn test_l6_session_guard_scenario_a_too_old() {
     let mut guard = SessionGuard::new();
 
     // Accept counter 200 — window is now [72, 200]
-    assert!(guard.check_and_update(200), "Counter 200 should be accepted");
+    assert!(
+        guard.check_and_update(200),
+        "Counter 200 should be accepted"
+    );
     // Counter 0 is outside the window [72, 200]
     let result = guard.check_and_update(0);
     assert!(!result, "Counter 0 (too old) should be rejected");
@@ -532,7 +631,10 @@ fn test_l6_session_guard_scenario_d_legitimate_in_window() {
 
     assert!(guard.check_and_update(100), "Counter 100");
     let result = guard.check_and_update(98);
-    assert!(result, "Counter 98 should be accepted (legitimate in-window)");
+    assert!(
+        result,
+        "Counter 98 should be accepted (legitimate in-window)"
+    );
 }
 
 #[test]
@@ -569,7 +671,10 @@ fn test_l6_session_guard_window_shift_on_jump() {
     assert!(guard.check_and_update(10));
     assert!(guard.check_and_update(300), "Large jump should be accepted");
     assert_eq!(guard.v_max, 300);
-    assert_eq!(guard.bitmask, 1, "After complete window skip, bitmask should reset to 1");
+    assert_eq!(
+        guard.bitmask, 1,
+        "After complete window skip, bitmask should reset to 1"
+    );
 }
 
 #[test]
@@ -579,7 +684,10 @@ fn test_l6_session_guard_rejects_counter_below_when_window_skipped() {
     assert!(guard.check_and_update(100));
     assert!(guard.check_and_update(500));
 
-    assert!(!guard.check_and_update(100), "Counter 100 should be too old after jump to 500");
+    assert!(
+        !guard.check_and_update(100),
+        "Counter 100 should be too old after jump to 500"
+    );
 }
 
 #[test]
@@ -599,7 +707,10 @@ fn test_l6_session_guard_reset() {
     assert_eq!(guard.v_max, 0, "After reset, v_max should be 0");
     assert_eq!(guard.bitmask, 0, "After reset, bitmask should be 0");
     assert!(guard.is_valid(), "After reset, guard should be valid");
-    assert!(guard.check_and_update(1), "After reset, counter 1 should be accepted");
+    assert!(
+        guard.check_and_update(1),
+        "After reset, counter 1 should be accepted"
+    );
 }
 
 #[test]
@@ -618,7 +729,10 @@ fn test_l6_session_guard_out_of_order_within_window() {
     assert!(guard.check_and_update(48), "Counter 48 (out of order)");
     assert!(guard.check_and_update(52), "Counter 52 (out of order)");
     assert!(guard.check_and_update(49), "Counter 49 (out of order)");
-    assert!(!guard.check_and_update(48), "Replay of 48 should be rejected");
+    assert!(
+        !guard.check_and_update(48),
+        "Replay of 48 should be rejected"
+    );
 }
 
 // ─────────────────────────────────────────────────────────
@@ -640,17 +754,19 @@ fn test_full_encrypt_shard_reconstruct_decrypt() {
 
     // Step 3: Simulate losing shard 0, reconstruct from shard 1 and parity shard 2
     let mut received_shards: Vec<Option<Vec<u8>>> = vec![
-        None,                        // Lost data shard 0
-        Some(shards[1].clone()),     // Data shard 1
-        Some(shards[2].clone()),     // Parity shard 2
+        None,                    // Lost data shard 0
+        Some(shards[1].clone()), // Data shard 1
+        Some(shards[2].clone()), // Parity shard 2
     ];
-    l4_rs::reconstruct(&mut received_shards).expect("RS reconstruction from 2 of 3 shards should succeed");
+    l4_rs::reconstruct(&mut received_shards)
+        .expect("RS reconstruction from 2 of 3 shards should succeed");
 
     // Reassemble original ciphertext from reconstructed data shards
     let mut reconstructed_enc = [
         received_shards[0].as_ref().unwrap().as_slice(),
         received_shards[1].as_ref().unwrap().as_slice(),
-    ].concat();
+    ]
+    .concat();
 
     // Step 4: Decrypt (L2)
     let decrypted = l2_aead::decrypt_in_place(&key, 1, &mut reconstructed_enc)

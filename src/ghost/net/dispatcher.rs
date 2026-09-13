@@ -10,7 +10,6 @@
 /// - No mutex contention on the hot path
 ///
 /// The dispatcher uses a fixed-size crossbeam channel per worker.
-
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

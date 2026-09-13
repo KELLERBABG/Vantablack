@@ -16,7 +16,6 @@
 /// Uses the Tsiolkovsky rocket equation to model propellant costs in the CGR
 /// routing algorithm so evasive orbital maneuvers do not inadvertently exhaust
 /// a satellite's finite thruster fuel.
-
 use std::f64::consts::PI;
 
 pub const MU_EARTH: f64 = 3.986004418e14;
@@ -57,7 +56,9 @@ impl KeplerElements {
         for _ in 0..10 {
             let delta = (e - self.e * e.sin() - self.mean_anomaly) / (1.0 - self.e * e.cos());
             e -= delta;
-            if delta.abs() < 1e-12 { break; }
+            if delta.abs() < 1e-12 {
+                break;
+            }
         }
         e
     }
@@ -76,7 +77,9 @@ impl KeplerElements {
         for _ in 0..10 {
             let delta = (e_anom - self.e * e_anom.sin() - m) / (1.0 - self.e * e_anom.cos());
             e_anom -= delta;
-            if delta.abs() < 1e-12 { break; }
+            if delta.abs() < 1e-12 {
+                break;
+            }
         }
         let sin_e = e_anom.sin();
         let cos_e = e_anom.cos();
@@ -108,14 +111,20 @@ pub struct GroundPosition {
 
 impl GroundPosition {
     pub fn new(lat_deg: f64, lon_deg: f64, alt_m: f64) -> Self {
-        Self { latitude: lat_deg, longitude: lon_deg, altitude: alt_m }
+        Self {
+            latitude: lat_deg,
+            longitude: lon_deg,
+            altitude: alt_m,
+        }
     }
 
     pub fn distance_to(&self, other: &GroundPosition) -> f64 {
         let dlat = (other.latitude - self.latitude).to_radians();
         let dlon = (other.longitude - self.longitude).to_radians();
         let a = (dlat / 2.0).sin().powi(2)
-            + self.latitude.to_radians().cos() * other.latitude.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+            + self.latitude.to_radians().cos()
+                * other.latitude.to_radians().cos()
+                * (dlon / 2.0).sin().powi(2);
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
         EARTH_RADIUS * c
     }
@@ -138,8 +147,16 @@ pub fn classify_orbital_plane(elements: &KeplerElements) -> OrbitalPlane {
     let alt = elements.a - EARTH_RADIUS;
     let inclination_deg = elements.i.to_degrees();
     if alt < 2_000_000.0 {
-        if inclination_deg > 80.0 { OrbitalPlane::LeoPolar } else { OrbitalPlane::LeoInclined }
-    } else if alt < 35_786_000.0 { OrbitalPlane::Meo } else { OrbitalPlane::Geo }
+        if inclination_deg > 80.0 {
+            OrbitalPlane::LeoPolar
+        } else {
+            OrbitalPlane::LeoInclined
+        }
+    } else if alt < 35_786_000.0 {
+        OrbitalPlane::Meo
+    } else {
+        OrbitalPlane::Geo
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -149,22 +166,38 @@ pub struct DisjointRouteConstraint {
 }
 
 impl Default for DisjointRouteConstraint {
-    fn default() -> Self { Self { used_planes: Vec::new(), min_separation_deg: 30.0 } }
+    fn default() -> Self {
+        Self {
+            used_planes: Vec::new(),
+            min_separation_deg: 30.0,
+        }
+    }
 }
 
 impl DisjointRouteConstraint {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn is_plane_available(&self, plane: OrbitalPlane) -> bool {
-        if plane == OrbitalPlane::Ground { return self.used_planes.len() < 3; }
+        if plane == OrbitalPlane::Ground {
+            return self.used_planes.len() < 3;
+        }
         !self.used_planes.contains(&plane)
     }
 
     pub fn reserve_plane(&mut self, plane: OrbitalPlane) -> bool {
-        if self.is_plane_available(plane) { self.used_planes.push(plane); true } else { false }
+        if self.is_plane_available(plane) {
+            self.used_planes.push(plane);
+            true
+        } else {
+            false
+        }
     }
 
-    pub fn distinct_planes_used(&self) -> usize { self.used_planes.len() }
+    pub fn distinct_planes_used(&self) -> usize {
+        self.used_planes.len()
+    }
 
     pub fn can_assign_all_shards(&self, shard_count: usize) -> bool {
         self.used_planes.len() + shard_count <= 5
@@ -186,32 +219,52 @@ impl DeltaVTracker {
         let dry_mass = 100.0;
         let mass_ratio = (total_dv / (isp * G0)).exp();
         let initial_propellant_mass = dry_mass * (mass_ratio - 1.0);
-        Self { total_dv, used_dv: 0.0, isp, dry_mass, initial_propellant_mass }
+        Self {
+            total_dv,
+            used_dv: 0.0,
+            isp,
+            dry_mass,
+            initial_propellant_mass,
+        }
     }
 
     pub fn compute_delta_v(&self, initial_mass: f64, final_mass: f64) -> f64 {
-        if final_mass <= 0.0 || initial_mass <= final_mass { return 0.0; }
+        if final_mass <= 0.0 || initial_mass <= final_mass {
+            return 0.0;
+        }
         self.isp * G0 * (initial_mass / final_mass).ln()
     }
 
     pub fn propellant_for_delta_v(&self, delta_v: f64) -> f64 {
-        if delta_v <= 0.0 { return 0.0; }
+        if delta_v <= 0.0 {
+            return 0.0;
+        }
         self.initial_propellant_mass * ((delta_v / (self.isp * G0)).exp() - 1.0)
     }
 
     pub fn record_maneuver(&mut self, delta_v: f64) -> bool {
         let remaining = self.total_dv - self.used_dv;
-        if delta_v > remaining { return false; }
+        if delta_v > remaining {
+            return false;
+        }
         self.used_dv += delta_v;
         true
     }
 
-    pub fn remaining_dv(&self) -> f64 { self.total_dv - self.used_dv }
+    pub fn remaining_dv(&self) -> f64 {
+        self.total_dv - self.used_dv
+    }
     pub fn remaining_propellant(&self) -> f64 {
         let r = self.remaining_dv();
-        if r <= 0.0 { 0.0 } else { self.propellant_for_delta_v(r) }
+        if r <= 0.0 {
+            0.0
+        } else {
+            self.propellant_for_delta_v(r)
+        }
     }
-    pub fn is_maneuverable(&self) -> bool { self.remaining_dv() > 5.0 }
+    pub fn is_maneuverable(&self) -> bool {
+        self.remaining_dv() > 5.0
+    }
 
     pub fn plane_change_delta_v(velocity_ms: f64, inclination_change_deg: f64) -> f64 {
         2.0 * velocity_ms * (inclination_change_deg.to_radians() / 2.0).sin()
@@ -264,8 +317,10 @@ impl OrbitalState {
     pub fn can_see(&self, ground: &GroundPosition) -> bool {
         let sat = &self.ground_pos;
         let d_sigma = (sat.latitude.to_radians().sin() * ground.latitude.to_radians().sin()
-            + sat.latitude.to_radians().cos() * ground.latitude.to_radians().cos()
-            * (ground.longitude - sat.longitude).to_radians().cos()).acos();
+            + sat.latitude.to_radians().cos()
+                * ground.latitude.to_radians().cos()
+                * (ground.longitude - sat.longitude).to_radians().cos())
+        .acos();
         d_sigma.to_degrees() < 90.0
     }
 
@@ -280,9 +335,20 @@ mod tests {
 
     #[test]
     fn test_orbital_period() {
-        let leo = KeplerElements { a: EARTH_RADIUS + 400_000.0, e: 0.001, i: 51.6_f64.to_radians(), raan: 0.0, arg_perigee: 0.0, mean_anomaly: 0.0 };
+        let leo = KeplerElements {
+            a: EARTH_RADIUS + 400_000.0,
+            e: 0.001,
+            i: 51.6_f64.to_radians(),
+            raan: 0.0,
+            arg_perigee: 0.0,
+            mean_anomaly: 0.0,
+        };
         let period = leo.orbital_period();
-        assert!((period - 5560.0).abs() < 100.0, "LEO period ~92.7 min, got {} s", period);
+        assert!(
+            (period - 5560.0).abs() < 100.0,
+            "LEO period ~92.7 min, got {} s",
+            period
+        );
     }
 
     #[test]

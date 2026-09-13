@@ -20,8 +20,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use chacha20poly1305::KeyInit;
+use parking_lot::Mutex;
 
 #[cfg(target_os = "android")]
 pub mod android_jni;
@@ -312,7 +312,11 @@ impl LeaseTable {
         l.last_seen = Instant::now();
         (
             true,
-            if advanced { AnchorEvent::WindowAdvance } else { AnchorEvent::NoChange },
+            if advanced {
+                AnchorEvent::WindowAdvance
+            } else {
+                AnchorEvent::NoChange
+            },
         )
     }
 
@@ -460,7 +464,12 @@ impl UdpFlowTable {
         }
         let socket = (self.bind_socket)(self.lan_bind).ok()?;
         let is_dns = key.dst.port() == 53;
-        let flow = Arc::new(UdpFlow { key: key.clone(), socket, last_seen: Instant::now(), is_dns });
+        let flow = Arc::new(UdpFlow {
+            key: key.clone(),
+            socket,
+            last_seen: Instant::now(),
+            is_dns,
+        });
         let local_port = flow.local_port();
         flows.insert(key.clone(), Arc::clone(&flow));
         if local_port != 0 {
@@ -588,7 +597,9 @@ pub struct VpnIngress {
 
 impl Default for VpnIngress {
     fn default() -> Self {
-        Self { rx: Mutex::new(HashMap::new()) }
+        Self {
+            rx: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -621,7 +632,8 @@ impl VpnIngress {
         let mut tag = chacha20poly1305::Tag::default();
         tag.copy_from_slice(&tag_bytes);
         let nonce = tunnel_nonce(epoch, ctr);
-        let cipher = chacha20poly1305::ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
+        let cipher =
+            chacha20poly1305::ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
         if cipher
             .decrypt_in_place_detached(
                 chacha20poly1305::Nonce::from_slice(&nonce),
@@ -642,7 +654,10 @@ impl VpnIngress {
         if advanced {
             state.v_max = ctr;
         }
-        OpenOutcome::Accepted { ip_packet: body, advanced }
+        OpenOutcome::Accepted {
+            ip_packet: body,
+            advanced,
+        }
     }
 
     /// Evict all state for a fingerprint (epoch rotation cleanup).
@@ -698,9 +713,8 @@ mod tests {
         // backdate last_seen beyond the silence window
         {
             let mut m = t.by_fp.lock();
-            m.get_mut(&f)
-                .unwrap()
-                .last_seen = Instant::now() - SILENCE_REANCHOR - Duration::from_secs(1);
+            m.get_mut(&f).unwrap().last_seen =
+                Instant::now() - SILENCE_REANCHOR - Duration::from_secs(1);
         }
         let ip_c: SocketAddr = "203.0.113.5:52000".parse().unwrap();
         // in-window counter (not advancing) from a fresh address
@@ -726,18 +740,30 @@ mod tests {
         let wire = seal_datagram(&key, 3, 17, &packet);
         let ing = VpnIngress::new();
         match ing.open(&key, "aa", 3, &wire) {
-            OpenOutcome::Accepted { ip_packet, advanced } => {
+            OpenOutcome::Accepted {
+                ip_packet,
+                advanced,
+            } => {
                 assert_eq!(ip_packet, packet);
                 assert!(advanced);
             }
             _ => panic!("first open must accept"),
         }
-        assert!(matches!(ing.open(&key, "aa", 3, &wire), OpenOutcome::Replay));
+        assert!(matches!(
+            ing.open(&key, "aa", 3, &wire),
+            OpenOutcome::Replay
+        ));
         let mut tampered = wire.clone();
         tampered[10] ^= 0xFF;
-        assert!(matches!(ing.open(&key, "aa", 3, &tampered), OpenOutcome::AuthFail));
+        assert!(matches!(
+            ing.open(&key, "aa", 3, &tampered),
+            OpenOutcome::AuthFail
+        ));
         // wrong epoch never opens
-        assert!(matches!(ing.open(&key, "aa", 4, &wire), OpenOutcome::AuthFail));
+        assert!(matches!(
+            ing.open(&key, "aa", 4, &wire),
+            OpenOutcome::AuthFail
+        ));
     }
 
     #[test]
@@ -745,10 +771,16 @@ mod tests {
         let key = [7u8; 32];
         let ing = VpnIngress::new();
         let wire = seal_datagram(&key, 1, 5, &[0x45u8; 40]);
-        assert!(matches!(ing.open(&key, "bb", 1, &wire), OpenOutcome::Accepted { .. }));
+        assert!(matches!(
+            ing.open(&key, "bb", 1, &wire),
+            OpenOutcome::Accepted { .. }
+        ));
         ing.evict("bb");
         // after eviction the replay window is gone: same wire opens again
-        assert!(matches!(ing.open(&key, "bb", 1, &wire), OpenOutcome::Accepted { .. }));
+        assert!(matches!(
+            ing.open(&key, "bb", 1, &wire),
+            OpenOutcome::Accepted { .. }
+        ));
     }
 
     #[test]
@@ -802,6 +834,9 @@ mod tests {
         let old_seen = flow1.last_seen;
         std::thread::sleep(Duration::from_millis(5));
         let flow2 = t.get_or_create(key.clone()).unwrap();
-        assert!(flow2.last_seen > old_seen, "get_or_create must return refreshed Arc");
+        assert!(
+            flow2.last_seen > old_seen,
+            "get_or_create must return refreshed Arc"
+        );
     }
 }

@@ -99,7 +99,12 @@ fn mss_ingest_clamp_and_egress_reply_direction() {
     let mut reverse = std::collections::HashMap::new();
     reverse.insert(
         4450u16,
-        (Ipv4Addr::from(CLIENT.0), CLIENT.1, Ipv4Addr::from(NAS.0), NAS.1),
+        (
+            Ipv4Addr::from(CLIENT.0),
+            CLIENT.1,
+            Ipv4Addr::from(NAS.0),
+            NAS.1,
+        ),
     );
     let to_client = nat_egress(&lan_synack, &reverse).expect("known reverse tuple");
     let mss = read_mss_option(&to_client).expect("SYN-ACK must keep its MSS option");
@@ -128,7 +133,12 @@ fn mss_ingest_clamp_and_egress_reply_direction() {
     );
     reverse.insert(
         4451u16,
-        (Ipv4Addr::from(CLIENT.0), CLIENT.1, Ipv4Addr::from(NAS.0), NAS.1),
+        (
+            Ipv4Addr::from(CLIENT.0),
+            CLIENT.1,
+            Ipv4Addr::from(NAS.0),
+            NAS.1,
+        ),
     );
     let out = nat_egress(&lan_synack_small, &reverse).unwrap();
     assert_eq!(

@@ -82,7 +82,10 @@ pub struct Headroom {
 
 impl Headroom {
     pub fn new(h: f64) -> Self {
-        Self { v: Mutex::new(h), cv: Condvar::new() }
+        Self {
+            v: Mutex::new(h),
+            cv: Condvar::new(),
+        }
     }
     pub fn set(&self, h: f64) {
         *self.v.lock() = h;
@@ -115,7 +118,10 @@ pub struct Done {
 
 impl Done {
     pub fn new() -> Self {
-        Self { v: Mutex::new(false), cv: Condvar::new() }
+        Self {
+            v: Mutex::new(false),
+            cv: Condvar::new(),
+        }
     }
     pub fn set(&self) {
         *self.v.lock() = true;
@@ -186,7 +192,13 @@ impl Netstack {
                 move || driver_loop(rx_q, tx_q, stats, stop)
             })
             .expect("spawn netstack thread");
-        Self { rx_tx, out_rx: Mutex::new(out_rx), stats, stop, join }
+        Self {
+            rx_tx,
+            out_rx: Mutex::new(out_rx),
+            stats,
+            stop,
+            join,
+        }
     }
 
     /// Feed one decrypted mesh packet (raw IPv4, dst = hub overlay IP).
@@ -289,7 +301,8 @@ fn driver_loop(
     while !stop.is_set() {
         // ── 1. Ingest mesh packets ──
         while let Ok(pkt) = rx_q.try_recv() {
-            let Some((rewritten, tuple, is_syn, local_port)) = nat_ingress(&pkt, &mut next_port, &mut nat)
+            let Some((rewritten, tuple, is_syn, local_port)) =
+                nat_ingress(&pkt, &mut next_port, &mut nat)
             else {
                 continue;
             };
@@ -337,13 +350,21 @@ fn driver_loop(
         // ── 2. Pump every flow ──
         let ports: Vec<u16> = flows.keys().copied().collect();
         for local_port in ports {
-            let Some(f) = flows.get_mut(&local_port) else { continue };
+            let Some(f) = flows.get_mut(&local_port) else {
+                continue;
+            };
             let sock = sockets.get_mut::<tcp::Socket>(f.handle);
 
             if !f.spawned && sock.state() == tcp::State::Established {
                 f.spawned = true;
                 if let Some(rx) = f.stack_out_rx.take() {
-                    spawn_proxy(f.tuple, f.lan_in_tx.clone(), rx, Arc::clone(&f.headroom), Arc::clone(&f.done));
+                    spawn_proxy(
+                        f.tuple,
+                        f.lan_in_tx.clone(),
+                        rx,
+                        Arc::clone(&f.headroom),
+                        Arc::clone(&f.done),
+                    );
                 }
             }
 
@@ -462,14 +483,17 @@ fn driver_loop(
         let ts = smoltcp::time::Instant::from_millis(t_ms);
         iface.poll(ts, &mut device, &mut sockets);
         t_ms += POLL_CAP_MS as i64;
-        stats.packets_out.store(device.tx_count.load(Ordering::Relaxed), Ordering::Relaxed);
+        stats
+            .packets_out
+            .store(device.tx_count.load(Ordering::Relaxed), Ordering::Relaxed);
 
         // ── 5. Sleep capped by poll_delay ──
         let ts2 = smoltcp::time::Instant::from_millis(t_ms);
         let delay = iface.poll_delay(ts2, &sockets);
         let sleep_for = match delay {
             Some(d) if d.total_millis() == 0 => Duration::ZERO,
-            Some(d) => Duration::from_millis(d.total_millis() as u64).min(Duration::from_millis(POLL_CAP_MS)),
+            Some(d) => Duration::from_millis(d.total_millis() as u64)
+                .min(Duration::from_millis(POLL_CAP_MS)),
             None => Duration::from_millis(POLL_CAP_MS),
         };
         if sleep_for.is_zero() {
@@ -495,7 +519,8 @@ fn make_listen_socket(sockets: &mut SocketSet<'static>, local_port: u16) -> Opti
         tcp::SocketBuffer::new(rx_buf),
         tcp::SocketBuffer::new(tx_buf),
     );
-    sock.listen(SocketAddrV4::new(NETSTACK_ADDR, local_port)).ok()?;
+    sock.listen(SocketAddrV4::new(NETSTACK_ADDR, local_port))
+        .ok()?;
     Some(sockets.add(sock))
 }
 
@@ -551,15 +576,22 @@ fn spawn_proxy(
                             let mut sent = false;
                             for _ in 0..50 {
                                 match lan_in_tx.try_send(buf[..n].to_vec()) {
-                                    Ok(()) => { sent = true; break; }
+                                    Ok(()) => {
+                                        sent = true;
+                                        break;
+                                    }
                                     Err(mpsc::TrySendError::Full(_)) => {
-                                        if done_r.is_set() { break; }
+                                        if done_r.is_set() {
+                                            break;
+                                        }
                                         std::thread::sleep(Duration::from_millis(10));
                                     }
                                     Err(mpsc::TrySendError::Disconnected(_)) => break,
                                 }
                             }
-                            if !sent { break; }
+                            if !sent {
+                                break;
+                            }
                         }
                     }
                 }
@@ -906,8 +938,14 @@ mod tests {
         let syn = tcp_packet(([10, 66, 0, 10], 51234), ([192, 168, 1, 50], 445), 0x02);
         // first pass: unknown SYN tuple → nat_ingress allocates port 20000
         // (first from the pool) and registers it.
-        let tuple = (std::net::Ipv4Addr::new(10, 66, 0, 10), 51234, std::net::Ipv4Addr::new(192, 168, 1, 50), 445);
-        let (rewritten, t2, is_syn, local_port) = nat_ingress(&syn, &mut next_port, &mut nat).unwrap();
+        let tuple = (
+            std::net::Ipv4Addr::new(10, 66, 0, 10),
+            51234,
+            std::net::Ipv4Addr::new(192, 168, 1, 50),
+            445,
+        );
+        let (rewritten, t2, is_syn, local_port) =
+            nat_ingress(&syn, &mut next_port, &mut nat).unwrap();
         assert_eq!(t2, tuple);
         assert!(is_syn);
         assert_eq!(local_port, 20000);
@@ -992,8 +1030,19 @@ mod tests {
         let (stack_out_tx, stack_out_rx) = mpsc::sync_channel::<Vec<u8>>(FLOW_QUEUE);
         let headroom = Arc::new(Headroom::new(1.0));
         let done = Arc::new(Done::new());
-        let t = (std::net::Ipv4Addr::new(127, 0, 0, 1), 0, std::net::Ipv4Addr::new(127, 0, 0, 1), addr.port());
-        spawn_proxy(t, lan_in_tx, stack_out_rx, Arc::clone(&headroom), Arc::clone(&done));
+        let t = (
+            std::net::Ipv4Addr::new(127, 0, 0, 1),
+            0,
+            std::net::Ipv4Addr::new(127, 0, 0, 1),
+            addr.port(),
+        );
+        spawn_proxy(
+            t,
+            lan_in_tx,
+            stack_out_rx,
+            Arc::clone(&headroom),
+            Arc::clone(&done),
+        );
         std::thread::sleep(Duration::from_millis(100));
         stack_out_tx.send(b"ping".to_vec()).unwrap();
         let echo = lan_in_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -1027,7 +1076,11 @@ mod tests {
         let cisn: u32 = 1000;
 
         // 1. SYN → driver must create the flow and smoltcp must SYN-ACK.
-        let mut syn = tcp_packet((client_ip.octets(), cport), (target_ip.octets(), addr.port()), 0x02);
+        let mut syn = tcp_packet(
+            (client_ip.octets(), cport),
+            (target_ip.octets(), addr.port()),
+            0x02,
+        );
         syn[24..28].copy_from_slice(&cisn.to_be_bytes()); // client ISN — helper leaves seq/ack zeroed
         fix_checksums(&mut syn, 20, true);
         ns.try_feed(syn).unwrap();
@@ -1046,7 +1099,11 @@ mod tests {
         let sisn = synack_seq.expect("no SYN-ACK from netstack — flow creation broken");
 
         // 2. ACK the handshake (client seq cisn+1, ack sisn+1).
-        let mut ack = tcp_packet((client_ip.octets(), cport), (target_ip.octets(), addr.port()), 0x10);
+        let mut ack = tcp_packet(
+            (client_ip.octets(), cport),
+            (target_ip.octets(), addr.port()),
+            0x10,
+        );
         ack[24..28].copy_from_slice(&(cisn + 1).to_be_bytes());
         ack[28..32].copy_from_slice(&sisn.wrapping_add(1).to_be_bytes());
         fix_checksums(&mut ack, 20, true);
@@ -1054,7 +1111,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
 
         // 3. Push data: "hello" must reach the echo server and come back.
-        let mut data = tcp_packet((client_ip.octets(), cport), (target_ip.octets(), addr.port()), 0x18);
+        let mut data = tcp_packet(
+            (client_ip.octets(), cport),
+            (target_ip.octets(), addr.port()),
+            0x18,
+        );
         data[24..28].copy_from_slice(&(cisn + 1).to_be_bytes()); // SYN consumed cisn; bare ACK consumed none
         data[28..32].copy_from_slice(&sisn.wrapping_add(1).to_be_bytes());
         data.extend_from_slice(b"hello");
@@ -1085,8 +1146,11 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(got.as_deref(), Some(b"hello".as_slice()),
-            "echo never returned — NAT egress / proxy path broken");
+        assert_eq!(
+            got.as_deref(),
+            Some(b"hello".as_slice()),
+            "echo never returned — NAT egress / proxy path broken"
+        );
         let st = ns.stats();
         assert!(st.tcp_flows >= 1);
         ns.shutdown();
@@ -1164,7 +1228,11 @@ mod tests {
         let syn = syn_with_mss(([10, 66, 0, 10], 51000), ([192, 168, 1, 50], 445), 1460);
         let (rewritten, _, is_syn, _) = nat_ingress(&syn, &mut next_port, &mut nat).unwrap();
         assert!(is_syn);
-        assert_eq!(read_mss(&rewritten), OVERLAY_MSS, "client SYN must be clamped before smoltcp sees it");
+        assert_eq!(
+            read_mss(&rewritten),
+            OVERLAY_MSS,
+            "client SYN must be clamped before smoltcp sees it"
+        );
         assert_eq!(internet_checksum(&rewritten[..20]), 0);
     }
 

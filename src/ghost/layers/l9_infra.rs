@@ -16,7 +16,6 @@
 ///    Prevents GPS and NTP spoofing attacks from collapsing the CGR routing mesh
 ///    by using Network Time Security (NTS) or onboard atomic clock references
 ///    for time synchronization.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -96,16 +95,26 @@ impl BuildInfo {
     }
 
     /// Verify the binary against a signed hash manifest.
-    pub fn verify_manifest(&self, manifest_hex: &str, signature: &[u8; 64], public_key: &[u8; 32]) -> bool {
+    pub fn verify_manifest(
+        &self,
+        manifest_hex: &str,
+        signature: &[u8; 64],
+        public_key: &[u8; 32],
+    ) -> bool {
         if let Some(hash) = self.self_hash() {
             let hash_hex = hex::encode(&hash);
             if hash_hex != manifest_hex {
-                warn!("Binary hash mismatch: expected {}, got {}", manifest_hex, hash_hex);
+                warn!(
+                    "Binary hash mismatch: expected {}, got {}",
+                    manifest_hex, hash_hex
+                );
                 return false;
             }
             // Verify the manifest signature
             let verified = crate::ghost::layers::l0_identity::verify_peer_signature(
-                public_key, hash_hex.as_bytes(), signature,
+                public_key,
+                hash_hex.as_bytes(),
+                signature,
             );
             self.verified.store(verified, Ordering::SeqCst);
             verified
@@ -250,7 +259,10 @@ impl KeyEnclave for SoftwareTpm {
         let key_bytes = keys.get(&handle).ok_or(EnclaveError::InvalidHandle)?;
         // Reconstruct Ed25519 key from bytes and sign
         let signing_key = ed25519_dalek::SigningKey::from_bytes(
-            &key_bytes.as_slice().try_into().map_err(|_| EnclaveError::OperationFailed("Invalid key length".into()))?,
+            &key_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| EnclaveError::OperationFailed("Invalid key length".into()))?,
         );
         let sig = signing_key.sign(data);
         Ok(sig.to_bytes())
@@ -260,7 +272,10 @@ impl KeyEnclave for SoftwareTpm {
         let keys = self.keys.lock().unwrap();
         let key_bytes = keys.get(&handle).ok_or(EnclaveError::InvalidHandle)?;
         let signing_key = ed25519_dalek::SigningKey::from_bytes(
-            &key_bytes.as_slice().try_into().map_err(|_| EnclaveError::OperationFailed("Invalid key length".into()))?,
+            &key_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| EnclaveError::OperationFailed("Invalid key length".into()))?,
         );
         Ok(signing_key.verifying_key().to_bytes())
     }
@@ -323,7 +338,10 @@ impl Default for SecureTimeKeeper {
         let now = SystemTime::now();
         Self {
             system_time_at_sync: now,
-            reference_time_at_sync: now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
+            reference_time_at_sync: now
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64(),
             has_atomic_clock: false,
             atomic_drift_rate: 1e-12,
             max_time_offset: 1.0, // 1 second tolerance
@@ -337,7 +355,10 @@ impl SecureTimeKeeper {
         let mut keeper = Self::default();
         keeper.has_atomic_clock = has_atomic_clock;
         if has_atomic_clock {
-            info!("SecureTimeKeeper: atomic clock reference available (drift: {}/s)", keeper.atomic_drift_rate);
+            info!(
+                "SecureTimeKeeper: atomic clock reference available (drift: {}/s)",
+                keeper.atomic_drift_rate
+            );
         }
         keeper
     }
@@ -361,7 +382,12 @@ impl SecureTimeKeeper {
     /// In production, this would use a full NTS client with TLS-authenticated
     /// NTP responses and cryptographic cookie exchange.
     /// Here we simulate the verification.
-    pub fn nts_synchronize(&mut self, server_time: f64, signature: &[u8; 64], server_pk: &[u8; 32]) -> bool {
+    pub fn nts_synchronize(
+        &mut self,
+        server_time: f64,
+        signature: &[u8; 64],
+        server_pk: &[u8; 32],
+    ) -> bool {
         let time_msg = server_time.to_le_bytes();
         let verified = crate::ghost::layers::l0_identity::verify_peer_signature(
             server_pk, &time_msg, signature,
@@ -388,7 +414,10 @@ impl SecureTimeKeeper {
 
         self.system_time_at_sync = SystemTime::now();
         self.reference_time_at_sync = server_time;
-        info!("SecureTimeKeeper: synchronized to NTS time (offset: {:.3}s)", offset);
+        info!(
+            "SecureTimeKeeper: synchronized to NTS time (offset: {:.3}s)",
+            offset
+        );
         true
     }
 

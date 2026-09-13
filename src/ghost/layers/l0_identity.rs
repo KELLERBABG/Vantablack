@@ -1,3 +1,5 @@
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use rand::RngCore;
 /// L0 — Ed25519 Identity Layer
 ///
 /// The permanent cryptographic identity of a GhostNet node.
@@ -9,11 +11,8 @@
 /// Signature format: 64 bytes (Ed25519)
 /// Public key size: 32 bytes
 /// Fingerprint: first 8 bytes of public key (hex-encoded)
-
 use std::fs;
 use std::path::Path;
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
-use rand::RngCore;
 
 /// Default filename for the persistent Ed25519 identity key.
 pub const IDENTITY_FILE: &str = "identity.key";
@@ -47,7 +46,9 @@ impl GhostIdentity {
         let mut seed = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut seed);
         let signing_key = SigningKey::from_bytes(&seed);
-        Self { long_term_signing: signing_key }
+        Self {
+            long_term_signing: signing_key,
+        }
     }
 
     /// Load identity from a file, or generate a fresh one and save it.
@@ -58,7 +59,9 @@ impl GhostIdentity {
                     let mut seed = [0u8; 32];
                     seed.copy_from_slice(&data);
                     let signing_key = SigningKey::from_bytes(&seed);
-                    return Self { long_term_signing: signing_key };
+                    return Self {
+                        long_term_signing: signing_key,
+                    };
                 }
                 _ => {
                     eprintln!("Corrupted identity file at {}, generating fresh key", path);
@@ -70,8 +73,8 @@ impl GhostIdentity {
         let write_res = {
             #[cfg(unix)]
             {
-                use std::os::unix::fs::OpenOptionsExt;
                 use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
                 fs::OpenOptions::new()
                     .write(true)
                     .create(true)
@@ -115,17 +118,17 @@ impl GhostIdentity {
     }
 
     /// Verify a signature against this identity's public key.
-    pub fn verify(&self, data: &[u8], signature: &Signature) -> Result<(), ed25519_dalek::SignatureError> {
+    pub fn verify(
+        &self,
+        data: &[u8],
+        signature: &Signature,
+    ) -> Result<(), ed25519_dalek::SignatureError> {
         self.verifying_key().verify(data, signature)
     }
 }
 
 /// Verify a signature from a peer's public key bytes.
-pub fn verify_peer_signature(
-    peer_pk_bytes: &[u8; 32],
-    data: &[u8],
-    signature: &[u8; 64],
-) -> bool {
+pub fn verify_peer_signature(peer_pk_bytes: &[u8; 32], data: &[u8], signature: &[u8; 64]) -> bool {
     if let Ok(peer_pk) = VerifyingKey::from_bytes(peer_pk_bytes) {
         let sig = Signature::from_bytes(signature);
         return peer_pk.verify(data, &sig).is_ok();

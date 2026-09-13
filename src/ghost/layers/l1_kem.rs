@@ -1,3 +1,7 @@
+use hkdf::Hkdf;
+use ml_kem::kem::{Encapsulate, Kem, KeyExport, TryKeyInit};
+use ml_kem::{DecapsulationKey512, EncapsulationKey, EncapsulationKey512, MlKem512};
+use sha2::Sha256;
 /// L1 — Hybrid Key Encapsulation Mechanism (KEM) Layer
 ///
 /// Implements the hybrid classical + post-quantum key exchange:
@@ -21,12 +25,7 @@
 ///   [848..880] Ed25519 public key (32 bytes)  — L0 identity
 ///   [880..944] Ed25519 signature (64 bytes)   — L0 proof
 ///   Total: 944 bytes
-
 use x25519_dalek::{EphemeralSecret, PublicKey as XPublicKey};
-use hkdf::Hkdf;
-use sha2::Sha256;
-use ml_kem::kem::{Encapsulate, Kem, KeyExport, TryKeyInit};
-use ml_kem::{DecapsulationKey512, EncapsulationKey, EncapsulationKey512, MlKem512};
 
 /// The total size of the handshake PDU before sharding.
 pub const HANDSHAKE_BLOB_LEN: usize = 944;
@@ -65,7 +64,8 @@ pub fn derive_hybrid_master_key_with_psk(
 
     let hk = Hkdf::<Sha256>::new(Some(&salt[..]), &ikm);
     let mut master_key = [0u8; 32];
-    hk.expand(b"GHOST_NET_MASTER_KEY_v2", &mut master_key).unwrap();
+    hk.expand(b"GHOST_NET_MASTER_KEY_v2", &mut master_key)
+        .unwrap();
     master_key
 }
 
@@ -150,7 +150,12 @@ pub fn parse_handshake_pdu(data: &[u8]) -> Option<HandshakeBlob> {
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&data[880..944]);
 
-    Some(HandshakeBlob { x25519_pub, kyber_pub, identity_pk, signature })
+    Some(HandshakeBlob {
+        x25519_pub,
+        kyber_pub,
+        identity_pk,
+        signature,
+    })
 }
 
 pub const RESPONSE_BLOB_LEN: usize = 912; // 16 magic + 32 X25519 pub + 768 ct + 32 identity + 64 sig
@@ -199,7 +204,12 @@ pub fn parse_response_pdu(data: &[u8]) -> Option<ResponseBlob> {
     identity_pk.copy_from_slice(&data[816..848]);
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&data[848..912]);
-    Some(ResponseBlob { x25519_pub, kyber_ct, identity_pk, signature })
+    Some(ResponseBlob {
+        x25519_pub,
+        kyber_ct,
+        identity_pk,
+        signature,
+    })
 }
 
 #[cfg(test)]
@@ -216,7 +226,10 @@ mod tests {
         let key_with_psk = derive_hybrid_master_key_with_psk(&x25519_ss, &kyber_ss, Some(&psk));
 
         // Keys should be different with PSK vs without
-        assert_ne!(key_no_psk, key_with_psk, "PSK mixing should produce different keys");
+        assert_ne!(
+            key_no_psk, key_with_psk,
+            "PSK mixing should produce different keys"
+        );
     }
 
     #[test]

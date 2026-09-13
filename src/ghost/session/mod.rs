@@ -13,11 +13,10 @@
 /// L1 key exchange is triggered to derive a new master key before the old
 /// counter wraps around. This prevents ChaCha20-Poly1305 nonce reuse
 /// without dropping the session connection.
-
 pub mod guard;
 
-use crate::ghost::layers::l6_session::SessionGuard;
 use crate::ghost::layers::l1_kem::compute_session_hash;
+use crate::ghost::layers::l6_session::SessionGuard;
 use crate::ghost::net::{AckEngine, ThroughputStats};
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -85,7 +84,6 @@ pub struct Session {
     pub use_bulk: bool,
 
     // ── Re-keying State ──────────────────────────────────────────────
-
     /// Whether a re-key operation is currently in progress.
     pub rekey_in_progress: AtomicBool,
     /// The old master key, retained during the grace period after re-keying.
@@ -158,7 +156,11 @@ impl Session {
     }
 
     /// Create a new session for a peer with an explicit role.
-    pub fn new_with_role(master_key: [u8; 32], peer_fingerprint: String, role: SessionRole) -> Self {
+    pub fn new_with_role(
+        master_key: [u8; 32],
+        peer_fingerprint: String,
+        role: SessionRole,
+    ) -> Self {
         let session_hash = compute_session_hash(&master_key);
         Self {
             master_key,
@@ -187,14 +189,17 @@ impl Session {
         let id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
         let id = if id == 0 { 1 } else { id }; // skip 0 (reserved)
         let id = id % MAX_STREAMS;
-        self.streams.insert(id, StreamState {
-            stream_type,
-            recv_buf: Vec::new(),
-            next_seq: 0,
-            created_at: Instant::now(),
-            bytes_recv: 0,
-            bytes_sent: 0,
-        });
+        self.streams.insert(
+            id,
+            StreamState {
+                stream_type,
+                recv_buf: Vec::new(),
+                next_seq: 0,
+                created_at: Instant::now(),
+                bytes_recv: 0,
+                bytes_sent: 0,
+            },
+        );
         id
     }
 
@@ -214,10 +219,11 @@ impl Session {
                 return None; // exhausted
             }
             let next = current + 1;
-            if self.tx_counter.compare_exchange(
-                current, next,
-                Ordering::SeqCst, Ordering::Relaxed,
-            ).is_ok() {
+            if self
+                .tx_counter
+                .compare_exchange(current, next, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
                 return Some(next);
             }
         }
@@ -265,10 +271,8 @@ impl Session {
     pub fn complete_rekey(&mut self, new_master_key: [u8; 32], current_counter: u32) {
         // Save the old key for the grace period
         self.old_master_key = Some(self.master_key);
-        self.rekey_grace_counter.store(
-            current_counter + OLD_KEY_GRACE_PACKETS,
-            Ordering::Relaxed,
-        );
+        self.rekey_grace_counter
+            .store(current_counter + OLD_KEY_GRACE_PACKETS, Ordering::Relaxed);
 
         // Install the new master key
         self.master_key = new_master_key;
@@ -297,9 +301,9 @@ impl Session {
         new_key_data: &mut Vec<u8>,
     ) -> Option<RekeyAcceptResult> {
         // Try the current (new) master key first
-        if crate::ghost::layers::l2_aead::decrypt_in_place(
-            &self.master_key, counter, new_key_data,
-        ).is_ok() {
+        if crate::ghost::layers::l2_aead::decrypt_in_place(&self.master_key, counter, new_key_data)
+            .is_ok()
+        {
             self.new_key_packets.fetch_add(1, Ordering::Relaxed);
             return Some(RekeyAcceptResult::AcceptedNewKey);
         }
@@ -310,9 +314,9 @@ impl Session {
             if counter <= grace_end {
                 // Clone the data to try old key decryption
                 let mut old_data = new_key_data.clone();
-                if crate::ghost::layers::l2_aead::decrypt_in_place(
-                    old_key, counter, &mut old_data,
-                ).is_ok() {
+                if crate::ghost::layers::l2_aead::decrypt_in_place(old_key, counter, &mut old_data)
+                    .is_ok()
+                {
                     // Copy old-key plaintext back to caller
                     *new_key_data = old_data;
                     return Some(RekeyAcceptResult::AcceptedOldKey);
@@ -361,11 +365,16 @@ impl Session {
             // Volatile-zero the old key
             if let Some(ref mut old) = self.old_master_key {
                 for b in old.iter_mut() {
-                    unsafe { std::ptr::write_volatile(b, 0u8); }
+                    unsafe {
+                        std::ptr::write_volatile(b, 0u8);
+                    }
                 }
             }
             self.old_master_key = None;
-            info!("Session {}: old key expired after grace period", self.peer_fingerprint);
+            info!(
+                "Session {}: old key expired after grace period",
+                self.peer_fingerprint
+            );
         }
     }
 }
@@ -423,7 +432,11 @@ pub fn parse_rekey_pdu(data: &[u8]) -> Option<RekeyBlob> {
     kyber_pub.copy_from_slice(&data[48..848]);
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&data[848..912]);
-    Some(RekeyBlob { x25519_pub, kyber_pub, signature })
+    Some(RekeyBlob {
+        x25519_pub,
+        kyber_pub,
+        signature,
+    })
 }
 
 /// Build a re-key response PDU (responder side).
@@ -472,7 +485,11 @@ pub fn parse_rekey_response_pdu(data: &[u8]) -> Option<RekeyResponseBlob> {
     kyber_ct.copy_from_slice(&data[48..816]);
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&data[816..880]);
-    Some(RekeyResponseBlob { x25519_pub, kyber_ct, signature })
+    Some(RekeyResponseBlob {
+        x25519_pub,
+        kyber_ct,
+        signature,
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -523,13 +540,17 @@ mod tests {
         let session = Session::new(key, "test_fp".to_string());
         assert!(!session.needs_rekey());
         // Set counter just below threshold
-        session.tx_counter.store(REKEY_THRESHOLD - 1, Ordering::Relaxed);
+        session
+            .tx_counter
+            .store(REKEY_THRESHOLD - 1, Ordering::Relaxed);
         assert!(!session.needs_rekey());
         // At threshold
         session.tx_counter.store(REKEY_THRESHOLD, Ordering::Relaxed);
         assert!(session.needs_rekey());
         // Far past threshold
-        session.tx_counter.store(REKEY_THRESHOLD + 50000, Ordering::Relaxed);
+        session
+            .tx_counter
+            .store(REKEY_THRESHOLD + 50000, Ordering::Relaxed);
         assert!(session.needs_rekey());
     }
 
@@ -549,7 +570,10 @@ mod tests {
         assert_eq!(session.master_key, new_key);
         assert!(session.old_master_key.is_some());
         assert_eq!(session.old_master_key.unwrap(), old_key);
-        assert_eq!(session.rekey_grace_counter.load(Ordering::Relaxed), 5000 + OLD_KEY_GRACE_PACKETS);
+        assert_eq!(
+            session.rekey_grace_counter.load(Ordering::Relaxed),
+            5000 + OLD_KEY_GRACE_PACKETS
+        );
         // Tx counter reset to 2
         assert_eq!(session.tx_counter.load(Ordering::Relaxed), 2);
         // New session hash should be computed
@@ -562,11 +586,7 @@ mod tests {
         let (_x_sec, x_pub) = crate::ghost::layers::l1_kem::generate_x25519_keypair();
         let (ky_pub, _ky_sec) = crate::ghost::layers::l1_kem::generate_kyber_keypair();
 
-        let pdu = build_rekey_pdu(
-            |data| identity.sign(data).to_bytes(),
-            &x_pub,
-            &ky_pub,
-        );
+        let pdu = build_rekey_pdu(|data| identity.sign(data).to_bytes(), &x_pub, &ky_pub);
 
         assert_eq!(pdu.len(), REKEY_BLOB_LEN);
         assert!(pdu.starts_with(REKEY_MAGIC));
@@ -590,11 +610,8 @@ mod tests {
         let x_pub = [0xABu8; 32];
         let kyber_ct = [0xCDu8; 768];
 
-        let pdu = build_rekey_response_pdu(
-            |data| identity.sign(data).to_bytes(),
-            &x_pub,
-            &kyber_ct,
-        );
+        let pdu =
+            build_rekey_response_pdu(|data| identity.sign(data).to_bytes(), &x_pub, &kyber_ct);
 
         assert_eq!(pdu.len(), REKEY_RESPONSE_BLOB_LEN);
         assert!(pdu.starts_with(REKEY_RESPONSE_MAGIC));
@@ -629,7 +646,9 @@ mod tests {
         assert!(!session.is_rekey_stalled());
 
         // Stalled — more than 5000 packets past threshold
-        session.tx_counter.store(REKEY_THRESHOLD + 5001, Ordering::Relaxed);
+        session
+            .tx_counter
+            .store(REKEY_THRESHOLD + 5001, Ordering::Relaxed);
         assert!(session.is_rekey_stalled());
     }
 

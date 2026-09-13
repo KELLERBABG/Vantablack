@@ -21,9 +21,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 use super::netstack::Netstack;
-use super::{
-    seal_datagram, FlowKey, LeaseTable, OpenOutcome, UdpFlowTable, VpnConfig, VpnIngress,
-};
+use super::{seal_datagram, FlowKey, LeaseTable, OpenOutcome, UdpFlowTable, VpnConfig, VpnIngress};
 
 /// Magic prefix marking a VPN tunnel payload inside a decrypted session frame.
 pub const VPN_PAYLOAD_MAGIC: &[u8; 5] = b"GVPN1";
@@ -127,7 +125,10 @@ impl VpnHub {
 
     /// Is `fp` allowed to use this hub?
     pub fn authorized(&self, fp: &str) -> bool {
-        self.cfg.allowed_fingerprints.iter().any(|a| a == fp || a == "any" || a == "*")
+        self.cfg
+            .allowed_fingerprints
+            .iter()
+            .any(|a| a == fp || a == "any" || a == "*")
     }
 
     /// Handle a decrypted `GVPN1` payload from a client.
@@ -184,7 +185,10 @@ impl VpnHub {
 
         let expected = self.ingress_epochs.lock().get(fp).copied().unwrap_or(epoch);
         match self.ingress.open(master_key, fp, expected, payload) {
-            OpenOutcome::Accepted { ip_packet, advanced } => {
+            OpenOutcome::Accepted {
+                ip_packet,
+                advanced,
+            } => {
                 self.leases.observe_tunnel_packet(fp, epoch, ctr, src);
                 let _ = advanced;
                 self.stats_in.fetch_add(1, Ordering::Relaxed);
@@ -277,49 +281,51 @@ impl VpnHub {
         let idle_limit = self.reader_idle_limit;
         let replies = self.egress_tx.clone();
         let this = Arc::clone(self);
-        let _ = std::thread::Builder::new().name("ggn-udp-flow".into()).spawn(move || {
-            // 4096 bytes: an EDNS0 DNS response can approach 4 KB, and `recv`
-            // into a too-small buffer truncates *silently* — the client would
-            // receive a malformed reply with no error logged anywhere.
-            // (PROTOTYPE.md flaw #2: this was 2048.)
-            let mut buf = vec![0u8; 4096];
-            let mut quiet = Duration::ZERO;
-            loop {
-                match flow.socket.recv(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        quiet = Duration::ZERO;
-                        if let Some(ip) = build_udp_packet(
-                            IpAddr::V4(dst_ip),
-                            dst_port,
-                            IpAddr::V4(client_ip),
-                            client_port,
-                            &buf[..n],
-                        ) {
-                            // Flaw #4: Enqueue unsealed raw IP packet. Sealing happens at drain time
-                            // in poll_egress, preventing stale epochs/counters on mid-queue re-anchor.
-                            if replies.send((fp.clone(), ip)).is_err() {
-                                break;
+        let _ = std::thread::Builder::new()
+            .name("ggn-udp-flow".into())
+            .spawn(move || {
+                // 4096 bytes: an EDNS0 DNS response can approach 4 KB, and `recv`
+                // into a too-small buffer truncates *silently* — the client would
+                // receive a malformed reply with no error logged anywhere.
+                // (PROTOTYPE.md flaw #2: this was 2048.)
+                let mut buf = vec![0u8; 4096];
+                let mut quiet = Duration::ZERO;
+                loop {
+                    match flow.socket.recv(&mut buf) {
+                        Ok(n) if n > 0 => {
+                            quiet = Duration::ZERO;
+                            if let Some(ip) = build_udp_packet(
+                                IpAddr::V4(dst_ip),
+                                dst_port,
+                                IpAddr::V4(client_ip),
+                                client_port,
+                                &buf[..n],
+                            ) {
+                                // Flaw #4: Enqueue unsealed raw IP packet. Sealing happens at drain time
+                                // in poll_egress, preventing stale epochs/counters on mid-queue re-anchor.
+                                if replies.send((fp.clone(), ip)).is_err() {
+                                    break;
+                                }
                             }
                         }
-                    }
-                    Ok(_) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // Poll cadence: 10 Hz; exit after `reader_idle_limit`
-                        // of total silence so reader and flow lifecycles agree.
-                        quiet += Duration::from_millis(100);
-                        if quiet >= idle_limit {
-                            break;
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Poll cadence: 10 Hz; exit after `reader_idle_limit`
+                            // of total silence so reader and flow lifecycles agree.
+                            quiet += Duration::from_millis(100);
+                            if quiet >= idle_limit {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
                         }
-                        std::thread::sleep(Duration::from_millis(100));
+                        Err(_) => break,
                     }
-                    Err(_) => break,
                 }
-            }
-            // Lifecycle agreement: a dead reader must not block a respawn —
-            // drop the dedup key so the next packet on this tuple re-spawns
-            // a reader for the (possibly successor) flow socket.
-            this.readers_spawned.lock().remove(&key_out);
-        });
+                // Lifecycle agreement: a dead reader must not block a respawn —
+                // drop the dedup key so the next packet on this tuple re-spawns
+                // a reader for the (possibly successor) flow socket.
+                this.readers_spawned.lock().remove(&key_out);
+            });
     }
 
     /// ICMP echo → echo reply (for the hub's own overlay address).

@@ -15,7 +15,6 @@
 ///
 /// Loss simulation: the hub can be configured with a drop probability
 /// (0.0 = no loss, 1.0 = all packets dropped).
-
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -190,13 +189,7 @@ mod tests {
         hub.register("virt://bob:1", tx_b);
 
         // Send a packet
-        let packet = build_test_gtf_packet(
-            [1, 2, 3, 4],
-            42,
-            0,
-            b"HELLO",
-            &[0u8; 16],
-        );
+        let packet = build_test_gtf_packet([1, 2, 3, 4], 42, 0, b"HELLO", &[0u8; 16]);
 
         let delivered = hub.route(packet.clone(), "virt://alice:1", "virt://bob:1");
         assert!(delivered, "Packet should be delivered");
@@ -228,10 +221,8 @@ mod tests {
         assert_eq!(hub.packets_dropped, 1);
 
         // Bob should NOT receive anything
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            ep_b.rx.recv(),
-        ).await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), ep_b.rx.recv()).await;
         assert!(result.is_err(), "Bob should not receive a dropped packet");
     }
 }

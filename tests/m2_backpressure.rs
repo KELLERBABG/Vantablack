@@ -37,7 +37,14 @@ fn internet_checksum(data: &[u8]) -> u16 {
 
 /// Build a client→hub TCP segment: src 10.66.0.10:52000 → dst `dst`.
 /// `payload` may be empty; flags: 0x02 SYN, 0x10 ACK, 0x08 FIN.
-fn tcp_packet(dst: (Ipv4Addr, u16), seq: u32, ack: u32, flags: u8, window: u16, payload: &[u8]) -> Vec<u8> {
+fn tcp_packet(
+    dst: (Ipv4Addr, u16),
+    seq: u32,
+    ack: u32,
+    flags: u8,
+    window: u16,
+    payload: &[u8],
+) -> Vec<u8> {
     let ihl = 20;
     let mut pkt = vec![0u8; ihl + 20 + payload.len()];
     pkt[0] = 0x45;
@@ -203,7 +210,12 @@ fn m2_backpressure_10mb_fast_producer_throttled_consumer_zero_loss() {
         let _ = i;
         for b in chunk.chunks(4) {
             let expect = &ctr.to_be_bytes()[..b.len()];
-            assert_eq!(b, expect, "stream corruption at offset {}", (b.as_ptr() as usize) - (received.as_ptr() as usize));
+            assert_eq!(
+                b,
+                expect,
+                "stream corruption at offset {}",
+                (b.as_ptr() as usize) - (received.as_ptr() as usize)
+            );
             if b.len() == 4 {
                 ctr = ctr.wrapping_add(1);
             }
@@ -228,7 +240,10 @@ fn m2_backpressure_10mb_fast_producer_throttled_consumer_zero_loss() {
             assert_eq!(st.tcp_flows, 0, "flow must tear down cleanly");
             // Driver naming: the LAN→client direction (our 10 MB) is counted
             // in bytes_c2s; bytes_s2c counts client→LAN payload (ACKs only).
-            assert_eq!(st.bytes_c2s, TOTAL as u64, "aggregated LAN→client bytes must equal the delivered stream");
+            assert_eq!(
+                st.bytes_c2s, TOTAL as u64,
+                "aggregated LAN→client bytes must equal the delivered stream"
+            );
             break;
         }
         std::thread::sleep(Duration::from_millis(200));

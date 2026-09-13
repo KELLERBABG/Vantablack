@@ -110,17 +110,28 @@ struct LiveNode {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let total_nodes: usize = args.get(1)
+    let total_nodes: usize = args
+        .get(1)
         .and_then(|s| s.parse().ok())
-        .or_else(|| std::env::var("MESH_NODES").ok().and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            std::env::var("MESH_NODES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        })
         .unwrap_or(5000);
 
     println!("================================================================================");
-    println!("  GLOBAL GHOST NET - {}-NODE AUTONOMOUS REAL-TIME MESH TOPOLOGY VERIFICATION  ", total_nodes);
+    println!(
+        "  GLOBAL GHOST NET - {}-NODE AUTONOMOUS REAL-TIME MESH TOPOLOGY VERIFICATION  ",
+        total_nodes
+    );
     println!("================================================================================");
 
     let start_time = Instant::now();
-    println!("[INIT] Bootstrapping {} distinct autonomous node instances with active UDP sockets...", total_nodes);
+    println!(
+        "[INIT] Bootstrapping {} distinct autonomous node instances with active UDP sockets...",
+        total_nodes
+    );
 
     let mut nodes: Vec<LiveNode> = Vec::with_capacity(total_nodes);
     let mut rng = rand::thread_rng();
@@ -169,10 +180,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let exit_idx = total_nodes - 1;
     let intermediate_count = total_nodes - 2;
 
-    println!("[INIT] Successfully bound {} live OS sockets with hardware-unique Ed25519 identities.", total_nodes);
-    println!("       Node {} (Client/Initiator) -> 127.0.0.1:{}", client_idx, nodes[client_idx].port);
-    println!("       Node {} (Exit Node)        -> 127.0.0.1:{}", exit_idx, nodes[exit_idx].port);
-    println!("       Carrier Pool                -> {} intermediate WAN routing peers", intermediate_count);
+    println!(
+        "[INIT] Successfully bound {} live OS sockets with hardware-unique Ed25519 identities.",
+        total_nodes
+    );
+    println!(
+        "       Node {} (Client/Initiator) -> 127.0.0.1:{}",
+        client_idx, nodes[client_idx].port
+    );
+    println!(
+        "       Node {} (Exit Node)        -> 127.0.0.1:{}",
+        exit_idx, nodes[exit_idx].port
+    );
+    println!(
+        "       Carrier Pool                -> {} intermediate WAN routing peers",
+        intermediate_count
+    );
     println!("--------------------------------------------------------------------------------");
 
     let client = &nodes[client_idx];
@@ -188,9 +211,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         cycle += 1;
-        println!("\n================================================================================");
-        println!(">>> [CYCLE #{}] DISPATCHING TRAFFIC ACROSS 5000-NODE MESH TOPOLOGY <<<", cycle);
-        println!("================================================================================");
+        println!(
+            "\n================================================================================"
+        );
+        println!(
+            ">>> [CYCLE #{}] DISPATCHING TRAFFIC ACROSS 5000-NODE MESH TOPOLOGY <<<",
+            cycle
+        );
+        println!(
+            "================================================================================"
+        );
 
         // STEP 1: Dynamically update WAN metrics across the 5000-node topology
         println!("[STEP 1] ADAPTIVE SHARD ROUTER: EVALUATING 5000-NODE TOPOLOGY DRIFT");
@@ -201,7 +231,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Real WAN network dynamics: bandwidth load, BGP route shifts, and latency jitter
             let jitter = rng.gen_range(-15.0..15.0);
             let current_rtt = (n.rtt_ms + jitter).max(4.0);
-            let current_loss = if rng.gen_range(0.0..1.0) < (1.0 - n.reliability) { true } else { false };
+            let current_loss = if rng.gen_range(0.0..1.0) < (1.0 - n.reliability) {
+                true
+            } else {
+                false
+            };
 
             let rtt_us = current_rtt * 1000.0;
             if current_loss {
@@ -219,26 +253,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         candidate_peers.shuffle(&mut rng);
 
         let best_candidates = router.select_shard_targets(&candidate_peers);
-        println!("       Live path telemetry evaluated across {} nodes. Top routes selected:", candidate_peers.len());
+        println!(
+            "       Live path telemetry evaluated across {} nodes. Top routes selected:",
+            candidate_peers.len()
+        );
         for (rank, (fp, addr, score)) in best_candidates.iter().take(3).enumerate() {
             let matched_node = nodes.iter().find(|n| n.fingerprint == *fp);
             let node_id = matched_node.map(|n| n.id).unwrap_or(0);
-            println!("         Rank {}: Carrier Node #{} [{}] at {} -> Fitness: {:.4}",
-                rank + 1, node_id, &fp[..12], addr, score);
+            println!(
+                "         Rank {}: Carrier Node #{} [{}] at {} -> Fitness: {:.4}",
+                rank + 1,
+                node_id,
+                &fp[..12],
+                addr,
+                score
+            );
         }
 
         let shard_routes = router.assign_shards(&best_candidates);
-        let carrier_a = &nodes[nodes.iter().position(|n| n.fingerprint == shard_routes[0].peer_fingerprint).unwrap_or(1)];
-        let carrier_b = &nodes[nodes.iter().position(|n| n.fingerprint == shard_routes[1].peer_fingerprint).unwrap_or(2)];
-        let carrier_c = &nodes[nodes.iter().position(|n| n.fingerprint == shard_routes[2].peer_fingerprint).unwrap_or(3)];
+        let carrier_a = &nodes[nodes
+            .iter()
+            .position(|n| n.fingerprint == shard_routes[0].peer_fingerprint)
+            .unwrap_or(1)];
+        let carrier_b = &nodes[nodes
+            .iter()
+            .position(|n| n.fingerprint == shard_routes[1].peer_fingerprint)
+            .unwrap_or(2)];
+        let carrier_c = &nodes[nodes
+            .iter()
+            .position(|n| n.fingerprint == shard_routes[2].peer_fingerprint)
+            .unwrap_or(3)];
 
         println!("       Dynamic Multi-Path Routes for RS(2,1):");
-        println!("         Path 0 (Shard 0) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
-            carrier_a.id, &carrier_a.fingerprint[..12], carrier_a.rtt_ms, carrier_a.bw_mbps);
-        println!("         Path 1 (Shard 1) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
-            carrier_b.id, &carrier_b.fingerprint[..12], carrier_b.rtt_ms, carrier_b.bw_mbps);
-        println!("         Path 2 (Shard 2) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
-            carrier_c.id, &carrier_c.fingerprint[..12], carrier_c.rtt_ms, carrier_c.bw_mbps);
+        println!(
+            "         Path 0 (Shard 0) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
+            carrier_a.id,
+            &carrier_a.fingerprint[..12],
+            carrier_a.rtt_ms,
+            carrier_a.bw_mbps
+        );
+        println!(
+            "         Path 1 (Shard 1) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
+            carrier_b.id,
+            &carrier_b.fingerprint[..12],
+            carrier_b.rtt_ms,
+            carrier_b.bw_mbps
+        );
+        println!(
+            "         Path 2 (Shard 2) -> Carrier Node #{} [{}] ({:.1} ms RTT, {:.0} Mbps)",
+            carrier_c.id,
+            &carrier_c.fingerprint[..12],
+            carrier_c.rtt_ms,
+            carrier_c.bw_mbps
+        );
 
         // Randomize which shard is dropped by the simulated WAN failure
         let drop_shard_idx = rng.gen_range(0..3usize);
@@ -258,7 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let parsed_hs = parse_handshake_pdu(&hs_pdu).expect("Valid handshake PDU");
         let (e_x_sec, e_x_pub) = generate_x25519_keypair();
         let (ky_ct, ky_ss) = kyber_encapsulate(&parsed_hs.kyber_pub).expect("Kyber encapsulate");
-        
+
         let mut e_x_arr = [0u8; 32];
         e_x_arr.copy_from_slice(e_x_pub.as_bytes());
 
@@ -274,13 +341,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let exit_master = derive_hybrid_master_key_with_psk(exit_xs.as_bytes(), &ky_ss, None);
 
         let parsed_resp = parse_response_pdu(&resp_pdu).expect("Valid response PDU");
-        let client_xs = c_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(parsed_resp.x25519_pub));
+        let client_xs =
+            c_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(parsed_resp.x25519_pub));
         let client_ky_ct = Ciphertext::<MlKem512>::from(parsed_resp.kyber_ct);
         let client_ky_ss = c_ky_dk.decapsulate(&client_ky_ct);
-        let client_master = derive_hybrid_master_key_with_psk(client_xs.as_bytes(), client_ky_ss.as_slice(), None);
+        let client_master =
+            derive_hybrid_master_key_with_psk(client_xs.as_bytes(), client_ky_ss.as_slice(), None);
 
         let session_hash = [0x5A, 0x11, 0xCA, (cycle % 256) as u8];
-        println!("       Post-quantum hybrid session established! Key: {}...", hex::encode(&client_master[..8]));
+        println!(
+            "       Post-quantum hybrid session established! Key: {}...",
+            hex::encode(&client_master[..8])
+        );
 
         // STEP 3: Client Encrypts Google Target & Encodes into 3 RS Shards
         println!("\n[STEP 3] SOCKS5 CONNECT & REED-SOLOMON RS(2,1) ASYMMETRIC SHARDING");
@@ -297,9 +369,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // STEP 4: Live UDP Socket I/O Routing Shards via 3 Distinct Carrier Nodes
         println!("\n[STEP 4] MULTI-PATH CONCURRENT LIVE UDP ROUTING TO EXIT NODE");
         let exit_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), exit_node.port);
-        let carrier_a_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), carrier_a.port);
-        let carrier_b_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), carrier_b.port);
-        let carrier_c_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), carrier_c.port);
+        let carrier_a_addr =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), carrier_a.port);
+        let carrier_b_addr =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), carrier_b.port);
+        let carrier_c_addr =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), carrier_c.port);
 
         // Client transmits Shard 0 over real UDP socket to Carrier A
         client.socket.send_to(&shards[0], carrier_a_addr).await?;
@@ -317,13 +392,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (len_c, _) = carrier_c.socket.recv_from(&mut buf_c).await?;
 
         // Carriers relay to Exit Node according to drop_shard_idx
-        if drop_shard_idx != 0 { carrier_a.socket.send_to(&buf_a[..len_a], exit_addr).await?; }
-        if drop_shard_idx != 1 { carrier_b.socket.send_to(&buf_b[..len_b], exit_addr).await?; }
-        if drop_shard_idx != 2 { carrier_c.socket.send_to(&buf_c[..len_c], exit_addr).await?; }
+        if drop_shard_idx != 0 {
+            carrier_a.socket.send_to(&buf_a[..len_a], exit_addr).await?;
+        }
+        if drop_shard_idx != 1 {
+            carrier_b.socket.send_to(&buf_b[..len_b], exit_addr).await?;
+        }
+        if drop_shard_idx != 2 {
+            carrier_c.socket.send_to(&buf_c[..len_c], exit_addr).await?;
+        }
 
-        println!("       [LIVE UDP] Client -> Dispatched 3 Shards across Carriers #{}, #{}, #{}",
-            carrier_a.id, carrier_b.id, carrier_c.id);
-        println!("       [LIVE UDP] Wire fault injection: Shard {} dropped in flight!", drop_shard_idx);
+        println!(
+            "       [LIVE UDP] Client -> Dispatched 3 Shards across Carriers #{}, #{}, #{}",
+            carrier_a.id, carrier_b.id, carrier_c.id
+        );
+        println!(
+            "       [LIVE UDP] Wire fault injection: Shard {} dropped in flight!",
+            drop_shard_idx
+        );
 
         // Exit Node receives incoming live UDP frames
         let mut exit_rx_buf_0 = vec![0u8; 1500];
@@ -355,10 +441,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &session_hash,
             NonceDirection::InitiatorToResponder,
             &mut exit_rx_pool,
-        ).expect("RS(2,1) reconstruct must succeed with 2 of 3 shards");
+        )
+        .expect("RS(2,1) reconstruct must succeed with 2 of 3 shards");
 
         let exit_dest_str = String::from_utf8_lossy(&recovered_bytes).into_owned();
-        println!("       Exit Node decrypted target destination: \"{}\"", exit_dest_str);
+        println!(
+            "       Exit Node decrypted target destination: \"{}\"",
+            exit_dest_str
+        );
 
         // STEP 6: Exit Node Egress IP Rotation (Round-Robin)
         println!("\n[STEP 6] EXIT NODE ROUND-ROBIN EGRESS IP ROTATION");
@@ -366,7 +456,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("       Outbound interface selected: {}", sock_addr.ip());
 
         // STEP 7: Public Real-World WAN Request to Google
-        println!("\n[STEP 7] PUBLIC STREAM INGESTION (LIVE OUTBOUND TCP) & CONCURRENT RETURN ROUTING");
+        println!(
+            "\n[STEP 7] PUBLIC STREAM INGESTION (LIVE OUTBOUND TCP) & CONCURRENT RETURN ROUTING"
+        );
         let live_google_data = match tokio::time::timeout(Duration::from_secs(4), async {
             let mut stream = tokio::net::TcpStream::connect("www.google.com:80").await?;
             tokio::io::AsyncWriteExt::write_all(&mut stream, b"HEAD / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\nUser-Agent: VantaBlack/0.4.1\r\n\r\n").await?;
@@ -394,16 +486,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), client.port);
 
         // Return Shard 0 via Carrier A to Client
-        exit_node.socket.send_to(&return_shards[0], carrier_a_addr).await?;
+        exit_node
+            .socket
+            .send_to(&return_shards[0], carrier_a_addr)
+            .await?;
         let mut ret_buf_a = vec![0u8; 1500];
         let (ret_len_a, _) = carrier_a.socket.recv_from(&mut ret_buf_a).await?;
-        carrier_a.socket.send_to(&ret_buf_a[..ret_len_a], client_addr).await?;
+        carrier_a
+            .socket
+            .send_to(&ret_buf_a[..ret_len_a], client_addr)
+            .await?;
 
         // Return Shard 2 via Carrier C to Client (Shard 1 simulated dropped on return path)
-        exit_node.socket.send_to(&return_shards[2], carrier_c_addr).await?;
+        exit_node
+            .socket
+            .send_to(&return_shards[2], carrier_c_addr)
+            .await?;
         let mut ret_buf_c = vec![0u8; 1500];
         let (ret_len_c, _) = carrier_c.socket.recv_from(&mut ret_buf_c).await?;
-        carrier_c.socket.send_to(&ret_buf_c[..ret_len_c], client_addr).await?;
+        carrier_c
+            .socket
+            .send_to(&ret_buf_c[..ret_len_c], client_addr)
+            .await?;
 
         // Client receives 2 return shards on its UDP socket
         let mut client_rx_buf_0 = vec![0u8; 1500];
@@ -423,7 +527,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &session_hash,
             NonceDirection::ResponderToInitiator,
             &mut client_rx_pool,
-        ).expect("Client RS reconstruct must succeed");
+        )
+        .expect("Client RS reconstruct must succeed");
 
         let client_received_str = String::from_utf8_lossy(&client_received);
         println!("       CLIENT DECRYPTED REAL LIVE GOOGLE PAYLOAD:");
@@ -431,7 +536,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("         {}", line);
         }
 
-        println!(">>> [CYCLE #{}] COMPLETE. 5000 LIVE NODES MAINTAINED. PAUSING 5s FOR NEXT CYCLE <<<", cycle);
+        println!(
+            ">>> [CYCLE #{}] COMPLETE. 5000 LIVE NODES MAINTAINED. PAUSING 5s FOR NEXT CYCLE <<<",
+            cycle
+        );
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }

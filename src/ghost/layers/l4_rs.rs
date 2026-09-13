@@ -7,7 +7,6 @@
 ///
 /// The input data is split at its midpoint into two shards,
 /// then a parity shard is computed from both.
-
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// Split data into 3 shards using (2,1) Reed-Solomon encoding.

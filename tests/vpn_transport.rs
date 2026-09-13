@@ -11,13 +11,12 @@
 
 mod common;
 use common::tunnel::{receiver_open, tunnel_frame};
-use vantablack::ghost::net::{GTF_BULK_SIZE};
+use vantablack::ghost::layers::l2_aead::NonceDirection;
 use vantablack::ghost::net::vpn::client::{open_to_tun, seal_from_tun, ClientState};
 use vantablack::ghost::net::vpn::hub::VpnHub;
 use vantablack::ghost::net::vpn::tun::{FakeTun, TunDevice};
-use vantablack::ghost::layers::l2_aead::NonceDirection;
 use vantablack::ghost::net::vpn::{VpnConfig, VpnRole};
-
+use vantablack::ghost::net::GTF_BULK_SIZE;
 
 #[test]
 fn transport_phone_to_hub_via_real_gtf_frames() {
@@ -51,7 +50,8 @@ fn transport_phone_to_hub_via_real_gtf_frames() {
         match TunDevice::read_packet(&mut tun, &mut rbuf) {
             Ok(n) => {
                 let wire = seal_from_tun(&phone, &rbuf[..n]).unwrap();
-                let frame = tunnel_frame(&key, sh, ctr, NonceDirection::InitiatorToResponder, &wire);
+                let frame =
+                    tunnel_frame(&key, sh, ctr, NonceDirection::InitiatorToResponder, &wire);
                 assert!(frame.len() <= GTF_BULK_SIZE);
                 // ── receiver side: the real wire pipeline ──
                 let body = receiver_open(&frame, frame.len(), &key, sh, ctr)
@@ -114,18 +114,27 @@ fn transport_hub_to_phone_reply_lands_in_tun() {
     let u = hub.poll_egress().expect("ICMP reply must be queued");
     assert_eq!(u.fingerprint, fp);
     assert_eq!(u.endpoint, phone_addr);
-    let reply_frame = tunnel_frame(&key, sh, 1002, NonceDirection::ResponderToInitiator, &u.wire);
+    let reply_frame = tunnel_frame(
+        &key,
+        sh,
+        1002,
+        NonceDirection::ResponderToInitiator,
+        &u.wire,
+    );
 
     // 3. Phone opens the reply through the exact receive path.
-    let reply_wire = receiver_open(&reply_frame, reply_frame.len(), &key, sh, 1002)
-        .expect("reply frame intact");
+    let reply_wire =
+        receiver_open(&reply_frame, reply_frame.len(), &key, sh, 1002).expect("reply frame intact");
     let tun2 = FakeTun::new();
     let (accepted, _adv) = open_to_tun(&phone, &reply_wire, &tun2);
     assert!(accepted, "phone must accept the hub's reply");
     let out = tun2.drain_outbound();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0][9], 1, "still ICMP");
-    assert_eq!(out[0][20], 0, "echo REPLY type (byte 20, after the IP header)");
+    assert_eq!(
+        out[0][20], 0,
+        "echo REPLY type (byte 20, after the IP header)"
+    );
     assert_eq!(&out[0][12..16], &[10, 66, 0, 1], "from the hub overlay IP");
     assert_eq!(&out[0][16..20], &[10, 66, 0, 10], "to the phone overlay IP");
 }

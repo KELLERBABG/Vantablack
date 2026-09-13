@@ -10,8 +10,8 @@ use tracing::{debug, info, warn};
 
 use crate::ghost::layers::l2_aead::encrypt_in_place;
 use crate::ghost::layers::l4_rs;
-use crate::ghost::net::{frame_shard, send_gtf};
 use crate::ghost::net::routing::PoissonReputationMatrix;
+use crate::ghost::net::{frame_shard, send_gtf};
 use crate::ghost::session::Session;
 
 // ── Bootstrap Seeds & Embedded Default Config ──────────────────────
@@ -109,13 +109,16 @@ impl NatHolePuncher {
 
     /// Register a peer discovered via beacon and attempt hole-punch.
     pub fn register_peer(&self, fp: &str, public_addr: SocketAddr, local_addr: SocketAddr) {
-        self.peers.insert(fp.to_string(), NatPeerState {
-            fingerprint: fp.to_string(),
-            public_addr,
-            local_addr,
-            connected: false,
-            last_keepalive: Instant::now(),
-        });
+        self.peers.insert(
+            fp.to_string(),
+            NatPeerState {
+                fingerprint: fp.to_string(),
+                public_addr,
+                local_addr,
+                connected: false,
+                last_keepalive: Instant::now(),
+            },
+        );
         debug!("NAT peer registered: {} at {}", fp, public_addr);
     }
 
@@ -172,7 +175,8 @@ impl NatHolePuncher {
 
     /// Build a localized routing cache — peers within 1-2 hops.
     pub fn local_cache(&self) -> Vec<(String, SocketAddr)> {
-        self.peers.iter()
+        self.peers
+            .iter()
             .filter(|e| e.connected)
             .map(|e| (e.fingerprint.clone(), e.public_addr))
             .collect()
@@ -203,7 +207,7 @@ pub struct PathMetrics {
 impl Default for PathMetrics {
     fn default() -> Self {
         Self {
-            rtt_us: 50_000.0,       // 50ms initial estimate
+            rtt_us: 50_000.0, // 50ms initial estimate
             loss_rate: 0.0,
             throughput_bps: 10_000_000.0, // 10 Mbps initial
             last_updated: Instant::now(),
@@ -300,14 +304,22 @@ impl AdaptiveShardRouter {
     pub fn record_success(&self, peer_fp: &str, rtt_us: f64) {
         let mut metrics = self.path_metrics.entry(peer_fp.to_string()).or_default();
         metrics.observe(rtt_us, false);
-        debug!("Path to {}: RTT={:.0}us, fitness={:.2}", peer_fp, metrics.rtt_us, metrics.fitness());
+        debug!(
+            "Path to {}: RTT={:.0}us, fitness={:.2}",
+            peer_fp,
+            metrics.rtt_us,
+            metrics.fitness()
+        );
     }
 
     /// Record a shard delivery failure (loss).
     pub fn record_loss(&self, peer_fp: &str) {
         let mut metrics = self.path_metrics.entry(peer_fp.to_string()).or_default();
         metrics.observe(0.0, true);
-        warn!("Path loss to {}: loss_rate={:.2}", peer_fp, metrics.loss_rate);
+        warn!(
+            "Path loss to {}: loss_rate={:.2}",
+            peer_fp, metrics.loss_rate
+        );
     }
 
     /// Get the fitness score for a peer path.
@@ -322,7 +334,10 @@ impl AdaptiveShardRouter {
     ///
     /// Returns the top candidates sorted by fitness, ensuring we have
     /// at least `data_shards` (2) candidates for RS reconstruction.
-    pub fn select_shard_targets(&self, available: &[(String, SocketAddr)]) -> Vec<(String, SocketAddr, f64)> {
+    pub fn select_shard_targets(
+        &self,
+        available: &[(String, SocketAddr)],
+    ) -> Vec<(String, SocketAddr, f64)> {
         let mut scored: Vec<(String, SocketAddr, f64)> = available
             .iter()
             .map(|(fp, addr)| (fp.clone(), *addr, self.path_fitness(fp)))
@@ -346,7 +361,9 @@ impl AdaptiveShardRouter {
     pub fn assign_shards(&self, targets: &[(String, SocketAddr, f64)]) -> Vec<ShardRoute> {
         let mut routes = Vec::new();
         for shard_idx in 0..3u8 {
-            if let Some((fp, _addr, fitness)) = targets.get(shard_idx as usize % targets.len().max(1)) {
+            if let Some((fp, _addr, fitness)) =
+                targets.get(shard_idx as usize % targets.len().max(1))
+            {
                 routes.push(ShardRoute {
                     peer_fingerprint: fp.clone(),
                     shard_index: shard_idx,
@@ -360,7 +377,9 @@ impl AdaptiveShardRouter {
 
     /// Check if we have enough reliable paths for RS reconstruction.
     pub fn can_reconstruct(&self) -> bool {
-        let good_paths = self.path_metrics.iter()
+        let good_paths = self
+            .path_metrics
+            .iter()
             .filter(|m| m.fitness() >= self.min_fitness)
             .count();
         good_paths >= self.data_shards
@@ -488,17 +507,21 @@ impl TitForTatEnforcer {
             }
 
             if record.is_leeching() {
-                warn!("Peer {} is leeching (ratio={:.2}), recommending eviction",
-                    peer_fp, record.reciprocity_ratio);
+                warn!(
+                    "Peer {} is leeching (ratio={:.2}), recommending eviction",
+                    peer_fp, record.reciprocity_ratio
+                );
 
                 // Also record in reputation matrix
-                self.reputation.record_interaction(&self.our_fingerprint, peer_fp, false);
+                self.reputation
+                    .record_interaction(&self.our_fingerprint, peer_fp, false);
                 return true;
             }
 
             // If peer has good ratio, record positive reputation
             if record.reciprocity_ratio > 0.8 {
-                self.reputation.record_interaction(&self.our_fingerprint, peer_fp, true);
+                self.reputation
+                    .record_interaction(&self.our_fingerprint, peer_fp, true);
             }
         }
         false
@@ -527,9 +550,16 @@ impl TitForTatEnforcer {
     /// Get detailed reciprocity stats for a peer: (bytes_for_them, bytes_for_us, ratio, is_evicted)
     pub fn peer_stats(&self, peer_fp: &str) -> (u64, u64, f64, bool) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
-        let (sent, recv, ratio) = self.reciprocity
+        let (sent, recv, ratio) = self
+            .reciprocity
             .get(&key)
-            .map(|r| (r.bytes_forwarded_for_them, r.bytes_forwarded_for_us, r.reciprocity_ratio))
+            .map(|r| {
+                (
+                    r.bytes_forwarded_for_them,
+                    r.bytes_forwarded_for_us,
+                    r.reciprocity_ratio,
+                )
+            })
             .unwrap_or((0, 0, 1.0));
         let evicted = self.is_evicted(peer_fp);
         (sent, recv, ratio, evicted)
@@ -543,7 +573,13 @@ impl TitForTatEnforcer {
                 let peer_fp = entry.key().1.clone();
                 let r = entry.value();
                 let evicted = self.is_evicted(&peer_fp);
-                (peer_fp, r.bytes_forwarded_for_them, r.bytes_forwarded_for_us, r.reciprocity_ratio, evicted)
+                (
+                    peer_fp,
+                    r.bytes_forwarded_for_them,
+                    r.bytes_forwarded_for_us,
+                    r.reciprocity_ratio,
+                    evicted,
+                )
             })
             .collect()
     }
@@ -612,7 +648,10 @@ impl MeshNode {
     }
 
     /// Select the best peers for shard routing, respecting reciprocity.
-    pub async fn select_egress_targets(&self, _destination: &str) -> Vec<(String, SocketAddr, f64)> {
+    pub async fn select_egress_targets(
+        &self,
+        _destination: &str,
+    ) -> Vec<(String, SocketAddr, f64)> {
         let available = self.peers_within(2);
         let mut candidates = self.router.select_shard_targets(&available);
 
@@ -679,7 +718,9 @@ impl ExitIpRotator {
 
     /// Get the next egress address (round-robin) with a dynamic source port.
     pub fn get_next_socket_addr(&self, target_port: u16) -> std::net::SocketAddr {
-        let idx = self.current_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let idx = self
+            .current_idx
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let ip = self.egress_ips[idx % self.egress_ips.len()];
         std::net::SocketAddr::new(ip, target_port)
     }
@@ -712,7 +753,8 @@ impl ExitIpRotator {
         if self.egress_ips.len() < 2 {
             return false;
         }
-        self.current_idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.current_idx
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.last_rotation = std::time::Instant::now();
         true
     }
@@ -771,13 +813,17 @@ pub async fn dispatch_shards_multipath(
             shard_payload,
         );
 
-        let peer_addr = targets.iter()
+        let peer_addr = targets
+            .iter()
             .find(|(fp, _, _)| *fp == route.peer_fingerprint)
             .map(|(_, addr, _)| *addr)
-            .unwrap_or_else(|| SocketAddr::from(([0,0,0,0], 0)));
+            .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
 
         if peer_addr.port() == 0 {
-            results.push(Err(std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "No address for peer")));
+            results.push(Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "No address for peer",
+            )));
             continue;
         }
 
@@ -790,7 +836,8 @@ pub async fn dispatch_shards_multipath(
             &relay_pkt,
             auth_tag,
             use_bulk,
-        ).await;
+        )
+        .await;
         results.push(result);
     }
 
@@ -831,7 +878,10 @@ pub async fn forward_to_exit_tunnel(
     let exit_addr = match peer_addrs.get(exit_node_fingerprint) {
         Some(e) => *e.value(),
         None => {
-            warn!("Exit node {} not found in peer registry", exit_node_fingerprint);
+            warn!(
+                "Exit node {} not found in peer registry",
+                exit_node_fingerprint
+            );
             return false;
         }
     };
@@ -840,7 +890,10 @@ pub async fn forward_to_exit_tunnel(
     let session_entry = match sessions.get(exit_node_fingerprint) {
         Some(s) => s,
         None => {
-            warn!("No session established with exit node {}", exit_node_fingerprint);
+            warn!(
+                "No session established with exit node {}",
+                exit_node_fingerprint
+            );
             return false;
         }
     };
@@ -889,7 +942,9 @@ pub async fn forward_to_exit_tunnel(
             &shard_data,
             &tag,
             use_bulk,
-        ).await {
+        )
+        .await
+        {
             debug!("Exit tunnel send error to {}: {}", exit_node_fingerprint, e);
             return false;
         }
@@ -947,7 +1002,7 @@ pub fn spawn_mesh_tasks(
     handles.push(tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(300)).await; // Every 5 minutes
-            // Fitness naturally decays — old metrics become less relevant
+                                                   // Fitness naturally decays — old metrics become less relevant
             debug!("Mesh: path metrics aging cycle");
         }
     }));
@@ -987,7 +1042,10 @@ mod tests {
             metrics.observe(200_000.0, true);
         }
         let bad_fitness = metrics.fitness();
-        assert!(bad_fitness < good_fitness, "Bad path should have lower fitness");
+        assert!(
+            bad_fitness < good_fitness,
+            "Bad path should have lower fitness"
+        );
     }
 
     #[test]
@@ -999,7 +1057,10 @@ mod tests {
             ("peer_c".to_string(), "10.0.0.3:1234".parse().unwrap()),
         ];
         let targets = router.select_shard_targets(&available);
-        assert!(targets.len() >= 2, "Should select at least 2 targets for RS(2,1)");
+        assert!(
+            targets.len() >= 2,
+            "Should select at least 2 targets for RS(2,1)"
+        );
 
         let routes = router.assign_shards(&targets);
         assert_eq!(routes.len(), 3, "Should assign all 3 shards");
@@ -1025,16 +1086,31 @@ mod tests {
         // Simulate a fair peer
         tft.forwarded_by("fair", 10_000);
         tft.forwarded_for("fair", 10_000);
-        assert!(tft.ratio_with("fair") > 0.5, "Fair ratio should be balanced");
+        assert!(
+            tft.ratio_with("fair") > 0.5,
+            "Fair ratio should be balanced"
+        );
     }
 
     #[test]
     fn test_shard_route_assignment() {
         let mesh = AdaptiveShardRouter::new();
         let targets = vec![
-            ("fast_peer".to_string(), "1.1.1.1:1234".parse().unwrap(), 0.95),
-            ("medium_peer".to_string(), "2.2.2.2:1234".parse().unwrap(), 0.60),
-            ("slow_peer".to_string(), "3.3.3.3:1234".parse().unwrap(), 0.35),
+            (
+                "fast_peer".to_string(),
+                "1.1.1.1:1234".parse().unwrap(),
+                0.95,
+            ),
+            (
+                "medium_peer".to_string(),
+                "2.2.2.2:1234".parse().unwrap(),
+                0.60,
+            ),
+            (
+                "slow_peer".to_string(),
+                "3.3.3.3:1234".parse().unwrap(),
+                0.35,
+            ),
         ];
         let routes = mesh.assign_shards(&targets);
         assert_eq!(routes.len(), 3);

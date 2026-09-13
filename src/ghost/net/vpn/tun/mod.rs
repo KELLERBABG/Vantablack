@@ -116,15 +116,24 @@ mod wintun {
                 Ok(p)
             }
             unsafe {
-                let create: unsafe extern "system" fn(*const u16, *const u16, *const u8, *mut Handle) -> i32 =
-                    std::mem::transmute(sym(lib, "WintunCreateAdapter")?);
+                let create: unsafe extern "system" fn(
+                    *const u16,
+                    *const u16,
+                    *const u8,
+                    *mut Handle,
+                ) -> i32 = std::mem::transmute(sym(lib, "WintunCreateAdapter")?);
                 let start: unsafe extern "system" fn(Handle, u32) -> Handle =
                     std::mem::transmute(sym(lib, "WintunStartSession")?);
 
                 let wname: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
                 let wtype: Vec<u16> = "Tunnel".encode_utf16().chain(std::iter::once(0)).collect();
                 let mut adapter: Handle = std::ptr::null_mut();
-                if create(wname.as_ptr(), wtype.as_ptr(), std::ptr::null(), &mut adapter) == 0
+                if create(
+                    wname.as_ptr(),
+                    wtype.as_ptr(),
+                    std::ptr::null(),
+                    &mut adapter,
+                ) == 0
                     || adapter.is_null()
                 {
                     FreeLibrary(lib);
@@ -136,8 +145,7 @@ mod wintun {
                 let session = start(adapter, 0x400_000); // 4 MiB ring
                 if session.is_null() {
                     if let Ok(p) = sym(lib, "WintunDeleteAdapter") {
-                        let del: unsafe extern "system" fn(Handle) -> i32 =
-                            std::mem::transmute(p);
+                        let del: unsafe extern "system" fn(Handle) -> i32 = std::mem::transmute(p);
                         del(adapter);
                     }
                     FreeLibrary(lib);
@@ -146,8 +154,14 @@ mod wintun {
                 // configure IPv4 via netsh (best-effort; needs admin)
                 let _ = std::process::Command::new("netsh")
                     .args([
-                        "interface", "ip", "set", "address", &format!("name={name}"),
-                        "static", &addr.to_string(), &mask.to_string(),
+                        "interface",
+                        "ip",
+                        "set",
+                        "address",
+                        &format!("name={name}"),
+                        "static",
+                        &addr.to_string(),
+                        &mask.to_string(),
                     ])
                     .status();
                 Ok(Self {
@@ -178,7 +192,10 @@ mod wintun {
                     // no packet available; brief sleep instead of event wait
                     // (the pump loop handles pacing)
                     std::thread::sleep(std::time::Duration::from_millis(1));
-                    return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "no packet"));
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "no packet",
+                    ));
                 }
                 let n = (size as usize).min(buf.len());
                 std::ptr::copy_nonoverlapping(pkt, buf.as_mut_ptr(), n);
@@ -298,7 +315,11 @@ mod unixtun {
             let _ = std::process::Command::new("ip")
                 .args(["link", "set", "dev", name, "up"])
                 .status();
-            Ok(Self { fd, name: name.to_string(), running: Arc::new(AtomicBool::new(true)) })
+            Ok(Self {
+                fd,
+                name: name.to_string(),
+                running: Arc::new(AtomicBool::new(true)),
+            })
         }
     }
 
@@ -498,7 +519,6 @@ impl TunDevice for FakeTun {
         &self.name
     }
 }
-
 
 #[cfg(test)]
 mod tests {

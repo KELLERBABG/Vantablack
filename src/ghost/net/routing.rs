@@ -9,7 +9,6 @@
 /// error rate). This allows the node to issue Byzantine isolation accusations only
 /// when the probability of the observed errors being due to cosmic radiation is
 /// negligibly small (< 10^-6).
-
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -79,13 +78,11 @@ impl Journey {
 }
 
 /// Contact plan: the set of all known contacts in the network.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ContactPlan {
     pub contacts: Vec<Contact>,
     pub by_source: HashMap<NodeId, Vec<Contact>>,
 }
-
 
 impl ContactPlan {
     pub fn add_contact(&mut self, contact: Contact) {
@@ -332,7 +329,8 @@ impl ReputationMatrix {
         let key = (from.to_string(), to.to_string());
         let ratio = if success { 1.0 } else { 0.0 };
         let current = self.scores.get(&key).copied().unwrap_or(1.0);
-        self.scores.insert(key, self.alpha * current + (1.0 - self.alpha) * ratio);
+        self.scores
+            .insert(key, self.alpha * current + (1.0 - self.alpha) * ratio);
     }
 
     pub fn get_reputation(&self, from: &str, to: &str) -> f64 {
@@ -385,8 +383,15 @@ mod tests {
 
         let p_value = rep.cosmic_consistency_p_value("alice", "bob");
         // p-value should be high (errors are consistent with cosmic radiation)
-        assert!(p_value > 0.05, "p_value={} should be >0.05 for cosmic-consistent errors", p_value);
-        assert!(!rep.is_byzantine("alice", "bob"), "Should not flag as Byzantine for cosmic-consistent errors");
+        assert!(
+            p_value > 0.05,
+            "p_value={} should be >0.05 for cosmic-consistent errors",
+            p_value
+        );
+        assert!(
+            !rep.is_byzantine("alice", "bob"),
+            "Should not flag as Byzantine for cosmic-consistent errors"
+        );
     }
 
     #[test]
@@ -405,8 +410,15 @@ mod tests {
 
         let p_value = rep.cosmic_consistency_p_value("alice", "mallory");
         // p-value should be extremely low (errors are NOT consistent with cosmic radiation)
-        assert!(p_value < 0.001, "p_value={} should be <0.001 for malicious errors", p_value);
-        assert!(rep.is_byzantine("alice", "mallory"), "Should flag malicious peer as Byzantine");
+        assert!(
+            p_value < 0.001,
+            "p_value={} should be <0.001 for malicious errors",
+            p_value
+        );
+        assert!(
+            rep.is_byzantine("alice", "mallory"),
+            "Should flag malicious peer as Byzantine"
+        );
         assert!(rep.observed_error_rate("alice", "mallory") > 0.2);
     }
 

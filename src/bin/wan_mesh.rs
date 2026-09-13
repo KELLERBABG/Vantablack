@@ -7,26 +7,25 @@ use std::time::{Duration, Instant};
 use ml_kem::kem::Decapsulate;
 use parking_lot::RwLock;
 use serde::Serialize;
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 use vantablack::ghost::{
     layers::{
-        l0_identity::{GhostIdentity, verify_peer_signature},
+        l0_identity::{verify_peer_signature, GhostIdentity},
         l1_kem::{
             build_handshake_pdu, build_response_pdu, compute_session_hash,
-            derive_hybrid_master_key_with_psk, generate_kyber_keypair,
-            generate_x25519_keypair, kyber_encapsulate, parse_handshake_pdu,
-            parse_response_pdu,
+            derive_hybrid_master_key_with_psk, generate_kyber_keypair, generate_x25519_keypair,
+            kyber_encapsulate, parse_handshake_pdu, parse_response_pdu,
         },
         l2_aead::{decrypt_in_place_with_context, encrypt_in_place_with_context, NonceDirection},
         l4_rs,
         l6_session::SessionGuard,
     },
     net::{
-        build_gtf_frame, extract_payload, frame_shard, unframe,
-        BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BASE_SIZE,
+        build_gtf_frame, extract_payload, frame_shard,
         mesh::{AdaptiveShardRouter, ExitIpRotator},
+        unframe, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BASE_SIZE,
     },
 };
 
@@ -270,7 +269,8 @@ fn dec_join_tamper_resistant(
             let a = pair_shards[0].as_ref()?;
             let b = pair_shards[1].as_ref()?;
             let mut merged = [a.as_slice(), b.as_slice()].concat();
-            if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok() {
+            if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok()
+            {
                 if merged.len() >= 2 {
                     let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
                     if 2 + len <= merged.len() {
@@ -331,7 +331,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8000".to_string());
 
     println!("================================================================================");
-    println!("  GLOBAL GHOST NET - LEVEL 2 MULTI-HOP MESH ROUTING NODE [ROLE: {}]", role.to_uppercase());
+    println!(
+        "  GLOBAL GHOST NET - LEVEL 2 MULTI-HOP MESH ROUTING NODE [ROLE: {}]",
+        role.to_uppercase()
+    );
     println!("  Listening on: {}", listen_addr);
     println!("================================================================================");
 
@@ -383,12 +386,20 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
                 let mut forwarded = vec![hops_remaining - 1];
                 forwarded.extend_from_slice(&payload);
                 let _ = socket.send_to(&forwarded, next_addr).await;
-                println!("[CARRIER] Multi-hop relay: {} bytes forwarded to NEXT HOP {} ({} hops left)",
-                    payload.len(), next_addr, hops_remaining - 1);
+                println!(
+                    "[CARRIER] Multi-hop relay: {} bytes forwarded to NEXT HOP {} ({} hops left)",
+                    payload.len(),
+                    next_addr,
+                    hops_remaining - 1
+                );
             } else {
                 // Final hop delivery (e.g. into Exit node or Client)
                 let _ = socket.send_to(&payload, next_addr).await;
-                println!("[CARRIER] Final-hop relay: {} bytes delivered to ENDPOINT {}", payload.len(), next_addr);
+                println!(
+                    "[CARRIER] Final-hop relay: {} bytes delivered to ENDPOINT {}",
+                    payload.len(),
+                    next_addr
+                );
             }
         }
     }
@@ -398,7 +409,10 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
 async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Error>> {
     println!("[EXIT] Ready. Waiting for multi-hop RS shards & Post-Quantum handshake...");
     let identity = GhostIdentity::generate_fresh();
-    println!("[EXIT] Identity fingerprint: {}", hex::encode(&identity.public_key_bytes()[..8]));
+    println!(
+        "[EXIT] Identity fingerprint: {}",
+        hex::encode(&identity.public_key_bytes()[..8])
+    );
 
     // Start local discovery beacon announcer
     start_beacon_announcer(GhostIdentity {
@@ -428,7 +442,8 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
         let start_wait = Instant::now();
 
         while received_count < 3 && start_wait.elapsed() < Duration::from_millis(3200) {
-            match tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
+            match tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await
+            {
                 Ok(Ok((len, src))) => {
                     // Check if this is a Post-Quantum Handshake PDU from Client
                     if len >= 16 && &buf[..16] == b"GHOST_HANDSHAKE_" {
@@ -446,8 +461,14 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                                     &ky_ct,
                                 );
 
-                                let exit_xs = e_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(parsed_hs.x25519_pub));
-                                session_key = derive_hybrid_master_key_with_psk(exit_xs.as_bytes(), &ky_ss, None);
+                                let exit_xs = e_x_sec.diffie_hellman(
+                                    &x25519_dalek::PublicKey::from(parsed_hs.x25519_pub),
+                                );
+                                session_key = derive_hybrid_master_key_with_psk(
+                                    exit_xs.as_bytes(),
+                                    &ky_ss,
+                                    None,
+                                );
                                 current_session_hash = compute_session_hash(&session_key);
                                 handshake_established = true;
 
@@ -473,7 +494,10 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                             current_cycle = packet_cycle;
                         }
 
-                        if packet_cycle == current_cycle && shard_idx < 3 && shards[shard_idx].is_none() {
+                        if packet_cycle == current_cycle
+                            && shard_idx < 3
+                            && shards[shard_idx].is_none()
+                        {
                             let gtf_raw = &buf[9..len];
                             let unpadded = if gtf_raw.len() >= GTF_BASE_SIZE {
                                 let raw_payload = extract_payload(gtf_raw);
@@ -493,7 +517,10 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
         }
 
         if received_count >= 2 {
-            println!("\n>>> [EXIT CYCLE #{}] Gathered {}/3 shards across kernel WAN paths.", current_cycle, received_count);
+            println!(
+                "\n>>> [EXIT CYCLE #{}] Gathered {}/3 shards across kernel WAN paths.",
+                current_cycle, received_count
+            );
             let active_key = session_key;
             let active_hash = if handshake_established {
                 current_session_hash
@@ -531,7 +558,10 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                 let egress = exit_rotator.get_next_socket_addr(80);
                 println!("[EXIT] Outbound Egress IP Rotated -> {}", egress.ip());
 
-                println!("[EXIT] Establishing live TCP connection to {}...", target_str);
+                println!(
+                    "[EXIT] Establishing live TCP connection to {}...",
+                    target_str
+                );
                 let google_resp = match tokio::time::timeout(Duration::from_secs(4), async {
                     let mut stream = TcpStream::connect("www.google.com:80").await?;
                     stream.write_all(b"HEAD / HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\nUser-Agent: VantaBlack-Level2/0.4.1\r\n\r\n").await?;
@@ -548,7 +578,13 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                 };
 
                 let return_ctr = tx_ctr + 1;
-                let (ret_shards, _) = enc_split_gtf(&active_key, return_ctr, &active_hash, NonceDirection::ResponderToInitiator, &google_resp);
+                let (ret_shards, _) = enc_split_gtf(
+                    &active_key,
+                    return_ctr,
+                    &active_hash,
+                    NonceDirection::ResponderToInitiator,
+                    &google_resp,
+                );
 
                 // Multi-Hop Return Dispatch
                 // Path 0: Exit -> Carrier 4 -> Carrier 1 -> Client (2 hops)
@@ -584,7 +620,11 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
 
                 // Shard 2 via Carrier 3 (or C5) to Client
                 let shaped_shard_2 = ret_shards[2].clone();
-                let target_c = if current_cycle % 10 >= 5 { c5_addr } else { c3_addr };
+                let target_c = if current_cycle % 10 >= 5 {
+                    c5_addr
+                } else {
+                    c3_addr
+                };
                 let mut pkt_2 = vec![1]; // 1 hop
                 pkt_2.extend_from_slice(&[172, 28, 1, 10]);
                 pkt_2.extend_from_slice(&8000u16.to_be_bytes());
@@ -605,7 +645,10 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
 
     let identity = GhostIdentity::generate_fresh();
     let local_pk = identity.public_key_bytes();
-    println!("[CLIENT] Client Identity Fingerprint: {}", hex::encode(&local_pk[..8]));
+    println!(
+        "[CLIENT] Client Identity Fingerprint: {}",
+        hex::encode(&local_pk[..8])
+    );
 
     // Start discovery listeners & announcers
     start_beacon_announcer(GhostIdentity {
@@ -659,11 +702,46 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         discovery_source: discovery_source_label.clone(),
         frame_standard: "GTF 512-Byte Strict Invariant + L5 Jitter".to_string(),
         carriers: vec![
-            CarrierMetric { name: "Carrier 1".into(), ip: "172.28.1.11".into(), netem: "45ms ±5ms (1% loss)".into(), rtt_ms: 0, status: "ACTIVE (Hop 1)".into(), role: "Transatlantic Fiber".into() },
-            CarrierMetric { name: "Carrier 2".into(), ip: "172.28.1.12".into(), netem: "85ms ±15ms (3% loss)".into(), rtt_ms: 0, status: "ACTIVE (Direct)".into(), role: "Transpacific Edge".into() },
-            CarrierMetric { name: "Carrier 3".into(), ip: "172.28.1.13".into(), netem: "160ms ±25ms (8% loss)".into(), rtt_ms: 0, status: "CHAOS TARGET (Severable)".into(), role: "Satellite Uplink".into() },
-            CarrierMetric { name: "Carrier 4".into(), ip: "172.28.1.14".into(), netem: "25ms ±3ms (0.5% loss)".into(), rtt_ms: 0, status: "ACTIVE (Hop 2)".into(), role: "Continental Core".into() },
-            CarrierMetric { name: "Carrier 5".into(), ip: "172.28.1.15".into(), netem: "55ms ±8ms (1% loss)".into(), rtt_ms: 0, status: "HOT STANDBY".into(), role: "Dynamic Failover Reserve".into() },
+            CarrierMetric {
+                name: "Carrier 1".into(),
+                ip: "172.28.1.11".into(),
+                netem: "45ms ±5ms (1% loss)".into(),
+                rtt_ms: 0,
+                status: "ACTIVE (Hop 1)".into(),
+                role: "Transatlantic Fiber".into(),
+            },
+            CarrierMetric {
+                name: "Carrier 2".into(),
+                ip: "172.28.1.12".into(),
+                netem: "85ms ±15ms (3% loss)".into(),
+                rtt_ms: 0,
+                status: "ACTIVE (Direct)".into(),
+                role: "Transpacific Edge".into(),
+            },
+            CarrierMetric {
+                name: "Carrier 3".into(),
+                ip: "172.28.1.13".into(),
+                netem: "160ms ±25ms (8% loss)".into(),
+                rtt_ms: 0,
+                status: "CHAOS TARGET (Severable)".into(),
+                role: "Satellite Uplink".into(),
+            },
+            CarrierMetric {
+                name: "Carrier 4".into(),
+                ip: "172.28.1.14".into(),
+                netem: "25ms ±3ms (0.5% loss)".into(),
+                rtt_ms: 0,
+                status: "ACTIVE (Hop 2)".into(),
+                role: "Continental Core".into(),
+            },
+            CarrierMetric {
+                name: "Carrier 5".into(),
+                ip: "172.28.1.15".into(),
+                netem: "55ms ±8ms (1% loss)".into(),
+                rtt_ms: 0,
+                status: "HOT STANDBY".into(),
+                role: "Dynamic Failover Reserve".into(),
+            },
         ],
         ..Default::default()
     }));
@@ -709,29 +787,58 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             while let Ok((mut stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
                     let mut handshake = [0u8; 2];
-                    if stream.read_exact(&mut handshake).await.is_err() || handshake[0] != 5 { return; }
+                    if stream.read_exact(&mut handshake).await.is_err() || handshake[0] != 5 {
+                        return;
+                    }
                     let mut methods = vec![0u8; handshake[1] as usize];
-                    if stream.read_exact(&mut methods).await.is_err() { return; }
-                    if stream.write_all(&[5, 0]).await.is_err() { return; }
+                    if stream.read_exact(&mut methods).await.is_err() {
+                        return;
+                    }
+                    if stream.write_all(&[5, 0]).await.is_err() {
+                        return;
+                    }
 
                     let mut req_header = [0u8; 4];
-                    if stream.read_exact(&mut req_header).await.is_err() || req_header[1] != 1 { return; }
+                    if stream.read_exact(&mut req_header).await.is_err() || req_header[1] != 1 {
+                        return;
+                    }
                     let dest = match req_header[3] {
                         1 => {
                             let mut ip = [0u8; 4];
-                            if stream.read_exact(&mut ip).await.is_err() { return; }
+                            if stream.read_exact(&mut ip).await.is_err() {
+                                return;
+                            }
                             let mut port = [0u8; 2];
-                            if stream.read_exact(&mut port).await.is_err() { return; }
-                            format!("{}.{}.{}.{}:{}", ip[0], ip[1], ip[2], ip[3], u16::from_be_bytes(port))
+                            if stream.read_exact(&mut port).await.is_err() {
+                                return;
+                            }
+                            format!(
+                                "{}.{}.{}.{}:{}",
+                                ip[0],
+                                ip[1],
+                                ip[2],
+                                ip[3],
+                                u16::from_be_bytes(port)
+                            )
                         }
                         3 => {
                             let mut len = [0u8; 1];
-                            if stream.read_exact(&mut len).await.is_err() { return; }
+                            if stream.read_exact(&mut len).await.is_err() {
+                                return;
+                            }
                             let mut domain = vec![0u8; len[0] as usize];
-                            if stream.read_exact(&mut domain).await.is_err() { return; }
+                            if stream.read_exact(&mut domain).await.is_err() {
+                                return;
+                            }
                             let mut port = [0u8; 2];
-                            if stream.read_exact(&mut port).await.is_err() { return; }
-                            format!("{}:{}", String::from_utf8_lossy(&domain), u16::from_be_bytes(port))
+                            if stream.read_exact(&mut port).await.is_err() {
+                                return;
+                            }
+                            format!(
+                                "{}:{}",
+                                String::from_utf8_lossy(&domain),
+                                u16::from_be_bytes(port)
+                            )
                         }
                         _ => return,
                     };
@@ -767,19 +874,40 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         cycle += 1;
         let is_carrier_3_severed = cycle % 10 >= 5; // Chaos monkey severs Carrier 3 every 5 of 10 cycles
 
-        println!("\n================================================================================");
-        println!(">>> [LEVEL 2 CYCLE #{}] MULTI-HOP SHARDING WITH ADAPTIVE FAILOVER <<<", cycle);
+        println!(
+            "\n================================================================================"
+        );
+        println!(
+            ">>> [LEVEL 2 CYCLE #{}] MULTI-HOP SHARDING WITH ADAPTIVE FAILOVER <<<",
+            cycle
+        );
         if is_carrier_3_severed {
-            println!("!!! [CHAOS MONKEY ACTIVE] Carrier 3 SEVERED! Dynamic Failover to Carrier 5 !!!");
+            println!(
+                "!!! [CHAOS MONKEY ACTIVE] Carrier 3 SEVERED! Dynamic Failover to Carrier 5 !!!"
+            );
         }
-        println!("================================================================================");
+        println!(
+            "================================================================================"
+        );
 
         // Path candidate setup
         let peers = vec![
-            ("carrier-1".to_string(), "172.28.1.11:8000".parse::<SocketAddr>()?),
-            ("carrier-2".to_string(), "172.28.1.12:8000".parse::<SocketAddr>()?),
-            ("carrier-3".to_string(), "172.28.1.13:8000".parse::<SocketAddr>()?),
-            ("carrier-5".to_string(), "172.28.1.15:8000".parse::<SocketAddr>()?),
+            (
+                "carrier-1".to_string(),
+                "172.28.1.11:8000".parse::<SocketAddr>()?,
+            ),
+            (
+                "carrier-2".to_string(),
+                "172.28.1.12:8000".parse::<SocketAddr>()?,
+            ),
+            (
+                "carrier-3".to_string(),
+                "172.28.1.13:8000".parse::<SocketAddr>()?,
+            ),
+            (
+                "carrier-5".to_string(),
+                "172.28.1.15:8000".parse::<SocketAddr>()?,
+            ),
         ];
 
         // Feed router telemetry
@@ -795,12 +923,21 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         let selected = router.select_shard_targets(&peers);
         println!("[ADAPTIVE ROUTER] Top path candidates sorted by live fitness:");
         for (rank, (name, addr, score)) in selected.iter().take(3).enumerate() {
-            println!("  Rank {}: {} ({}) -> Fitness: {:.4}", rank + 1, name, addr, score);
+            println!(
+                "  Rank {}: {} ({}) -> Fitness: {:.4}",
+                rank + 1,
+                name,
+                addr,
+                score
+            );
         }
 
         // Post-Quantum ML-KEM-512 + X25519 Handshake (Bootstrapped or periodic rekeying every 500 cycles)
         if !pq_handshake_done || cycle % 500 == 1 {
-            println!("[CLIENT PQ-KEM] Initiating ML-KEM-512 + X25519 Handshake with Exit Node ({})...", exit_addr);
+            println!(
+                "[CLIENT PQ-KEM] Initiating ML-KEM-512 + X25519 Handshake with Exit Node ({})...",
+                exit_addr
+            );
             let (c_x_sec, c_x_pub) = generate_x25519_keypair();
             let (c_ky_ek, c_ky_dk) = generate_kyber_keypair();
 
@@ -814,13 +951,26 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             // Send handshake PDU to exit node
             if socket.send_to(&hs_pdu, exit_addr).await.is_ok() {
                 let mut resp_buf = vec![0u8; 2048];
-                match tokio::time::timeout(Duration::from_millis(1500), socket.recv_from(&mut resp_buf)).await {
+                match tokio::time::timeout(
+                    Duration::from_millis(1500),
+                    socket.recv_from(&mut resp_buf),
+                )
+                .await
+                {
                     Ok(Ok((len, _from))) if len >= 16 && &resp_buf[..16] == b"GHOST_RESPONSE__" => {
                         if let Some(parsed_resp) = parse_response_pdu(&resp_buf[..len]) {
-                            let client_xs = c_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(parsed_resp.x25519_pub));
-                            let client_ky_ct = ml_kem::kem::Ciphertext::<ml_kem::MlKem512>::from(parsed_resp.kyber_ct);
+                            let client_xs = c_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(
+                                parsed_resp.x25519_pub,
+                            ));
+                            let client_ky_ct = ml_kem::kem::Ciphertext::<ml_kem::MlKem512>::from(
+                                parsed_resp.kyber_ct,
+                            );
                             let client_ky_ss = c_ky_dk.decapsulate(&client_ky_ct);
-                            session_key = derive_hybrid_master_key_with_psk(client_xs.as_bytes(), client_ky_ss.as_slice(), None);
+                            session_key = derive_hybrid_master_key_with_psk(
+                                client_xs.as_bytes(),
+                                client_ky_ss.as_slice(),
+                                None,
+                            );
                             session_hash = compute_session_hash(&session_key);
                             pq_handshake_done = true;
                             if cycle > 1 {
@@ -844,10 +994,16 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                             &ky_ct,
                         );
                         let parsed_resp = parse_response_pdu(&resp_pdu).unwrap();
-                        let client_xs = c_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(parsed_resp.x25519_pub));
-                        let client_ky_ct = ml_kem::kem::Ciphertext::<ml_kem::MlKem512>::from(parsed_resp.kyber_ct);
+                        let client_xs = c_x_sec
+                            .diffie_hellman(&x25519_dalek::PublicKey::from(parsed_resp.x25519_pub));
+                        let client_ky_ct =
+                            ml_kem::kem::Ciphertext::<ml_kem::MlKem512>::from(parsed_resp.kyber_ct);
                         let client_ky_ss = c_ky_dk.decapsulate(&client_ky_ct);
-                        session_key = derive_hybrid_master_key_with_psk(client_xs.as_bytes(), client_ky_ss.as_slice(), None);
+                        session_key = derive_hybrid_master_key_with_psk(
+                            client_xs.as_bytes(),
+                            client_ky_ss.as_slice(),
+                            None,
+                        );
                         session_hash = compute_session_hash(&session_key);
                         pq_handshake_done = true;
                     }
@@ -859,10 +1015,19 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         let target_dest = b"www.google.com:80";
 
         // Construct 3 canonical 512-byte GTF privacy frames with L5 randomized jitter noise
-        let (gtf_shards, _) = enc_split_gtf(&session_key, tx_ctr, &session_hash, NonceDirection::InitiatorToResponder, target_dest);
+        let (gtf_shards, _) = enc_split_gtf(
+            &session_key,
+            tx_ctr,
+            &session_hash,
+            NonceDirection::InitiatorToResponder,
+            target_dest,
+        );
 
         let dispatch_start = Instant::now();
-        let total_jitter: usize = gtf_shards.iter().map(|s| s.len().saturating_sub(GTF_BASE_SIZE)).sum();
+        let total_jitter: usize = gtf_shards
+            .iter()
+            .map(|s| s.len().saturating_sub(GTF_BASE_SIZE))
+            .sum();
         println!("[TRAFFIC SHAPING] Strict 512-byte GTF + L5 Random Jitter Padding: +{} bytes wire cover", total_jitter);
 
         // Shard 0: 2-HOP ROUTE via Carrier 1 -> Carrier 4 -> Exit
@@ -886,11 +1051,22 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         pkt_1.push(1);
         pkt_1.extend_from_slice(&gtf_shards[1]);
         socket.send_to(&pkt_1, "172.28.1.12:8000").await?;
-        println!("[CLIENT] Shard 1 -> 1-Hop Direct: Client -> Carrier 2 -> Exit (GTF {} bytes)", pkt_1.len());
+        println!(
+            "[CLIENT] Shard 1 -> 1-Hop Direct: Client -> Carrier 2 -> Exit (GTF {} bytes)",
+            pkt_1.len()
+        );
 
         // Shard 2: ADAPTIVE ROUTE via Carrier 3 (or Carrier 5 when severed)
-        let active_c3_or_c5 = if is_carrier_3_severed { "172.28.1.15:8000" } else { "172.28.1.13:8000" };
-        let active_name = if is_carrier_3_severed { "Carrier 5 (Failover Reserve)" } else { "Carrier 3 (Satellite)" };
+        let active_c3_or_c5 = if is_carrier_3_severed {
+            "172.28.1.15:8000"
+        } else {
+            "172.28.1.13:8000"
+        };
+        let active_name = if is_carrier_3_severed {
+            "Carrier 5 (Failover Reserve)"
+        } else {
+            "Carrier 3 (Satellite)"
+        };
 
         let mut pkt_2 = vec![1]; // 1 hop
         pkt_2.extend_from_slice(&[172, 28, 1, 20]);
@@ -899,16 +1075,26 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         pkt_2.push(2);
         pkt_2.extend_from_slice(&gtf_shards[2]);
         socket.send_to(&pkt_2, active_c3_or_c5).await?;
-        println!("[CLIENT] Shard 2 -> Adaptive Hop: Client -> {} -> Exit (GTF {} bytes)", active_name, pkt_2.len());
+        println!(
+            "[CLIENT] Shard 2 -> Adaptive Hop: Client -> {} -> Exit (GTF {} bytes)",
+            active_name,
+            pkt_2.len()
+        );
 
-        let mut replay_status_str = format!("L6 Replay Window Active (v_max={})", client_session_guard.v_max);
+        let mut replay_status_str = format!(
+            "L6 Replay Window Active (v_max={})",
+            client_session_guard.v_max
+        );
 
         // Scenario 2: Active Replay Attack Injection
         // Every 4 cycles, launch a rogue clone of Shard 0 with a stale counter to verify Exit drops it
         if cycle % 4 == 0 {
             println!(">>> [ATTACK SIMULATOR] Injecting DUPLICATE REPLAY SHARD with stale counter to test L6 Anti-Replay Guard...");
             let _ = socket.send_to(&pkt_0, "172.28.1.11:8000").await;
-            replay_status_str = format!("REPLAY ATTACK INJECTED (Counter {} - Blocked by L6 Guard)", tx_ctr);
+            replay_status_str = format!(
+                "REPLAY ATTACK INJECTED (Counter {} - Blocked by L6 Guard)",
+                tx_ctr
+            );
         }
 
         // Await Return Shards
@@ -919,15 +1105,21 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         let wait_return = Instant::now();
 
         while rx_count < 3 && wait_return.elapsed() < Duration::from_millis(3500) {
-            match tokio::time::timeout(Duration::from_millis(600), socket.recv_from(&mut rx_buf)).await {
+            match tokio::time::timeout(Duration::from_millis(600), socket.recv_from(&mut rx_buf))
+                .await
+            {
                 Ok(Ok((len, from))) => {
                     if len >= 9 {
                         let packet_cycle = u64::from_be_bytes([
-                            rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3], rx_buf[4], rx_buf[5], rx_buf[6], rx_buf[7],
+                            rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3], rx_buf[4], rx_buf[5],
+                            rx_buf[6], rx_buf[7],
                         ]);
                         let shard_idx = rx_buf[8] as usize;
 
-                        if packet_cycle == cycle && shard_idx < 3 && return_shards[shard_idx].is_none() {
+                        if packet_cycle == cycle
+                            && shard_idx < 3
+                            && return_shards[shard_idx].is_none()
+                        {
                             let shard_rtt = dispatch_start.elapsed().as_millis() as u64;
                             let gtf_return = &rx_buf[9..len];
                             let unpadded = if gtf_return.len() >= GTF_BASE_SIZE {
@@ -973,7 +1165,10 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                 replay_attacks_blocked += 1;
                 println!("!!! [CLIENT REPLAY ALERT #{}] Replayed counter {} rejected by L6 Sliding Window!", replay_attacks_blocked, return_ctr);
                 lines.push(format!("REPLAY ATTACK BLOCKED (Counter {})", return_ctr));
-                format!("REPLAY_ATTACK_BLOCKED: Counter {} dropped by sliding window", return_ctr)
+                format!(
+                    "REPLAY_ATTACK_BLOCKED: Counter {} dropped by sliding window",
+                    return_ctr
+                )
             } else if let Some(payload) = decrypted {
                 let decrypted_str = String::from_utf8_lossy(&payload);
                 println!("[CLIENT] SUCCESS! Reconstructed Google HTTP Response through RS(2,1) + AEAD Verification:");
@@ -1012,22 +1207,37 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             state.discovery_source = discovery_source_label.clone();
             state.frame_standard = "GTF 512-Byte Invariant + L5 Jitter".to_string();
             state.active_routes = vec![
-                format!("Shard 0: Client -> Carrier 1 -> Carrier 4 -> Exit (RTT: {} ms)", rtts[0]),
+                format!(
+                    "Shard 0: Client -> Carrier 1 -> Carrier 4 -> Exit (RTT: {} ms)",
+                    rtts[0]
+                ),
                 format!("Shard 1: Client -> Carrier 2 -> Exit (RTT: {} ms)", rtts[1]),
-                format!("Shard 2: Client -> {} -> Exit (RTT: {} ms)", active_name, rtts[2]),
+                format!(
+                    "Shard 2: Client -> {} -> Exit (RTT: {} ms)",
+                    active_name, rtts[2]
+                ),
             ];
             state.carriers[0].rtt_ms = rtts[0];
             state.carriers[1].rtt_ms = rtts[1];
             state.carriers[2].rtt_ms = if is_carrier_3_severed { 0 } else { rtts[2] };
-            state.carriers[2].status = if is_carrier_3_severed { "SEVERED (Chaos Monkey)".into() } else { "ACTIVE".into() };
+            state.carriers[2].status = if is_carrier_3_severed {
+                "SEVERED (Chaos Monkey)".into()
+            } else {
+                "ACTIVE".into()
+            };
             state.carriers[3].rtt_ms = rtts[0] / 2;
             state.carriers[4].rtt_ms = if is_carrier_3_severed { rtts[2] } else { 0 };
-            state.carriers[4].status = if is_carrier_3_severed { "FAILOVER ACTIVE".into() } else { "HOT STANDBY".into() };
+            state.carriers[4].status = if is_carrier_3_severed {
+                "FAILOVER ACTIVE".into()
+            } else {
+                "HOT STANDBY".into()
+            };
             state.google_headers = lines;
             state.byzantine_event = byzantine_msg;
             state.replay_defense = replay_status_str;
             state.replay_attacks_blocked = replay_attacks_blocked;
-            state.traffic_shaping_status = "ACTIVE (GTF 512B Base + L5 Random Jitter [16-64B])".to_string();
+            state.traffic_shaping_status =
+                "ACTIVE (GTF 512B Base + L5 Random Jitter [16-64B])".to_string();
             state.jitter_bytes_injected = total_jitter;
             state.failover_convergence_ms = if is_carrier_3_severed { rtts[2] } else { 0 };
             if state.byzantine_event.contains("Shard #1") {
@@ -1038,4 +1248,3 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
-

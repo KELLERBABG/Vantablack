@@ -56,27 +56,38 @@ fn keepalive_roundtrip_then_rekey_reanchors_fresh_epoch() {
 
     // ── 1. Idle client sends the keepalive echo; hub answers; TUN gets it. ──
     let mut tun = FakeTun::new();
-    tun.push_inbound(build_keepalive(
-        HUB_OVERLAY.0.into(),
-        CLIENT_IP.0.into(),
-    ));
+    tun.push_inbound(build_keepalive(HUB_OVERLAY.0.into(), CLIENT_IP.0.into()));
     push_from_client(&mut tun, &phone, &hub, ep1, 2);
 
-    let u = (0..500).find_map(|_| hub.poll_egress()).expect("keepalive answered");
-    let reply_frame = tunnel_frame(&KEY, SH, 1001, NonceDirection::ResponderToInitiator, &u.wire);
-    let reply = receiver_open(&reply_frame, reply_frame.len(), &KEY, SH, 1001).expect("sealed reply");
+    let u = (0..500)
+        .find_map(|_| hub.poll_egress())
+        .expect("keepalive answered");
+    let reply_frame = tunnel_frame(
+        &KEY,
+        SH,
+        1001,
+        NonceDirection::ResponderToInitiator,
+        &u.wire,
+    );
+    let reply =
+        receiver_open(&reply_frame, reply_frame.len(), &KEY, SH, 1001).expect("sealed reply");
     let tun2 = FakeTun::new();
     let (accepted, _) = open_to_tun(&phone, &reply, &tun2);
     assert!(accepted, "keepalive reply must open on the phone");
     let out = tun2.drain_outbound();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0][20], 0, "echo REPLY — tunnel proven bidirectionally alive");
+    assert_eq!(
+        out[0][20], 0,
+        "echo REPLY — tunnel proven bidirectionally alive"
+    );
 
     // Burn a few hub-side tx counters so the reset is observable (hub→client
     // ICMP replies already consumed some; force more via another keepalive).
     tun.push_inbound(build_keepalive(HUB_OVERLAY.0.into(), CLIENT_IP.0.into()));
     push_from_client(&mut tun, &phone, &hub, ep1, 3);
-    let u2 = (0..500).find_map(|_| hub.poll_egress()).expect("second reply");
+    let u2 = (0..500)
+        .find_map(|_| hub.poll_egress())
+        .expect("second reply");
     let pre_ctr = u32::from_be_bytes([u2.wire[4], u2.wire[5], u2.wire[6], u2.wire[7]]);
     assert!(pre_ctr > 1, "hub counter advanced before re-handshake");
 
@@ -89,17 +100,28 @@ fn keepalive_roundtrip_then_rekey_reanchors_fresh_epoch() {
     // Client speaks under the NEW epoch from the NEW endpoint: adopted.
     tun.push_inbound(build_keepalive(HUB_OVERLAY.0.into(), CLIENT_IP.0.into()));
     push_from_client(&mut tun, &phone, &hub, ep2, 2);
-    let u3 = (0..500).find_map(|_| hub.poll_egress()).expect("reply after re-key");
+    let u3 = (0..500)
+        .find_map(|_| hub.poll_egress())
+        .expect("reply after re-key");
     assert_eq!(u3.endpoint, ep2, "lease re-anchored to the new endpoint");
     // Hub restarted its counter space for this client: next seal is ctr 1.
     let post_ctr = u32::from_be_bytes([u3.wire[4], u3.wire[5], u3.wire[6], u3.wire[7]]);
     assert_eq!(post_ctr, 1, "hub tx counters reset on fresh handshake");
     // The reply was sealed under the client's NEW epoch (hub mirror adopted).
     let hdr_epoch = u32::from_be_bytes([u3.wire[0], u3.wire[1], u3.wire[2], u3.wire[3]]);
-    assert_eq!(hdr_epoch, new_epoch, "hub seals under the client's adopted epoch");
+    assert_eq!(
+        hdr_epoch, new_epoch,
+        "hub seals under the client's adopted epoch"
+    );
     // And the phone still opens it.
     let reply3 = receiver_open(
-        &tunnel_frame(&KEY, SH, 1002, NonceDirection::ResponderToInitiator, &u3.wire),
+        &tunnel_frame(
+            &KEY,
+            SH,
+            1002,
+            NonceDirection::ResponderToInitiator,
+            &u3.wire,
+        ),
         1400,
         &KEY,
         SH,

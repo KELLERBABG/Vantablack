@@ -17,7 +17,6 @@
 /// - Code rate: 1/2 (512 data bits + 512 parity bits)
 /// - Error correction capability: up to ~8% BER
 /// - Decoder: Sum-Product Algorithm (Belief Propagation) with 10 iterations
-
 use std::fmt;
 
 /// LDPC code block size in bits.
@@ -300,10 +299,7 @@ impl LdpcCodec {
 /// Errors that can occur during LDPC encoding/decoding.
 #[derive(Debug, Clone)]
 pub enum LdpcError {
-    InvalidLength {
-        expected: usize,
-        got: usize,
-    },
+    InvalidLength { expected: usize, got: usize },
     DecodingFailed,
 }
 
@@ -311,7 +307,11 @@ impl fmt::Display for LdpcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LdpcError::InvalidLength { expected, got } => {
-                write!(f, "LDPC: invalid length, expected {} bytes, got {}", expected, got)
+                write!(
+                    f,
+                    "LDPC: invalid length, expected {} bytes, got {}",
+                    expected, got
+                )
             }
             LdpcError::DecodingFailed => write!(f, "LDPC: decoding failed after max iterations"),
         }
@@ -426,6 +426,9 @@ mod tests {
         codeword[15] ^= 0x10;
 
         let decoded = codec.decode(&codeword).expect("Decoding failed");
-        assert_eq!(decoded, original_data, "LDPC must correct dispersed bit flips");
+        assert_eq!(
+            decoded, original_data,
+            "LDPC must correct dispersed bit flips"
+        );
     }
 }

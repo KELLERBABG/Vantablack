@@ -13,7 +13,6 @@
 ///
 /// plus the networking layer including the Ghost Transport Frame (GTF),
 /// Contact Graph Routing (CGR), and the ACK-based reliable transport.
-
 pub mod layers;
 pub mod net;
 pub mod session;
@@ -25,7 +24,7 @@ use std::time::Instant;
 
 use dashmap::DashMap;
 use tokio::net::UdpSocket;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
 
 use net::routing::ContactPlan;
@@ -98,11 +97,15 @@ impl GhostNode {
 
                 while let Some((packet, src_addr)) = rx.recv().await {
                     stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    stats.bytes_recv.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                    stats
+                        .bytes_recv
+                        .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
                     let counter = net::parse_packet_counter(&packet);
                     let shard_index = packet[net::OFFSET_SHARD_INDEX] as usize;
-                    if shard_index > 2 { continue; }
+                    if shard_index > 2 {
+                        continue;
+                    }
 
                     let payload = net::extract_payload(&packet).to_vec();
 
@@ -118,7 +121,8 @@ impl GhostNode {
                         // Try to find session by hash prefix
                         let mut found = false;
                         for mut entry in sessions.iter_mut() {
-                            let s_hash = hex::encode(&entry.session_hash[..4.min(entry.session_hash.len())]);
+                            let s_hash =
+                                hex::encode(&entry.session_hash[..4.min(entry.session_hash.len())]);
                             if s_hash == hash_key {
                                 // Verify auth tag
                                 let tag = net::extract_auth_tag(&packet);
@@ -130,7 +134,10 @@ impl GhostNode {
 
                                 // Verify replay guard
                                 if !entry.guard.check_and_update(counter) {
-                                    warn!("Worker {}: replay rejected counter={} from {}", i, counter, src_addr);
+                                    warn!(
+                                        "Worker {}: replay rejected counter={} from {}",
+                                        i, counter, src_addr
+                                    );
                                     stats.drops.fetch_add(1, Ordering::Relaxed);
                                     break;
                                 }
@@ -138,10 +145,15 @@ impl GhostNode {
                                 // Decrypt payload
                                 let key = entry.master_key;
                                 let mut msg = payload.clone();
-                                if let Ok(plaintext) = layers::l2_aead::decrypt_in_place(&key, counter, &mut msg) {
+                                if let Ok(plaintext) =
+                                    layers::l2_aead::decrypt_in_place(&key, counter, &mut msg)
+                                {
                                     if let Ok(text) = std::str::from_utf8(plaintext) {
                                         let text = text.trim_end_matches('\0');
-                                        info!("[{}] {}: {}", worker_fp, entry.peer_fingerprint, text);
+                                        info!(
+                                            "[{}] {}: {}",
+                                            worker_fp, entry.peer_fingerprint, text
+                                        );
                                     }
                                 }
                                 found = true;
@@ -150,7 +162,10 @@ impl GhostNode {
                         }
 
                         if !found {
-                            debug!("Worker {}: no session for hash {} from {}", i, hash_key, src_addr);
+                            debug!(
+                                "Worker {}: no session for hash {} from {}",
+                                i, hash_key, src_addr
+                            );
                         }
                     }
                 }
@@ -160,7 +175,7 @@ impl GhostNode {
         }
 
         let identity = layers::l0_identity::GhostIdentity::load_or_generate(
-            &layers::l0_identity::identity_file_path()
+            &layers::l0_identity::identity_file_path(),
         );
 
         Ok(Self {
@@ -195,7 +210,8 @@ impl GhostNode {
 
     /// Get throughput report.
     pub fn throughput_report(&self, interval_ms: u64) -> (f64, f64, f64, f64) {
-        self.stats.report(std::time::Duration::from_millis(interval_ms))
+        self.stats
+            .report(std::time::Duration::from_millis(interval_ms))
     }
 
     /// Graceful shutdown signal.

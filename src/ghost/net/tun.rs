@@ -43,8 +43,8 @@
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use tracing::{info, warn};
 
     /// Wintun adapter handle — wraps the raw wintun FFI pointer.
@@ -80,21 +80,31 @@ mod platform {
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(dir) = exe.parent() {
                     let p = dir.join("wintun.dll");
-                    if p.exists() { return Some(p); }
+                    if p.exists() {
+                        return Some(p);
+                    }
                 }
             }
             if let Ok(cwd) = std::env::current_dir() {
                 let p = cwd.join("wintun.dll");
-                if p.exists() { return Some(p); }
+                if p.exists() {
+                    return Some(p);
+                }
             }
             if let Ok(sys_root) = std::env::var("SystemRoot") {
-                let p = std::path::PathBuf::from(sys_root).join("System32").join("wintun.dll");
-                if p.exists() { return Some(p); }
+                let p = std::path::PathBuf::from(sys_root)
+                    .join("System32")
+                    .join("wintun.dll");
+                if p.exists() {
+                    return Some(p);
+                }
             }
             if let Ok(path_var) = std::env::var("PATH") {
                 for dir in std::env::split_paths(&path_var) {
                     let p = dir.join("wintun.dll");
-                    if p.exists() { return Some(p); }
+                    if p.exists() {
+                        return Some(p);
+                    }
                 }
             }
             None
@@ -105,7 +115,10 @@ mod platform {
         }
 
         pub fn new(name: &str, tun_type: &str) -> std::io::Result<Self> {
-            info!("Initializing wintun adapter: name={}, type={}", name, tun_type);
+            info!(
+                "Initializing wintun adapter: name={}, type={}",
+                name, tun_type
+            );
 
             match Self::find_wintun_dll() {
                 Some(dll_path) => {
@@ -113,8 +126,8 @@ mod platform {
                     #[cfg(feature = "vpn")]
                     {
                         // Attempt real Wintun initialization via WintunTun
-                        use std::net::Ipv4Addr;
                         use crate::ghost::net::vpn::tun::{TunDevice, WintunTun};
+                        use std::net::Ipv4Addr;
 
                         // Default overlay IP 10.66.0.2 / 255.255.255.0 for the TUN adapter interface
                         let addr = Ipv4Addr::new(10, 66, 0, 2);
@@ -231,7 +244,10 @@ impl TunAdapter {
     pub fn new(name: &str, tun_type: &str) -> std::io::Result<Self> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            format!("TUN mode not yet supported on this platform: name={}, type={}", name, tun_type),
+            format!(
+                "TUN mode not yet supported on this platform: name={}, type={}",
+                name, tun_type
+            ),
         ))
     }
 
@@ -249,9 +265,13 @@ impl TunAdapter {
         ))
     }
 
-    pub fn is_running(&self) -> bool { false }
+    pub fn is_running(&self) -> bool {
+        false
+    }
 
     pub fn shutdown(&self) {}
 
-    pub fn name(&self) -> &str { "unsupported" }
+    pub fn name(&self) -> &str {
+        "unsupported"
+    }
 }

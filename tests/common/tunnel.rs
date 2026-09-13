@@ -75,10 +75,22 @@ pub fn receiver_open(
         return None;
     }
     let mut msg = b[2..2 + l].to_vec();
-    let ok = decrypt_in_place_with_context(key, ctr, &sh, NonceDirection::InitiatorToResponder, &mut msg)
-        .is_ok()
-        || decrypt_in_place_with_context(key, ctr, &sh, NonceDirection::ResponderToInitiator, &mut msg)
-            .is_ok();
+    let ok = decrypt_in_place_with_context(
+        key,
+        ctr,
+        &sh,
+        NonceDirection::InitiatorToResponder,
+        &mut msg,
+    )
+    .is_ok()
+        || decrypt_in_place_with_context(
+            key,
+            ctr,
+            &sh,
+            NonceDirection::ResponderToInitiator,
+            &mut msg,
+        )
+        .is_ok();
     if !ok {
         return None;
     }
