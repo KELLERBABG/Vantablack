@@ -82,7 +82,9 @@
     .vignette {
       position: fixed;
       inset: 0;
-      background: radial-gradient(ellipse at 50% 38%, transparent 30%, rgba(5, 7, 10, 0.72) 62%, var(--bg) 92%);
+      background:
+        radial-gradient(ellipse 65% 55% at 72% 38%, rgba(34, 211, 238, 0.09) 0%, transparent 65%),
+        radial-gradient(ellipse 80% 70% at 50% 38%, transparent 40%, rgba(5, 7, 10, 0.55) 75%, var(--bg) 98%);
       pointer-events: none;
       z-index: 1;
     }
@@ -746,82 +748,334 @@
   </div>
 
   <script>
-    /* —— Ambient 3D Rotating Globe ——————————————————————————————————— */
+    /* —— Ambient 3D Rotating Geodesic Mesh Globe ——————————————————— */
     (function () {
       if (typeof THREE === 'undefined') return;
       var canvas = document.getElementById('globe-canvas');
       if (!canvas) return;
-      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
       var renderer;
       try {
-        renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
       } catch (e) { return; }
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
       var scene = new THREE.Scene();
-      var camera = new THREE.PerspectiveCamera(45, 1, 1, 2000);
+      var camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
       camera.position.z = 300;
 
-      var N = 320, R = 118;
-      var pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
-      for (var i = 0; i < N; i++) {
-        var y = 1 - (i / (N - 1)) * 2;
-        var r = Math.sqrt(Math.max(0, 1 - y * y));
-        var phi = i * 2.399963229728653;
-        pos[i * 3]     = Math.cos(phi) * r * R;
-        pos[i * 3 + 1] = y * R;
-        pos[i * 3 + 2] = Math.sin(phi) * r * R;
-        col[i * 3] = 0.13; col[i * 3 + 1] = 0.83; col[i * 3 + 2] = 0.93;
-      }
-      var geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      var globe = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 1.75, vertexColors: true, transparent: true, opacity: 0.55,
-        blending: THREE.AdditiveBlending, depthWrite: false
-      }));
-      scene.add(globe);
+      var globeGroup = new THREE.Group();
+      scene.add(globeGroup);
 
-      var segs = [], LIMIT = 34;
-      for (var a = 0; a < N; a++) {
-        for (var b = a + 1; b < N; b++) {
-          var dx = pos[a * 3] - pos[b * 3],
-              dy = pos[a * 3 + 1] - pos[b * 3 + 1],
-              dz = pos[a * 3 + 2] - pos[b * 3 + 2];
-          if (dx * dx + dy * dy + dz * dz < LIMIT * LIMIT) {
-            segs.push(pos[a * 3], pos[a * 3 + 1], pos[a * 3 + 2],
-                      pos[b * 3], pos[b * 3 + 1], pos[b * 3 + 2]);
+      var R = 118;
+
+      // 1. Inner depth occlusion core (prevents messy back-side wire bleed & adds rich contrast)
+      var coreGeo = new THREE.SphereGeometry(R - 2.5, 32, 32);
+      var coreMat = new THREE.MeshBasicMaterial({
+        color: 0x05131d,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false
+      });
+      globeGroup.add(new THREE.Mesh(coreGeo, coreMat));
+
+      // 2. Outer atmospheric rim glow (Fresnel shader)
+      var haloGeo = new THREE.SphereGeometry(R + 5, 32, 32);
+      var haloMat = new THREE.ShaderMaterial({
+        vertexShader: [
+          'varying vec3 vNormal;',
+          'void main() {',
+          '  vNormal = normalize(normalMatrix * normal);',
+          '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+          '}'
+        ].join('\n'),
+        fragmentShader: [
+          'varying vec3 vNormal;',
+          'void main() {',
+          '  float intensity = pow(0.68 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 2.0);',
+          '  gl_FragColor = vec4(0.13, 0.83, 0.93, 1.0) * intensity * 0.52;',
+          '}'
+        ].join('\n'),
+        blending: THREE.AdditiveBlending,
+        side: THREE.BackSide,
+        transparent: true,
+        depthWrite: false
+      });
+      globeGroup.add(new THREE.Mesh(haloGeo, haloMat));
+
+      // 3. Geodesic Triangulation (Subdivided Icosahedron)
+      // Produces pure spherical triangles with ZERO crossed diagonals / zero squares with an X
+      var baseGeo = new THREE.IcosahedronGeometry(R, 3);
+      var pos = baseGeo.attributes.position;
+      var uniqueVerts = [];
+      var vertMap = new Map();
+
+      function getVertIdx(x, y, z) {
+        var key = x.toFixed(3) + '_' + y.toFixed(3) + '_' + z.toFixed(3);
+        if (!vertMap.has(key)) {
+          vertMap.set(key, uniqueVerts.length);
+          uniqueVerts.push(new THREE.Vector3(x, y, z));
+        }
+        return vertMap.get(key);
+      }
+
+      var edgeSet = new Set();
+      var edgeList = [];
+      var neighbors = [];
+
+      for (var i = 0; i < pos.count; i += 3) {
+        var i0 = getVertIdx(pos.getX(i),     pos.getY(i),     pos.getZ(i));
+        var i1 = getVertIdx(pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1));
+        var i2 = getVertIdx(pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2));
+
+        while (neighbors.length < uniqueVerts.length) neighbors.push([]);
+
+        var triEdges = [[i0, i1], [i1, i2], [i2, i0]];
+        for (var e = 0; e < triEdges.length; e++) {
+          var a = triEdges[e][0], b = triEdges[e][1];
+          var edgeKey = a < b ? (a + '_' + b) : (b + '_' + a);
+          if (!edgeSet.has(edgeKey)) {
+            edgeSet.add(edgeKey);
+            edgeList.push(a, b);
+            neighbors[a].push(b);
+            neighbors[b].push(a);
           }
         }
       }
-      var lgeo = new THREE.BufferGeometry();
-      lgeo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
-      var lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
-        color: 0x22d3ee, transparent: true, opacity: 0.08,
-        blending: THREE.AdditiveBlending, depthWrite: false
-      }));
-      scene.add(lines);
 
-      scene.position.set(96, -34, 0);
+      // 4. Primary Triangle Wireframe Lines (clean geodesic network)
+      var linePos = new Float32Array(edgeList.length * 3);
+      for (var l = 0; l < edgeList.length; l++) {
+        var v = uniqueVerts[edgeList[l]];
+        linePos[l * 3]     = v.x;
+        linePos[l * 3 + 1] = v.y;
+        linePos[l * 3 + 2] = v.z;
+      }
+      var lineGeo = new THREE.BufferGeometry();
+      lineGeo.setAttribute('position', new THREE.BufferAttribute(linePos, 3));
+      var lineMat = new THREE.LineBasicMaterial({
+        color: 0x22d3ee,
+        transparent: true,
+        opacity: 0.28,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      globeGroup.add(new THREE.LineSegments(lineGeo, lineMat));
 
+      // 5. Active Highlight Route Lines (multipath data corridors)
+      var activeEdges = [];
+      for (var ae = 0; ae < edgeList.length; ae += 2) {
+        if (Math.random() < 0.16) {
+          activeEdges.push(edgeList[ae], edgeList[ae + 1]);
+        }
+      }
+      var activeLinePos = new Float32Array(activeEdges.length * 3);
+      for (var al = 0; al < activeEdges.length; al++) {
+        var av = uniqueVerts[activeEdges[al]];
+        activeLinePos[al * 3]     = av.x;
+        activeLinePos[al * 3 + 1] = av.y;
+        activeLinePos[al * 3 + 2] = av.z;
+      }
+      var activeLineGeo = new THREE.BufferGeometry();
+      activeLineGeo.setAttribute('position', new THREE.BufferAttribute(activeLinePos, 3));
+      var activeLineMat = new THREE.LineBasicMaterial({
+        color: 0x67e8f9,
+        transparent: true,
+        opacity: 0.72,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      globeGroup.add(new THREE.LineSegments(activeLineGeo, activeLineMat));
+
+      // 6. Glowing Node Points with smooth circular glow texture
+      function createGlowTexture() {
+        var c = document.createElement('canvas');
+        c.width = 64;
+        c.height = 64;
+        var ctx = c.getContext('2d');
+        var grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        grad.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        grad.addColorStop(0.2, 'rgba(34, 211, 238, 0.95)');
+        grad.addColorStop(0.55, 'rgba(34, 211, 238, 0.3)');
+        grad.addColorStop(1, 'rgba(34, 211, 238, 0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(32, 32, 32, 0, Math.PI * 2);
+        ctx.fill();
+        return new THREE.CanvasTexture(c);
+      }
+
+      var nodeTexture = createGlowTexture();
+
+      var numNodes = uniqueVerts.length;
+      var nodePos = new Float32Array(numNodes * 3);
+      var nodeCol = new Float32Array(numNodes * 3);
+
+      for (var n = 0; n < numNodes; n++) {
+        var nv = uniqueVerts[n];
+        nodePos[n * 3]     = nv.x;
+        nodePos[n * 3 + 1] = nv.y;
+        nodePos[n * 3 + 2] = nv.z;
+
+        // Brand colors: electric cyan base, occasional emerald gateways & violet hubs
+        var rand = Math.random();
+        if (rand < 0.12) {
+          // Emerald
+          nodeCol[n * 3] = 0.06; nodeCol[n * 3 + 1] = 0.72; nodeCol[n * 3 + 2] = 0.50;
+        } else if (rand < 0.22) {
+          // Violet
+          nodeCol[n * 3] = 0.65; nodeCol[n * 3 + 1] = 0.55; nodeCol[n * 3 + 2] = 0.98;
+        } else {
+          // Cyan
+          nodeCol[n * 3] = 0.13; nodeCol[n * 3 + 1] = 0.83; nodeCol[n * 3 + 2] = 0.93;
+        }
+      }
+
+      var nodeGeo = new THREE.BufferGeometry();
+      nodeGeo.setAttribute('position', new THREE.BufferAttribute(nodePos, 3));
+      nodeGeo.setAttribute('color', new THREE.BufferAttribute(nodeCol, 3));
+
+      var nodeMat = new THREE.PointsMaterial({
+        size: 4.6,
+        map: nodeTexture,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.92,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      globeGroup.add(new THREE.Points(nodeGeo, nodeMat));
+
+      // 7. Live Network Data Packets moving along triangle edges
+      var numPackets = 16;
+      var packets = [];
+      for (var p = 0; p < numPackets; p++) {
+        var startNode = Math.floor(Math.random() * numNodes);
+        var nbrs = neighbors[startNode];
+        var endNode = nbrs[Math.floor(Math.random() * nbrs.length)];
+        packets.push({
+          from: startNode,
+          to: endNode,
+          prev: startNode,
+          t: Math.random(),
+          speed: 0.012 + Math.random() * 0.018
+        });
+      }
+
+      var packetPositions = new Float32Array(numPackets * 3);
+      var packetGeo = new THREE.BufferGeometry();
+      packetGeo.setAttribute('position', new THREE.BufferAttribute(packetPositions, 3));
+
+      var packetMat = new THREE.PointsMaterial({
+        size: 6.5,
+        map: nodeTexture,
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.95,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      globeGroup.add(new THREE.Points(packetGeo, packetMat));
+
+      // Scene layout & responsive positioning
       function resize() {
         var w = window.innerWidth, h = window.innerHeight;
         renderer.setSize(w, h, false);
         camera.aspect = w / h;
-        camera.position.z = w < 820 ? 400 : 300;
+        if (w < 820) {
+          camera.position.z = 390;
+          scene.position.set(0, -50, 0);
+        } else {
+          camera.position.z = 300;
+          scene.position.set(Math.min(w * 0.12, 130), -30, 0);
+        }
         camera.updateProjectionMatrix();
       }
       resize();
       window.addEventListener('resize', resize);
 
-      if (reduce) { renderer.render(scene, camera); return; }
+      // Interactive cursor parallax and drag-to-rotate
+      var targetTiltX = 0, targetTiltY = 0;
+      var isDragging = false;
+      var prevPointerX = 0, prevPointerY = 0;
+      var dragVelocityX = 0, dragVelocityY = 0;
 
+      window.addEventListener('pointerdown', function (e) {
+        if (e.target.closest && e.target.closest('a, button, input, textarea, .btn, .nav-link, code, pre, .term')) return;
+        isDragging = true;
+        prevPointerX = e.clientX;
+        prevPointerY = e.clientY;
+        dragVelocityX = 0;
+        dragVelocityY = 0;
+      });
+
+      window.addEventListener('pointermove', function (e) {
+        var nx = (e.clientX / window.innerWidth) * 2 - 1;
+        var ny = (e.clientY / window.innerHeight) * 2 - 1;
+        targetTiltY = nx * 0.35;
+        targetTiltX = ny * 0.22;
+
+        if (isDragging) {
+          var dx = e.clientX - prevPointerX;
+          var dy = e.clientY - prevPointerY;
+          dragVelocityX = dx * 0.005;
+          dragVelocityY = dy * 0.005;
+          globeGroup.rotation.y += dragVelocityX;
+          globeGroup.rotation.x += dragVelocityY;
+          prevPointerX = e.clientX;
+          prevPointerY = e.clientY;
+        }
+      });
+
+      window.addEventListener('pointerup', function () { isDragging = false; });
+      window.addEventListener('pointercancel', function () { isDragging = false; });
+
+      var autoSpinSpeed = reduceMotion ? 0.0009 : 0.0022;
+      var currentTiltX = 0;
+      var tmpVec = new THREE.Vector3();
+
+      // Render & Animation Loop
       (function frame() {
         requestAnimationFrame(frame);
-        globe.rotation.y += 0.0006;
-        globe.rotation.x = Math.sin(Date.now() * 0.0001) * 0.05;
-        lines.rotation.copy(globe.rotation);
+
+        // Packet traversal update
+        var posAttr = packetGeo.attributes.position;
+        var pArr = posAttr.array;
+        for (var pi = 0; pi < numPackets; pi++) {
+          var pkt = packets[pi];
+          pkt.t += pkt.speed;
+          if (pkt.t >= 1) {
+            pkt.t = 0;
+            var oldFrom = pkt.from;
+            pkt.from = pkt.to;
+            pkt.prev = oldFrom;
+            var candidates = neighbors[pkt.from].filter(function (idx) { return idx !== oldFrom; });
+            pkt.to = candidates.length > 0
+              ? candidates[Math.floor(Math.random() * candidates.length)]
+              : neighbors[pkt.from][0];
+          }
+          var vA = uniqueVerts[pkt.from];
+          var vB = uniqueVerts[pkt.to];
+          tmpVec.lerpVectors(vA, vB, pkt.t).normalize().multiplyScalar(R + 0.6);
+          pArr[pi * 3]     = tmpVec.x;
+          pArr[pi * 3 + 1] = tmpVec.y;
+          pArr[pi * 3 + 2] = tmpVec.z;
+        }
+        posAttr.needsUpdate = true;
+
+        // Smooth rotation & inertia
+        if (!isDragging) {
+          dragVelocityX *= 0.92;
+          dragVelocityY *= 0.92;
+          globeGroup.rotation.y += autoSpinSpeed + dragVelocityX;
+          globeGroup.rotation.x += dragVelocityY;
+
+          currentTiltX += (targetTiltX + Math.sin(Date.now() * 0.0008) * 0.08 - currentTiltX) * 0.04;
+          globeGroup.rotation.x = currentTiltX + dragVelocityY;
+        }
+
         renderer.render(scene, camera);
       })();
     })();
