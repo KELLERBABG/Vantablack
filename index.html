@@ -778,7 +778,7 @@
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
       var globe = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 2.4, vertexColors: true, transparent: true, opacity: 0.75,
+        size: 1.75, vertexColors: true, transparent: true, opacity: 0.55,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
       scene.add(globe);
@@ -798,7 +798,7 @@
       var lgeo = new THREE.BufferGeometry();
       lgeo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
       var lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
-        color: 0x22d3ee, transparent: true, opacity: 0.18,
+        color: 0x22d3ee, transparent: true, opacity: 0.08,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
       scene.add(lines);
@@ -815,10 +815,11 @@
       resize();
       window.addEventListener('resize', resize);
 
+      if (reduce) { renderer.render(scene, camera); return; }
 
       (function frame() {
         requestAnimationFrame(frame);
-        globe.rotation.y += 0.0018;
+        globe.rotation.y += 0.0006;
         globe.rotation.x = Math.sin(Date.now() * 0.0001) * 0.05;
         lines.rotation.copy(globe.rotation);
         renderer.render(scene, camera);
