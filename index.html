@@ -68,7 +68,19 @@
       line-height: 1.62;
       overflow-x: hidden;
       -webkit-font-smoothing: antialiased;
+      /* Firefox */
+      scrollbar-width: thin;
+      scrollbar-color: #1e3448 var(--bg);
     }
+
+    /* Chromium / Safari / Edge */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb {
+      background: #1e3448;
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background: #2b4a68; }
 
     /* —— Ambient Background Canvas ——————————————————————————————————— */
     #globe-canvas {
