@@ -43,6 +43,11 @@ fuzzing = []
 # Hardware TPM 2.0 and PKCS#11 HSM integration stubs
 hardware-tpm = []
 pkcs11 = []
+# QUIC as an optional transport under GTF (SOTA P1-2): datagrams for the
+# Reed-Solomon privacy path, streams for bulk frames. Self-signed certificates
+# are accepted because the identity is bound to the TLS session by a channel
+# binding instead — see `ghost::net::quic`.
+quic = ["dep:quinn", "dep:rcgen"]
 
 # Embeds the application icon and version block into the Windows binaries
 # (see build.rs and assets/app.rc). Harmless everywhere else: the build script
@@ -58,6 +63,18 @@ strip = "symbols"   # Remove symbols from binary
 panic = "abort"     # Skip unwind tables
 debug = false       # No debug info
 
+# A transport benchmark must not run under the profile above: it optimizes for the
+# size of the shipped installer, which is both slow to build and a poor measure of
+# how fast a carrier moves bytes. `scripts/bench_transport.sh` uses this profile
+# (and keeps unwinding, because the bench is a test).
+[profile.bench-transport]
+inherits = "release"
+opt-level = 3
+lto = false
+codegen-units = 16
+panic = "unwind"
+strip = "symbols"
+
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", default-features = false }
 
@@ -67,6 +84,13 @@ reed-solomon-erasure = "6.0.0"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+# STUN MESSAGE-INTEGRITY (RFC 8489 §14.5) is HMAC-SHA1. Same RustCrypto family
+# as the sha2/hkdf already used above; see `ghost::net::stun`.
+hmac = "0.12"
+sha1 = "0.10"
+# TURN uses long-term credentials: MD5(username ":" realm ":" password) is the
+# HMAC key (RFC 8489 §9.2.2). MD5 is required by the spec here, not chosen.
+md5 = "0.7"
 aes = "0.8"
 xts-mode = "0.5"
 gf256 = { version = "0.3", features = ["shamir", "thread-rng"] }
@@ -92,3 +116,8 @@ tray-icon = { version = "0.24.2", optional = true }
 tao = { version = "0.36.0", optional = true }
 wry = { version = "0.56.0", optional = true }
 smoltcp = { version = "0.14.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"], optional = true }
+# QUIC transport (feature `quic`). `rustls-ring` supplies the crypto provider
+# explicitly so the handshake does not depend on a process-wide default being
+# installed first.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"], optional = true }

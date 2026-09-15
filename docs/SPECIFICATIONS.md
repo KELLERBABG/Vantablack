@@ -106,6 +106,88 @@ To defeat passive Deep Packet Inspection (DPI) and timing correlation attacks, p
 
 ---
 
+### 2.4 Identity Beacon Format & Extension Sections
+
+Discovery beacons are the only datagrams accepted from an unauthenticated source, so their layout is versioned in a way that never breaks older peers.
+
+#### Signed prefix (fixed, 112 bytes)
+
+| Byte Range | Field | Type | Description |
+|---|---|---|---|
+| `00..15` | Magic | `[u8; 16]` | `GHOST_BEACON____` (`net::BEACON_PREFIX`) |
+| `16..47` | Public key | `[u8; 32]` | Full Ed25519 public key |
+| `48..111` | Signature | `[u8; 64]` | Ed25519 signature over bytes `16..47` |
+
+Two legacy layouts extend this without any section metadata and remain accepted verbatim: the bare 112-byte beacon, and the 208-byte beacon carrying a 32-byte ZK commitment at `112..143` followed by a 64-byte proof at `144..207`.
+
+#### Extension sections (optional, appended)
+
+Every section is `[magic: 4][len: u16 BE][payload: len]`, appended immediately after the 112-byte signed prefix and tiled in order:
+
+| Magic | Payload | Description |
+|---|---|---|
+| `ZKPR` | `commitment[32] \|\| proof[64]` (`len = 96`) | ZK membership proof |
+| `ICEO` | UTF-8 text, see below | Sender's ICE offer |
+| `RLYC` | empty (`len = 0`) | This node will relay for others (`GHOST_RELAY=1`) |
+
+`RLYC` is a *capability*, not an address: a relay is reached at the address its beacon arrived from — the same socket it forwards on — so carrying an address would let a peer advertise someone else's. Its presence is the whole message, which is why a non-empty payload is a parse error. A node that advertises it leaves the legacy layouts behind (see the tiling note below), which is what keeps `GHOST_RELAY` opt-in rather than a silent compatibility break.
+
+**Tiling rule.** A datagram is interpreted as *sectioned* only when the sections consume it exactly: every section header must be fully present, every declared length must fit inside the datagram, every magic must be known, and the `ZKPR` payload must be exactly 96 bytes. Any violation makes the parser fall back to the legacy fixed-layout interpretation rather than reject the beacon. This is what makes the format backward compatible — a legacy 32-byte ZK commitment is uniformly random, so requiring exact tiling is what stops a coincidence from being mistaken for a section magic.
+
+When a ZK proof and an ICE offer are both present they are emitted as two sections in that order; a beacon with a ZK proof but nothing else to carry keeps the **legacy 208-byte layout** byte-for-byte, so peers on builds older than this section still verify it. A `RLYC` section is the one exception: a node that advertises relay capability has something new to say by definition, so it always uses the sectioned layout, and a peer that predates it will reject that beacon rather than misread it at fixed offsets.
+
+#### ICE offer payload (`ICEO`)
+
+A line-oriented `key=value` text encoding produced by `ice::IceOffer::encode` and parsed by `IceOffer::decode`. `decode` is strict — an unknown key, a missing key, or a line that is not exactly `key=value` is an error, so a truncated or corrupted offer is never silently half-applied:
+
+| Key | Required | Description |
+|---|---|---|
+| `ufrag` | yes | ICE username fragment (the receiver authenticates with its own password) |
+| `pwd` | yes | ICE password, at least 22 characters (RFC 8445 §5.3) |
+| `role` | yes | `controlling` or `controlled` (affects nomination) |
+| `cand` | yes, ≥ 1 | One line per candidate: `type,address,port,priority,foundation` |
+
+#### NAT traversal (STUN/TURN/ICE — Phase 1 P1-1)
+
+`net::stun` implements the RFC 8489 message codec: header/type interleaving (class bits are split *around* the method bits, so a success response to Binding is `0x0101`, not `0x0081`), attribute TLV framing with 4-byte padding, `XOR-MAPPED-ADDRESS` (v4 and v6), `PRIORITY`, `USE-CANDIDATE`, `ICE-CONTROLLED`/`ICE-CONTROLLING`, `ERROR-CODE`, `FINGERPRINT` (CRC-32/ISO-HDLC) and `MESSAGE-INTEGRITY` (HMAC-SHA1). The integrity key is the password belonging to the ufrag that appears **first** in `USERNAME` — i.e. the receiver's own password for requests, so both agents verify with their own secret without disclosing it.
+
+`net::ice` implements the RFC 8445 agent: candidate types and type preferences (`host` 126, `peer-reflexive` 110, `server-reflexive` 100, `relay` 0), the pair-priority formula, foundation grouping, a check list ordered by pair priority with foundation siblings held frozen until their predecessor fails, `Nmax`-bounded retransmission, role conflict resolved by tie-breaker, peer-reflexive discovery and explicit nomination. A pair is only reported usable after a **nominated** pair completes a round trip.
+
+`net::turn` implements the TURN client side plus a `RelayServer` state machine: `ALLOCATE` yields `XOR-RELAYED-ADDRESS`/`LIFETIME`, `CREATE-PERMISSION` installs a peer permission, `CHANNEL-BIND` installs a channel binding, and `SEND`/`DATA` carry the relayed datagrams. Long-term credentials are keyed by `MD5(username:realm:password)` as RFC 8489 §9.2.2 specifies. The relay's own behaviour is a pure state machine, so it is exercised without any sockets.
+
+`net::relay` adds a DERP-style **blind** relay, and `net::fallback` is what connects it to a failed punch rather than leaving it as an unused capability.
+
+**The envelope.** A frame that cannot travel directly is wrapped for one relay hop:
+
+```
+[0..4]   BLND  ("BLND", the blind-envelope magic)
+[4..8]   hop count, u32 BE — always 0; a non-zero count is the onion path (RLY!)
+[8..40]  target fingerprint, 32 bytes, null-padded
+[40..]   opaque region: the complete GTF datagram the target must parse
+```
+
+The two magics are deliberately different. The onion's last hop re-wraps with `remaining_hops - 1`, so a legitimate onion arrives with a hop count of **zero** and is otherwise structurally identical to a blind forward; a shared magic would make the two indistinguishable on the wire, and a receiver that guessed wrong would either re-encrypt someone else's ciphertext or hand an onion body to the tunnel as a frame.
+
+**What the relay emits.** The *opaque region*, not the envelope. The target has to parse the datagram out of it exactly as it would off the wire, so the relay drops the addressing header it routed on and nothing else. The region it carries — the target's own AEAD ciphertext — travels verbatim; that unchanged region is the property that makes the forward blind, and it is asserted at the byte level.
+
+**Framing on the hop.** An envelope is 40 bytes plus a whole GTF frame (552-616 B for a privacy frame, 1512 B for a bulk one), which does not fit a privacy frame's 486-byte payload region. The hop therefore uses one of two framings, chosen by size: a single **bulk frame with the tunnel bit (0x02)** when the envelope fits its 1 446-byte region, otherwise the envelope is Reed-Solomon split across three bulk frames — the same convention `relay.rs` already uses to re-wrap an onion hop. Both are ordinary receive-path framings; there is no relay-specific wire format.
+
+**The ladder.** `fallback::choose_fallback` walks *direct → a mesh peer that advertises relay capability → TURN*, deterministically so two nodes in the same topology agree. Mesh first because it needs no infrastructure and is repaid through the tit-for-tat ledger; TURN last because it is the operator's own. A candidate that is us or the target is never chosen, and a TURN route is refused outright when this node holds no allocation — recording one would black-hole every send to that peer.
+
+**Both directions are independent.** Forwarding is one-way and stateless: the relay remembers nothing about the sender, so the target's reply travels through a relay *it* chooses (possibly a different one). That is what keeps the relay unable to correlate the two directions, and why both ends run the ladder on their own.
+
+**The pinhole.** A relay forwards to the address it observed, and a NAT admits that datagram only if the target has already sent something *there*. `NatHolePuncher::send_relay_keepalives` sends a STUN binding indication to every advertised relay on the beacon tick for exactly this reason: without it the fallback is filtered before it can arrive, which is a silent failure otherwise.
+
+**Admission.** A relay forwards only for an identity it has verified (a signed beacon, or a completed handshake), never for itself, never back to the sender, and never beyond its transit quota — the same `FlowController` that bounds its own transit traffic. An open relay is a reflection and amplification vector, so each of those refusals is counted rather than merely logged.
+
+**TURN.** When configured (`GHOST_TURN_SERVER` + credentials), an allocation is taken at startup on a socket of its own — an allocation is bound to the 5-tuple that created it — and its `XOR-RELAYED-ADDRESS` is advertised as a relay candidate in our own offer, so a peer that cannot reach us directly can reach *that*. Datagrams the server relays to us are sealed for us exactly as a direct send would be and enter the same receive pipeline; the socket carries only TURN traffic, so nothing races the mesh socket. Allocation lifetime is refreshed at half the granted value, and permissions/channels are re-armed alongside it. The ladder's TURN rung sends to the *peer's* advertised relayed address: ours is the transport, theirs is the destination.
+
+`net::upnp` is the *opportunistic* path, and the cheapest one when the gateway cooperates: rather than work around the NAT, ask it for a mapping. Two protocols are spoken — UPnP-IGD (SSDP `M-SEARCH` to `239.255.255.250:1900`, then SOAP `AddPortMapping` on the `WANIPConnection`/`WANPPPConnection` service of the device description) and NAT-PMP (RFC 6886; a 12-byte binary request to the default gateway on `:5351`, retried three times with a doubling wait). A granted mapping is added to our offered candidates as a server-reflexive address — it *is* our public address, however it was learned — and renewed at half the granted lifetime, because a lease that quietly expires leaves a candidate no peer can reach.
+
+Nothing here is required for connectivity: disabled UPnP, an enterprise gateway or a CGNAT in the path are all ordinary outcomes, so the attempt runs under a short deadline and its failure is a log line. One parsing note that matters for review: `upnp::find_wan_control` takes the first WAN connection service whose `controlURL` resolves to the **same origin** as the description it came from; a control URL naming a different host is refused, because on a shared local link that is exactly what an attacker would supply.
+
+---
+
 ## 3. SessionGuard: Anti-Replay Sliding Window Bitmask
 
 Session security operates at Layer 6 via `SessionGuard` (32-bit counter) and `SessionGuardU64` (64-bit counter).
@@ -143,13 +225,58 @@ Given incoming counter $C$:
 The `AdaptiveShardRouter` dynamically selects path candidates using empirical latency and loss observations.
 
 ### 4.1 Path Fitness Function
-Each peer path tracks round-trip latency ($\text{RTT}$) and packet loss ($\text{LossRate}$):
 
-$$\text{Fitness} = \frac{1.0}{1.0 + (\text{RTT}_{\mu\text{s}} / 100{,}000.0)} \times (1.0 - \text{LossRate})$$
+Each peer path tracks round-trip latency, packet loss, and delivered bytes, and keeps them
+**apart** — a loss is not a round trip, and a rate is not a constant:
 
-- $\text{RTT}$ is smoothed using an Exponential Moving Average (EMA).
+| Field | Source | Update |
+| :-- | :-- | :-- |
+| `srtt_us` | a completed round trip (ICE check, `record_success`) | EMA, $\alpha = 0.125$ (RFC 6298 §2.3) |
+| `min_rtt_us` | the same samples | running minimum |
+| `loss_rate` | a failed delivery (`record_loss`) | EMA down on delivery ($\beta = 0.1$), up on loss |
+| `cwnd` | bytes delivered / lost | additive increase on delivery, halved on loss (RFC 5681 §3.1) |
+| `delivery_bps` | `record_delivery(bytes, elapsed)` | EMA of measured bytes/second ($\alpha = 0.25$) |
+
+A path's rate estimate is the smaller of what its window allows and what it was observed
+delivering:
+
+$$\text{Rate} = \min\left(\frac{\text{cwnd}}{\text{srtt}},\; 2 \cdot \text{delivery\_bps}\right)$$
+
+and the score deliberately weights the three signals rather than multiplying two of them:
+
+$$\text{Fitness} = 0.4 \cdot \underbrace{\min\left(\frac{100{,}000}{\text{RTT}_{\mu\text{s}}}, 2\right)}_{\text{latency}} + 0.3 \cdot (1 - \text{LossRate})^{2} + 0.3 \cdot \min\left(\frac{\text{Rate}}{10^6}, 10\right) / 10$$
+
 - Loss rate increments upon unacknowledged transmissions and decays upon successful deliveries.
 - Minimum acceptable fitness threshold: $\text{min\_fitness} = 0.3$.
+- A path with no fresh measurement ($< 30$ s, `PathMetrics::STALE_AFTER`) scores the neutral
+  prior $0.5$ — an unmeasured path must not outrank a measured good one, and a stale estimate
+  is not evidence that a path is still fast. A path losing more than half of its traffic
+  scores $0.0$ and stops being selected.
+
+### 4.1.1 Congestion control and the transit shaper
+
+`FlowController` is a **policy** ceiling: a token bucket at the rate the operator configured
+against a path the node trusts less than its own. It reads nothing from the network.
+`net::cc::TransitGovernor` is the **control** half that closes the loop. At each beacon tick
+(`nc.keepalive_interval_secs`, 1–300 s) the node:
+
+1. takes the RTT of every connected peer from the completed ICE check
+   (`NatHolePuncher::selected_rtt`) and records it as a path sample;
+2. takes the transit bytes actually forwarded for that peer from the tit-for-tat ledger and
+   records the delta as a delivered-byte measurement over the tick interval;
+3. shapes to the **weakest live path**: $\text{rate} = \min_i(\text{Rate}_i)$ clamped to
+   $[\text{MIN\_SHAPED\_RATE\_BPS},\ \text{ceiling}]$ — the floor is 8,000 B/s, i.e. **64 kbps**
+   (`cc::MIN_SHAPED_RATE_BPS`) — and pushed into the shaper with
+   `FlowController::set_transit_rate_bps`.
+
+The floor exists so one collapsing path cannot drive the node's shaper to zero while other
+paths are healthy: a path measured below it is a path the shard router should stop using, not
+one to forward at. The ceiling is never exceeded, because measurement may only pull the
+effective rate **down** from the operator's policy. With no live estimate at all the shaper is
+left exactly as configured — a node that has just started, or whose peers have all gone quiet,
+has no evidence to justify re-shaping. The same tick refreshes each peer's `ContactPlan`
+contact with the measured RTT and rate, so CGR routes age with the links they were learned
+from instead of keeping their first measurement forever.
 
 ### 4.2 Autonomous Failover Execution
 1. **Loss Observation:** When a link fails (e.g. Carrier 3 severed by Chaos Monkey), `router.record_loss("carrier-3")` drops its fitness score below the threshold.
@@ -378,4 +505,94 @@ A real-time observability and remote control engine is embedded directly within 
   - `GET /healthz`: Health check endpoint returning HTTP 200 JSON with node version, fingerprint, and uptime.
   - `GET /metrics`: Prometheus-compatible exposition format for integration with Grafana / Prometheus scrapers.
   - `OPTIONS *`: CORS preflight responding with HTTP 204 and standard permissive access-control headers.
+
+---
+
+## 11. Optional Transport: QUIC under GTF (SOTA P1-2)
+
+QUIC is a **carrier**, not a second protocol. The frames are the GTF frames of §2.1, built by the
+same `build_gtf_frame`, sealed by the same L2 AEAD, and authenticated by the same session layer;
+the transport replaces only what moves them. It is off unless `GHOST_QUIC=1` and only compiles
+under `--features quic` (`quinn` + `rustls-ring`), so a default build has no QUIC code and no
+QUIC port at all.
+
+### 11.1 Which framing a frame takes
+
+| GTF framing | Size | Carrier | Why |
+| :-- | --: | :-- | :-- |
+| Privacy shard | ≤ 486 B payload | QUIC **datagram** (RFC 9221) | Unreliable and unordered by design, which is what a Reed-Solomon (2,1) shard expects: a lost shard is reconstructable, and a retransmission would only add latency to bytes the peer does not need. |
+| Bulk frame | 1472 B fixed | QUIC **stream** | A 1472-byte frame does not fit a QUIC datagram (path-MTU bounded, ≈1200 in practice). Streams have no such limit and give the bulk path the reliable, in-order delivery it wants. |
+
+The split is `QuicLink::send_frame`'s decision, reported back as `CarrierPath::Datagram | Stream`
+so a caller — and `scripts/bench_transport.sh` — can see which route a frame took instead of
+guessing. `send_frame_as` forces a framing when a caller has an opinion.
+
+A datagram that finds no room waits up to **50 ms** (`DATAGRAM_ROOM_TIMEOUT`) for space and is
+then reported as *not carried*. It deliberately does **not** use quinn's `send_datagram`, which
+frees space by discarding the oldest *queued* datagrams: silently dropping a shard would turn
+this carrier back into the lossy one it was chosen to improve on. "Not carried" lets the egress
+fall through to UDP with the frame intact.
+
+### 11.2 What authenticates what
+
+The certificate is **self-signed and is deliberately not the trust anchor**: there is no PKI in a
+mesh, and inventing one to carry traffic the mesh already authenticates would be theatre. Both
+ends run a rustls verifier that accepts a self-signed chain. What binds the connection to an
+identity is a **channel binding** (RFC 5705):
+
+1. both ends derive 32 bytes of keying material from the TLS session itself
+   (`Connection::export_keying_material`, label `ggn-quic-identity-binding`);
+2. each end sends `[Ed25519 public key (32 B)][Ed25519 signature (64 B) over that
+   keying material]` — 96 bytes, `BINDING_LEN` — on a bidirectional stream the peer reads before
+   any data flows;
+3. each end verifies the signature **and** that the key belongs to the fingerprint the mesh
+   already authenticated (dialling end against its expected peer, accepting end against its
+   admission rule).
+
+A man in the middle who terminates TLS on both sides gets a **different** channel binding on each
+side, so the two signatures cannot both be valid. That is the property a self-signed certificate
+alone cannot provide: accepting the certificate skips X.509 trust, not authentication. A peer
+whose signature fails, or whose identity the admission rule does not know, is refused with the
+session closed.
+
+### 11.3 Where the carrier sits in the live path
+
+`net::carrier::Carrier` is a registry of established links keyed by **peer fingerprint**, never by
+address: a peer that reconnects from a new address replaces its own entry, and no address change
+can inherit someone else's link. A link that has already closed is evicted on lookup, so the
+tunnel cannot be handed a dead carrier.
+
+Egress consults it in `send3_adaptive`, *after* the fallback decision and *before* the shard
+router: a carrier link rides the address ICE already measured, so it is only usable where a
+direct path exists, and it is preferred there because QUIC's own loss recovery beats three UDP
+shards on a lossy path. A frame that the carrier did not take leaves the shards to UDP unchanged.
+The whole sequence is `route?` → carrier → CGR/fitness shard dispatch → UDP.
+
+Ingress is the same pipeline a UDP datagram enters: a frame read from a link goes to
+`RxContext::ingest`, so a carrier frame is indistinguishable downstream from one that arrived on
+the socket. Address-keyed tunnel bookkeeping uses the link's remote address.
+
+Links are established in both directions:
+
+* **Accept:** an inbound session is admitted only if `nc.sessions` or the beacon-verified peer
+  table already knows the claimed fingerprint — the same rule the DERP relay uses — so a stranger
+  cannot open a carrier link just by reaching the port.
+* **Dial:** every 5 s, each peer in the NAT puncher's connected set with no link yet is dialled at
+  the address ICE verified. Failures are expected (the peer may have no transport, or a middlebox
+  may drop the second port) and are logged at debug; the UDP path is unaffected.
+
+### 11.4 Verification
+
+`tests/p1_quic.rs` (loopback, no privileges): a frame crosses intact and the identity is proven;
+a wrong fingerprint is refused; an unknown identity cannot open a session; and the registry sends
+only for peers it holds a link to, evicting a closed one. `scripts/bench_transport.sh` runs
+`tests/bench_transport.rs`, which carries the same GTF frames over UDP and over QUIC with the
+framing held fixed and prints payload/wire MiB and MiB/s per row. The bench runs over loopback —
+the one path where UDP is at its best and where loss recovery cannot show up — so it measures what
+the framing costs, not which carrier is faster on a real path.
+
+**Not implemented:** multipath-QUIC (SOTA P1-2 names it for a multi-homed Wi-Fi+LTE host). The
+registry holds one link per peer fingerprint; a second path would need the key to be
+`(fingerprint, local path)` and the shard router to spread carriers across links. See
+`docs/UNWIRED.md`.
 

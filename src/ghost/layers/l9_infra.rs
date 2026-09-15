@@ -190,12 +190,16 @@ impl std::fmt::Display for EnclaveError {
     }
 }
 
-/// Software-simulated TPM for development environments.
+/// Software-simulated enclave for development environments.
 ///
 /// In production, this would be replaced by a real TPM 2.0 or ARM TrustZone
 /// implementation using `tss-esapi` or `trustzone-rs` crates.
 /// For development, this stores keys in memory with secure zeroing on drop.
-pub struct SoftwareTpm {
+///
+/// This implements the handle-based [`KeyEnclave`] surface. It is deliberately
+/// **not** the same type as `ghost::net::security::SoftwareKeyEnclave`, which implements
+/// the `HsmBackend` surface (SOTA P0-1 removed that name collision).
+pub struct SoftwareKeyEnclave {
     /// Key store: handle → key bytes.
     keys: std::sync::Mutex<std::collections::HashMap<u64, Vec<u8>>>,
     /// Next available handle.
@@ -204,7 +208,7 @@ pub struct SoftwareTpm {
     tampered: AtomicBool,
 }
 
-impl Default for SoftwareTpm {
+impl Default for SoftwareKeyEnclave {
     fn default() -> Self {
         Self {
             keys: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -214,9 +218,9 @@ impl Default for SoftwareTpm {
     }
 }
 
-impl SoftwareTpm {
+impl SoftwareKeyEnclave {
     pub fn new() -> Self {
-        info!("SoftwareTPM initialized (development mode — not secure for production)");
+        info!("SoftwareKeyEnclave initialized (development mode — not secure for production)");
         Self::default()
     }
 
@@ -231,7 +235,7 @@ impl SoftwareTpm {
             }
         }
         keys.clear();
-        warn!("SoftwareTPM: Tamper detected! All keys zeroed.");
+        warn!("SoftwareKeyEnclave: Tamper detected! All keys zeroed.");
     }
 
     pub fn is_tampered(&self) -> bool {
@@ -239,7 +243,7 @@ impl SoftwareTpm {
     }
 }
 
-impl KeyEnclave for SoftwareTpm {
+impl KeyEnclave for SoftwareKeyEnclave {
     fn store_key(&self, key_bytes: &[u8]) -> Result<u64, EnclaveError> {
         if self.tampered.load(Ordering::SeqCst) {
             return Err(EnclaveError::KeyUnavailable);
@@ -247,7 +251,7 @@ impl KeyEnclave for SoftwareTpm {
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         let mut keys = self.keys.lock().unwrap();
         keys.insert(handle, key_bytes.to_vec());
-        debug!("SoftwareTPM: stored key with handle {}", handle);
+        debug!("SoftwareKeyEnclave: stored key with handle {}", handle);
         Ok(handle)
     }
 
@@ -286,7 +290,7 @@ impl KeyEnclave for SoftwareTpm {
             for byte in key_data.iter_mut() {
                 *byte = 0;
             }
-            debug!("SoftwareTPM: deleted key handle {}", handle);
+            debug!("SoftwareKeyEnclave: deleted key handle {}", handle);
             Ok(())
         } else {
             Err(EnclaveError::InvalidHandle)
@@ -304,7 +308,7 @@ impl KeyEnclave for SoftwareTpm {
 
         let mut keys = self.keys.lock().unwrap();
         keys.insert(handle, seed.to_vec());
-        debug!("SoftwareTPM: generated key handle {}", handle);
+        debug!("SoftwareKeyEnclave: generated key handle {}", handle);
         Ok((handle, pk))
     }
 }
@@ -479,8 +483,8 @@ mod tests {
     }
 
     #[test]
-    fn test_software_tpm_generate_key() {
-        let tpm = SoftwareTpm::new();
+    fn test_software_key_enclave_generate_key() {
+        let tpm = SoftwareKeyEnclave::new();
         let result = tpm.generate_key();
         assert!(result.is_ok());
         let (handle, pk) = result.unwrap();
@@ -489,8 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn test_software_tpm_sign_and_verify() {
-        let tpm = SoftwareTpm::new();
+    fn test_software_key_enclave_sign_and_verify() {
+        let tpm = SoftwareKeyEnclave::new();
         let (handle, pk) = tpm.generate_key().unwrap();
 
         let data = b"test message";
@@ -504,8 +508,8 @@ mod tests {
     }
 
     #[test]
-    fn test_software_tpm_tamper_response() {
-        let tpm = SoftwareTpm::new();
+    fn test_software_key_enclave_tamper_response() {
+        let tpm = SoftwareKeyEnclave::new();
         let (handle, _) = tpm.generate_key().unwrap();
 
         tpm.detect_tamper();

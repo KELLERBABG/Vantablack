@@ -12,7 +12,7 @@
 /// This avoids exposing plaintext at intermediate hops since each hop only
 /// strips its own encryption layer, while the end-to-end encryption is preserved.
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,10 +25,21 @@ use crate::ghost::layers::l2_aead::encrypt_in_place;
 use crate::ghost::layers::l4_rs;
 use crate::ghost::net::frame_shard;
 use crate::ghost::net::send_gtf;
+use crate::ghost::net::FlowController;
 use crate::ghost::session::Session;
 
 /// Magic prefix for relay packets — distinguishes relay from direct data.
 pub const RELAY_MAGIC: &[u8; 4] = b"RLY!";
+
+/// Magic prefix for a single-hop *blind* envelope.
+///
+/// Deliberately not [`RELAY_MAGIC`]. Both envelopes carry a hop count, and the
+/// onion's last hop rewraps with `remaining_hops - 1`, so a legitimate two-hop
+/// onion arrives with a hop count of **zero** — structurally identical to a
+/// blind forward. Sharing a magic would make the two indistinguishable on the
+/// wire, and a receiver that guessed wrong would either re-encrypt someone
+/// else's ciphertext or hand an onion body to the tunnel as if it were a frame.
+pub const BLIND_MAGIC: &[u8; 4] = b"BLND";
 
 /// Maximum number of hops in a relay path.
 pub const MAX_HOPS: usize = 5;
@@ -73,15 +84,28 @@ pub fn build_relay_packet(
     remaining_hops: u32,
     inner_payload: &[u8],
 ) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(40 + inner_payload.len());
-    buf.extend_from_slice(RELAY_MAGIC);
-    buf.extend_from_slice(&remaining_hops.to_be_bytes());
+    build_envelope(
+        RELAY_MAGIC,
+        next_hop_fingerprint,
+        remaining_hops,
+        inner_payload,
+    )
+}
+
+/// `[magic][hops u32][fingerprint 32, null-padded][payload]`.
+///
+/// One encoder for both envelope kinds, so the two can never drift apart in
+/// width — the parser on the far side reads fixed offsets.
+fn build_envelope(magic: &[u8; 4], fingerprint: &str, hops: u32, payload: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(40 + payload.len());
+    buf.extend_from_slice(magic);
+    buf.extend_from_slice(&hops.to_be_bytes());
     let mut fp_bytes = [0u8; 32];
-    let fp = next_hop_fingerprint.as_bytes();
+    let fp = fingerprint.as_bytes();
     let copy_len = fp.len().min(32);
     fp_bytes[..copy_len].copy_from_slice(&fp[..copy_len]);
     buf.extend_from_slice(&fp_bytes);
-    buf.extend_from_slice(inner_payload);
+    buf.extend_from_slice(payload);
     buf
 }
 
@@ -400,5 +424,425 @@ mod tests {
         let bundles = bb.dequeue_for("peer1");
         assert_eq!(bundles.len(), 1);
         assert!(!bb.has_pending("peer1"));
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DERP-style blind relay — the Phase 1 fallback when ICE cannot connect
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Minimum width of a relay envelope: magic(4) + hops(4) + fingerprint(32).
+const RELAY_ENVELOPE_MIN: usize = 40;
+
+/// A borrowed view of a single-hop relay envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlindFrame<'a> {
+    /// Final destination fingerprint.
+    pub target_fingerprint: &'a str,
+    /// End-to-end ciphertext. The relay has no key for this and must not alter
+    /// it — the identity of these bytes across the relay *is* the blind property.
+    pub opaque: &'a [u8],
+}
+
+/// Parse a single-hop relay envelope ("blind forward").
+///
+/// Returns `None` for anything else, including multi-hop onions (a non-zero hop
+/// count), which travel via [`try_forward_relay`] instead. Keeping the two
+/// apart matters: blind forwarding must never re-encrypt, and the onion path
+/// must never forward someone else's ciphertext untouched.
+pub fn parse_blind_frame(raw: &[u8]) -> Option<BlindFrame<'_>> {
+    if raw.len() < RELAY_ENVELOPE_MIN || &raw[..4] != BLIND_MAGIC {
+        return None;
+    }
+    let hops = u32::from_be_bytes([raw[4], raw[5], raw[6], raw[7]]);
+    if hops != 0 {
+        return None;
+    }
+    let fp_bytes = &raw[8..40];
+    let end = fp_bytes.iter().position(|&b| b == 0).unwrap_or(32);
+    let target_fingerprint = std::str::from_utf8(&fp_bytes[..end]).ok()?;
+    Some(BlindFrame {
+        target_fingerprint,
+        opaque: &raw[RELAY_ENVELOPE_MIN..],
+    })
+}
+
+/// Wrap an already-sealed frame for delivery to `target_fp` through a relay.
+///
+/// The hop count is zero: exactly one relay hop, no onion layers.
+pub fn wrap_blind_frame(target_fp: &str, opaque: &[u8]) -> Vec<u8> {
+    build_envelope(BLIND_MAGIC, target_fp, 0, opaque)
+}
+
+/// Why a relay refused to forward. Counted rather than only logged, so an
+/// operator can tell abuse apart from a misconfiguration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    /// Not a relay envelope at all, or a blind envelope that does not parse.
+    NotAnEnvelope,
+    /// A multi-hop onion (`RLY!`): not this code path's business.
+    NotBlindForward,
+    /// The sender has no established session with us.
+    UnauthorizedSender,
+    /// We have no address for the target.
+    UnknownTarget,
+    /// Transit quota exhausted.
+    QuotaExceeded,
+    /// The target is the sender — would be a reflection.
+    Loop,
+}
+
+/// The result of a relay decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Forwarded {
+    /// Emit these bytes to this address.
+    ///
+    /// `bytes` is the envelope's *opaque region*, not the envelope: the target has
+    /// to parse the datagram out of it exactly as it would off the wire, so the
+    /// relay drops the addressing header it routed on and nothing else. That
+    /// header is relay-layer framing the relay wrote (or read) itself; the region
+    /// it carries — the target's own AEAD ciphertext — is forwarded verbatim, and
+    /// that unchanged region is the property that makes the forward blind.
+    Deliver {
+        dest: SocketAddr,
+        bytes: Vec<u8>,
+    },
+    Dropped(DropReason),
+}
+
+/// DERP-style blind relay.
+///
+/// The security story is what this type *cannot* do:
+///
+/// * **Blind.** It holds no key for the payload. The opaque region is the
+///   end-to-end sealed frame between the two endpoints, so the relay forwards
+///   bytes it cannot interpret — blindness is structural, not a policy.
+/// * **Not an open relay.** Only peers with an established session can relay
+///   through it.
+/// * **Rationed.** Forwarded bytes are charged against a transit quota, reusing
+///   the same [`FlowController`] the node uses for its own transit traffic.
+/// * **Not a reflector.** A frame addressed back to its sender is refused.
+pub struct DerpRelay {
+    /// Peers with an established session, and their addresses.
+    authorized: Arc<DashMap<String, SocketAddr>>,
+    /// Peers that advertise relay capability, usable as *our* relays.
+    candidates: Arc<DashMap<String, SocketAddr>>,
+    /// Transit accounting for other people's traffic.
+    flow: Arc<FlowController>,
+    forwarded_frames: AtomicU64,
+    forwarded_bytes: AtomicU64,
+    dropped: AtomicU64,
+}
+
+impl DerpRelay {
+    pub fn new(flow: Arc<FlowController>) -> Self {
+        DerpRelay {
+            authorized: Arc::new(DashMap::new()),
+            candidates: Arc::new(DashMap::new()),
+            flow,
+            forwarded_frames: AtomicU64::new(0),
+            forwarded_bytes: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+        }
+    }
+
+    /// Record a peer we have a session with, making it eligible to relay.
+    pub fn authorize(&self, fp: &str, addr: SocketAddr) {
+        self.authorized.insert(fp.to_string(), addr);
+    }
+
+    pub fn deauthorize(&self, fp: &str) {
+        self.authorized.remove(fp);
+    }
+
+    pub fn is_authorized(&self, fp: &str) -> bool {
+        self.authorized.contains_key(fp)
+    }
+
+    pub fn authorized_count(&self) -> usize {
+        self.authorized.len()
+    }
+
+    /// Record a peer that advertised relay capability (from its beacon).
+    pub fn add_relay_candidate(&self, fp: &str, addr: SocketAddr) {
+        self.candidates.insert(fp.to_string(), addr);
+    }
+
+    /// Known relays, ordered by whether we already have a session with them — a
+    /// relay we are authenticated to is strictly more useful, because using it
+    /// costs no new handshake and we know it is reachable.
+    ///
+    /// Ties break on fingerprint. Without that the order within a group came from
+    /// `DashMap` iteration and changed between runs, which made relay selection —
+    /// and any test of it — non-reproducible.
+    pub fn relay_candidates(&self) -> Vec<(String, SocketAddr)> {
+        let mut out: Vec<(String, SocketAddr)> = self
+            .candidates
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
+        out.sort_by(|a, b| {
+            let known = self.authorized.contains_key(&a.0);
+            let other_known = self.authorized.contains_key(&b.0);
+            (!known, &a.0).cmp(&(!other_known, &b.0))
+        });
+        out
+    }
+
+    /// Pick a relay that is neither us nor the destination, if one is known.
+    pub fn pick_relay(&self, our_fp: &str, target_fp: &str) -> Option<(String, SocketAddr)> {
+        self.relay_candidates()
+            .into_iter()
+            .find(|(fp, _)| fp != our_fp && fp != target_fp)
+    }
+
+    /// `(forwarded_frames, forwarded_bytes, dropped)`.
+    pub fn stats(&self) -> (u64, u64, u64) {
+        (
+            self.forwarded_frames.load(Ordering::Relaxed),
+            self.forwarded_bytes.load(Ordering::Relaxed),
+            self.dropped.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Relay side: decide whether to forward, and produce the datagram.
+    ///
+    /// Forwarding is *one-way*: nothing here remembers the sender, so the target's
+    /// reply travels through a relay of its own choosing. That is what keeps the
+    /// relay stateless and unable to correlate the two directions, and it is why
+    /// both ends run the fallback ladder independently.
+    ///
+    /// `from_fp` must be an identity we have verified — the caller establishes
+    /// that, since only it knows which session a datagram arrived on.
+    pub fn forward(&self, from_fp: &str, payload: &[u8]) -> Forwarded {
+        let Some(frame) = parse_blind_frame(payload) else {
+            // An onion is a different protocol path, and saying *that* is more
+            // useful than a generic refusal: the caller routes it to the
+            // hop-forwarding path instead of reporting a malformed envelope.
+            let is_onion = payload.len() >= RELAY_ENVELOPE_MIN && &payload[..4] == RELAY_MAGIC;
+            return Forwarded::Dropped(if is_onion {
+                DropReason::NotBlindForward
+            } else {
+                DropReason::NotAnEnvelope
+            });
+        };
+
+        if !self.authorized.contains_key(from_fp) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            debug!(from = %from_fp, "DERP: refusing to relay for an unauthorized sender");
+            return Forwarded::Dropped(DropReason::UnauthorizedSender);
+        }
+        if frame.target_fingerprint == from_fp {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return Forwarded::Dropped(DropReason::Loop);
+        }
+        let Some(dest) = self
+            .authorized
+            .get(frame.target_fingerprint)
+            .map(|e| *e.value())
+        else {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return Forwarded::Dropped(DropReason::UnknownTarget);
+        };
+        if !self.flow.try_consume_transit(payload.len()) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            debug!(from = %from_fp, "DERP: transit quota exhausted, dropping");
+            return Forwarded::Dropped(DropReason::QuotaExceeded);
+        }
+
+        self.forwarded_frames.fetch_add(1, Ordering::Relaxed);
+        self.forwarded_bytes
+            .fetch_add(frame.opaque.len() as u64, Ordering::Relaxed);
+        // The opaque region, verbatim: the relay has parsed only its own header
+        // (which is how it knows where this goes) and can interpret nothing else.
+        Forwarded::Deliver {
+            dest,
+            bytes: frame.opaque.to_vec(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod derp_tests {
+    use super::*;
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    fn relay_with_quota(mbps: u64) -> DerpRelay {
+        DerpRelay::new(Arc::new(FlowController::new(mbps)))
+    }
+
+    #[test]
+    fn blind_frame_round_trips_and_preserves_the_opaque_region() {
+        let opaque = b"end-to-end sealed GTF frame".to_vec();
+        let wrapped = wrap_blind_frame("aabbccdd", &opaque);
+        let frame = parse_blind_frame(&wrapped).expect("must parse as a blind frame");
+        assert_eq!(frame.target_fingerprint, "aabbccdd");
+        assert_eq!(frame.opaque, &opaque[..]);
+    }
+
+    #[test]
+    fn multi_hop_onions_are_not_blind_forwarded() {
+        // A 2-hop onion must go down the re-encrypting path, not this one.
+        let onion = build_relay_packet("aabbccdd", 2, b"layered");
+        assert!(parse_blind_frame(&onion).is_none());
+        let relay = relay_with_quota(10);
+        relay.authorize("sender", addr("10.0.0.1:1"));
+        relay.authorize("aabbccdd", addr("10.0.0.2:2"));
+        assert_eq!(
+            relay.forward("sender", &onion),
+            Forwarded::Dropped(DropReason::NotBlindForward)
+        );
+    }
+
+    #[test]
+    fn non_envelopes_are_identified_separately() {
+        let relay = relay_with_quota(10);
+        assert_eq!(
+            relay.forward("sender", b"just mesh traffic"),
+            Forwarded::Dropped(DropReason::NotAnEnvelope)
+        );
+        // A RLY! prefix that is too short is still not an envelope.
+        assert_eq!(
+            relay.forward("sender", b"RLY!short"),
+            Forwarded::Dropped(DropReason::NotAnEnvelope)
+        );
+    }
+
+    #[test]
+    fn forwarding_requires_an_established_session() {
+        let relay = relay_with_quota(10);
+        relay.authorize("target", addr("10.0.0.2:2"));
+        let framed = wrap_blind_frame("target", b"sealed");
+        // Unknown sender: refused. This is what stops it being an open relay.
+        assert_eq!(
+            relay.forward("stranger", &framed),
+            Forwarded::Dropped(DropReason::UnauthorizedSender)
+        );
+        relay.authorize("stranger", addr("10.0.0.3:3"));
+        assert!(matches!(
+            relay.forward("stranger", &framed),
+            Forwarded::Deliver { .. }
+        ));
+    }
+
+    #[test]
+    fn unknown_target_is_counted_and_dropped() {
+        let relay = relay_with_quota(10);
+        relay.authorize("sender", addr("10.0.0.1:1"));
+        let framed = wrap_blind_frame("ghost-peer", b"sealed");
+        assert_eq!(
+            relay.forward("sender", &framed),
+            Forwarded::Dropped(DropReason::UnknownTarget)
+        );
+        assert_eq!(relay.stats().2, 1);
+    }
+
+    #[test]
+    fn a_frame_addressed_to_its_sender_is_refused() {
+        let relay = relay_with_quota(10);
+        relay.authorize("sender", addr("10.0.0.1:1"));
+        let framed = wrap_blind_frame("sender", b"reflect me");
+        assert_eq!(
+            relay.forward("sender", &framed),
+            Forwarded::Dropped(DropReason::Loop)
+        );
+    }
+
+    #[test]
+    fn delivery_is_byte_identical_so_the_relay_stays_blind() {
+        let relay = relay_with_quota(10);
+        relay.authorize("sender", addr("10.0.0.1:1"));
+        relay.authorize("target", addr("10.0.0.2:2"));
+
+        // Stand in for a sealed GTF frame: high-entropy bytes the relay cannot
+        // interpret, which is exactly the relay's view of real traffic.
+        let opaque: Vec<u8> = (0..512u32).map(|i| (i * 31 % 251) as u8).collect();
+        let framed = wrap_blind_frame("target", &opaque);
+
+        match relay.forward("sender", &framed) {
+            Forwarded::Deliver { dest, bytes } => {
+                assert_eq!(dest, addr("10.0.0.2:2"));
+                // Not merely equal in length: identical, so the relay could not
+                // have read, rewritten, padded or re-tagged anything it carries.
+                assert_eq!(bytes, opaque);
+                // And what it emits is the *frame*, not its own envelope: the
+                // target parses this exactly as it would a direct send.
+                assert!(
+                    parse_blind_frame(&bytes).is_none(),
+                    "the relay's own header must not be forwarded"
+                );
+            }
+            other => panic!("expected delivery, got {other:?}"),
+        }
+        let (frames, by, dropped) = relay.stats();
+        assert_eq!(frames, 1);
+        assert_eq!(
+            by,
+            opaque.len() as u64,
+            "transit is charged for what is actually forwarded"
+        );
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn transit_quota_is_charged_and_exhaustion_is_visible() {
+        // Zero transit rate: the bucket starts empty, so nothing can be relayed.
+        let relay = relay_with_quota(0);
+        relay.authorize("sender", addr("10.0.0.1:1"));
+        relay.authorize("target", addr("10.0.0.2:2"));
+        let framed = wrap_blind_frame("target", b"sealed");
+        assert_eq!(
+            relay.forward("sender", &framed),
+            Forwarded::Dropped(DropReason::QuotaExceeded)
+        );
+        assert_eq!(relay.stats().0, 0, "nothing was forwarded");
+    }
+
+    #[test]
+    fn relay_selection_skips_us_and_the_destination_and_prefers_a_known_relay() {
+        let relay = relay_with_quota(10);
+        relay.add_relay_candidate("us", addr("10.0.0.1:1"));
+        relay.add_relay_candidate("target", addr("10.0.0.2:2"));
+        relay.add_relay_candidate("alpha", addr("10.0.0.3:3"));
+        relay.add_relay_candidate("beta", addr("10.0.0.4:4"));
+
+        // Neither ourselves nor the destination may be our relay, and with no
+        // session yet the choice is deterministic rather than map-ordered.
+        let picked = relay.pick_relay("us", "target").expect("a usable relay");
+        assert_ne!(picked.0, "us");
+        assert_ne!(picked.0, "target");
+        assert_eq!(picked.0, "alpha", "unauthenticated relays break ties by fp");
+
+        // A relay we already hold a session with wins over every stranger.
+        relay.authorize("beta", addr("10.0.0.4:4"));
+        assert_eq!(relay.pick_relay("us", "target").unwrap().0, "beta");
+        assert_eq!(
+            relay.relay_candidates().first().map(|(fp, _)| fp.as_str()),
+            Some("beta")
+        );
+
+        // With only ourselves and the destination known, there is no relay.
+        let solo = relay_with_quota(10);
+        solo.add_relay_candidate("us", addr("10.0.0.1:1"));
+        solo.add_relay_candidate("target", addr("10.0.0.2:2"));
+        assert!(solo.pick_relay("us", "target").is_none());
+    }
+
+    #[test]
+    fn deauthorizing_a_peer_revokes_relaying_immediately() {
+        let relay = relay_with_quota(10);
+        relay.authorize("sender", addr("10.0.0.1:1"));
+        relay.authorize("target", addr("10.0.0.2:2"));
+        assert_eq!(relay.authorized_count(), 2);
+        relay.deauthorize("sender");
+        assert!(!relay.is_authorized("sender"));
+        let framed = wrap_blind_frame("target", b"sealed");
+        assert_eq!(
+            relay.forward("sender", &framed),
+            Forwarded::Dropped(DropReason::UnauthorizedSender)
+        );
     }
 }

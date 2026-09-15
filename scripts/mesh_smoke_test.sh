@@ -6,6 +6,10 @@
 # real ChaCha20-Poly1305 + Reed-Solomon sharding, real TCP through the mesh.
 # No mocks, no virtual transport, no fake data.
 #
+# A Linux-with-root section additionally runs the kernel-level symmetric-NAT gate
+# (scripts/nat_gate_iptables.sh, throwaway network namespaces); elsewhere it is
+# skipped and `tests/p1_nat.rs` / `tests/p1_relay.rs` cover the same logic.
+#
 # Topology (all on localhost):
 #   HTTP server (py -m http.server)     :19000
 #   node B  — exit node                 :15252  (opens the real TCP connection)
@@ -184,6 +188,29 @@ if [ "$SESSIONS" = 1 ]; then
     say "skipping QEL integration (quantumnet not installed — optional)"
   fi
 fi
+
+# ── iptables symmetric-NAT topology (SOTA P1-1) ─────────────────────────────
+# The Rust gates (`tests/p1_nat.rs`, `tests/p1_relay.rs`) model an RFC 4787 NAT
+# and run on every platform. This checks the model against the real kernel, in
+# throwaway network namespaces, when the host can do it at all (Linux + root).
+# It is a separate script because it needs namespaces, `ip` and `iptables`; when
+# those are missing it exits 0 having said so, and this section reports the skip
+# rather than a vacuous pass.
+say "NAT topology: kernel-level symmetric-NAT gate"
+NAT_OUT=$(bash "$ROOT/scripts/nat_gate_iptables.sh" 2>&1); NAT_RC=$?
+echo "$NAT_OUT" | sed 's/^/    /'
+case "$NAT_OUT" in
+  *skipping*)
+    say "    (skipped — needs Linux + root; the Rust gates cover the same logic here)"
+    ;;
+  *)
+    if [ "$NAT_RC" -eq 0 ]; then
+      ok "kernel-level symmetric-NAT gate: symmetric mapping, relay pinhole, filtering"
+    else
+      bad "kernel-level symmetric-NAT gate failed (see output above)"
+    fi
+    ;;
+esac
 
 say "node A log (tail):"
 tail -5 "$TMP/nodeA/node_a.log" 2>/dev/null | sed 's/^/    /'

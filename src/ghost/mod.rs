@@ -41,8 +41,13 @@ pub const CHANNEL_SIZE: usize = 8192;
 
 /// A GhostNet node that bundles identity, session state, and transport.
 pub struct GhostNode {
-    /// The node's long-term Ed25519 identity
-    pub identity: layers::l0_identity::GhostIdentity,
+    /// The node's long-term Ed25519 identity.
+    ///
+    /// Shared rather than owned: subsystems that outlive a call (the relay's
+    /// admission rule, the optional QUIC transport's channel binding) need to
+    /// sign or verify under this key, and sharing one instance keeps exactly one
+    /// copy of the signing key in memory.
+    pub identity: Arc<layers::l0_identity::GhostIdentity>,
     /// Active sessions keyed by peer fingerprint (concurrent hash map).
     pub sessions: Arc<DashMap<String, Session>>,
     /// Async UDP socket bound to a dynamic port.
@@ -181,7 +186,7 @@ impl GhostNode {
         );
 
         Ok(Self {
-            identity,
+            identity: Arc::new(identity),
             sessions: sessions_clone,
             socket,
             contact_plan: RwLock::new(ContactPlan::default()),

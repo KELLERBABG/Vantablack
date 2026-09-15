@@ -1,3 +1,5 @@
+#[cfg(feature = "quic")]
+pub mod carrier;
 /// GhostNet Network Layer
 ///
 /// Implements the Ghost Transport Frame (GTF) — the wire format for all
@@ -8,14 +10,69 @@
 ///
 /// Also implements a lightweight ACK engine for reliable delivery over UDP,
 /// and an adaptive token-bucket flow controller.
+pub mod cc;
 pub mod consumer;
 pub mod dispatcher;
+pub mod fallback;
+pub mod ice;
 pub mod mesh;
 pub mod orbit;
+#[cfg(feature = "quic")]
+pub mod quic;
 pub mod relay;
+
+/// Which framing an optional transport used for a frame (SOTA P1-2).
+///
+/// Defined here rather than in the transport so that a build *without* the
+/// transport still names the same type: the tunnel asks its carrier registry for
+/// a path on every frame, and "no carrier" must be a value it can hold rather
+/// than a `cfg` at every call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarrierPath {
+    /// Unreliable, unordered carrier — the Reed-Solomon privacy path.
+    Datagram,
+    /// Reliable, ordered carrier — the bulk path.
+    Stream,
+}
+
+/// A carrier registry in a build with no optional transport compiled in.
+///
+/// It is deliberately the same shape as the real one: everything this build can
+/// say is "nothing is registered", which is exactly true.
+#[cfg(not(feature = "quic"))]
+pub mod carrier {
+    use super::CarrierPath;
+
+    /// No optional transport in this build (`--features quic` adds one).
+    #[derive(Debug, Default)]
+    pub struct Carrier;
+
+    impl Carrier {
+        pub fn disabled() -> Self {
+            Carrier
+        }
+        pub fn enabled(&self) -> bool {
+            false
+        }
+        pub fn peer_count(&self) -> usize {
+            0
+        }
+        pub fn label(&self) -> &'static str {
+            "none"
+        }
+        /// Nothing to send on: the caller keeps to UDP.
+        pub async fn send_frame(&self, _fp: &str, _frame: &[u8]) -> Option<CarrierPath> {
+            None
+        }
+        pub fn forget(&self, _fp: &str) {}
+    }
+}
 pub mod routing;
 pub mod security;
+pub mod stun;
 pub mod tun;
+pub mod turn;
+pub mod upnp;
 #[cfg(feature = "vpn")]
 pub mod vpn;
 
@@ -244,16 +301,30 @@ pub fn unframe(b: &[u8]) -> Option<Vec<u8>> {
 
 // ── Flow Controller ────────────────────────────────────────────────
 
+/// Smallest transit burst the shaper will ever allow, so a very low rate still
+/// admits a whole packet rather than deadlocking on a sub-packet burst.
+const MIN_TRANSIT_BURST: u64 = 1500;
+
 /// Adaptive token-bucket flow controller with dual-rate shaping.
+///
+/// This is a **policy** limit — "do not forward someone else's traffic faster
+/// than this" — not a congestion-control loop. For the control loop see
+/// [`cc::AckEngine`], which measures the path and decides how fast to go; this
+/// type only enforces a ceiling. The two compose: a caller that has a
+/// congestion-controlled rate calls [`FlowController::set_transit_rate_bps`] so
+/// shaping follows the measurement instead of a hand-set constant.
 pub struct FlowController {
     /// Transit tokens (for routing other people's traffic).
     transit_bucket: AtomicU64,
     /// Local tokens (for the user's own traffic — effectively unlimited).
     local_bucket: AtomicU64,
-    /// Max transit bytes per second.
-    transit_rate: u64,
-    /// Burst allowance for transit.
-    transit_burst: u64,
+    /// Max transit bytes per second. Atomic so the rate can be retuned — and so
+    /// [`Self::replenish`] sees the *new* rate rather than the constructor's.
+    transit_rate: AtomicU64,
+    /// Burst allowance for transit, retuned with the rate so the two cannot
+    /// disagree (a 100 ms burst of the *old* rate would let a raised limit be
+    /// exceeded instantly and a lowered one be overshot for a whole RTT).
+    transit_burst: AtomicU64,
     /// Timestamp of last replenishment (nanos).
     last_replenish: AtomicU64,
 }
@@ -266,8 +337,9 @@ impl FlowController {
         Self {
             transit_bucket: AtomicU64::new(bytes_per_sec), // start full
             local_bucket: AtomicU64::new(u64::MAX),
-            transit_rate: bytes_per_sec,
-            transit_burst: bytes_per_sec / 10, // 100ms burst
+            transit_rate: AtomicU64::new(bytes_per_sec),
+            // Start with a full 100 ms burst of credit.
+            transit_burst: AtomicU64::new((bytes_per_sec / 10).max(MIN_TRANSIT_BURST)),
             last_replenish: AtomicU64::new(now_nanos()),
         }
     }
@@ -279,10 +351,11 @@ impl FlowController {
         let elapsed = now.saturating_sub(last);
         if elapsed > 1_000_000 {
             // only replenish if >1ms elapsed
-            let tokens =
-                (self.transit_rate as u128).saturating_mul(elapsed as u128) / 1_000_000_000;
+            let rate = self.transit_rate.load(Ordering::Relaxed) as u128;
+            let tokens = rate.saturating_mul(elapsed as u128) / 1_000_000_000;
+            let burst = self.transit_burst.load(Ordering::Relaxed) as u128;
             let current = self.transit_bucket.load(Ordering::Relaxed) as u128;
-            let new = (current + tokens).min(self.transit_burst as u128) as u64;
+            let new = (current + tokens).min(burst) as u64;
             self.transit_bucket.store(new, Ordering::Relaxed);
             self.last_replenish.store(now, Ordering::Relaxed);
         }
@@ -306,12 +379,34 @@ impl FlowController {
         true // no throttle
     }
 
-    /// Reset the transit rate (atomic-safe for &self).
+    /// Reset the transit rate (atomic-safe for `&self`).
+    ///
+    /// Sets the *rate* the bucket replenishes at, and refills the bucket to its
+    /// new ceiling so a raised limit takes effect immediately. (Until this was
+    /// fixed the method wrote the requested rate into the token *bucket*, which
+    /// `replenish` then ignored: it kept computing credit from the rate the
+    /// constructor had been given, so retuning a live node silently did nothing.)
     pub fn set_transit_rate_mbps(&self, mbps: u64) {
-        let bytes_per_sec = mbps * 125_000;
-        // This is a hack: we store the new rate via the bucket with relaxed ordering.
-        // A production implementation would use proper atomic rate fields.
+        self.set_transit_rate_bps(mbps * 125_000);
+    }
+
+    /// Set the transit rate from a measured or modelled rate, bytes per second.
+    ///
+    /// This is how a congestion-controlled estimate reaches the shaper: the
+    /// caller runs [`cc::AckEngine`] and hands the result here.
+    pub fn set_transit_rate_bps(&self, bytes_per_sec: u64) {
+        self.transit_rate.store(bytes_per_sec, Ordering::Relaxed);
+        self.transit_burst.store(
+            (bytes_per_sec / 10).max(MIN_TRANSIT_BURST),
+            Ordering::Relaxed,
+        );
         self.transit_bucket.store(bytes_per_sec, Ordering::Relaxed);
+        self.last_replenish.store(now_nanos(), Ordering::Relaxed);
+    }
+
+    /// The rate the bucket currently replenishes at, bytes per second.
+    pub fn transit_rate_bps(&self) -> u64 {
+        self.transit_rate.load(Ordering::Relaxed)
     }
 }
 

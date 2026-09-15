@@ -41,6 +41,22 @@ jobs:
       - name: Verify Headless (server) Build
         run: cargo check --no-default-features --all-targets --verbose
 
+      # SOTA P0-1: `hardware-tpm` / `pkcs11` must gate code that actually
+      # compiles. These backends previously sat in a module no `mod` declaration
+      # referenced, so the features gated nothing and were never built by CI.
+      - name: Verify HSM Feature Gates (hardware-tpm + pkcs11)
+        run: cargo check --features hardware-tpm,pkcs11 --all-targets --verbose
+
+      # SOTA P1-2: the QUIC carrier is behind a feature, so without this step it
+      # would be the same kind of never-built code the HSM step above exists to
+      # catch. The gate (`tests/p1_quic.rs`) and the framing decisions in
+      # `net/quic.rs` only compile — and only run — under this feature.
+      - name: Verify QUIC Carrier (quic + vpn)
+        run: |
+          cargo check --features quic --all-targets --verbose
+          cargo test --features quic --verbose
+          cargo check --features "quic vpn" --all-targets --verbose
+
   clippy-fmt:
     name: Code Hygiene & Formatting
     runs-on: ubuntu-latest

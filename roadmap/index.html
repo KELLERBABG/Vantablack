@@ -418,13 +418,13 @@
         <div class="sota-phase-label">Phase 0 — 1–2 weeks</div>
         <div class="sota-phase-title">Stops-the-line</div>
         <div class="sota-phase-desc">Dedup ×3 types, seal-at-drain + pre-wrap rekey, handshake allowlist. CI builds <code>vpn</code> + <code>hardware-tpm</code>.</div>
-        <div class="sota-phase-gate">Gate: loopback + 174 tests green, no doc drift.</div>
+        <div class="sota-phase-gate">Gate: loopback + 370 tests green, no doc drift.</div>
       </div>
       <div class="sota-phase">
         <div class="sota-phase-label">Phase 1 — 3–5 weeks</div>
         <div class="sota-phase-title">Reachable mesh</div>
-        <div class="sota-phase-desc">Full ICE/STUN/TURN + DERP relay, QUIC/multipath + BBR, real CGR over TLE contacts.</div>
-        <div class="sota-phase-gate">Gate: 2 NAT44 + LTE phone, no port-forward, iperf survives handover.</div>
+        <div class="sota-phase-desc">Full ICE/STUN/TURN + DERP relay, QUIC/multipath + BBR, real CGR over TLE contacts.<br><strong>Landed:</strong> RFC 8489 STUN + RFC 8445 ICE replace the port-guessing loop; TURN allocation, DERP blind relay and the <code>direct → relay → TURN</code> ladder are wired; UPnP-IGD/NAT-PMP give an opportunistic candidate; CGR is consulted, not just populated; CUBIC/NewReno/BBR + <code>TransitGovernor</code> shape the tunnel from measured path capacity; QUIC is an optional GTF carrier (<code>--features quic</code>, <code>GHOST_QUIC=1</code>). <strong>Open:</strong> multipath-QUIC, and no real gateway/TURN server/middlebox has been exercised.</div>
+        <div class="sota-phase-gate">Gate: 2 NAT44 + LTE phone, no port-forward, iperf survives handover. <em>Not yet run: every traversal test is loopback or in-process.</em></div>
       </div>
       <div class="sota-phase">
         <div class="sota-phase-label">Phase 2 — 3–4 weeks</div>

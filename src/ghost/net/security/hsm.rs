@@ -13,10 +13,14 @@
 /// - `pkcs11`: Enables `Pkcs11Backend` (requires `cryptoki`)
 /// - No features = only `SoftwareTpm` (safe fallback)
 
+// `AtomicBool`/`Ordering`/`warn!` are only reached by the feature-gated
+// hardware backends below, so they are gated with them to keep a
+// default (software-only) build free of unused-import warnings.
+#[cfg(any(feature = "hardware-tpm", feature = "pkcs11"))]
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{debug, info, warn};
-
-use super::LockedMemory;
+use tracing::info;
+#[cfg(any(feature = "hardware-tpm", feature = "pkcs11"))]
+use tracing::warn;
 
 // ── HsmBackend Trait ────────────────────────────────────────────────
 
@@ -49,10 +53,13 @@ pub trait HsmBackend: Send + Sync {
 
 // ── SoftwareTpm (fallback) ──────────────────────────────────────────
 
-/// Software-backed HSM — stores the private key in a LockedMemory region.
+/// Software-backed HSM — holds the Ed25519 key material in ordinary process
+/// memory. It does **not** pin pages itself: callers that need `mlock`/
+/// `VirtualLock` semantics should keep the key inside [`super::LockedMemory`]
+/// or a `SecureMemGuard`.
 ///
 /// This is the fallback implementation for testing and development.
-/// For production, replace with `Pkcs11Backend` or `Tpm2Backend`.
+/// For production, use `Pkcs11Backend` or `Tpm2Backend`.
 pub struct SoftwareTpm {
     /// Ed25519 signing key (whole keypair for simplicity).
     /// In production hardware HSM, the private key never enters host memory.
@@ -117,7 +124,8 @@ impl HsmBackend for SoftwareTpm {
         use sha2::Sha256;
         let hk = Hkdf::<Sha256>::new(Some(self.fingerprint.as_bytes()), context);
         let mut session_key = [0u8; 32];
-        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key).unwrap();
+        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key)
+            .unwrap();
         session_key
     }
 
@@ -140,10 +148,15 @@ impl HsmBackend for SoftwareTpm {
 ///
 /// Requires Cargo feature: `hardware-tpm`
 #[cfg(feature = "hardware-tpm")]
+#[allow(dead_code)] // Stub: `open()` returns Err until real tss-esapi wiring (SOTA Phase 2 P2-3).
 pub struct Tpm2Backend {
-    /// Context handle for the TPM device.
-    // In production, this would be tss_esapi::Context
-    context: *mut std::ffi::c_void,
+    /// TPM device this backend was opened against.
+    ///
+    /// Deliberately *not* a live `tss_esapi::Context`: `HsmBackend` requires
+    /// `Send + Sync`, and a TPM context is neither, so the real context has to
+    /// live behind a lock when Phase 2 lands. Storing a raw pointer here would
+    /// make the type `!Send + !Sync` and the trait impl below would not compile.
+    device_path: String,
     /// Handle to the Ed25519 key within the TPM.
     key_handle: u32,
     /// Cached public key (extracted once at initialization).
@@ -214,7 +227,8 @@ impl HsmBackend for Tpm2Backend {
         use sha2::Sha256;
         let hk = Hkdf::<Sha256>::new(Some(self.fingerprint.as_bytes()), context);
         let mut session_key = [0u8; 32];
-        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key).unwrap();
+        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key)
+            .unwrap();
         session_key
     }
 
@@ -238,6 +252,7 @@ impl HsmBackend for Tpm2Backend {
 ///
 /// Requires Cargo feature: `pkcs11`
 #[cfg(feature = "pkcs11")]
+#[allow(dead_code)] // Stub: `open()` returns Err until real cryptoki wiring (SOTA Phase 2 P2-3).
 pub struct Pkcs11Backend {
     /// Session handle to the PKCS#11 token.
     session_handle: u64,
@@ -300,7 +315,8 @@ impl HsmBackend for Pkcs11Backend {
         use sha2::Sha256;
         let hk = Hkdf::<Sha256>::new(Some(self.fingerprint.as_bytes()), context);
         let mut session_key = [0u8; 32];
-        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key).unwrap();
+        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key)
+            .unwrap();
         session_key
     }
 

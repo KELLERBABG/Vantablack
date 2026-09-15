@@ -45,12 +45,17 @@ use vantablack::ghost::{
     net::{
         self,
         consumer::{self, ConsumerSettings},
+        fallback::{self, Fallback, FallbackPath, TurnPath},
+        frame_shard,
         mesh::{ExitIpRotator, TitForTatEnforcer},
         parse_packet_counter,
-        relay::{build_relay_packet, parse_relay_header, spawn_store_forward_task, BundleBuffer},
-        routing::PoissonReputationMatrix,
+        relay::{
+            self, build_relay_packet, parse_relay_header, spawn_store_forward_task, BundleBuffer,
+            DerpRelay,
+        },
+        routing::{ContactPlan, PoissonReputationMatrix},
         security::{LockedMemory, RevocationList, RevocationReason, ZkAuthenticator},
-        send_gtf, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BULK_SIZE,
+        send_gtf, unframe, upnp, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BULK_SIZE,
         OFFSET_PAYLOAD_START,
     },
     session::{Session, SessionRole},
@@ -124,25 +129,8 @@ async fn assemble(
     None
 }
 
-fn frame_shard(d: &[u8]) -> Vec<u8> {
-    let l = (d.len() as u16).to_be_bytes();
-    let mut f = Vec::with_capacity(d.len() + 2);
-    f.extend_from_slice(&l);
-    f.extend_from_slice(d);
-    f
-}
-
-fn unframe(b: &[u8]) -> Option<Vec<u8>> {
-    if b.len() < 2 {
-        return None;
-    }
-    let l = u16::from_be_bytes([b[0], b[1]]) as usize;
-    if l == 0 || 2 + l > b.len() {
-        None
-    } else {
-        Some(b[2..2 + l].to_vec())
-    }
-}
+// `frame_shard` / `unframe` live in `ghost::net` (canonical, SOTA P0-1) and are
+// imported below.
 
 fn enc_split(
     key: &[u8; 32],
@@ -182,8 +170,127 @@ async fn send3(
     }
 }
 
+/// How a message actually left this node (SOTA P1-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Routed {
+    Direct,
+    /// The optional transport carried it (SOTA P1-2).
+    ///
+    /// Distinct from `Direct` because it is a different carrier over the same
+    /// measured path: QUIC's own loss recovery and congestion control carry the
+    /// frames instead of the UDP shard path.
+    Carrier,
+    MeshRelay,
+    Turn,
+    /// No session with the chosen relay, or no allocation: nothing carried it.
+    Unroutable,
+}
+
+/// Seal `payload` as ONE self-contained GTF datagram.
+///
+/// This is the single-datagram form the receive path already knows: a bulk frame
+/// with the tunnel bit (0x02) set, whose payload region holds
+/// `frame_shard(ciphertext)` — exactly what `unframe()` consumes. The tunnel bit
+/// is what stops the receiver waiting for Reed-Solomon siblings that will never
+/// arrive, which is the point: a relay hop carries one datagram at a time.
+fn seal_single(
+    key: &[u8; 32],
+    ctr: u32,
+    sh: &[u8; 4],
+    direction: NonceDirection,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut framed = (payload.len() as u16).to_be_bytes().to_vec();
+    framed.extend_from_slice(payload);
+    if !framed.len().is_multiple_of(2) {
+        framed.push(0);
+    }
+    encrypt_in_place_with_context(key, ctr, sh, direction, &mut framed);
+    let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap_or([0u8; 16]);
+    let carrier = frame_shard(&framed);
+    let mut frame = net::build_gtf_frame(*sh, ctr, 0, &carrier, &tag, true);
+    frame[net::OFFSET_FLAGS] |= 0x02;
+    frame
+}
+
+/// Hand one already-built GTF datagram to a relay peer, wrapped in a blind
+/// envelope addressed to `target_fp` (SOTA P1-1 / B22).
+///
+/// The datagram travels inside the envelope **verbatim**, so the target parses
+/// exactly what a direct send would have delivered, and the relay holds no key
+/// for any of it. Returns `false` when there is no session with the relay: the
+/// relay cannot authenticate the forward without one.
+///
+/// Two framings, because the envelope itself has to fit a datagram. A privacy
+/// frame (512–576 B) fits a single bulk frame's payload region. A bulk frame
+/// (1472 B) does not, so the envelope is Reed-Solomon split across three bulk
+/// frames — the same convention `relay.rs` uses to re-wrap an onion hop.
+async fn send_datagram_via_relay(
+    nc: &Arc<GhostNode>,
+    sock: &UdpSocket,
+    relay_fp: &str,
+    relay_addr: &SocketAddr,
+    target_fp: &str,
+    datagram: &[u8],
+) -> bool {
+    let envelope = fallback::blind_envelope(target_fp, datagram);
+    let Some(sess) = nc.sessions.get(relay_fp) else {
+        tracing::warn!(relay = %relay_fp, "fallback: no session with the relay — cannot forward");
+        return false;
+    };
+    let (rkey, rsh, rrole) = (sess.master_key, sess.session_hash, sess.role);
+    drop(sess);
+    let dir = dir_for(rrole);
+    let next_ctr = || {
+        nc.sessions
+            .get(relay_fp)
+            .map(|s| s.next_tx_counter())
+            .unwrap_or(2)
+    };
+
+    if envelope.len() + 2 <= net::MAX_BULK_PAYLOAD_LEN {
+        let frame = seal_single(&rkey, next_ctr(), &rsh, dir, &envelope);
+        return match sock.send_to(&frame, relay_addr).await {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(relay = %relay_fp, "fallback: relay send failed: {e}");
+                false
+            }
+        };
+    }
+
+    let ctr = next_ctr();
+    let (carriers, tag) = enc_split(&rkey, ctr, &rsh, dir, &envelope);
+    let mut ok = true;
+    for i in 0..3 {
+        if let Err(e) = send_gtf(
+            sock,
+            relay_addr,
+            rsh,
+            ctr,
+            i as u8,
+            &carriers[i],
+            &tag,
+            true,
+        )
+        .await
+        {
+            tracing::warn!(relay = %relay_fp, "fallback: relay send failed: {e}");
+            ok = false;
+        }
+    }
+    ok
+}
+
 /// Send 3 RS shards using adaptive multi-path routing when alternative peer routes exist.
+///
+/// `route` is the peer's fallback when it has no direct path (SOTA P1-1). When it
+/// is set, multi-path selection is skipped — deliberately. The carriers must all
+/// travel the one route the relay carries, and spreading them across *other*
+/// peers would send them to machines that hold no session with the target.
+#[allow(clippy::too_many_arguments)]
 async fn send3_adaptive(
+    nc: &Arc<GhostNode>,
     sock: &UdpSocket,
     primary_dst: &SocketAddr,
     primary_fp: &str,
@@ -193,7 +300,30 @@ async fn send3_adaptive(
     tag: &[u8; 16],
     router: &vantablack::ghost::net::mesh::AdaptiveShardRouter,
     all_peers: &Arc<DashMap<String, SocketAddr>>,
-) {
+    // The CGR contact plan, when the caller already holds a read guard. Passed in
+    // rather than read here so this stays a plain dispatch that takes no lock of
+    // its own, and so a caller that has already looked at the plan pays for it
+    // once.
+    plan: Option<&ContactPlan>,
+    me: &str,
+    // The peer's fallback path, when its direct checks have failed.
+    route: Option<&FallbackPath>,
+    turn: Option<&Arc<TurnPath>>,
+    // The optional transport, when this build and this run have one (SOTA P1-2).
+    carrier: Option<&Arc<net::carrier::Carrier>>,
+) -> Routed {
+    if let Some(path) = route {
+        return send3_via_fallback(nc, sock, primary_fp, sh, ctr, f, tag, path, turn).await;
+    }
+    // A carrier link rides the address ICE already measured, so it is preferred
+    // exactly where a direct path exists — and it is tried before the shard
+    // router because QUIC's own loss recovery is better than three UDP shards
+    // when the path is lossy, which is the case this transport exists for.
+    if let Some(carrier) = carrier {
+        if send3_via_carrier(carrier, primary_fp, sh, ctr, f, tag).await {
+            return Routed::Carrier;
+        }
+    }
     let mut available: Vec<(String, SocketAddr)> = all_peers
         .iter()
         .map(|entry| (entry.key().clone(), *entry.value()))
@@ -204,7 +334,23 @@ async fn send3_adaptive(
     }
 
     if available.len() > 1 {
-        let selected = router.select_shard_targets(&available);
+        // Prefer CGR ordering whenever the plan knows a route: peers are then
+        // taken in measured earliest-arrival order, and each accepted peer's
+        // transit nodes are barred from the later ones, so the shards cross
+        // genuinely separate parts of the mesh instead of three paths that share
+        // one relay. With no plan — or an empty one — fall back to path fitness:
+        // a plan that has not learned about a peer yet is a gap in our
+        // knowledge, not evidence that the peer is unreachable.
+        let selected = match plan.filter(|p| !p.is_empty()) {
+            Some(plan) => router.select_shard_targets_routed(
+                me,
+                &available,
+                plan,
+                unix_now_secs(),
+                router.shard_target_count(),
+            ),
+            None => router.select_shard_targets(&available),
+        };
         let routes = router.assign_shards(&selected);
         // Enforce disjoint routing constraint across distinct network planes
         let mut disjoint_constraint = net::orbit::DisjointRouteConstraint::new();
@@ -234,6 +380,249 @@ async fn send3_adaptive(
     } else {
         // Fallback to direct send
         send3(sock, primary_dst, sh, ctr, f, tag).await;
+    }
+    Routed::Direct
+}
+
+/// Ship the three RS carriers over the optional transport, one frame each.
+///
+/// The bytes are built exactly as `send_gtf` builds them, so the peer parses
+/// what a UDP send would have delivered: the transport is a *carrier*, not a
+/// second wire format, and nothing about GTF, the sealing or the identity model
+/// changes on this path. Returns `false` when there is no link, which is the
+/// ordinary case and not a failure — the caller then keeps to UDP.
+///
+/// A link that carried at least two of the three shards counts as carried: the
+/// pool reconstructs from any two, so re-sending the set over UDP would only
+/// duplicate bytes the peer already has.
+async fn send3_via_carrier(
+    carrier: &Arc<net::carrier::Carrier>,
+    target_fp: &str,
+    sh: [u8; 4],
+    ctr: u32,
+    f: &[Vec<u8>],
+    tag: &[u8; 16],
+) -> bool {
+    // A build or a run with no transport answers here, before anything is built.
+    // The send below then doubles as the liveness check: a registry with no link
+    // for this peer returns `None` on every shard, which is the same answer a
+    // closed link gives, and both mean "keep to UDP".
+    if !carrier.enabled() {
+        return false;
+    }
+    let mut carried = 0usize;
+    for i in 0..3 {
+        let frame = net::build_gtf_frame(sh, ctr, i as u8, &f[i], tag, false);
+        if carrier.send_frame(target_fp, &frame).await.is_some() {
+            carried += 1;
+        }
+    }
+    if carried < 3 {
+        tracing::debug!(
+            peer = %target_fp,
+            carried,
+            "carrier: partial shard send"
+        );
+    }
+    carried >= 2
+}
+
+/// Build the optional-transport registry (SOTA P1-2).
+///
+/// Off unless `GHOST_QUIC=1`: a second transport is a second port and a second
+/// parse surface, so an operator opts in. `GHOST_QUIC_PORT` overrides the bind.
+#[cfg(feature = "quic")]
+fn build_carrier(nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
+    let enabled = std::env::var("GHOST_QUIC")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !enabled {
+        return Arc::new(net::carrier::Carrier::disabled());
+    }
+    let port = std::env::var("GHOST_QUIC_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(vantablack::ghost::net::quic::QUIC_DEFAULT_PORT);
+    let bind: SocketAddr = format!("0.0.0.0:{port}").parse().expect("valid bind");
+    match vantablack::ghost::net::quic::QuicTransport::listen(bind, Arc::clone(&nc.identity)) {
+        Ok(t) => net::carrier::Carrier::new(Arc::new(t)),
+        Err(e) => {
+            // A transport that cannot bind is not a reason to refuse to run: the
+            // tunnel has a working UDP path either way, and saying so is the
+            // difference between a degraded node and a dead one.
+            tracing::error!(
+                port,
+                "QUIC: cannot bind, continuing without the transport: {e}"
+            );
+            Arc::new(net::carrier::Carrier::disabled())
+        }
+    }
+}
+
+/// A build with no optional transport compiled in.
+#[cfg(not(feature = "quic"))]
+fn build_carrier(_nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
+    Arc::new(net::carrier::Carrier::disabled())
+}
+
+/// The QUIC ingress + dial tasks, spawned where the receive pipeline lives
+/// (SOTA P1-2).
+///
+/// The admission rule is the session table or the beacon-verified address
+/// table — the same rule the relay uses — so a stranger cannot open a carrier
+/// link just by reaching the port. Dialling happens only toward peers ICE has
+/// already measured: a carrier link rides the address ICE verified, and dialling
+/// before that would mean trusting an unauthenticated address with the session.
+///
+/// Ingress feeds `ingest`, the same entry point a UDP datagram takes, so a frame
+/// that arrived over the transport is indistinguishable downstream.
+macro_rules! spawn_carrier_tasks {
+    ($carrier:expr, $rx:expr, $nc:expr, $nat:expr, $peers:expr) => {{
+        #[cfg(feature = "quic")]
+        if $carrier.enabled() {
+            let carrier = Arc::clone($carrier);
+            let rx = Arc::clone($rx);
+            let nc = Arc::clone($nc);
+            let peers = Arc::clone($peers);
+            let nat = Arc::clone($nat);
+
+            // ── Ingress ──
+            tokio::spawn({
+                let carrier = Arc::clone(&carrier);
+                let rx = Arc::clone(&rx);
+                let nc = Arc::clone(&nc);
+                let peers = Arc::clone(&peers);
+                async move {
+                    loop {
+                        let Some(transport) = carrier.transport().cloned() else {
+                            return;
+                        };
+                        let known = {
+                            let nc = Arc::clone(&nc);
+                            let peers = Arc::clone(&peers);
+                            move |fp: &str| nc.sessions.contains_key(fp) || peers.contains_key(fp)
+                        };
+                        let link = match transport.accept_one(known).await {
+                            Ok(l) => l,
+                            Err(e) => {
+                                tracing::debug!("carrier: inbound session refused: {e}");
+                                continue;
+                            }
+                        };
+                        let fp = link.peer_fingerprint().to_string();
+                        let src = link.remote_address();
+                        if let Some(old) = carrier.register(fp.clone(), Arc::clone(&link)) {
+                            old.close();
+                        }
+                        let rx = Arc::clone(&rx);
+                        let carrier = Arc::clone(&carrier);
+                        tokio::spawn(async move {
+                            while let Some(frame) = link.recv_frame().await {
+                                tracing::trace!(peer = %fp, len = frame.len(), "carrier: frame in");
+                                rx.ingest(&frame, src).await;
+                            }
+                            // The link ended: forget it so the tunnel stops
+                            // preferring a carrier that is gone.
+                            carrier.forget(&fp);
+                            tracing::info!(peer = %fp, "carrier: link closed");
+                        });
+                    }
+                }
+            });
+
+            // ── Egress ──
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let Some(transport) = carrier.transport().cloned() else {
+                        return;
+                    };
+                    for (fp, addr) in nat.local_cache() {
+                        if carrier.link(&fp).is_some() {
+                            continue;
+                        }
+                        if !nc.sessions.contains_key(&fp) && !peers.contains_key(&fp) {
+                            continue;
+                        }
+                        match transport.connect(addr, &fp).await {
+                            Ok(link) => {
+                                tracing::info!(peer = %fp, %addr, "carrier: link established");
+                                if let Some(old) = carrier.register(fp.clone(), link) {
+                                    old.close();
+                                }
+                            }
+                            Err(e) => {
+                                // Expected against a peer running without the
+                                // transport, or behind a filter that drops a
+                                // second port. The UDP path is unaffected.
+                                tracing::debug!(peer = %fp, %addr, "carrier: dial failed: {e}");
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }};
+}
+
+/// Ship the three carriers to a peer whose direct checks failed.
+///
+/// One datagram per carrier, each inside its own envelope: the relay forwards
+/// datagrams it cannot read, and the target reassembles the three it receives
+/// into the same ciphertext a direct send would have produced.
+#[allow(clippy::too_many_arguments)]
+async fn send3_via_fallback(
+    nc: &Arc<GhostNode>,
+    sock: &UdpSocket,
+    target_fp: &str,
+    sh: [u8; 4],
+    ctr: u32,
+    f: &[Vec<u8>],
+    tag: &[u8; 16],
+    path: &FallbackPath,
+    turn: Option<&Arc<TurnPath>>,
+) -> Routed {
+    let mut shipped = true;
+    for i in 0..3 {
+        let datagram = net::build_gtf_frame(sh, ctr, i as u8, &f[i], tag, false);
+        let ok = match path {
+            // A route entry is only ever written when a direct path failed, so a
+            // `Direct` value here would mean the route table contradicted itself.
+            FallbackPath::Direct => {
+                debug_assert!(false, "a direct peer must not have a fallback route");
+                false
+            }
+            FallbackPath::MeshRelay {
+                relay_fp,
+                relay_addr,
+            } => {
+                send_datagram_via_relay(nc, sock, relay_fp, relay_addr, target_fp, &datagram).await
+            }
+            FallbackPath::Turn { peer_relayed } => match turn {
+                Some(t) => {
+                    // The peer's own relayed address is the destination; our
+                    // allocation is what carries the datagram to it.
+                    t.send_sealed(*peer_relayed, datagram);
+                    true
+                }
+                None => {
+                    tracing::warn!(
+                        peer = %target_fp,
+                        "fallback: TURN route selected but this node holds no allocation"
+                    );
+                    false
+                }
+            },
+        };
+        shipped &= ok;
+    }
+    if !shipped {
+        return Routed::Unroutable;
+    }
+    match path {
+        FallbackPath::MeshRelay { .. } => Routed::MeshRelay,
+        FallbackPath::Turn { .. } => Routed::Turn,
+        FallbackPath::Direct => Routed::Unroutable,
     }
 }
 
@@ -324,6 +713,7 @@ async fn send_tunnel_frame(
     peer_fp: &str,
     endpoint: SocketAddr,
     tunnel_wire: &[u8],
+    fallback: Option<&Fallback>,
 ) {
     let Some(sess) = nc.sessions.get(peer_fp) else {
         tracing::debug!(peer = %peer_fp, "VPN egress: no session yet — dropped");
@@ -368,7 +758,29 @@ async fn send_tunnel_frame(
     let frame = net::build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
     let mut frame = frame; // set tunnel bit (bit 1) on top of bulk bit (bit 0)
     frame[net::OFFSET_FLAGS] |= 0x02;
-    let _ = nc.socket.send_to(&frame, endpoint).await;
+    // A peer with no direct path carries its tunnel traffic over the same
+    // fallback the control frames use; otherwise a VPN session would connect and
+    // then silently stop moving packets.
+    match fallback.and_then(|f| f.path(peer_fp)) {
+        Some(FallbackPath::MeshRelay {
+            relay_fp,
+            relay_addr,
+        }) => {
+            let _ =
+                send_datagram_via_relay(nc, &nc.socket, &relay_fp, &relay_addr, peer_fp, &frame)
+                    .await;
+        }
+        Some(FallbackPath::Turn { peer_relayed }) => match fallback.and_then(|f| f.turn()) {
+            Some(t) => t.send_sealed(peer_relayed, frame),
+            None => tracing::warn!(
+                peer = %peer_fp,
+                "VPN egress: TURN route with no allocation — frame dropped"
+            ),
+        },
+        Some(FallbackPath::Direct) | None => {
+            let _ = nc.socket.send_to(&frame, endpoint).await;
+        }
+    }
 }
 
 /// Strip the 2-byte length prefix (plus optional parity pad) from a decrypted frame.
@@ -450,29 +862,151 @@ fn rx_push(state: &mut RxState, ctr: u32, payload: Vec<u8>) -> Vec<Vec<u8>> {
     out
 }
 
+/// Optional beacon sections (Phase 1 P1-1). Each is `[4 magic][u16 len][bytes]`,
+/// appended after the 112-byte signed prefix.
+///
+/// The frame is self-describing and validated by *tiling*: a datagram is only
+/// read as sectioned when its sections consume it exactly. That is what lets the
+/// pre-P1-1 fixed layouts keep parsing — see [`parse_beacon_sections`].
+const BEACON_SECTION_ZK: &[u8; 4] = b"ZKPR";
+const BEACON_SECTION_ICE: &[u8; 4] = b"ICEO";
+/// Empty section: "this node will relay for others" (`GHOST_RELAY=1`).
+///
+/// Capability, not address. A relay is reached at the address its beacon came
+/// from — the same socket it forwards on — so carrying an address would let a
+/// peer advertise someone else's. Its presence is the whole message, which is
+/// why the payload must be empty.
+const BEACON_SECTION_RELAY: &[u8; 4] = b"RLYC";
+
+/// How long a measured direct contact stays valid before it must be re-observed.
+/// A NAT mapping is typically torn down after 30–120 s of silence, so a contact
+/// is not treated as permanent.
+const ICE_CONTACT_WINDOW_SECS: f64 = 120.0;
+
+/// Wall-clock seconds since the Unix epoch, the clock `ContactPlan` timestamps
+/// live on.
+fn unix_now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+/// Legacy fixed beacon layouts, still accepted from older peers.
+const BEACON_LEGACY_LEN: usize = 112;
+const BEACON_LEGACY_ZK_LEN: usize = 208;
+
+/// Optional sections carried by an extended beacon.
+struct BeaconSections<'a> {
+    /// `(commitment, proof)` when a ZK membership proof is present.
+    zk: Option<(&'a [u8; 32], &'a [u8])>,
+    /// The sender's ICE offer, as produced by `ice::IceOffer::encode`.
+    ice_offer: Option<&'a str>,
+    /// Whether the sender advertises relay capability.
+    relay_capable: bool,
+}
+
+/// Parse the trailing optional sections of a beacon.
+///
+/// Returns `None` when the datagram uses a legacy fixed layout. This is
+/// deliberately strict: a legacy ZK commitment is 32 random bytes, so a
+/// coincidence could make it look like a section magic. Requiring the sections
+/// to tile the datagram exactly (and the ZK section to be the right size) makes
+/// that coincidence fall back to the legacy interpretation instead of failing
+/// verification.
+fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
+    let mut pos = BEACON_LEGACY_LEN;
+    let mut zk = None;
+    let mut ice_offer = None;
+    let mut relay_capable = false;
+    while pos < amt {
+        if pos + 6 > amt {
+            return None;
+        }
+        let magic = &buf[pos..pos + 4];
+        let len = u16::from_be_bytes([buf[pos + 4], buf[pos + 5]]) as usize;
+        let start = pos + 6;
+        let end = start + len;
+        if end > amt {
+            return None;
+        }
+        if magic == BEACON_SECTION_ZK {
+            if len != 96 {
+                return None;
+            }
+            let commitment: &[u8; 32] = buf[start..start + 32].try_into().ok()?;
+            zk = Some((commitment, &buf[start + 32..end]));
+        } else if magic == BEACON_SECTION_ICE {
+            ice_offer = Some(std::str::from_utf8(&buf[start..end]).ok()?);
+        } else if magic == BEACON_SECTION_RELAY {
+            if len != 0 {
+                return None;
+            }
+            relay_capable = true;
+        } else {
+            return None;
+        }
+        pos = end;
+    }
+    Some(BeaconSections {
+        zk,
+        ice_offer,
+        relay_capable,
+    })
+}
+
+/// Append one optional beacon section.
+fn push_beacon_section(buf: &mut Vec<u8>, magic: &[u8; 4], payload: &[u8]) {
+    buf.extend_from_slice(magic);
+    buf.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    buf.extend_from_slice(payload);
+}
+
 fn build_beacon_packet(
     pk: &[u8; 32],
     signer: impl Fn(&[u8]) -> [u8; 64],
     with_zk: bool,
+    ice_offer: Option<&str>,
+    relay_capable: bool,
 ) -> Vec<u8> {
-    // Signed beacon: [16 magic][32 full Ed25519 pk][64 signature over pk]
-    // If with_zk: appends [32 commitment][64 zk_proof] (208 bytes total)
-    let len = if with_zk { 208 } else { 112 };
-    let mut buf = vec![0u8; len];
+    // Signed prefix: [16 magic][32 full Ed25519 pk][64 signature over pk].
+    let mut buf = vec![0u8; BEACON_LEGACY_LEN];
     buf[0..16].copy_from_slice(BEACON_PREFIX);
     buf[16..48].copy_from_slice(pk);
     let sig = signer(&buf[16..48]);
     buf[48..112].copy_from_slice(&sig);
+
+    if ice_offer.is_none() && !relay_capable && with_zk {
+        // Nothing new to carry: keep the exact legacy 208-byte layout so peers on
+        // older builds still verify this beacon. A node that advertises relay
+        // capability is by definition on the new layout, and an older build
+        // rejects its beacon rather than reading the ZK block at fixed offsets —
+        // which is why capability is opt-in (`GHOST_RELAY=1`) and not the default.
+        let (zk_proof, commitment) = ZkAuthenticator::create_proof(pk, &signer);
+        buf.resize(BEACON_LEGACY_ZK_LEN, 0);
+        buf[112..144].copy_from_slice(&commitment);
+        buf[144..BEACON_LEGACY_ZK_LEN].copy_from_slice(&zk_proof[..64]);
+        return buf;
+    }
+
     if with_zk {
         let (zk_proof, commitment) = ZkAuthenticator::create_proof(pk, &signer);
-        buf[112..144].copy_from_slice(&commitment);
-        buf[144..208].copy_from_slice(&zk_proof[..64]);
+        let mut section = Vec::with_capacity(96);
+        section.extend_from_slice(&commitment);
+        section.extend_from_slice(&zk_proof[..64]);
+        push_beacon_section(&mut buf, BEACON_SECTION_ZK, &section);
+    }
+    if let Some(offer) = ice_offer {
+        push_beacon_section(&mut buf, BEACON_SECTION_ICE, offer.as_bytes());
+    }
+    if relay_capable {
+        push_beacon_section(&mut buf, BEACON_SECTION_RELAY, &[]);
     }
     buf
 }
 
 async fn handle_pkt(
-    node: &GhostNode,
+    node: Arc<GhostNode>,
     peers: &DashMap<String, SocketAddr>,
     pending_hs: &PendingHandshakes,
     sock: &UdpSocket,
@@ -491,6 +1025,8 @@ async fn handle_pkt(
     vpn_mode: Option<&VpnMode>,
     tft: Option<&TitForTatEnforcer>,
     exit_rotator: Option<&ExitIpRotator>,
+    relay_role: Option<&DerpRelay>,
+    fallback_state: Option<&Fallback>,
 ) {
     #[cfg(not(feature = "vpn"))]
     let _ = vpn_mode;
@@ -621,6 +1157,12 @@ async fn handle_pkt(
             fp.clone(),
             Session::new_with_role(d, fp.clone(), SessionRole::Responder),
         );
+        // Keep the relay's address book current: a session is also the strongest
+        // statement that this peer is who it says it is, and its address may have
+        // moved since the beacon that first authorized it.
+        if let Some(relay) = relay_role {
+            relay.authorize(&fp, *src);
+        }
         // VPN: a fresh handshake re-anchors the client's lease (precedence 1)
         // and evicts all per-epoch tunnel state.
         #[cfg(feature = "vpn")]
@@ -694,7 +1236,11 @@ async fn handle_pkt(
             }
 
             peers.insert(fp.clone(), *src);
-            node.sessions.insert(fp.clone(), Session::new(d, fp));
+            node.sessions
+                .insert(fp.clone(), Session::new(d, fp.clone()));
+            if let Some(relay) = relay_role {
+                relay.authorize(&fp, *src);
+            }
             // VPN client: adopt the real session key for tunnel sealing.
             #[cfg(feature = "vpn")]
             if let Some(VpnMode::Client(client, _)) = vpn_mode {
@@ -809,6 +1355,55 @@ async fn handle_pkt(
             }
         }
 
+        // Blind relay (SOTA P1-1 / B22): a decrypted payload may carry a
+        // single-hop envelope addressed to another peer. We hold no key for the
+        // region it carries and must not touch it — the forward is byte-for-byte
+        // by construction, which is the whole security property of the relay.
+        //
+        // The envelope magic is distinct from the onion's (`BLND!` vs `RLY!`), so
+        // the two paths cannot be confused even though the onion's *last* hop also
+        // arrives with a hop count of zero.
+        if let Some(payload) = frame_payload(pt) {
+            if let Some(blind) = relay::parse_blind_frame(payload) {
+                let Some(relay) = relay_role else {
+                    tracing::debug!(
+                        from = %peer_fp,
+                        target = %blind.target_fingerprint,
+                        "Relay: blind envelope received but relaying is not enabled (GHOST_RELAY)"
+                    );
+                    return;
+                };
+                match fallback::relay_hop(relay, &peer_fp, payload) {
+                    Ok(hop) => {
+                        // Length only, never contents: enough to show the relay
+                        // forwarded the frame it was handed, and nothing about it.
+                        tracing::debug!(
+                            from = %peer_fp,
+                            target = %blind.target_fingerprint,
+                            dest = %hop.dest,
+                            opaque_len = hop.bytes.len(),
+                            "Relay: forwarding a sealed frame blindly"
+                        );
+                        if let Err(e) = sock.send_to(&hop.bytes, hop.dest).await {
+                            tracing::debug!(dest = %hop.dest, "Relay: forward failed: {e}");
+                        }
+                        // Transit is the relay's side of the tit-for-tat ledger: a
+                        // peer that uses us as a relay owes us the reciprocal.
+                        if let Some(enforcer) = tft {
+                            enforcer.forwarded_for(&peer_fp, hop.bytes.len() as u64);
+                        }
+                    }
+                    Err(reason) => tracing::debug!(
+                        from = %peer_fp,
+                        target = %blind.target_fingerprint,
+                        ?reason,
+                        "Relay: blind forward refused"
+                    ),
+                }
+                return;
+            }
+        }
+
         // Multi-hop relay: a decrypted payload may carry a relay header.
         // (parse the UNFRAMED payload — the length prefix precedes the header)
         if let Some(payload) = frame_payload(pt) {
@@ -913,7 +1508,7 @@ async fn handle_pkt(
                             if let Some(payload) = frame_payload(&payload) {
                                 if role == SessionRole::Responder && looks_like_dest(payload) {
                                     handle_exit_connect(
-                                        node,
+                                        Arc::clone(&node),
                                         sock,
                                         src,
                                         &key,
@@ -923,6 +1518,7 @@ async fn handle_pkt(
                                         exit_tunnels,
                                         ic,
                                         exit_rotator,
+                                        fallback_state,
                                     )
                                     .await;
                                     return;
@@ -977,7 +1573,7 @@ async fn handle_pkt(
                     return;
                 }
                 handle_exit_connect(
-                    node,
+                    Arc::clone(&node),
                     sock,
                     src,
                     &key,
@@ -987,6 +1583,7 @@ async fn handle_pkt(
                     exit_tunnels,
                     ctr,
                     exit_rotator,
+                    fallback_state,
                 )
                 .await;
                 return;
@@ -1021,7 +1618,7 @@ async fn handle_pkt(
 /// Exit node: accept a SOCKS5 CONNECT, open the destination TCP connection,
 /// reply "OK" over the mesh, and relay bytes in both directions.
 async fn handle_exit_connect(
-    node: &GhostNode,
+    node: Arc<GhostNode>,
     sock: &UdpSocket,
     src: &SocketAddr,
     key: &[u8; 32],
@@ -1031,6 +1628,7 @@ async fn handle_exit_connect(
     tunnels: &ExitTunnels,
     connect_ctr: u32,
     exit_rotator: Option<&ExitIpRotator>,
+    fallback_state: Option<&Fallback>,
 ) {
     let dest = String::from_utf8_lossy(dest).into_owned();
     let (host, port) = match dest.rsplit_once(':') {
@@ -1127,7 +1725,26 @@ async fn handle_exit_connect(
         .map(|s| s.next_tx_counter())
         .unwrap_or(2);
     let (f, tag) = enc_split(key, ok_ctr, sh, NonceDirection::ResponderToInitiator, b"OK");
-    send3(sock, src, *sh, ok_ctr, &f, &tag).await;
+    // The initiator may have reached us *through* a relay, in which case `src` is
+    // the relay's address and a direct reply would go nowhere. Route it the same
+    // way the data path is routed.
+    match fallback_state.and_then(|f| f.path(peer_fp)) {
+        Some(path) => {
+            let _ = send3_via_fallback(
+                &node,
+                sock,
+                peer_fp,
+                *sh,
+                ok_ctr,
+                &f,
+                &tag,
+                &path,
+                fallback_state.and_then(|f| f.turn()),
+            )
+            .await;
+        }
+        None => send3(sock, src, *sh, ok_ctr, &f, &tag).await,
+    }
 
     let tkey = exit_tunnel_key(src, sh);
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -1161,6 +1778,11 @@ async fn handle_exit_connect(
     let key2 = *key;
     let addr2 = *src;
     let tkey2 = tkey.clone();
+    // Replies take the same route the request did, resolved once: a peer that
+    // reached us through a relay cannot be answered directly.
+    let node3 = Arc::clone(&node);
+    let route2 = fallback_state.and_then(|f| f.path(peer_fp));
+    let turn2 = fallback_state.and_then(|f| f.turn().cloned());
     tokio::spawn(async move {
         let (mut rd, mut wr) = stream.into_split();
         let sock3 = sock2;
@@ -1181,7 +1803,23 @@ async fn handle_exit_connect(
                             NonceDirection::ResponderToInitiator,
                             &rbuf[..n],
                         );
-                        send3(&sock3, &addr2, sh2, ctr, &f, &tag).await;
+                        match route2.as_ref() {
+                            Some(path) => {
+                                let _ = send3_via_fallback(
+                                    &node3,
+                                    &sock3,
+                                    &fp2,
+                                    sh2,
+                                    ctr,
+                                    &f,
+                                    &tag,
+                                    path,
+                                    turn2.as_ref(),
+                                )
+                                .await;
+                            }
+                            None => send3(&sock3, &addr2, sh2, ctr, &f, &tag).await,
+                        }
                     }
                 }
             }
@@ -1875,6 +2513,13 @@ async fn run_node(
 
     let node = GhostNode::new(&ba).await?;
     node.flow_controller.set_transit_rate_mbps(tm);
+    // The rate above is the operator's *policy* ceiling. The governor is the
+    // control half: it measures what the paths actually carry and lowers the
+    // effective rate to match, so a node whose links degrade stops accepting
+    // transit at the rate it was configured with.
+    let transit_governor = Arc::new(vantablack::ghost::net::cc::TransitGovernor::new(
+        tm.saturating_mul(125_000),
+    ));
     tracing::info!(fingerprint = %node.fingerprint(), address = %node.local_addr, "Node ready");
 
     // ── BOOTSTRAP SEEDS ──
@@ -1918,8 +2563,185 @@ async fn run_node(
         );
     }
 
-    // WIRED: Category A - NAT hole puncher
-    let nat_puncher = Arc::new(vantablack::ghost::net::mesh::NatHolePuncher::new());
+    // Category A — NAT traversal (ICE over STUN).
+    //
+    // A STUN server is what makes a NATed node reachable: without one there is
+    // no server-reflexive address to advertise, so say so up front instead of
+    // letting hole-punching fail opaquely later.
+    let stun_server = std::env::var("GHOST_STUN_SERVER")
+        .ok()
+        .and_then(|v| v.parse::<SocketAddr>().ok());
+    let mut nat_puncher = vantablack::ghost::net::mesh::NatHolePuncher::new();
+    match stun_server {
+        Some(server) => {
+            tracing::info!(server = %server, "STUN: configured for NAT traversal");
+            nat_puncher = nat_puncher.with_stun_server(server);
+        }
+        None => tracing::warn!(
+            "STUN: no GHOST_STUN_SERVER set — public-address discovery and ICE \
+             reflexive candidates are unavailable; only direct/LAN paths will work"
+        ),
+    }
+    nat_puncher.set_local_fingerprint(nc.fingerprint());
+
+    // Dedicated NAT-traversal socket.
+    //
+    // ICE checks must not share the mesh's receive path: two tasks calling
+    // `recv_from` on one socket split datagrams nondeterministically, which is
+    // indistinguishable from random packet loss. The candidates below describe
+    // *this* socket, and the checks run on it.
+    let nat_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    let nat_local = nat_socket.local_addr()?;
+    let probe_target = stun_server.unwrap_or_else(|| {
+        format!("{}:{}", BEACON_MULTICAST_ADDR, BEACON_PORT)
+            .parse()
+            .expect("the beacon address is a valid socket address")
+    });
+    // A wildcard bind does not say which interface we would send from, so ask
+    // the routing table (a UDP `connect` is a route lookup only).
+    let host_candidate = match vantablack::ghost::net::ice::probe_local_addr(probe_target) {
+        Ok(a) => SocketAddr::new(a.ip(), nat_local.port()),
+        Err(e) => {
+            tracing::debug!(
+                "NAT traversal: route probe failed ({e}); advertising the bound address"
+            );
+            nat_local
+        }
+    };
+
+    // Our advertised offer: stable credentials plus whatever candidates we can
+    // gather. Credentials must not rotate — a peer authenticates its checks
+    // against the credentials it received from us.
+    let mut offer_agent = vantablack::ghost::net::ice::IceAgent::new(
+        vantablack::ghost::net::ice::IceRole::Controlling,
+    );
+    offer_agent.set_local_credentials(nat_puncher.local_credentials().clone());
+    offer_agent.add_host_candidate(host_candidate, host_candidate);
+    if let Some(server) = stun_server {
+        match offer_agent
+            .gather_reflexive(&nat_socket, server, Duration::from_secs(3))
+            .await
+        {
+            Ok(c) => tracing::info!(public = %c.addr, "STUN: public address discovered"),
+            Err(e) => tracing::warn!(server = %server, "STUN: discovery failed: {e}"),
+        }
+    }
+
+    // Opportunistic: ask the local gateway to open the port for us (SOTA P1-1).
+    // A granted mapping makes us reachable without either side punching anything,
+    // so the address becomes an ordinary candidate — it *is* our public address,
+    // however it was learned. Failure is the common case (UPnP disabled, CGNAT, an
+    // enterprise gateway) and is logged, not raised: ICE still runs.
+    if let std::net::IpAddr::V4(local_v4) = host_candidate.ip() {
+        match upnp::opportunistic_public_addr(local_v4, nat_local.port()).await {
+            Some(public) => {
+                tracing::info!(
+                    public = %public,
+                    "UPnP/NAT-PMP: gateway mapping granted — advertising it as a candidate"
+                );
+                offer_agent.add_server_reflexive_candidate(host_candidate, public, None);
+                // A lease is not permanent, and a mapping that quietly expires
+                // leaves a candidate in our offer that no peer can reach.
+                let port = nat_local.port();
+                tokio::spawn(async move {
+                    upnp::renew_udp_mapping(local_v4, port).await;
+                });
+            }
+            None => tracing::debug!("UPnP/NAT-PMP: {}", upnp::describe_attempt(None)),
+        }
+    }
+    // ── TURN allocation (SOTA P1-1) ──
+    //
+    // The last rung of the fallback ladder. Configured, never assumed: without
+    // `GHOST_TURN_SERVER` (plus credentials) nothing here runs and the node behaves
+    // exactly as before. An allocation gives us an address on the public internet
+    // that peers can reach even when both ends are behind address-and-port
+    // dependent NATs, which is the case ICE cannot solve on its own.
+    let turn_configured = std::env::var("GHOST_TURN_SERVER")
+        .ok()
+        .and_then(|v| v.parse::<SocketAddr>().ok());
+    let (turn_path, mut turn_rx): (
+        Option<Arc<TurnPath>>,
+        Option<tokio::sync::mpsc::UnboundedReceiver<(SocketAddr, Vec<u8>)>>,
+    ) = match (
+        turn_configured,
+        std::env::var("GHOST_TURN_USER").ok(),
+        std::env::var("GHOST_TURN_PASS").ok(),
+    ) {
+        (Some(server), Some(user), Some(pass)) => {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            match TurnPath::establish(server, user, pass, Duration::from_secs(5), tx).await {
+                Ok(path) => {
+                    tracing::info!(
+                        server = %server,
+                        relayed = %path.relayed_addr(),
+                        lifetime_secs = path.granted_lifetime().as_secs(),
+                        "TURN: allocation established — advertising it as a relay candidate"
+                    );
+                    // The allocation is part of our own offer: a peer that cannot
+                    // reach us directly can reach *it*, and the server hands us
+                    // what arrives. This is the address, not the server's.
+                    offer_agent.add_relay_candidate(host_candidate, path.relayed_addr());
+                    (Some(path), Some(rx))
+                }
+                Err(e) => {
+                    tracing::warn!(server = %server, "TURN: allocation failed: {e}");
+                    (None, None)
+                }
+            }
+        }
+        (Some(_), _, _) => {
+            tracing::warn!(
+                "TURN: GHOST_TURN_SERVER set but GHOST_TURN_USER/GHOST_TURN_PASS are missing \
+                 — skipping the allocation"
+            );
+            (None, None)
+        }
+        _ => (None, None),
+    };
+
+    let our_offer = vantablack::ghost::net::ice::IceOffer::new(
+        nat_puncher.local_credentials().clone(),
+        offer_agent.local_candidates().to_vec(),
+        // Advisory only: the real role is derived from the two fingerprints so
+        // both sides agree without negotiation.
+        true,
+    );
+    tracing::info!(
+        candidates = offer_agent.local_candidates().len(),
+        "NAT traversal: advertising an ICE offer in beacons"
+    );
+    let our_offer_text = Arc::new(std::sync::RwLock::new(our_offer.encode()));
+
+    let nat_puncher = Arc::new(nat_puncher);
+
+    // ── Relay role + fallback routes (SOTA P1-1 / B22) ──
+    //
+    // A node relays for others only when asked (`GHOST_RELAY=1`): forwarding
+    // someone else's traffic costs transit bandwidth, and that should be a
+    // deliberate operational choice rather than a surprise. The quota is the
+    // same `FlowController` that bounds our own transit traffic.
+    let relay_enabled = std::env::var("GHOST_RELAY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let relay_role: Option<Arc<DerpRelay>> = if relay_enabled {
+        tracing::info!(
+            "DERP: relay role enabled — forwarding sealed frames for beacon-verified peers"
+        );
+        Some(Arc::new(DerpRelay::new(Arc::clone(&nc.flow_controller))))
+    } else {
+        None
+    };
+    // Which unreachable peers go through which relay. Empty until a punch fails,
+    // and cleared the moment a direct path is measured again.
+    let fallback_routes = Arc::new(Fallback::new(turn_path.clone()));
+
+    // ── Optional QUIC transport (SOTA P1-2) ──
+    //
+    // The registry exists in every build so the egress sites can ask one question
+    // per frame without a `cfg` of their own; whether it holds a transport is the
+    // operator's call, and without one every answer is "nothing to send on".
+    let carrier = build_carrier(&nc);
 
     // WIRED: Category B - Long-stream Forward Error Correction (LDPC Codec)
     let ldpc_enabled = std::env::var("GHOST_LDPC_FEC")
@@ -2769,6 +3591,14 @@ async fn run_node(
         let de = Arc::clone(&default_exit);
         let srouter_socks = Arc::clone(&shard_router);
         let cs_socks = Arc::clone(&consumer_settings);
+        // The tunnel's egress consults the fallback table, so the proxy needs it
+        // too: a peer reachable only through a relay must carry the tunnel, not
+        // just the control frames.
+        let fallback_routes_socks = Arc::clone(&fallback_routes);
+        // The tunnel's egress prefers the optional transport where a link exists,
+        // so the proxy holds it too (SOTA P1-2).
+        let carrier_socks = Arc::clone(&carrier);
+        let turn_path_socks = turn_path.clone();
         let sp = socks_port;
         tokio::spawn(async move {
             let lis = tokio::net::TcpListener::bind(("127.0.0.1", sp))
@@ -2785,6 +3615,9 @@ async fn run_node(
                     let de2 = Arc::clone(&de);
                     let shard_router_proxy = Arc::clone(&srouter_socks);
                     let cs2 = Arc::clone(&cs_socks);
+                    let fallback_routes_proxy = Arc::clone(&fallback_routes_socks);
+                    let carrier_proxy = Arc::clone(&carrier_socks);
+                    let turn_path_proxy = turn_path_socks.clone();
                     tokio::spawn(async move {
                         let mut b = [0u8; 2];
                         if s.read_exact(&mut b).await.is_err() || b[0] != 5 {
@@ -2904,7 +3737,23 @@ async fn run_node(
                         tracing::info!(dest = %dest, "SOCKS5 CONNECT");
                         let (f, tag) =
                             enc_split(&key, connect_ctr, &sh, dir_for(role), dest.as_bytes());
-                        send3(&nn.socket, &tgt, sh, connect_ctr, &f, &tag).await;
+                        match fallback_routes_proxy.path(&fp) {
+                            Some(path) => {
+                                let _ = send3_via_fallback(
+                                    &nn,
+                                    &nn.socket,
+                                    &fp,
+                                    sh,
+                                    connect_ctr,
+                                    &f,
+                                    &tag,
+                                    &path,
+                                    turn_path_proxy.as_ref(),
+                                )
+                                .await;
+                            }
+                            None => send3(&nn.socket, &tgt, sh, connect_ctr, &f, &tag).await,
+                        }
                         // Wait for the exit's framed "OK" (delivered via handle_pkt).
                         let mut connected = false;
                         for _ in 0..50 {
@@ -2938,6 +3787,12 @@ async fn run_node(
                         let chh2 = Arc::clone(&chh);
                         let srouter = Arc::clone(&shard_router_proxy);
                         let aa_proxy = Arc::clone(&aa);
+                        // The tunnel's egress consults the fallback table: a peer
+                        // that is only reachable through a relay must carry the
+                        // tunnel too, not just the control frames.
+                        let routes_out = Arc::clone(&fallback_routes_proxy);
+                        let turn_path_out = turn_path_proxy.clone();
+                        let carrier_out = Arc::clone(&carrier_proxy);
                         tokio::spawn(async move {
                             let mut rbuf = vec![0u8; 900]; // keeps each RS shard ≤ 486 B privacy-frame cap
                             loop {
@@ -2956,7 +3811,11 @@ async fn run_node(
                                             NonceDirection::InitiatorToResponder,
                                             &rbuf[..n],
                                         );
-                                        send3_adaptive(
+                                        let me = nn2.fingerprint();
+                                        let plan = nn2.contact_plan.read().await;
+                                        let route = routes_out.path(&fp_out);
+                                        let _ = send3_adaptive(
+                                            &nn2,
                                             &nn2.socket,
                                             &tgt_out,
                                             &fp_out,
@@ -2966,6 +3825,11 @@ async fn run_node(
                                             &tag,
                                             &srouter,
                                             &aa_proxy,
+                                            Some(&plan),
+                                            &me,
+                                            route.as_ref(),
+                                            turn_path_out.as_ref(),
+                                            Some(&carrier_out),
                                         )
                                         .await;
                                     }
@@ -2993,6 +3857,14 @@ async fn run_node(
     // ── BEACON SENDER (UDP multicast) ──
     {
         let nc = Arc::clone(&nc);
+        let offers = Arc::clone(&our_offer_text);
+        let router = Arc::clone(&shard_router);
+        let nat_p = Arc::clone(&nat_puncher);
+        let nat_sock = Arc::clone(&nat_socket);
+        let ledger = Arc::clone(&tft);
+        let governor = Arc::clone(&transit_governor);
+        let relay_role = relay_role.clone();
+        let advertises_relay = relay_role.is_some();
         tokio::spawn(async move {
             let beacon_sock = match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,
@@ -3007,22 +3879,100 @@ async fn run_node(
             let zk_enabled = std::env::var("GHOST_ZK_DISCOVERY")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
+            // Cumulative transit egress per peer as of the last tick, so the
+            // delivery rate is a delta and not a lifetime total.
+            let mut last_forwarded: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
             loop {
+                let secs = nc.keepalive_interval_secs.load(Ordering::Relaxed);
+                let interval = Duration::from_secs(secs.clamp(1, 300));
+
+                // ── Congestion-control tick ──
+                // The beacon cadence is also the control cadence. Every signal
+                // below is a measurement, not a setting: ICE's connectivity
+                // checks time the round trip of the very path the shards will
+                // use, and the tit-for-tat ledger counts the transit bytes
+                // actually forwarded for each peer.
+                let connected = nat_p.local_cache();
+                for (fp, _addr) in &connected {
+                    if let Some(rtt) = nat_p.selected_rtt(fp) {
+                        router.record_success(fp, rtt.as_micros() as f64);
+                    }
+                    let (forwarded_for_them, _, _, _) = ledger.peer_stats(fp);
+                    let previous = last_forwarded
+                        .insert(fp.clone(), forwarded_for_them)
+                        .unwrap_or(forwarded_for_them);
+                    let delta = forwarded_for_them.saturating_sub(previous);
+                    if delta > 0 {
+                        router.record_delivery(fp, delta, interval);
+                    }
+                }
+                // Open (and hold open) a NAT mapping toward every relay we know.
+                // Without it the relay's forwarded frame is filtered before it can
+                // reach us, and the fallback would look like it had nowhere to go.
+                if let Some(relay) = relay_role.as_ref() {
+                    let addrs: Vec<SocketAddr> = relay
+                        .relay_candidates()
+                        .into_iter()
+                        .map(|(_, a)| a)
+                        .collect();
+                    if !addrs.is_empty() {
+                        let n = nat_p.send_relay_keepalives(&nat_sock, &addrs).await;
+                        tracing::debug!(relays = n, "NAT: relay pinholes refreshed");
+                    }
+                }
+
+                let rate = governor.apply(&nc.flow_controller, &router.live_path_rates());
+                tracing::debug!(
+                    rate_bps = rate,
+                    ceiling_bps = governor.ceiling_bps(),
+                    paths = governor.paths_seen(),
+                    connected_peers = connected.len(),
+                    "Transit shaper retuned from measured path capacity"
+                );
+
+                // The same two measurements keep the contact plan honest: a CGR
+                // route is only as good as the link latency and capacity on it,
+                // and both are now observed rather than assumed. Without this a
+                // contact registered once at connect time would keep its first
+                // RTT forever while the path degraded around it.
+                {
+                    let me = nc.fingerprint();
+                    let now = unix_now_secs();
+                    let mut plan = nc.contact_plan.write().await;
+                    for (fp, _addr) in &connected {
+                        let Some(rtt) = nat_p.selected_rtt(fp) else {
+                            continue;
+                        };
+                        plan.observe_link(
+                            &me,
+                            fp,
+                            rtt,
+                            now,
+                            ICE_CONTACT_WINDOW_SECS,
+                            router.path_rate_bps(fp),
+                        );
+                    }
+                }
+
                 if nc.beacon_enabled.load(Ordering::Relaxed) {
                     // Beacons are signed with the device identity so a forged
                     // fingerprint can never trigger an auto-handshake.
                     // When GHOST_ZK_DISCOVERY=1, a zero-knowledge membership proof is attached.
+                    // Carry our ICE offer so a discoverer can authenticate
+                    // connectivity checks against us immediately.
+                    let offer_text = offers.read().ok().map(|g| g.clone());
                     let beacon = build_beacon_packet(
                         &nc.identity.public_key_bytes(),
                         |d| nc.identity.sign(d).to_bytes(),
                         zk_enabled,
+                        offer_text.as_deref(),
+                        advertises_relay,
                     );
                     if let Err(e) = beacon_sock.send_to(&beacon, mc_addr).await {
                         tracing::debug!("Beacon send error: {e}");
                     }
                 }
-                let secs = nc.keepalive_interval_secs.load(Ordering::Relaxed);
-                let interval = Duration::from_secs(secs.clamp(1, 300));
                 sleep(interval).await;
             }
         });
@@ -3035,6 +3985,10 @@ async fn run_node(
         let peers = Arc::clone(&addrs);
         let rl = Arc::clone(&revocation_list);
         let nat_p = Arc::clone(&nat_puncher);
+        let nat_sock = Arc::clone(&nat_socket);
+        let router = Arc::clone(&shard_router);
+        let relay_role = relay_role.clone();
+        let routes = Arc::clone(&fallback_routes);
         tokio::spawn(async move {
             let zk_required = std::env::var("GHOST_ZK_DISCOVERY")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -3084,28 +4038,186 @@ async fn run_node(
                         continue;
                     }
 
-                    // WIRED: ZK proof verification if present or required
-                    if amt >= 208 {
-                        let mut commitment = [0u8; 32];
-                        commitment.copy_from_slice(&buf[112..144]);
-                        let zk_proof = &buf[144..208];
-                        if !ZkAuthenticator::verify_proof(&pk, zk_proof, &commitment) {
-                            tracing::warn!(peer = %src, "Beacon ZK proof verification failed — dropped");
-                            continue;
+                    // Optional trailing sections (Phase 1 P1-1): a ZK membership
+                    // proof, the sender's ICE offer, and whether the sender is
+                    // willing to relay. A beacon with none of them keeps the
+                    // legacy fixed layout.
+                    let mut advertises_relay = false;
+                    let peer_offer = match parse_beacon_sections(&buf, amt) {
+                        Some(sections) => {
+                            advertises_relay = sections.relay_capable;
+                            match sections.zk {
+                                Some((commitment, proof)) => {
+                                    if !ZkAuthenticator::verify_proof(&pk, proof, commitment) {
+                                        tracing::warn!(peer = %src, "Beacon ZK proof verification failed — dropped");
+                                        continue;
+                                    }
+                                }
+                                None if zk_required => {
+                                    tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a ZK proof");
+                                    continue;
+                                }
+                                None => {}
+                            }
+                            sections.ice_offer.map(str::to_string)
                         }
-                    } else if zk_required {
-                        tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires 208-byte ZK proof beacon");
-                        continue;
-                    }
+                        None => {
+                            // Legacy layout: the ZK block sits at fixed offsets.
+                            if amt >= BEACON_LEGACY_ZK_LEN {
+                                let mut commitment = [0u8; 32];
+                                commitment.copy_from_slice(&buf[112..144]);
+                                let zk_proof = &buf[144..BEACON_LEGACY_ZK_LEN];
+                                if !ZkAuthenticator::verify_proof(&pk, zk_proof, &commitment) {
+                                    tracing::warn!(peer = %src, "Beacon ZK proof verification failed — dropped");
+                                    continue;
+                                }
+                            } else if zk_required {
+                                tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a ZK proof");
+                                continue;
+                            }
+                            None
+                        }
+                    };
                     let beacon_fp = hex::encode(&pk[..8]);
                     if beacon_fp == local_fp {
                         continue;
                     }
                     tracing::info!(peer = %src, fingerprint = %beacon_fp, "Discovered via beacon");
 
-                    // WIRED: Register discovered peer with NatHolePuncher
                     if let Ok(local_sa) = nc.local_addr.parse::<SocketAddr>() {
                         nat_p.register_peer(&beacon_fp, src, local_sa);
+                    }
+
+                    // Relay bookkeeping (SOTA P1-1).
+                    //
+                    // A peer that advertises relay capability becomes a relay we
+                    // may use; its address is the one its beacon arrived from,
+                    // which is the socket it forwards on. A *verified* beacon is
+                    // also what authorizes a peer to relay through us: the
+                    // fingerprint is derived from the Ed25519 key the signature
+                    // just covered, so this is the same identity check the
+                    // auto-handshake below relies on, and the transit quota still
+                    // bounds what any one peer can push through us.
+                    if let Some(relay) = relay_role.as_ref() {
+                        if advertises_relay {
+                            relay.add_relay_candidate(&beacon_fp, src);
+                            tracing::debug!(relay = %beacon_fp, "DERP: peer advertises relay capability");
+                        }
+                        relay.authorize(&beacon_fp, src);
+                    }
+
+                    // Install the peer's offer and start authenticated checks.
+                    // Both sides learn the other's offer from beacons, so this is
+                    // the point at which a direct path can be attempted at all.
+                    if let Some(offer_text) = peer_offer {
+                        match vantablack::ghost::net::ice::IceOffer::decode(&offer_text) {
+                            Ok(offer) => {
+                                // The peer's own relayed address, if it holds a
+                                // TURN allocation: that is where a TURN fallback
+                                // would have to send, not our own allocation.
+                                let peer_turn = offer
+                                    .candidates
+                                    .iter()
+                                    .find(|c| {
+                                        c.ctype == vantablack::ghost::net::ice::CandidateType::Relay
+                                    })
+                                    .map(|c| c.addr);
+                                nat_p.set_ice_offer(&beacon_fp, offer);
+                                if !nat_p.is_connected(&beacon_fp) {
+                                    let np = Arc::clone(&nat_p);
+                                    let sock = Arc::clone(&nat_sock);
+                                    let fp = beacon_fp.clone();
+                                    let node = Arc::clone(&nc);
+                                    let me = local_fp.clone();
+                                    let r = Arc::clone(&router);
+                                    let routes = Arc::clone(&routes);
+                                    let relay_candidates: Vec<(String, SocketAddr)> = relay_role
+                                        .as_ref()
+                                        .map(|r| r.relay_candidates())
+                                        .unwrap_or_default();
+                                    // Our own allocation is the transport; the
+                                    // peer's is the destination.
+                                    let turn_relayed = peer_turn;
+                                    tokio::spawn(async move {
+                                        if np.punch_hole(&sock, &fp).await {
+                                            tracing::info!(peer = %fp, "ICE: direct path established");
+                                            // A measured path supersedes any fallback: direct
+                                            // is cheaper and is what the ladder prefers.
+                                            routes.clear(&fp);
+                                            // The completed check measured a round
+                                            // trip, so register it as a real
+                                            // contact: from here the CGR router
+                                            // routes on observations rather than
+                                            // on assumptions (SOTA P1-3).
+                                            if let Some(rtt) = np.selected_rtt(&fp) {
+                                                node.contact_plan.write().await.observe_link(
+                                                    &me,
+                                                    &fp,
+                                                    rtt,
+                                                    unix_now_secs(),
+                                                    ICE_CONTACT_WINDOW_SECS,
+                                                    0.0,
+                                                );
+                                                tracing::debug!(
+                                                    peer = %fp,
+                                                    rtt_ms = rtt.as_millis(),
+                                                    "CGR: direct contact registered from measured RTT"
+                                                );
+                                            }
+                                        } else {
+                                            // A failed punch is not a silent event, and it
+                                            // is not the end of the path either: hand the
+                                            // peer to the fallback ladder (SOTA P1-1 / B22).
+                                            // The router must still stop treating this path
+                                            // as usable — that is a measured loss, and it
+                                            // accumulates across beacon intervals until the
+                                            // path falls below the selection threshold.
+                                            r.record_loss(&fp);
+                                            let chosen = fallback::choose_fallback(
+                                                &me,
+                                                &fp,
+                                                &relay_candidates,
+                                                turn_relayed,
+                                            );
+                                            match chosen {
+                                                Some(path) => {
+                                                    // `set` refuses a TURN route when this
+                                                    // node holds no allocation: recording
+                                                    // one would black-hole every send.
+                                                    if routes.set(&fp, path.clone()) {
+                                                        tracing::warn!(
+                                                            peer = %fp,
+                                                            path = %path.label(),
+                                                            "ICE: no direct path — every candidate pair failed; \
+                                                             falling back to a relay"
+                                                        );
+                                                    } else {
+                                                        tracing::warn!(
+                                                            peer = %fp,
+                                                            "ICE: peer advertises a TURN relay but this node \
+                                                             holds no allocation (GHOST_TURN_*) — unreachable"
+                                                        );
+                                                    }
+                                                }
+                                                None => {
+                                                    routes.clear(&fp);
+                                                    tracing::warn!(
+                                                        peer = %fp,
+                                                        "ICE: no direct path and no relay available \
+                                                         (no mesh relay advertises capability and no TURN \
+                                                         allocation is configured) — this peer is unreachable"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            Err(e) => tracing::warn!(
+                                peer = %src,
+                                "Beacon carried an invalid ICE offer: {e}"
+                            ),
+                        }
                     }
 
                     // WIRED: Check revocation list before auto-handshaking
@@ -3153,12 +4265,156 @@ async fn run_node(
     }
 
     // ── PACKET RECEIVER (uses LocklessDispatcher for parallel dispatch) ──
-    let nr = Arc::clone(&nc);
-    let pa = Arc::clone(&addrs);
-    let sp2 = Arc::clone(&spool);
-    let phs = Arc::clone(&pending_hs);
-    let rl2 = Arc::clone(&revocation_list);
-    let rep2 = Arc::clone(&reputation_matrix);
+    //
+    // Everything the receive path needs, so that *any* socket carrying sealed
+    // GTF frames for us can feed the same pipeline. Two sources exist in Phase 1:
+    // the mesh socket, and a TURN allocation's socket once the server relays a
+    // peer's datagrams to us. Giving them one entry point is what keeps a
+    // relayed frame indistinguishable from a direct one — and keeps the two from
+    // drifting apart as the receive path changes.
+    struct RxContext {
+        node: Arc<GhostNode>,
+        peers: Arc<DashMap<String, SocketAddr>>,
+        spool: Arc<DashMap<u32, Vec<Option<Vec<u8>>>>>,
+        pending_hs: PendingHandshakes,
+        revocation_list: Arc<RevocationList>,
+        reputation: Arc<PoissonReputationMatrix>,
+        vpn: Option<VpnMode>,
+        exit_tunnels: ExitTunnels,
+        sessions_rx: SessionChannels,
+        rx_state_map: RxStateMap,
+        connect_acks: ConnectAcks,
+        connect_ok_ctrs: ConnectOkCtrs,
+        trusted_exits: Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+        psk: Option<[u8; 32]>,
+        tft: Arc<TitForTatEnforcer>,
+        rotator: Option<Arc<ExitIpRotator>>,
+        relay_role: Option<Arc<DerpRelay>>,
+        /// Which peers need a relay, and the allocation that carries them.
+        fallback: Option<Arc<Fallback>>,
+        dispatcher: Arc<net::dispatcher::LocklessDispatcher>,
+        /// The socket replies leave from. For a datagram the TURN server relayed
+        /// to us this is still the mesh socket: the peer reached us through the
+        /// relay, so its next frame arrives the same way, and the data path back
+        /// to it is routed by the fallback table rather than by this address.
+        socket: Arc<UdpSocket>,
+    }
+
+    impl RxContext {
+        /// Pipe one received datagram into the tunnel.
+        async fn ingest(&self, datagram: &[u8], src: SocketAddr) {
+            let amt = datagram.len();
+            if amt < net::MIN_FRAME_SIZE {
+                return;
+            }
+            let _ = self.node.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
+            let _ = self
+                .node
+                .stats
+                .bytes_recv
+                .fetch_add(amt as u64, Ordering::Relaxed);
+            // Dispatch through lockless multi-worker session hash queue
+            let _ = self.dispatcher.dispatch(datagram, src);
+            let ctr = parse_packet_counter(datagram);
+            // Tunnel bulk frames (flags bit 1) are single-frame
+            // datagrams: no RS sharding, no spool. They must bypass the
+            // 2-of-3 shard pool — in it they would never assemble and be
+            // silently dropped. Dispatch straight to handle_pkt.
+            #[cfg(feature = "vpn")]
+            if net::parse_flags(datagram) & 0x02 != 0 {
+                let pe = net::BULK_OFFSET_AUTH_TAG_START.min(amt);
+                if pe <= net::BULK_OFFSET_PAYLOAD_START {
+                    return;
+                }
+                if let Some(sd) = unframe(&datagram[net::BULK_OFFSET_PAYLOAD_START..pe]) {
+                    self.deliver(ctr, sd, src).await;
+                }
+                return;
+            }
+            #[cfg(not(feature = "vpn"))]
+            let _ = &self.vpn;
+            let si = datagram[net::OFFSET_SHARD_INDEX] as usize;
+            if si > 2 {
+                return;
+            }
+            let ats = if amt >= GTF_BULK_SIZE {
+                net::BULK_OFFSET_AUTH_TAG_START
+            } else {
+                net::OFFSET_AUTH_TAG_START
+            };
+            let pe = ats.min(amt);
+            if pe <= OFFSET_PAYLOAD_START {
+                return;
+            }
+            let Some(sd) = unframe(&datagram[OFFSET_PAYLOAD_START..pe]) else {
+                return;
+            };
+            // This path runs concurrently: `assemble` is what decides which of
+            // the (up to) three carriers completes a frame, and it takes the
+            // reconstructed ciphertext forward exactly once.
+            if let Some(r) = assemble(&self.spool, ctr, si, sd).await {
+                if std::env::var("GGN_DEBUG_RX").is_ok() {
+                    tracing::info!("assembled frame ctr={ctr} si={si} len={}", r.len());
+                }
+                self.deliver(ctr, r, src).await;
+            } else if std::env::var("GGN_DEBUG_RX").is_ok() {
+                tracing::info!("assemble dropped ctr={ctr} si={si}");
+            }
+        }
+
+        /// Hand a decrypted-frame candidate to `handle_pkt` on its own task.
+        ///
+        /// Spawned rather than awaited: `handle_pkt` can block on session locks
+        /// and tunnel writes, and the receive loop must stay able to read the
+        /// socket while that happens.
+        async fn deliver(&self, ctr: u32, payload: Vec<u8>, src: SocketAddr) {
+            let node = Arc::clone(&self.node);
+            let peers = Arc::clone(&self.peers);
+            let pending_hs = Arc::clone(&self.pending_hs);
+            let sock = Arc::clone(&self.socket);
+            let rl = Arc::clone(&self.revocation_list);
+            let rep = Arc::clone(&self.reputation);
+            let et = Arc::clone(&self.exit_tunnels);
+            let sc = Arc::clone(&self.sessions_rx);
+            let rsm = Arc::clone(&self.rx_state_map);
+            let ca = Arc::clone(&self.connect_acks);
+            let coc = Arc::clone(&self.connect_ok_ctrs);
+            let te = Arc::clone(&self.trusted_exits);
+            let tft = Arc::clone(&self.tft);
+            let rot = self.rotator.clone();
+            let relay_role = self.relay_role.clone();
+            let fallback_state = self.fallback.clone();
+            let vpn = self.vpn.clone();
+            let psk = self.psk;
+            tokio::spawn(async move {
+                handle_pkt(
+                    node,
+                    &peers,
+                    &pending_hs,
+                    &sock,
+                    ctr,
+                    &payload,
+                    &src,
+                    Some(&rl),
+                    Some(&*rep),
+                    &et,
+                    &sc,
+                    &rsm,
+                    &ca,
+                    &coc,
+                    &te,
+                    psk,
+                    vpn.as_ref(),
+                    Some(&*tft),
+                    rot.as_deref(),
+                    relay_role.as_deref(),
+                    fallback_state.as_deref(),
+                )
+                .await;
+            });
+        }
+    }
+
     // Dispatcher's owned view of the VPN state (main keeps the original).
     #[cfg(feature = "vpn")]
     let vpn_rx: Option<VpnMode> = vpn_mode.as_ref().map(|m| match m {
@@ -3167,151 +4423,58 @@ async fn run_node(
     });
     #[cfg(not(feature = "vpn"))]
     let vpn_rx: Option<VpnMode> = None;
-    let et2 = Arc::clone(&exit_tunnels);
-    let sc2 = Arc::clone(&sess_chan);
-    let rsm2 = Arc::clone(&rx_state_map);
-    let ca2 = Arc::clone(&connect_acks);
-    let coc2 = Arc::clone(&connect_ok_ctrs);
-    let te2 = Arc::clone(&trusted_exits);
-    let psk2 = psk;
-    let tft_rx = Arc::clone(&tft);
-    let rotator_rx = exit_rotator.clone();
-    let dispatcher = Arc::new(net::dispatcher::LocklessDispatcher::new(4, 1024));
-    tokio::spawn(async move {
-        let sock = nr.socket.clone();
-        let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
-        while nr.running.load(Ordering::Relaxed) {
-            if let Ok((amt, src)) = sock.recv_from(&mut buf).await {
-                if amt < net::MIN_FRAME_SIZE {
-                    continue;
-                }
-                let _ = nr.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                let _ = nr.stats.bytes_recv.fetch_add(amt as u64, Ordering::Relaxed);
-                // Dispatch through lockless multi-worker session hash queue
-                let _ = dispatcher.dispatch(&buf[..amt], src);
-                let ctr = parse_packet_counter(&buf);
-                // Tunnel bulk frames (flags bit 1) are single-frame
-                // datagrams: no RS sharding, no spool. They must bypass the
-                // 2-of-3 shard pool — in it they would never assemble and be
-                // silently dropped. Dispatch straight to handle_pkt.
-                #[cfg(feature = "vpn")]
-                if net::parse_flags(&buf) & 0x02 != 0 {
-                    let pe = net::BULK_OFFSET_AUTH_TAG_START.min(amt);
-                    if pe <= net::BULK_OFFSET_PAYLOAD_START {
-                        continue;
-                    }
-                    if let Some(sd) = unframe(&buf[net::BULK_OFFSET_PAYLOAD_START..pe]) {
-                        let n2 = Arc::clone(&nr);
-                        let pa2 = Arc::clone(&pa);
-                        let phs2 = Arc::clone(&phs);
-                        let sock2 = Arc::clone(&sock);
-                        let src2 = src;
-                        let rl3 = Arc::clone(&rl2);
-                        let rep3 = Arc::clone(&rep2);
-                        let et3 = Arc::clone(&et2);
-                        let sc3 = Arc::clone(&sc2);
-                        let rsm3 = Arc::clone(&rsm2);
-                        let ca3 = Arc::clone(&ca2);
-                        let coc3 = Arc::clone(&coc2);
-                        let te3 = Arc::clone(&te2);
-                        let psk3 = psk2;
-                        let vpn_pkt = vpn_rx.clone();
-                        let tft3 = Arc::clone(&tft_rx);
-                        let rot3 = rotator_rx.clone();
-                        tokio::spawn(async move {
-                            handle_pkt(
-                                &n2,
-                                &pa2,
-                                &phs2,
-                                &sock2,
-                                ctr,
-                                &sd,
-                                &src2,
-                                Some(&rl3),
-                                Some(&*rep3),
-                                &et3,
-                                &sc3,
-                                &rsm3,
-                                &ca3,
-                                &coc3,
-                                &te3,
-                                psk3,
-                                vpn_pkt.as_ref(),
-                                Some(&*tft3),
-                                rot3.as_deref(),
-                            )
-                            .await;
-                        });
-                    }
-                    continue;
-                }
-                let si = buf[net::OFFSET_SHARD_INDEX] as usize;
-                if si > 2 {
-                    continue;
-                }
-                let ats = if amt >= GTF_BULK_SIZE {
-                    net::BULK_OFFSET_AUTH_TAG_START
-                } else {
-                    net::OFFSET_AUTH_TAG_START
-                };
-                let pe = ats.min(amt);
-                if pe <= OFFSET_PAYLOAD_START {
-                    continue;
-                }
-                if let Some(sd) = unframe(&buf[OFFSET_PAYLOAD_START..pe]) {
-                    let sp = Arc::clone(&sp2);
-                    let phs2 = Arc::clone(&phs);
-                    let n2 = Arc::clone(&nr);
-                    let pa2 = Arc::clone(&pa);
-                    let sock2 = Arc::clone(&sock);
-                    let src2 = src;
-                    let rl3 = Arc::clone(&rl2);
-                    let rep3 = Arc::clone(&rep2);
-                    let et3 = Arc::clone(&et2);
-                    let sc3 = Arc::clone(&sc2);
-                    let rsm3 = Arc::clone(&rsm2);
-                    let ca3 = Arc::clone(&ca2);
-                    let coc3 = Arc::clone(&coc2);
-                    let te3 = Arc::clone(&te2);
-                    let psk3 = psk2;
-                    let vpn_pkt = vpn_rx.clone();
-                    let tft3 = Arc::clone(&tft_rx);
-                    let rot3 = rotator_rx.clone();
-                    tokio::spawn(async move {
-                        if let Some(r) = assemble(&sp, ctr, si, sd).await {
-                            if std::env::var("GGN_DEBUG_RX").is_ok() {
-                                tracing::info!("assembled frame ctr={ctr} si={si} len={}", r.len());
-                            }
-                            handle_pkt(
-                                &n2,
-                                &pa2,
-                                &phs2,
-                                &sock2,
-                                ctr,
-                                &r,
-                                &src2,
-                                Some(&rl3),
-                                Some(&*rep3),
-                                &et3,
-                                &sc3,
-                                &rsm3,
-                                &ca3,
-                                &coc3,
-                                &te3,
-                                psk3,
-                                vpn_pkt.as_ref(),
-                                Some(&*tft3),
-                                rot3.as_deref(),
-                            )
-                            .await;
-                        } else if std::env::var("GGN_DEBUG_RX").is_ok() {
-                            tracing::info!("assemble dropped ctr={ctr} si={si}");
-                        }
-                    });
+    let rx = Arc::new(RxContext {
+        node: Arc::clone(&nc),
+        peers: Arc::clone(&addrs),
+        spool: Arc::clone(&spool),
+        pending_hs: Arc::clone(&pending_hs),
+        revocation_list: Arc::clone(&revocation_list),
+        reputation: Arc::clone(&reputation_matrix),
+        vpn: vpn_rx,
+        exit_tunnels: Arc::clone(&exit_tunnels),
+        sessions_rx: Arc::clone(&sess_chan),
+        rx_state_map: Arc::clone(&rx_state_map),
+        connect_acks: Arc::clone(&connect_acks),
+        connect_ok_ctrs: Arc::clone(&connect_ok_ctrs),
+        trusted_exits: Arc::clone(&trusted_exits),
+        psk,
+        tft: Arc::clone(&tft),
+        rotator: exit_rotator.clone(),
+        relay_role: relay_role.clone(),
+        fallback: Some(Arc::clone(&fallback_routes)),
+        dispatcher: Arc::new(net::dispatcher::LocklessDispatcher::new(4, 1024)),
+        socket: nc.socket.clone(),
+    });
+    {
+        let rx = Arc::clone(&rx);
+        tokio::spawn(async move {
+            let sock = Arc::clone(&rx.socket);
+            let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
+            while rx.node.running.load(Ordering::Relaxed) {
+                if let Ok((amt, src)) = sock.recv_from(&mut buf).await {
+                    rx.ingest(&buf[..amt], src).await;
                 }
             }
-        }
-    });
+        });
+    }
+
+    // ── TURN INGRESS ──
+    //
+    // Datagrams the TURN server relays to us are sealed for us exactly as a
+    // direct send would be, so they enter the same pipeline. `peer` is the peer's
+    // address as the server knows it, which is what tunnel bookkeeping keys on.
+    if let Some(mut ingress) = turn_rx.take() {
+        let rx = Arc::clone(&rx);
+        tokio::spawn(async move {
+            while let Some((peer, frame)) = ingress.recv().await {
+                rx.ingest(&frame, peer).await;
+            }
+            tracing::warn!("TURN: allocation closed, relayed datagrams will no longer arrive");
+        });
+    }
+
+    // ── OPTIONAL TRANSPORT INGRESS + DIAL (SOTA P1-2) ──
+    spawn_carrier_tasks!(&carrier, &rx, &nc, &nat_puncher, &addrs);
 
     // ── VPN EGRESS ──
     #[cfg(feature = "vpn")]
@@ -3321,19 +4484,22 @@ async fn run_node(
             // frames. All channels inside the hub are bounded (rule 3).
             let nc = Arc::clone(&nc);
             let hub = Arc::clone(hub);
+            let fb = Arc::clone(&fallback_routes);
             tokio::spawn(async move {
                 let mut last_sweep = std::time::Instant::now();
                 loop {
                     let mut sent = 0;
                     while let Some(u) = hub.poll_netstack_egress() {
-                        send_tunnel_frame(&nc, &u.fingerprint, u.endpoint, &u.wire).await;
+                        send_tunnel_frame(&nc, &u.fingerprint, u.endpoint, &u.wire, Some(&fb))
+                            .await;
                         sent += 1;
                         if sent > 64 {
                             break;
                         } // yield; stay responsive
                     }
                     while let Some(u) = hub.poll_egress() {
-                        send_tunnel_frame(&nc, &u.fingerprint, u.endpoint, &u.wire).await;
+                        send_tunnel_frame(&nc, &u.fingerprint, u.endpoint, &u.wire, Some(&fb))
+                            .await;
                         sent += 1;
                         if sent > 64 {
                             break;
@@ -3451,13 +4617,14 @@ async fn run_node(
             // Mesh sender half: outer session encryption + bulk frame.
             let nc2 = Arc::clone(&nc);
             let addrs2 = Arc::clone(&addrs);
+            let fb = Arc::clone(&fallback_routes);
             tokio::spawn(async move {
                 while let Some(wire) = rx.recv().await {
                     // ClientState.fingerprint = the hub's fingerprint.
                     let dest = client2.fingerprint.clone();
                     let tgt = addrs2.get(&dest).map(|v| *v.value());
                     if let Some(tgt) = tgt {
-                        send_tunnel_frame(&nc2, &dest, tgt, &wire).await;
+                        send_tunnel_frame(&nc2, &dest, tgt, &wire, Some(&fb)).await;
                     } else {
                         tracing::debug!("VPN client: hub address unknown — PEER first");
                     }
@@ -3856,7 +5023,11 @@ async fn run_node(
                     .get(dest)
                     .map(|v| *v.value())
                     .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                send3_adaptive(
+                let me = nc.fingerprint();
+                let plan = nc.contact_plan.read().await;
+                let route = fallback_routes.path(dest);
+                let routed = send3_adaptive(
+                    &nc,
                     &nc.socket,
                     &tgt,
                     dest,
@@ -3866,9 +5037,20 @@ async fn run_node(
                     &tag,
                     &shard_router,
                     &addrs,
+                    Some(&plan),
+                    &me,
+                    route.as_ref(),
+                    turn_path.as_ref(),
+                    Some(&carrier),
                 )
                 .await;
-                println!("Chat sent to {}: {}", &dest[..8.min(dest.len())], msg);
+                match routed {
+                    Routed::Unroutable => println!(
+                        "Chat to {} could not leave: no direct path and no relay could carry it",
+                        &dest[..8.min(dest.len())]
+                    ),
+                    _ => println!("Chat sent to {}: {}", &dest[..8.min(dest.len())], msg),
+                }
             }
             "REP" => {
                 let local_fp = nc.fingerprint();
@@ -4104,5 +5286,164 @@ async fn run_node(
             }
             _ => tracing::warn!("Unknown command: {}. Type HELP for commands.", p[0]),
         }
+    }
+}
+
+#[cfg(test)]
+mod beacon_section_tests {
+    use super::*;
+
+    fn test_pk() -> [u8; 32] {
+        [7u8; 32]
+    }
+
+    fn stub_signer(_d: &[u8]) -> [u8; 64] {
+        [9u8; 64]
+    }
+
+    /// A real identity, because a ZK proof *is* an Ed25519 signature over the
+    /// commitment — a stub signer can never produce a verifiable one.
+    fn real_identity() -> l0_identity::GhostIdentity {
+        l0_identity::GhostIdentity::generate_fresh()
+    }
+
+    /// Build an offer through the real encoder, so these tests cannot drift away
+    /// from the signalling format they are meant to cover.
+    fn sample_offer(controlling: bool) -> String {
+        use std::net::SocketAddr;
+        use vantablack::ghost::net::ice::{
+            Candidate, CandidateType, IceCredentials, IceOffer, DEFAULT_COMPONENT,
+        };
+        let base: SocketAddr = "192.168.1.5:40000".parse().unwrap();
+        IceOffer::new(
+            IceCredentials {
+                ufrag: "deadbeef".into(),
+                password: "00112233445566778899aabbccddeeff".into(),
+            },
+            vec![Candidate::new(
+                CandidateType::Host,
+                base,
+                base,
+                DEFAULT_COMPONENT,
+                None,
+            )],
+            controlling,
+        )
+        .encode()
+    }
+
+    #[test]
+    fn a_plain_beacon_keeps_the_legacy_112_byte_layout() {
+        let b = build_beacon_packet(&test_pk(), stub_signer, false, None, false);
+        assert_eq!(b.len(), BEACON_LEGACY_LEN);
+        assert_eq!(&b[..16], BEACON_PREFIX);
+        let sections = parse_beacon_sections(&b, b.len()).expect("parses with no sections");
+        assert!(sections.zk.is_none());
+        assert!(sections.ice_offer.is_none());
+    }
+
+    #[test]
+    fn a_zk_beacon_without_an_offer_stays_byte_compatible_with_old_peers() {
+        // An older build verifies the ZK block at fixed offsets, so a beacon
+        // with no offer to carry must not switch to the sectioned format.
+        let identity = real_identity();
+        let pk = identity.public_key_bytes();
+        let b = build_beacon_packet(&pk, |d| identity.sign(d).to_bytes(), true, None, false);
+        assert_eq!(b.len(), BEACON_LEGACY_ZK_LEN);
+
+        // And the legacy positional read must still verify it.
+        let mut commitment = [0u8; 32];
+        commitment.copy_from_slice(&b[112..144]);
+        assert!(ZkAuthenticator::verify_proof(
+            &pk,
+            &b[144..BEACON_LEGACY_ZK_LEN],
+            &commitment
+        ));
+    }
+
+    #[test]
+    fn an_offer_beacon_round_trips_through_its_sections() {
+        let offer = sample_offer(true);
+        let b = build_beacon_packet(&test_pk(), stub_signer, false, Some(&offer), false);
+        assert!(b.len() > BEACON_LEGACY_LEN);
+
+        let sections = parse_beacon_sections(&b, b.len()).expect("sections must tile exactly");
+        assert!(sections.zk.is_none(), "no ZK was requested");
+        assert_eq!(sections.ice_offer, Some(offer.as_str()));
+
+        // And it decodes back into a usable offer, candidates included.
+        let decoded = vantablack::ghost::net::ice::IceOffer::decode(sections.ice_offer.unwrap())
+            .expect("a well-formed offer must decode");
+        assert_eq!(decoded.credentials.ufrag, "deadbeef");
+        assert!(decoded.controlling);
+        assert_eq!(
+            decoded.candidates[0].addr,
+            "192.168.1.5:40000".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_zk_beacon_with_an_offer_carries_both_sections() {
+        let offer = sample_offer(false);
+        let identity = real_identity();
+        let pk = identity.public_key_bytes();
+        let b = build_beacon_packet(
+            &pk,
+            |d| identity.sign(d).to_bytes(),
+            true,
+            Some(&offer),
+            false,
+        );
+        let sections = parse_beacon_sections(&b, b.len()).expect("both sections must parse");
+
+        let (commitment, proof) = sections.zk.expect("ZK section present");
+        assert!(
+            ZkAuthenticator::verify_proof(&pk, proof, commitment),
+            "the proof must verify against the identity that signed it"
+        );
+        assert_eq!(sections.ice_offer, Some(offer.as_str()));
+        let decoded =
+            vantablack::ghost::net::ice::IceOffer::decode(sections.ice_offer.unwrap()).unwrap();
+        assert!(!decoded.controlling);
+    }
+
+    #[test]
+    fn malformed_or_unknown_sections_fall_back_to_the_legacy_layout() {
+        // A length that runs past the datagram must not be trusted.
+        let mut buf = vec![0u8; BEACON_LEGACY_LEN];
+        push_beacon_section(&mut buf, BEACON_SECTION_ICE, b"x");
+        let amt = buf.len();
+        buf[BEACON_LEGACY_LEN + 4..BEACON_LEGACY_LEN + 6].copy_from_slice(&9999u16.to_be_bytes());
+        assert!(parse_beacon_sections(&buf, amt).is_none());
+
+        // An unknown magic is not a section either.
+        let mut buf2 = vec![0u8; BEACON_LEGACY_LEN];
+        push_beacon_section(&mut buf2, b"XXXX", b"payload");
+        let amt2 = buf2.len();
+        assert!(parse_beacon_sections(&buf2, amt2).is_none());
+
+        // A ZK section of the wrong size is rejected rather than misread.
+        let mut buf3 = vec![0u8; BEACON_LEGACY_LEN];
+        push_beacon_section(&mut buf3, BEACON_SECTION_ZK, &[0u8; 40]);
+        let amt3 = buf3.len();
+        assert!(parse_beacon_sections(&buf3, amt3).is_none());
+
+        // A trailing partial header is rejected.
+        let mut buf4 = vec![0u8; BEACON_LEGACY_LEN + 3];
+        buf4[BEACON_LEGACY_LEN] = b'I';
+        let amt4 = buf4.len();
+        assert!(parse_beacon_sections(&buf4, amt4).is_none());
+    }
+
+    #[test]
+    fn an_empty_offer_section_is_absent_not_empty_text() {
+        // A zero-length ICEO section is a present-but-empty offer, which the
+        // decoder rejects; the framing itself must still tile.
+        let mut buf = vec![0u8; BEACON_LEGACY_LEN];
+        push_beacon_section(&mut buf, BEACON_SECTION_ICE, b"");
+        let amt = buf.len();
+        let sections = parse_beacon_sections(&buf, amt).expect("tiles exactly");
+        assert_eq!(sections.ice_offer, Some(""));
+        assert!(vantablack::ghost::net::ice::IceOffer::decode("").is_err());
     }
 }

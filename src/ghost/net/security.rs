@@ -560,108 +560,20 @@ impl<const N: usize> Drop for SecureMemGuard<N> {
 
 // ── 5bis. HSM / TPM Backend Abstraction ──────────────────────────────
 
-/// Trait abstracting hardware security module (HSM) or TPM-backed key operations.
-///
-/// The Ed25519 identity signing key is the root of trust for the GhostNet
-/// node identity. By keeping this key inside a hardware-backed enclave
-/// (TPM 2.0, PKCS#11, NitroKey, YubiHSM), the private key material is
-/// never exportable — even in the presence of kernel-level memory dumps.
-///
-/// Implementations:
-/// - `SoftwareTpm`: In-memory key storage (fallback, for testing/dev)
-/// - `Pkcs11Backend`: Real PKCS#11 HSM (production, requires `tss-esapi` or `cryptoki`)
-/// - `Tpm2Backend`: TPM 2.0 via `tss-esapi` (production on TPM-equipped hardware)
-pub trait HsmBackend: Send + Sync {
-    /// Return the public key bytes for this identity.
-    fn public_key(&self) -> &[u8; 32];
+// Single source of truth: the `hsm` submodule (SOTA P0-1 dedup). The trait
+// and every backend implementation live in `security/hsm.rs`; this module only
+// re-exports them, so `security::{HsmBackend, SoftwareTpm, create_hsm_backend}`
+// and `security::hsm::*` both resolve. `hardware-tpm` / `pkcs11` are real
+// features: they gate the compiled backends below, not a dead file.
+pub mod hsm;
 
-    /// Sign `data` with the Ed25519 key. Returns a 64-byte signature.
-    fn sign(&self, data: &[u8]) -> [u8; 64];
+pub use hsm::{create_hsm_backend, create_hsm_backend_from_key, HsmBackend, SoftwareTpm};
 
-    /// Verify a signature against the stored public key.
-    fn verify(&self, data: &[u8], signature: &[u8; 64]) -> bool;
+#[cfg(feature = "hardware-tpm")]
+pub use hsm::Tpm2Backend;
 
-    /// Derive a session sub-key from the identity key via KDF.
-    /// This prevents the identity key from being used directly for bulk encryption.
-    fn derive_session_key(&self, context: &[u8]) -> [u8; 32];
-
-    /// Returns a human-readable identifier for the backend type.
-    fn backend_type(&self) -> &'static str;
-}
-
-/// Software-backed HSM — stores the private key in a LockedMemory region.
-///
-/// This is the fallback implementation for testing and development.
-/// For production, replace with `Pkcs11Backend` or `Tpm2Backend`.
-pub struct SoftwareTpm {
-    /// Ed25519 keypair wrapped in locked memory.
-    keypair: ed25519_dalek::SigningKey,
-    /// Cached public key bytes (32 bytes).
-    public_key_bytes: [u8; 32],
-    /// Human-readable fingerprint.
-    fingerprint: String,
-    /// Backend type string.
-    backend: &'static str,
-}
-
-impl SoftwareTpm {
-    /// Create a new software TPM from an existing Ed25519 signing key.
-    pub fn new(keypair: ed25519_dalek::SigningKey) -> Self {
-        let verifying_key = keypair.verifying_key();
-        let pk_bytes = verifying_key.to_bytes();
-        let fp = hex::encode(&pk_bytes[..8]);
-        Self {
-            keypair,
-            public_key_bytes: pk_bytes,
-            fingerprint: fp,
-            backend: "software",
-        }
-    }
-
-    /// Generate a fresh Ed25519 key for the software TPM.
-    pub fn generate_fresh() -> Self {
-        let mut csprng = rand::rngs::OsRng;
-        let keypair = ed25519_dalek::SigningKey::generate(&mut csprng);
-        Self::new(keypair)
-    }
-
-    pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
-    }
-}
-
-impl HsmBackend for SoftwareTpm {
-    fn public_key(&self) -> &[u8; 32] {
-        &self.public_key_bytes
-    }
-
-    fn sign(&self, data: &[u8]) -> [u8; 64] {
-        use ed25519_dalek::Signer;
-        let signature = self.keypair.sign(data);
-        signature.to_bytes()
-    }
-
-    fn verify(&self, data: &[u8], signature: &[u8; 64]) -> bool {
-        use ed25519_dalek::Verifier;
-        let verifying_key = self.keypair.verifying_key();
-        let sig = ed25519_dalek::Signature::from_bytes(signature);
-        verifying_key.verify(data, &sig).is_ok()
-    }
-
-    fn derive_session_key(&self, context: &[u8]) -> [u8; 32] {
-        use hkdf::Hkdf;
-        use sha2::Sha256;
-        let hk = Hkdf::<Sha256>::new(Some(self.fingerprint.as_bytes()), context);
-        let mut session_key = [0u8; 32];
-        hk.expand(b"GHOST_NET_HSM_SESSION_KEY", &mut session_key)
-            .unwrap();
-        session_key
-    }
-
-    fn backend_type(&self) -> &'static str {
-        self.backend
-    }
-}
+#[cfg(feature = "pkcs11")]
+pub use hsm::Pkcs11Backend;
 
 // ── 6. Fixed-Slot Temporal Isolation ─────────────────────────────────
 

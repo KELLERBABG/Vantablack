@@ -31,9 +31,9 @@ use crate::ghost::layers::l2_aead::{
 };
 use crate::ghost::layers::l4_rs;
 use crate::ghost::net::{
-    build_gtf_frame, parse_flags, parse_packet_counter, BULK_OFFSET_AUTH_TAG_START,
-    BULK_OFFSET_PAYLOAD_START, MIN_FRAME_SIZE, OFFSET_AUTH_TAG_START, OFFSET_FLAGS,
-    OFFSET_PAYLOAD_START, OFFSET_SHARD_INDEX,
+    build_gtf_frame, frame_shard, parse_flags, parse_packet_counter, unframe,
+    BULK_OFFSET_AUTH_TAG_START, BULK_OFFSET_PAYLOAD_START, MIN_FRAME_SIZE, OFFSET_AUTH_TAG_START,
+    OFFSET_FLAGS, OFFSET_PAYLOAD_START, OFFSET_SHARD_INDEX,
 };
 use ml_kem::kem::Decapsulate;
 use ml_kem::{Ciphertext, MlKem512};
@@ -105,25 +105,8 @@ impl TunDevice for AndroidTun {
 
 const MAGIC: &[u8; 5] = crate::ghost::net::vpn::hub::VPN_PAYLOAD_MAGIC;
 
-fn frame_shard(d: &[u8]) -> Vec<u8> {
-    let l = (d.len() as u16).to_be_bytes();
-    let mut f = Vec::with_capacity(d.len() + 2);
-    f.extend_from_slice(&l);
-    f.extend_from_slice(d);
-    f
-}
-
-fn unframe(b: &[u8]) -> Option<Vec<u8>> {
-    if b.len() < 2 {
-        return None;
-    }
-    let l = u16::from_be_bytes([b[0], b[1]]) as usize;
-    if l == 0 || 2 + l > b.len() {
-        None
-    } else {
-        Some(b[2..2 + l].to_vec())
-    }
-}
+// `frame_shard` / `unframe` come from `ghost::net` (canonical, SOTA P0-1);
+// this module used to carry its own byte-identical copies.
 
 fn tunnel_frame(
     key: &[u8; 32],

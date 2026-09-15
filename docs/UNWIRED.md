@@ -15,11 +15,15 @@ Last verified against `v0.4.0` on the commit that added this file.
 > (hardware TPMs, orbital telemetry feeds, atomic clocks, eBPF kernels) become available for
 > physical verification. They remain preserved as experimental modules.
 
-## 1. The lost roadmap document
+## 1. The roadmap
 
-Eleven source comments cite a numbered roadmap by line number. **That document is not in this
-repository** — `find . -iname '*.md'` returns only `README.md` and the five files in `docs/`.
-The citations are the only surviving record of it:
+Eleven source comments cite a numbered roadmap by line number. Two roadmap documents are now
+in the tree — `roadmap/SOTA.md` (the phased plan, whose items are named `P0-1`, `P1-2`, … and
+whose *Gate* line is the definition of done) and `roadmap/INVENTION.md` (20 further inventions,
+numbered 1–20 and again 21+, as section headings). **Neither is the document those comments
+cite**: the cited numbering (16, 22–33) does not line up with either scheme, and the item titles
+differ (`INVENTION.md`'s 16 is "ZK Proof-of-Transit", the citation's 16 is "Portable Single
+Executable Packaging"). So the citations are still the only record of that plan:
 
 | Cited line | Item | Implementing file |
 | :-- | :-- | :-- |
@@ -50,7 +54,7 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 
 | Symbol | What it claims to do | Reality |
 | :-- | :-- | :-- |
-| `NatHolePuncher` | STUN-style dual-side UDP hole punching | **Wired** — instantiated in `main.rs`, peer addresses and endpoints registered on beacon discovery. |
+| `NatHolePuncher` | STUN-style dual-side UDP hole punching | **Wired & real (P1-1)** — a port-guessing loop that returned `true` unconditionally has been replaced by an RFC 8445 ICE agent: candidates are gathered (host + STUN reflexive), checks are authenticated, and `punch_hole` reports success only when a nominated pair completed a measured round trip. `selected_rtt()` is the measurement the contact plan and the routers consume. |
 | `AdaptiveShardRouter` | Route the 3 RS shards over the best paths | **Wired** — instantiated in `src/main.rs` and dispatched via `send3_adaptive` across multi-peer paths based on path fitness metrics. |
 | `TitForTatEnforcer` | Evict peers that leech transit | **Wired & Enforced** — tracks inbound/outbound relay transit bytes, drops transit for leechers/evicted peers, and runs periodic audit sweeps with CLI inspection (`TFT`). Bug B5 fixed. |
 | `MeshNode` | Top-level mesh integration | Unwired. |
@@ -59,6 +63,19 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 | `dispatch_shards_multipath()` | Multi-path relay dispatch | Unwired. |
 | `spawn_mesh_tasks()` | Spawn NAT keepalive + reciprocity audit tasks | Replaced by `main.rs` dedicated async tasks for keepalives and tit-for-tat audit cycle. |
 | `EMBEDDED_DEFAULT_CONFIG` | Hardcoded bootstrap seeds | Contains literal placeholders — IPs `51.15.xx.xx`, `45.33.xx.xx`, `139.162.xx.xx` and fingerprints `deadbeef12345678`, `cafebabe87654321`, `baadf00dabcdef01`. Unreachable anyway: `main.rs` uses its own `EMBEDDED_SEEDS: &[&str] = &[]`. |
+
+### `src/ghost/net/{stun,ice,turn,cc}.rs` — Phase 1 transport (P1-1, P1-2)
+
+| Symbol | Reality |
+| :-- | :-- |
+| `stun::{Message, TransactionId, verify_integrity}` | **Wired** — RFC 8489 codec (Binding request/success/indication, TURN attributes, `FINGERPRINT`, `MESSAGE-INTEGRITY`). Used by `ice.rs`, by `NatHolePuncher::punch_hole`, and for keepalives; `main.rs` reads `GHOST_STUN_SERVER` and warns when it is unset, so the reflexive-gathering path is load-bearing rather than dead. |
+| `ice::{IceAgent, IceOffer, Candidate}` | **Wired** — `main.rs` advertises a stable offer in the beacon (`ICEO` section, see `SPECIFICATIONS.md §2.4`) and spawns a punch when a peer's offer arrives. Candidates and credentials come from the offer; no beacons, no checks. |
+| `turn::{TurnClient, TurnServer}` | **Wired (P1-1)** — with `GHOST_TURN_SERVER`/`_USER`/`_PASS` set, `fallback::TurnPath` takes an allocation at startup on a socket of its own, advertises the `XOR-RELAYED-ADDRESS` as a relay candidate in our offer, refreshes at half the granted lifetime, re-arms permissions and channels, and feeds datagrams the server relays to us into the same receive path as mesh traffic. Off unless configured. **Not verified against a real TURN server**: the client/server pair is tested in-process (`turn.rs`) and the allocation lifecycle is not exercised over a network here. |
+| `cc::{AckEngine, Cubic, NewReno, Bbr, Pacer, TransitGovernor}` | **Wired (P1-2)** — `TransitGovernor` is ticked from the beacon task and drives `FlowController::set_transit_rate_bps` from measured path capacity; see `SPECIFICATIONS.md §4.1.1`. `AckEngine`/`AckPdu` are the per-session byte-level loop and are not yet fed by a live sender. |
+| `upnp::{opportunistic_public_addr, renew_udp_mapping}` | **Wired (P1-1)** — `main.rs` asks the gateway for a UDP mapping before advertising its offer, adds the granted address as a server-reflexive candidate, and spawns a renewal task at half the granted lease. UPnP-IGD (SSDP + SOAP `AddPortMapping`) and NAT-PMP (RFC 6886) are both implemented. **Not verified end-to-end**: no gateway on the build machine answered, so the SSDP/SOAP/NAT-PMP parsing and framing are unit-tested and the network paths are not. |
+| `relay::DerpRelay` | **Wired (P1-1)** — with `GHOST_RELAY=1` the node takes the relay role (advertised in beacons as the `RLYC` section), and `handle_pkt`'s blind-envelope branch forwards for any identity it has verified, subject to the transit quota. `fallback::Fallback` is the join that was missing (B22): a failed punch now records a path, and `send3_adaptive`, the SOCKS5 egress, `handle_exit_connect`'s replies and `send_tunnel_frame` all consult it. |
+| `quic::{QuicTransport, QuicLink}` | **Wired (P1-2)** — with `GHOST_QUIC=1` (`--features quic`) the node binds a QUIC endpoint, admits inbound sessions whose identity the session table or the beacon table already knows, and dials the peers ICE has measured every 5 s. Frames are the same GTF frames; ingress enters `RxContext::ingest`, egress is preferred in `send3_adaptive`. Identity is bound to the TLS session by a channel binding, not by the (self-signed) certificate. **Not verified over a real network**: every test is loopback (`tests/p1_quic.rs`, `tests/bench_transport.rs`), so a middlebox that drops the second port, or a NAT that breaks QUIC's path, is untested here. A default build contains none of this code. |
+| `carrier::Carrier` | **Wired (P1-2)** — the registry `main.rs` consults on every peer send. Exists in *every* build, including one with no transport compiled in: without the feature it answers "nothing to send on" for every peer, which is what keeps the egress sites free of `cfg` branches. |
 
 ### `src/ghost/net/security.rs`, `src/ghost/net/security/hsm.rs`
 
@@ -78,7 +95,7 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 | :-- | :-- |
 | `KeplerElements`, `OrbitalState`, `DeltaVTracker`, `GroundPosition` | Complete Keplerian propagation and delta-v math with unit tests. Satellite/DTN scaffolding. |
 | `DisjointRouteConstraint` | **Wired** — Enforced in `send3_adaptive` within `src/main.rs` ensuring shard routes reserve distinct network/orbital planes. |
-| `ContactPlan`, `Journey`, `Contact`, `edge_presence`, `latency` | `ContactPlan` is *constructed* in `GhostNode::new` and never populated or queried. `latency()` returns a hard-coded 10 ms. |
+| `ContactPlan`, `Journey`, `Contact`, `edge_presence`, `latency` | **Wired (P1-3)** — `GhostNode::contact_plan` is populated twice over: `observe_link()` on a completed ICE check, and again on every beacon tick from the live RTT and measured rate (`SPECIFICATIONS.md §4.1.1`). `latency()` is a real propagation model — `range_km / speed_km_s()`, half a measured RTT for an observed contact — instead of a hard-coded 10 ms, and `find_earliest_arrival` is a real earliest-arrival Dijkstra over the time-varying contact graph. `send3_adaptive` now dispatches shards through `select_shard_targets_routed` whenever the plan is non-empty, so the plan is *consulted* and not merely maintained. |
 | `PoissonReputationMatrix` | **Wired & Enforced** — `main.rs` records interactions and actively enforces `is_byzantine()` by dropping handshakes, responses, and relay hops from Byzantine-flagged peers. |
 | `ReputationMatrix` | Legacy EWMA matrix. Unwired. |
 | `min_nodes_for_byzantine_tolerance` | Unwired. |
@@ -109,7 +126,8 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 
 | Symbol | Reality |
 | :-- | :-- |
-| `tests/mod.rs` + `tests/virtual_net.rs` | A **second, stale copy** of `tests/common/virtual_net.rs`, compiled as its own test binary. |
+| `tests/mod.rs` + `tests/virtual_net.rs` | **Deleted (P0-1)** — they were a stale copy of `tests/common/virtual_net.rs` and its module declaration, compiled as a second test binary. `tests/common/virtual_net.rs` is the only copy. |
+| `tests/p1_nat.rs` + `tests/common/nat.rs` | **Added (P1-1 gate)** — an RFC 4787 NAT model (endpoint-independent vs address-and-port-dependent mapping and filtering) driving the real `IceAgent`: two residential NATs connect with a measured RTT on both sides, two CGNATs provably cannot, and a relay candidate is only reached after every direct pair has failed. Runs on every platform with no root, unlike `scripts/mesh_smoke_test.sh`. |
 
 ---
 
@@ -117,10 +135,10 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 
 | Name | Defined in | Note |
 | :-- | :-- | :-- |
-| `SoftwareTpm` | `net/security.rs`, `net/security/hsm.rs`, `layers/l9_infra.rs` | **Three** distinct types, same name, different APIs. |
-| `HsmBackend` | `net/security.rs`, `net/security/hsm.rs` | Two incompatible trait definitions. |
+| `SoftwareTpm` | `net/security.rs`, `net/security/hsm.rs`, `layers/l9_infra.rs` | **Resolved (P0-1)** — one `SoftwareTpm` and one `HsmBackend`, in `net/security/hsm.rs`, which is now a real module (`pub mod hsm;`) with re-exports; the duplicate in `security.rs` is deleted. `l9_infra`'s unrelated handle-based enclave is renamed `SoftwareKeyEnclave` — it implements a different trait (`KeyEnclave`) and merging the two would have been wrong. |
+| `HsmBackend` | `net/security.rs`, `net/security/hsm.rs` | **Resolved (P0-1)** — one trait, in `hsm.rs`. |
 | `EMBEDDED_DEFAULT_CONFIG` | `layers/l9_infra.rs` (`&str`, TOML), `net/mesh.rs` (`&[(&str, u16, &str)]`) | Same name, different types. A third seed list, `EMBEDDED_SEEDS`, lives in `main.rs`. |
-| `frame_shard` / `unframe` | `net/mod.rs`, `main.rs`, `examples/attack_harness.rs` | Re-implemented per crate/binary. |
+| `frame_shard` / `unframe` | `net/mod.rs`, `main.rs`, `examples/attack_harness.rs` | **Resolved (P0-1)** — `net/mod.rs` is canonical and `main.rs`/`android_jni.rs` now import it. `tests/common/tunnel.rs` keeps a deliberate re-derivation as a test **oracle** (sharing the code would stop it catching a change in canonical framing); `examples/attack_harness.rs` still has its own copy. |
 | `JITTER_MAX` | `net/mod.rs`, `layers/l5_noise.rs` | Duplicated constant. |
 | `nonce_from_counter` vs `nonce_from_counter_u64` | `layers/l2_aead.rs` | The u32 variant is the one used everywhere; bytes 8–12 of the nonce are left zero, so the "64-bit counter" claim in the docs is not what the wire uses. |
 
@@ -209,12 +227,18 @@ Aligned `docs/SPECIFICATIONS.md`, `index.html`, and `src/ghost/net/mod.rs` to th
 privacy frame specification (session hash 0..4, counter 4..8, shard index 8..9, flags 9..10, encrypted
 shard payload 10..496 [486 B], auth tag 496..512 [16 B], and jitter 512..576 [0..64 B]).
 
-**B16 — CI does not compile the feature-gated HSM code.** *(PARTIALLY FIXED)*
+**B16 — CI does not compile the feature-gated HSM code.** *(FIXED)*
 `hardware-tpm` and `pkcs11` were referenced by `#[cfg(feature = ...)]` in
 `net/security/hsm.rs` but were never declared in `Cargo.toml`, so `--features hardware-tpm` was
-an "unknown feature" error and the blocks could never compile. The features are now declared and
-`README.md` documents `cargo check --features hardware-tpm,pkcs11`. **The CI workflow does not yet
-run that check.**
+an "unknown feature" error and the blocks could never compile. The features are declared, and the
+test job now runs `cargo check --features hardware-tpm,pkcs11 --all-targets` — without which the
+second half of this bug was still live: **`net/security/hsm.rs` was never compiled at all.**
+There was no `mod hsm;` anywhere in the tree, so its `HsmBackend`, `SoftwareTpm`, `Tpm2Backend`,
+`Pkcs11Backend`, auto-detection and six unit tests were invisible to the compiler, and both
+features gated nothing. Joining the module tree surfaced a latent bug: `Tpm2Backend` held a raw
+`*mut c_void` context, and a raw pointer is `!Send + !Sync`, so it could never have satisfied
+`HsmBackend: Send + Sync`. It now carries the device path and documents the locking a live
+`tss_esapi::Context` will need.
 
 **B17 — fuzz targets do not fuzz their namesakes.** *(FIXED)*
 Updated `fuzz_parse_handshake_pdu.rs` to fuzz both `parse_handshake_pdu` and `parse_response_pdu`, and
@@ -224,18 +248,91 @@ updated `fuzz_handle_pkt.rs` to fuzz packet counter/flags/session hash extractio
 Scripts dynamically resolve `target/debug/vantablack.exe` using `ROOT` and `cargo metadata` rather than
 referencing the stale removed hard-coded build directory.
 
+**B19 — a lost packet was recorded as a `0 µs` round trip.** *(FIXED)*
+`AdaptiveShardRouter::record_loss` called `metrics.observe(0.0, true)`, and `observe` folded that
+zero into the RTT average — so every loss made the path look **faster**, and the router then
+preferred it. `PathMetrics` now keeps the three signals apart (`observe_rtt`, `observe_loss`,
+`observe_delivery`), a non-positive sample is rejected outright, and loss applies the
+multiplicative decrease to the window instead. Regression test:
+`mesh::tests::a_loss_is_not_an_rtt_sample`.
+
+**B20 — the path "throughput" was a constant nobody measured.** *(FIXED)*
+`PathMetrics::observe` set `throughput_bps` from `let cwnd = 10_000_000.0; // Assume ~10MB cwnd`,
+and `Default` claimed 10 Mbps for a path that had never carried a byte. The estimate is now built
+from delivered bytes over elapsed time with an AIMD window
+(`PathMetrics::rate_bps`, `TransitGovernor`), and a path with no fresh measurement reports
+"no estimate" rather than a guess — see `SPECIFICATIONS.md §4.1`.
+
+**B21 — a completed check could be credited to the wrong candidate pair.** *(FIXED)*
+A `Binding Success` response was matched to a pair by `(remote address, local base)`. Two pairs
+can share both — a host and a server-reflexive candidate gathered from one socket, checked
+against the same peer — so the round trip could land on the pair that never sent it: that pair
+reported `Succeeded` with no RTT while the pair that actually measured the path stayed
+unmeasured, and the controlling agent could nominate it. The response is now attributed by the
+transaction ID recorded when the check was built, which is unambiguous. Caught by the Phase 1
+gate (`tests/p1_nat.rs`), which asserts a measured RTT on **both** sides.
+
+**B22 — the relay fallback is not reachable from the tunnel yet.** *(FIXED)*
+`relay::DerpRelay` was implemented and tested, and `punch_hole` failed honestly, but no call site
+consumed the failure — so a session whose direct path could not be established had nowhere to go.
+`net::fallback` is the join: `choose_fallback` walks *direct → mesh relay → TURN*, `Fallback`
+records the choice, and every egress that addresses a peer consults it. Two things had to change
+to make the halves fit, and both were bugs in the halves rather than in the join:
+
+* **The relay emitted the wrong bytes.** `Forwarded::Deliver` returned the *envelope*, but the
+target has to parse a GTF datagram out of what it receives — and an envelope is not one. The
+relay now drops the addressing header it routed on and emits the opaque region. The header is
+relay-layer framing it wrote itself; the region it carries is the target's ciphertext and travels
+verbatim, which is what keeps the forward blind.
+* **The two envelope kinds shared a magic.** The onion's last hop re-wraps with
+`remaining_hops - 1`, so a legitimate onion arrives with a hop count of *zero* — structurally a
+blind forward. Sharing `RLY!` meant a receiver could not tell them apart. Blind envelopes are
+`BLND!` now, and a test asserts a zero-hop onion is still refused by the blind path.
+
+Also required for the path to work at all: `NatHolePuncher::send_relay_keepalives` opens a NAT
+mapping toward every advertised relay on the beacon tick. Without it a relay's forward to a NATed
+peer is filtered before it can arrive. Gate: `tests/p1_relay.rs` (8 tests, no network); kernel
+check: `scripts/nat_gate_iptables.sh` (Linux + root).
+
+**B23 — multipath-QUIC is not built.** *(OPEN)* `roadmap/SOTA.md` P1-2 names multipath-QUIC for a
+multi-homed host (Wi-Fi + LTE at once). The carrier registry keys links by peer fingerprint alone,
+so a peer has one link however many local paths exist, and the shard router cannot spread carriers
+across them. Doing it properly means keying by `(fingerprint, local path)`, choosing the local
+address per link, and letting `select_shard_targets` treat two links to the same peer as two paths.
+Nothing in the current design blocks that; it is simply not written.
+
+**Also unverified, and not for want of code:** the QUIC carrier, the UPnP/NAT-PMP candidate path
+and the TURN allocation are all exercised only in-process on loopback. A real gateway, a real TURN
+server and a real middlebox are the checks that would move them from "wired" to "proven", and
+none of those exist on the machine this was built on.
+
 ---
 
 ## 5. How to re-verify this file
 
 ```bash
-# Unwired symbol check — expect 0 for every name below
-for s in MeshNode NatHolePuncher AdaptiveShardRouter ExitIpRotator TitForTatEnforcer \
-         LdpcCodec XtsMemoryEncryptor VerifiedRingBuffer XdpDispatcher TunAdapter \
-         LocklessDispatcher create_hsm_backend ZkAuthenticator TleDistributor \
-         KeplerElements Journey dispatch_shards_multipath spawn_mesh_tasks \
-         split_secret join_shares; do
-  printf '%-28s %s\n' "$s" "$(grep -rc "\b$s\b" src/main.rs src/ghost/mod.rs | paste -sd+ | bc)"
+# Symbol check. `wc -l`, not `bc`: this list used to pipe through `bc`, which is
+# not present on a stock Git-Bash and made the whole check print empty strings —
+# i.e. it reported nothing and looked like it had.
+
+# WIRED — expected >= 1 hit in src/main.rs, src/ghost/mod.rs or the module that
+# owns the wiring. `TurnClient` and `DerpRelay` are driven by `net::fallback`,
+# which is the plumbing that keeps `main.rs` from having to hold them directly.
+# `Carrier` and `QuicTransport` are behind `#[cfg(feature = "quic")]`, so grep the
+# quic targets with `--features quic` files too (they are plain source here).
+for s in NatHolePuncher AdaptiveShardRouter ExitIpRotator TitForTatEnforcer \
+         LdpcCodec XtsMemoryEncryptor VerifiedRingBuffer ZkAuthenticator \
+         IceAgent TransitGovernor observe_link LocklessDispatcher \
+         TleDistributor TurnClient DerpRelay Carrier QuicTransport; do
+  printf '%-30s %s\n' "$s" "$(grep -rn "\b$s\b" src/main.rs src/ghost/mod.rs src/ghost/net/fallback.rs \
+    src/ghost/net/carrier.rs src/ghost/net/quic.rs | wc -l)"
+done
+
+# STILL UNWIRED — expected exactly 0:
+for s in MeshNode dispatch_shards_multipath spawn_mesh_tasks Journey \
+         XdpDispatcher TunAdapter KeplerElements \
+         split_secret join_shares create_hsm_backend; do
+  printf '%-30s %s\n' "$s" "$(grep -rn "\b$s\b" src/main.rs src/ghost/mod.rs | wc -l)"
 done
 
 # The roadmap citations still present in source
