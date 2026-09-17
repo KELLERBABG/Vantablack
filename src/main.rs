@@ -3792,7 +3792,7 @@ fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
                     &bench_ctx.key,
                     &bench_ctx.nonce,
                     bench_ctx.epoch,
-                    direction,
+                    bench_ctx.direction,
                     &mut merged,
                 )
                 .is_ok()
@@ -7038,7 +7038,7 @@ async fn run_node(
                         println!(
                             "  tx counter      : {}  (headroom {})",
                             ctr,
-                            u32::MAX.saturating_sub(ctr)
+                            u64::MAX.saturating_sub(ctr)
                         );
                         println!(
                             "  watchdog        : {} (re-handshake attempts {})",

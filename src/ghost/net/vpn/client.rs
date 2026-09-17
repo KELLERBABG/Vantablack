@@ -368,10 +368,10 @@ pub mod resilience {
         /// tunnel, and the same recovery vehicle fixes it (fresh handshake → epoch
         /// rotation → both counters reset). Checked *before* the liveness machine
         /// so exhaustion takes precedence over a merely idle link.
-        pub fn poll_with_counter(&mut self, now: Instant, tx_counter: u32) -> Action {
+        pub fn poll_with_counter(&mut self, now: Instant, tx_counter: u64) -> Action {
             // Re-key well before the wrap. The margin wants to exceed the worst-case
             // RTT + handshake time at the client's peak frame rate.
-            const COUNTER_REKEY_AT: u32 = u32::MAX - 1_000_000;
+            const COUNTER_REKEY_AT: u64 = u64::MAX - 10_000_000;
             if tx_counter < COUNTER_REKEY_AT {
                 return self.poll(now);
             }
@@ -494,8 +494,8 @@ pub mod resilience {
             // monotonic replay window rejects every later frame *forever*. The
             // watchdog must therefore demand a fresh epoch before that point,
             // reusing the same recovery vehicle as a dead link.
-            const BELOW: u32 = u32::MAX - 2_000_000; // under the re-key margin
-            const ABOVE: u32 = u32::MAX - 100_000; // past the re-key margin
+            const BELOW: u64 = u64::MAX - 20_000_000; // under the re-key margin
+            const ABOVE: u64 = u64::MAX - 100_000; // past the re-key margin
 
             // Headroom: the counter must never override the liveness machine.
             let t0 = at(0);
