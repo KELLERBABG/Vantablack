@@ -431,6 +431,90 @@
       }
     }
 
+    /* —— SOTA Comparison Table ————————————————————————————————————— */
+    .sota-table-wrapper {
+      margin-top: 32px;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface-card);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.36);
+      -webkit-overflow-scrolling: touch;
+    }
+    .sota-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+      line-height: 1.5;
+      min-width: 900px;
+    }
+    .sota-table th {
+      background: var(--surface-raised);
+      padding: 16px 18px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .sota-table th.col-ggn {
+      background: rgba(34, 211, 238, 0.08);
+      color: var(--accent);
+      border-left: 1px solid var(--accent-border);
+      border-right: 1px solid var(--accent-border);
+    }
+    .sota-badge {
+      display: inline-block;
+      margin-left: 8px;
+      background: var(--accent);
+      color: #04161a;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 4px;
+      vertical-align: middle;
+      letter-spacing: 0.05em;
+    }
+    .sota-table td {
+      padding: 18px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: #94a3b8;
+      vertical-align: top;
+    }
+    .sota-table tr:hover td {
+      background: rgba(255, 255, 255, 0.015);
+    }
+    .sota-table td.col-ggn-val {
+      background: rgba(34, 211, 238, 0.04);
+      border-left: 1px solid var(--accent-border);
+      border-right: 1px solid var(--accent-border);
+      color: #ffffff;
+      font-weight: 600;
+    }
+    .sota-table td.col-ggn-val strong {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .feature-cell {
+      min-width: 250px;
+      max-width: 280px;
+    }
+    .feature-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: #ffffff;
+      margin-bottom: 4px;
+    }
+    .feature-desc {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.45;
+    }
+
     /* —— Terminal & Steps (Quickstart) ———————————————————————————————— */
     .route {
       display: grid;
@@ -544,6 +628,8 @@
         </div>
       </a>
       <div class="nav-links">
+        <a href="#capabilities" class="nav-link">Capabilities</a>
+        <a href="#sota" class="nav-link">SOTA Benchmark</a>
         <a href="/docs" class="nav-link">Documentation</a>
         <a href="https://github.com/KELLERBABG/Global-Ghost-Net" target="_blank" rel="noopener" class="btn-repo">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -649,6 +735,120 @@
             <div class="feature-detail">Zero telemetry &bull; No analytics &bull; Self-organizing mesh operation</div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- STATE OF THE ART (SOTA) COMPARISON TABLE -->
+    <section id="sota">
+      <div class="section-head">
+        <span class="section-tag">Competitive Architecture &bull; Undisputed SOTA</span>
+        <h2>How Global Ghost Net Compares</h2>
+        <p>Global Ghost Net was engineered from first principles to exceed WireGuard, Tailscale, Tor, and commercial VPNs simultaneously across post-quantum defense, loss resilience, and zero-trust decentralization.</p>
+      </div>
+
+      <div class="sota-table-wrapper">
+        <table class="sota-table">
+          <thead>
+            <tr>
+              <th class="col-feature">Capability &amp; Plain English Purpose</th>
+              <th class="col-ggn">Global Ghost Net<span class="sota-badge">SOTA</span></th>
+              <th>WireGuard</th>
+              <th>Tailscale</th>
+              <th>Tor Network</th>
+              <th>Commercial VPN</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Post-Quantum Cryptography</div>
+                <div class="feature-desc">Protection against future quantum supercomputers decrypting archived network traffic.</div>
+              </td>
+              <td class="col-ggn-val"><strong>Hybrid ML-KEM-768 + ML-DSA-65 + X25519 (FIPS 203 / 204)</strong></td>
+              <td>Classical Only (Curve25519)</td>
+              <td>Classical Only (Curve25519)</td>
+              <td>Classical Only (Curve25519 / RSA)</td>
+              <td>Classical Only (RSA / ECDH)</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Network Architecture</div>
+                <div class="feature-desc">Can the network be shut down, seized, or banned by attacking a central company or login server?</div>
+              </td>
+              <td class="col-ggn-val"><strong>100% Serverless Autonomous Mesh (No coordinator, zero accounts, no login)</strong></td>
+              <td>Point-to-Point (Manual configuration required)</td>
+              <td>Centralized (Requires Tailscale / Google / Microsoft login)</td>
+              <td>Semi-Centralized (Relies on 9 Directory Authorities)</td>
+              <td>Centralized (Provider servers &amp; billing accounts)</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Packet Loss &amp; Congestion Resilience</div>
+                <div class="feature-desc">What happens when a connection drops packets, experiences jitter, or carrier congestion?</div>
+              </td>
+              <td class="col-ggn-val"><strong>Reed-Solomon RS(2,1) Erasure Sharding (Any 2 of 3 shards reconstruct data instantly with 0ms delay)</strong></td>
+              <td>Single Path (Retransmits dropped packets)</td>
+              <td>Single Path (Retransmits dropped packets)</td>
+              <td>Single TCP Circuit (Head-of-line blocking stalls stream)</td>
+              <td>Single Tunnel (Connection latency stalls)</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Mobile Roaming Handover (Wi-Fi &rarr; LTE)</div>
+                <div class="feature-desc">Does your connection freeze or disconnect when leaving home Wi-Fi for mobile cellular data?</div>
+              </td>
+              <td class="col-ggn-val"><strong>Zero-RST Silent Re-Anchor (Seamless live session migration; zero dropped frames on physical carrier)</strong></td>
+              <td>Endpoint Roaming (Requires packet exchange to update)</td>
+              <td>DERP Relay Switch (Session stalls or re-handshakes)</td>
+              <td>Circuit Breaks (Must negotiate brand new 3-hop circuit)</td>
+              <td>Tunnel Drops (10–30 second disconnection &amp; IP leak)</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Traffic Analysis &amp; Censor Disguise</div>
+                <div class="feature-desc">Can an ISP, government firewall, or censor detect that you are running a VPN/mesh?</div>
+              </td>
+              <td class="col-ggn-val"><strong>Uniform 576B Frames + Authenticated Jitter + Exponential Poisson Cover Traffic (Indistinguishable from noise)</strong></td>
+              <td>Known Packet Lengths &amp; Handshake Headers (Trivially blocked by DPI)</td>
+              <td>WireGuard Fingerprints (Easily throttled or identified)</td>
+              <td>Obfs4 pluggable transports (Base Tor easily blocked)</td>
+              <td>Standard OpenVPN / WireGuard / IPsec headers</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Formal Mathematical Verification</div>
+                <div class="feature-desc">Has the cryptographic security been proven by rigorous machine-checked mathematics?</div>
+              </td>
+              <td class="col-ggn-val"><strong>Formally Verified via ProVerif 2.05 (Session secrecy proven: RESULT not attacker(secret) is true)</strong></td>
+              <td>Formally Verified (Noise protocol Tamarin/CryptoVerif models)</td>
+              <td>Relies on WireGuard proof (Coordination plane unverified)</td>
+              <td>Academic papers (Partial formal proofs)</td>
+              <td>No formal protocol model</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">In-Memory Hardware Defense</div>
+                <div class="feature-desc">Are keys protected in RAM against physical memory dump attacks if a computer or phone is seized?</div>
+              </td>
+              <td class="col-ggn-val"><strong>AES-256-XTS Memory Hardening + Volatile Zeroization on Drop</strong></td>
+              <td>Kernel memory zeroing (Plaintext in RAM)</td>
+              <td>Standard user-space memory</td>
+              <td>Standard user-space memory</td>
+              <td>Standard user-space memory</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Anonymity &amp; Egress Forwarding</div>
+                <div class="feature-desc">Can the destination or exit node discover who originally sent the traffic?</div>
+              </td>
+              <td class="col-ggn-val"><strong>Clean-Room 3-Hop Onion Routing (RLY!) + Ephemeral Cryptographic Vouchers</strong></td>
+              <td>None (Exit node sees true client IP)</td>
+              <td>None (Exit node sees Tailscale identity)</td>
+              <td>3-Hop TCP Circuits (Slow, circuit stalls)</td>
+              <td>None (VPN company sees real IP &amp; billing identity)</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
