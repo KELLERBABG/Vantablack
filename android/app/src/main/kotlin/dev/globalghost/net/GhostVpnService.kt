@@ -1,4 +1,4 @@
-﻿package dev.globalghost.net
+package dev.globalghost.net
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -53,11 +53,25 @@ class GhostVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        hubFp = intent?.getStringExtra(EXTRA_HUB_FP) ?: hubFp
-        intent?.getStringExtra(EXTRA_HUB_ADDR)?.let {
-            val host = it.substringBeforeLast(':')
-            val port = it.substringAfterLast(':').toIntOrNull() ?: 0
-            if (port in 1..65535) hubAddr = InetSocketAddress(host, port)
+        hubFp = intent?.getStringExtra(EXTRA_HUB_FP)?.trim() ?: hubFp
+        intent?.getStringExtra(EXTRA_HUB_ADDR)?.trim()?.let {
+            val s = it.replace(" ", "")
+            val host: String
+            val port: Int
+            if (s.contains(':')) {
+                host = s.substringBeforeLast(':')
+                port = s.substringAfterLast(':').toIntOrNull() ?: 55225
+            } else if (s.count { c -> c == '.' } == 4) {
+                // e.g. 192.168.178.36.55225 (user accidentally typed dot instead of colon)
+                host = s.substringBeforeLast('.')
+                port = s.substringAfterLast('.').toIntOrNull() ?: 55225
+            } else {
+                host = s
+                port = 55225
+            }
+            if (port in 1..65535 && host.isNotEmpty()) {
+                hubAddr = InetSocketAddress(host, port)
+            }
         }
         dnsServer = intent?.getStringExtra(EXTRA_DNS) ?: dnsServer
         searchDomain = intent?.getStringExtra(EXTRA_SEARCH_DOMAIN)

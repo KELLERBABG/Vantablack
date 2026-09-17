@@ -1,4 +1,4 @@
-﻿package dev.globalghost.net
+package dev.globalghost.net
 
 import android.app.Activity
 import android.content.Intent
@@ -58,9 +58,17 @@ class MainActivity : Activity() {
         }
         layout.addView(lblAddr)
 
+        val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
+        val initialAddr = intent?.getStringExtra(GhostVpnService.EXTRA_HUB_ADDR)
+            ?: prefs.getString("hub_addr", "192.168.178.36:55225")
+            ?: "192.168.178.36:55225"
+        val initialFp = intent?.getStringExtra(GhostVpnService.EXTRA_HUB_FP)
+            ?: prefs.getString("hub_fp", "5fa96851e39ae44b")
+            ?: "5fa96851e39ae44b"
+
         editHubAddr = EditText(this).apply {
-            hint = "192.168.1.x:2271"
-            setText("192.168.1.47:2271")
+            hint = "192.168.178.36:55225"
+            setText(initialAddr)
             setTextColor(Color.parseColor("#ffffff"))
             setHintTextColor(Color.parseColor("#484f58"))
             background = GradientDrawable().apply {
@@ -82,8 +90,8 @@ class MainActivity : Activity() {
         layout.addView(lblFp)
 
         editHubFp = EditText(this).apply {
-            hint = "e.g. a53cbc3f05ce6ddc"
-            setText("a53cbc3f05ce6ddc")
+            hint = "5fa96851e39ae44b"
+            setText(initialFp)
             setTextColor(Color.parseColor("#ffffff"))
             setHintTextColor(Color.parseColor("#484f58"))
             background = GradientDrawable().apply {
@@ -163,6 +171,10 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Enter both Hub address and fingerprint", Toast.LENGTH_LONG).show()
             return
         }
+        getSharedPreferences("ggn_vpn", MODE_PRIVATE).edit()
+            .putString("hub_addr", hubAddr)
+            .putString("hub_fp", hubFp)
+            .apply()
         val vpnIntent = VpnService.prepare(this)
         if (vpnIntent != null) {
             startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
