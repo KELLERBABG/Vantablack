@@ -30,7 +30,7 @@ Instead of funneling traffic through a central VPN provider where it can be moni
 ## Why Use It?
 
 * **Quantum-Resilient Privacy:** Uses hybrid ML-KEM-512 (Kyber / FIPS 203) and ephemeral X25519 ECDH. Data captured by state surveillance today cannot be decrypted when cryptographically relevant quantum computers arrive.
-* **Asymmetric Shard Routing:** Every message is split into 3 mathematical shards (Reed-Solomon RS(2,1)). Shards travel through different computers across divergent internet paths; intercepting any single path yields zero readable information.
+* **Asymmetric Shard Routing:** Every message is split into 3 mathematical shards (Reed-Solomon RS(2,1)) dispatched across divergent internet paths for packet-loss resilience. Payload confidentiality is strictly enforced by AEAD encryption, while erasure coding guarantees reconstruction from any 2 shards without retransmission.
 * **Byzantine Tamper Resistance:** Pairwise combinatorial Poly1305 MAC tag verification isolates and drops corrupted shards in real-time, reconstructing intact payloads via pristine alternate paths.
 * **Zero Infrastructure Costs:** No need to pay for a central VPS. Connect your devices seamlessly using free Cloudflare DNS seeds and automatic local peer caching.
 * **Anti-Traffic Fingerprinting:** Layer 5 traffic shaping injects randomized jitter noise (16–64 bytes) to defeat deep packet inspection (DPI), packet-length analysis, and timing correlation.

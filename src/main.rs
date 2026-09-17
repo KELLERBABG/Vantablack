@@ -3950,7 +3950,80 @@ fn peer_entry(
     })
 }
 
+fn handle_cli_args() -> Option<anyhow::Result<()>> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        return None;
+    }
+    match args[1].as_str() {
+        "split-key" | "split_key" => {
+            let secret = if args.len() >= 3 {
+                let hex_str = args[2].trim();
+                let bytes = match hex::decode(hex_str) {
+                    Ok(b) => b,
+                    Err(e) => return Some(Err(anyhow::anyhow!("Invalid hex key: {e}"))),
+                };
+                if bytes.len() != 32 {
+                    return Some(Err(anyhow::anyhow!(
+                        "Key must be exactly 32 bytes (64 hex characters), got {}",
+                        bytes.len()
+                    )));
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            } else {
+                let mut arr = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut arr);
+                println!("Generated fresh 32-byte secret key: {}", hex::encode(arr));
+                arr
+            };
+            let shares = vantablack::ghost::layers::l3_shamir::split_secret_bytes(&secret);
+            println!("L3 Shamir Secret Sharing (2-of-3 threshold split):");
+            for (i, share) in shares.iter().enumerate() {
+                println!("  Share {}: {}", i + 1, hex::encode(share));
+            }
+            println!("Any 2 of these 3 shares will reconstruct the original secret.");
+            Some(Ok(()))
+        }
+        "join-key" | "join_key" => {
+            if args.len() < 4 {
+                println!("Usage: ggn join-key <share1_hex> <share2_hex>");
+                return Some(Err(anyhow::anyhow!("Two hex shares required")));
+            }
+            let s1 = match hex::decode(args[2].trim()) {
+                Ok(b) => b,
+                Err(e) => return Some(Err(anyhow::anyhow!("Invalid hex for share 1: {e}"))),
+            };
+            let s2 = match hex::decode(args[3].trim()) {
+                Ok(b) => b,
+                Err(e) => return Some(Err(anyhow::anyhow!("Invalid hex for share 2: {e}"))),
+            };
+            let secret = vantablack::ghost::layers::l3_shamir::join_shares(&s1, &s2);
+            println!(
+                "Reconstructed secret ({} bytes): {}",
+                secret.len(),
+                hex::encode(&secret)
+            );
+            Some(Ok(()))
+        }
+        "--help" | "-h" | "help" => {
+            println!("Global Ghost Net (GGN) — Post-Quantum WAN Mesh Daemon");
+            println!("Usage:");
+            println!("  ggn                             Run node daemon");
+            println!("  ggn split-key [32B_HEX_KEY]     Split secret into 3 Shamir shares (2-of-3 threshold)");
+            println!("  ggn join-key <SHARE1> <SHARE2>  Reconstruct secret from any 2 Shamir shares");
+            println!("  ggn --help                      Show this help");
+            Some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    if let Some(res) = handle_cli_args() {
+        return res;
+    }
     // The desktop window owns the main thread: tao refuses to build an
     // EventLoop anywhere else on Windows, and macOS requires the main thread.
     // The node therefore runs on its own thread and hands its handle back so
@@ -6441,7 +6514,7 @@ async fn run_node(
 
     // ── CLI ──
     if !socks {
-        tracing::info!("Commands: PEER <ip:port>, CHAT <fp> <msg>, SENDRELAY <dest> <relay> <payload>, EXIT <fp>, EXITS, TFT [fp], FEC, MEMSEC, FINGERPRINT, PEERS, STATUS, STATS, BEACON <on/off>, REVOKE, REP, HELP");
+        tracing::info!("Commands: PEER <ip:port>, CHAT <fp> <msg>, SENDRELAY <dest> <relay> <payload>, EXIT <fp>, EXITS, TFT [fp], FEC, MEMSEC, SHAMIR <split|join>, FINGERPRINT, PEERS, STATUS, STATS, BEACON <on/off>, REVOKE, REP, HELP");
     }
 
     loop {
@@ -7021,6 +7094,56 @@ async fn run_node(
                     "  L0/L1 LockedMemory Guard  : ACTIVE (mlock / VirtualLock RAM page pinning)"
                 );
             }
+            "SHAMIR" => {
+                if p.len() < 2 {
+                    println!("Usage: SHAMIR SPLIT [hex_secret] | SHAMIR JOIN <share1_hex> <share2_hex>");
+                } else {
+                    match p[1].to_uppercase().as_str() {
+                        "SPLIT" => {
+                            let secret = if p.len() >= 3 {
+                                match hex::decode(p[2].trim()) {
+                                    Ok(b) if b.len() == 32 => {
+                                        let mut arr = [0u8; 32];
+                                        arr.copy_from_slice(&b);
+                                        arr
+                                    }
+                                    _ => {
+                                        println!("Error: Key must be 32 bytes (64 hex characters)");
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                let mut arr = [0u8; 32];
+                                rand::thread_rng().fill_bytes(&mut arr);
+                                println!("Generated fresh 32-byte secret key: {}", hex::encode(arr));
+                                arr
+                            };
+                            let shares = vantablack::ghost::layers::l3_shamir::split_secret_bytes(&secret);
+                            println!("L3 Shamir Secret Sharing (2-of-3 threshold split):");
+                            for (i, share) in shares.iter().enumerate() {
+                                println!("  Share {}: {}", i + 1, hex::encode(share));
+                            }
+                            println!("Any 2 of these 3 shares will reconstruct the original secret.");
+                        }
+                        "JOIN" => {
+                            if p.len() < 4 {
+                                println!("Usage: SHAMIR JOIN <share1_hex> <share2_hex>");
+                            } else {
+                                match (hex::decode(p[2].trim()), hex::decode(p[3].trim())) {
+                                    (Ok(s1), Ok(s2)) => {
+                                        let secret = vantablack::ghost::layers::l3_shamir::join_shares(&s1, &s2);
+                                        println!("Reconstructed secret ({} bytes): {}", secret.len(), hex::encode(&secret));
+                                    }
+                                    _ => {
+                                        println!("Error: Invalid hex strings for shares");
+                                    }
+                                }
+                            }
+                        }
+                        _ => println!("Usage: SHAMIR SPLIT [hex_secret] | SHAMIR JOIN <share1_hex> <share2_hex>"),
+                    }
+                }
+            }
             "HELP" => {
                 println!("Commands:");
                 println!("  PEER <ip:port>     - Connect to a peer");
@@ -7042,6 +7165,12 @@ async fn run_node(
                 );
                 println!(
                     "  MEMSEC              - Show runtime memory encryption & ring buffer status"
+                );
+                println!(
+                    "  SHAMIR SPLIT [hex]  - Split a 32-byte secret into 3 Shamir shares (2-of-3)"
+                );
+                println!(
+                    "  SHAMIR JOIN <s1> <s2> - Reconstruct a secret from any 2 Shamir shares"
                 );
                 println!("  LEASES               - VPN hub: client leases (raw)");
                 println!("  VPNSTATS             - VPN in/out/flow totals");

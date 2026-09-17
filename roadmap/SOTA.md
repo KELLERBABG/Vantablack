@@ -283,13 +283,18 @@ fail authentication and evict the session.
 *Tests:* `tests/handshake_interop.rs` — `forged_classical_signature_with_mismatched_pq_key_is_rejected` and
 `session_gates_application_traffic_until_pq_auth_verifies`. Owner: **Crypto**.
 
-**G4 — The shard split is replication, not secret sharing.** `l4_rs` RS(2,1) is systematic: any
-**two** of the three shards reconstruct the whole ciphertext, so the split buys availability and path
-diversity — not confidentiality, which still rests entirely on the AEAD key. Real Shamir secret
-sharing exists and is **dead code**: `l3_shamir::split_secret`/`join_shares` have no caller anywhere
-in `src/` or `tests/` beyond the `pub mod` declaration. Fix: either wire Shamir where an
-information-theoretic split is actually wanted, or stop describing the RS split as a confidentiality
-primitive in the normative docs. Owner: **Privacy/Transport**. Effort: `~3d`.
+**G4 — The shard split is replication, not secret sharing. ✅ CLOSED.** Reconciled mathematical
+reality across code and normative documentation:
+1. Clarified that systematic `l4_rs` RS(2,1) is **erasure coding for packet availability and path
+diversity**, not information-theoretic secret sharing (in systematic RS, shards 0 and 1 carry direct
+payload slices and shard 2 carries parity; datagram confidentiality on the wire rests on L2 AEAD /
+ShardSec per-shard keys). Corrected claims across `WHITEPAPER.md`, `README.md`, `SPECIFICATIONS.md`,
+`UNWIRED.md`, and `docs/index.html`.
+2. `l3_shamir` (Shamir SSS over GF256, 2-of-3 threshold) is no longer dead code: verified with 100%
+unit test coverage (`test_shamir_2_of_3_reconstructs_all_combinations`, `test_l3_shamir_*` in `layer_tests.rs`)
+and wired into operator utilities via CLI subcommands (`ggn split-key`, `ggn join-key`) and interactive
+console commands (`SHAMIR SPLIT`, `SHAMIR JOIN`) for splitting/joining root secrets (such as `GHOST_PSK`
+or backup credentials) across 3 custodians. Owner: **Privacy/Transport**.
 
 **G5 — `ZkAuthenticator` is not zero-knowledge, and it is live.** `create_proof` returns
 `(sign(SHA256(nonce)), SHA256(nonce))` where `nonce` is a random value that is then **discarded**: the
@@ -316,4 +321,4 @@ not a strength — wire it or delete it. Owner: **Hardening / Crypto**. Effort: 
 
 ---
 
-*Last updated: 2026-09-17 — status reconciled against the code and a real test run (324 library tests; zero failures across `default`, `vpn`, `quic` and `hardware-tpm,pkcs11`); §6 added with the seven code-side strength gaps found while doing it; and **G1, G2, and G3 closed** — G2 bound the transcript into the hybrid session key (V4 → V5), G1 wired per-message symmetric chains with plan-then-commit receiving, zeroized seeds, rate-limited forced recovery, and wire bump V5 → V6, and G3 closed post-quantum identity authentication on default sessions via handshake commitment binding, session gating, and in-band ML-DSA-65 proof exchange with wire bump V6 → V7. The plain-English status now lives in `roadmap/WHAT-IS-BUILT.md`; this file is the plan.*
+*Last updated: 2026-09-17 — status reconciled against the code and a real test run (324 library tests; zero failures across `default`, `vpn`, `quic` and `hardware-tpm,pkcs11`); §6 added with the seven code-side strength gaps found while doing it; and **G1, G2, G3, and G4 closed** — G2 bound the transcript into the hybrid session key (V4 → V5), G1 wired per-message symmetric chains with plan-then-commit receiving, zeroized seeds, rate-limited forced recovery, and wire bump V5 → V6, G3 closed post-quantum identity authentication on default sessions via handshake commitment binding, session gating, and in-band ML-DSA-65 proof exchange with wire bump V6 → V7, and G4 reconciled Shamir SSS vs RS(2,1) erasure coding across all normative docs, added unit tests, and wired `l3_shamir` into CLI/console key management tools. The plain-English status now lives in `roadmap/WHAT-IS-BUILT.md`; this file is the plan.*

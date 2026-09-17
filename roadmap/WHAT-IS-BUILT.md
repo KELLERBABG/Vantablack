@@ -80,6 +80,14 @@ recombined, so a tampered shard is rejected rather than quietly corrupting the r
 *Tests:* `src/ghost/net/shardsec.rs` — `two_authenticated_shards_reconstruct` and
 `one_captured_shard_never_opens`. Switched on with `GHOST_SHARDSEC=1`.
 
+**Threshold secret sharing is real and separate from transport erasure coding.** Shamir's Secret
+Sharing (2-of-3 threshold over GF256) is implemented, unit-tested, and wired into CLI/console tools
+(`ggn split-key` and `ggn join-key`) for splitting pre-shared keys (`GHOST_PSK`) or recovery
+credentials across custodians with information-theoretic confidentiality. Datagram transport uses
+systematic Reed-Solomon RS(2,1) exclusively for path diversity and packet-loss recovery, where
+confidentiality rests on L2 AEAD authenticated encryption rather than erasure coding.
+*Tests:* `src/ghost/layers/l3_shamir.rs` (4 unit tests) and `tests/layer_tests.rs` (2 integration tests).
+
 **Three-hop onion routing with an exit policy.** Traffic can be wrapped in three layers so each
 relay in the chain can only decrypt its own layer and learn only the next hop. Exits must present a
 signed, expiring voucher (`EXITAUTH`) or the request is denied.
@@ -216,10 +224,10 @@ Observed on this machine, 2026-09-17, Windows, nightly toolchain, **zero failure
 
 | what | result |
 |---|---|
-| library unit tests, default features | 316 passed |
+| library unit tests, default features | 328 passed |
 | `src/main.rs` tests | 14 passed (run twice, once per binary) |
 | `tests/handshake_interop.rs` | 3 passed |
-| `tests/layer_tests.rs` | 46 passed |
+| `tests/layer_tests.rs` | 48 passed |
 | `tests/p1_nat.rs` | 7 passed |
 | `tests/p1_relay.rs` | 8 passed |
 | `tests/p2_wire.rs` | 6 passed |

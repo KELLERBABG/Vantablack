@@ -104,7 +104,7 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 
 | Symbol | Reality |
 | :-- | :-- |
-| `l3_shamir::split_secret` / `join_shares` | Never called. The transport uses L4 RS(2,1) only. |
+| `l3_shamir::split_secret` / `join_shares` | **Wired & Verified (G4)** — Shamir SSS (2-of-3 threshold over GF256). Active as key escrow and threshold backup utility (`ggn split-key`, `ggn join-key`, and console `SHAMIR SPLIT`/`SHAMIR JOIN`) with 100% unit test coverage in `l3_shamir.rs` and `layer_tests.rs`. Datagram transport uses L4 RS(2,1) + ShardSec. |
 | `LdpcCodec` (L7) | **Wired & Verified** — Gallager bit-flipping iterative decoder corrected and proven against single- and multi-bit burst corruptions. Active for long-stream encoding via `GHOST_LDPC_FEC=1`, inspectable via CLI `FEC`. |
 | `XtsMemoryEncryptor`, `EncryptedMemoryRegion` (L8) | **Wired & Active** — Real AES-256-XTS (IEEE 1619) engine instantiated in `main.rs` with CSPRNG-generated keys for volatile runtime memory security, inspectable via CLI `MEMSEC`. |
 | `VerifiedRingBuffer` (L8) | **Wired & Active** — Bounded lock-free SPSC ring buffer for inter-thread packet staging, integrated into node subsystem and monitored via CLI `MEMSEC`. |

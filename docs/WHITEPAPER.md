@@ -15,7 +15,7 @@ Global Ghost Net is an autonomous, post-quantum WAN mesh routing daemon. Operati
 1. **Serverless Decentralization:** Every node operates simultaneously as a router and a relay. There is no central directory server.
 2. **Post-Quantum Defense-in-Depth:** Key agreement combines classical elliptic-curve Diffie-Hellman (X25519) with lattice-based key encapsulation (ML-KEM-512 / FIPS 203) alongside optional pre-shared salt mixing.
 3. **Traffic Morphing:** Frames are padded with variable pseudorandom jitter, rendering datagrams indistinguishable from uniform white noise to intermediate deep packet inspection (DPI) systems.
-4. **Resilient Erasure Multipath:** Datagrams are sharded via Reed-Solomon RS(2,1). Intercepting any single transit path yields mathematically zero recoverable data.
+4. **Resilient Erasure Multipath:** Datagrams are sharded via Reed-Solomon RS(2,1) for path diversity and packet-loss resilience (any 2 of 3 shards reconstruct intact payloads). Datagram confidentiality on the wire is enforced by authenticated encryption (L2 AEAD / ShardSec per-shard keys).
 
 ---
 
@@ -26,8 +26,8 @@ Global Ghost Net is an autonomous, post-quantum WAN mesh routing daemon. Operati
 | **L0** | Identity | Ed25519 | Cryptographic node identity and beacon signing |
 | **L1** | Key Exchange | X25519 + ML-KEM-512 | Hybrid post-quantum key encapsulation with HKDF-SHA256 |
 | **L2** | AEAD Transport | ChaCha20-Poly1305 | 256-bit encryption with directional session-bound nonces |
-| **L3** | Secret Sharing | Shamir SSS (GF256) | Threshold key distribution and split recovery |
-| **L4** | Erasure Coding | Reed-Solomon RS(2,1) | Multi-path fragment dispersal (any 2 of 3 shards reconstruct) |
+| **L3** | Secret Sharing | Shamir SSS (GF256) | Threshold key distribution and split recovery (2-of-3 threshold) |
+| **L4** | Erasure Coding | Reed-Solomon RS(2,1) | Multi-path fragment dispersal & availability (any 2 of 3 shards reconstruct) |
 | **L5** | Traffic Obfuscation | Jitter Padding | Randomized byte injection to eliminate length fingerprinting |
 | **L6** | Replay Protection | SessionGuardU64 | 64-bit sliding window packet replay rejection |
 | **L7** | Error Correction | LDPC | Forward error correction across high-loss links |

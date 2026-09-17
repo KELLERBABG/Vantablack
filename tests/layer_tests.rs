@@ -5,11 +5,13 @@ use ml_kem::kem::KeyExport;
 /// - L0: Identity generation, signing, verification
 /// - L1: X25519 keypairs, Kyber-512 KEM, hybrid key derivation, handshake PDU building/parsing
 /// - L2: ChaCha20-Poly1305 encrypt/decrypt, tamper detection
+/// - L3: Shamir's Secret Sharing (GF256) 2-of-3 threshold split and reconstruct
 /// - L4: Reed-Solomon encode/reconstruct with all shard loss combinations
 /// - L6: Session guard replay window (all 4 scenarios), timeout behavior
 use vantablack::ghost::layers::l0_identity;
 use vantablack::ghost::layers::l1_kem;
 use vantablack::ghost::layers::l2_aead;
+use vantablack::ghost::layers::l3_shamir;
 use vantablack::ghost::layers::l4_rs;
 use vantablack::ghost::layers::l6_session::SessionGuard;
 
@@ -404,6 +406,39 @@ fn test_l2_empty_message_roundtrip() {
     assert!(
         decrypted.is_empty(),
         "Decrypted empty message should be empty"
+    );
+}
+
+// ─────────────────────────────────────────────────────────
+// L3 — Shamir Secret Sharing Tests (GF256, 2-of-3 threshold)
+// ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_l3_shamir_2_of_3_threshold_reconstruction() {
+    let secret_key = [0x55u8; 32];
+    let shares = l3_shamir::split_secret_bytes(&secret_key);
+    assert_eq!(shares.len(), 3, "Shamir SSS must generate 3 shares");
+
+    // Reconstruct with any pair
+    let rec01 = l3_shamir::join_shares(&shares[0], &shares[1]);
+    let rec02 = l3_shamir::join_shares(&shares[0], &shares[2]);
+    let rec12 = l3_shamir::join_shares(&shares[1], &shares[2]);
+
+    assert_eq!(rec01, secret_key.to_vec());
+    assert_eq!(rec02, secret_key.to_vec());
+    assert_eq!(rec12, secret_key.to_vec());
+}
+
+#[test]
+fn test_l3_shamir_single_share_insufficient() {
+    let secret_key = [0x77u8; 32];
+    let shares = l3_shamir::split_secret_bytes(&secret_key);
+    // Supplying only 1 share to join_share_slice
+    let rec = l3_shamir::join_share_slice(&[&shares[0]]);
+    assert_ne!(
+        rec,
+        secret_key.to_vec(),
+        "Single share must not reconstruct the secret"
     );
 }
 
