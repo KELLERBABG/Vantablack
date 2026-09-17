@@ -55,9 +55,9 @@ use vantablack::ghost::{
             RESPONSE_BLOB_LEN,
         },
         l2_aead::{
-            decrypt_in_place_with_context, encrypt_in_place_with_context, xchacha_open,
-            xchacha_open_with_aad, xchacha_seal_in_place, xchacha_seal_in_place_with_aad,
-            NonceDirection,
+            decrypt_in_place_with_context, random_xnonce, xchacha_open,
+            xchacha_open_with_aad, xchacha_seal_in_place,
+            xchacha_seal_in_place_with_aad, NonceDirection,
         },
         l4_rs,
         l7_ldpc::LdpcCodec,
@@ -93,7 +93,6 @@ use vantablack::ghost::{
 
 enum PendingHandshake {
     Kem512(x25519_dalek::EphemeralSecret, DecapsulationKey512),
-    Kem768(x25519_dalek::EphemeralSecret, DecapsulationKey768),
     Negotiated {
         x_secret: x25519_dalek::EphemeralSecret,
         kem512: DecapsulationKey512,
@@ -2690,9 +2689,6 @@ async fn handle_pkt(
                 let ct = Ciphertext::<MlKem512>::try_from(resp.kyber_ct.as_slice()).ok();
                 ct.map(|ct| (ax, dk.decapsulate(&ct).as_slice().to_vec()))
             }
-            (HybridCipherSuite::X25519MlKem768V3, PendingHandshake::Kem768(ax, dk)) => {
-                kyber768_decapsulate(&dk, &resp.kyber_ct).ok().map(|ss| (ax, ss))
-            }
             _ => None,
         }) else {
             tracing::warn!(peer = %src, "Suite response does not match pending handshake");
@@ -3109,19 +3105,22 @@ async fn handle_pkt(
                     tracing::info!(via = %src, hop = %next, "Relay packet forwarded");
                     return;
                 }
-                // Final hop: the inner payload is [counter u32 BE][initiator→us
-                // encrypted blob]. Try each of our sessions to unwrap it.
+                // Final hop: the inner payload is [counter u64 BE (8B)][wire_nonce (12B)][initiator→us
+                // encrypted blob + tag]. Try each of our sessions to unwrap it using XChaCha20-Poly1305 (G6).
                 let inner = &relay.inner_payload;
-                if inner.len() >= 4 {
+                if inner.len() >= 20 + 16 {
                     // WIRED: Record bytes forwarded by relay peer for us
                     if let Some(enforcer) = tft {
                         enforcer.forwarded_by(&peer_fp, inner.len() as u64);
                     }
 
-                    let ic = u64::from(u32::from_be_bytes([
+                    let ic = u64::from_be_bytes([
                         inner[0], inner[1], inner[2], inner[3],
-                    ]));
-                    let blob = inner[4..].to_vec();
+                        inner[4], inner[5], inner[6], inner[7],
+                    ]);
+                    let mut wire_nonce = [0u8; 12];
+                    wire_nonce.copy_from_slice(&inner[8..20]);
+                    let blob = inner[20..].to_vec();
                     let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> = node
                         .sessions
                         .iter()
@@ -3135,28 +3134,26 @@ async fn handle_pkt(
                         })
                         .collect();
                     for (fp2, key, sh, role) in candidates {
-                        // The onion's inner layer is the v1 construction (32-bit
-                        // counter carried in the relay header), so it takes the
-                        // narrowed counter, not the tunnel anchor's 64-bit one.
+                        // G6: The onion's inner layer now uses XChaCha20-Poly1305 with a
+                        // 64-bit counter and transmitted 12-byte random nonce.
                         // Each direction gets a fresh ciphertext copy: an AEAD
                         // attempt may mutate its buffer before returning an error.
-                        let ic32 = ic as u32;
                         let pt2 = {
                             let mut first = blob.clone();
-                            match decrypt_in_place_with_context(
+                            match xchacha_open(
                                 &key,
-                                ic32,
-                                &sh,
+                                &wire_nonce,
+                                0,
                                 NonceDirection::InitiatorToResponder,
                                 &mut first,
                             ) {
                                 Ok(plain) => Some(plain.to_vec()),
                                 Err(_) => {
                                     let mut second = blob.clone();
-                                    decrypt_in_place_with_context(
+                                    xchacha_open(
                                         &key,
-                                        ic32,
-                                        &sh,
+                                        &wire_nonce,
+                                        0,
                                         NonceDirection::ResponderToInitiator,
                                         &mut second,
                                     )
@@ -4125,16 +4122,10 @@ async fn run_node(
     // WIRED: Category B - Verified SPSC Ring Buffer for packet staging
     let verified_ring = Arc::new(VerifiedRingBuffer::<Vec<u8>>::new(1024));
 
-    // NOT WIRED: SecureTimeKeeper is constructed and then discarded (`_time_keeper` is
-    // never read), so no check in this daemon actually consults NTS-secured time. The
-    // comment here previously claimed "WIRED:", which was false. Either give it a
-    // consumer or stop constructing it — see roadmap/WHAT-IS-BUILT.md §4.
-    let _time_keeper = Arc::new(vantablack::ghost::layers::l9_infra::SecureTimeKeeper::new(
-        false,
-    ));
-    // NOT WIRED: BuildInfo is constructed and discarded, and `verify_manifest()` is
-    // never called, so no build-hash verification runs. Previously mislabelled "WIRED:".
-    let _build_info = vantablack::ghost::layers::l9_infra::BuildInfo::new();
+    // G7: SecureTimeKeeper and BuildInfo were constructed here and immediately
+    // discarded (_time_keeper, _build_info — neither was ever read). Removed
+    // rather than wired: the library primitives remain available in l9_infra
+    // for future use when a real consumer exists.
 
     let ba = std::env::var("GHOST_BIND").unwrap_or_else(|_| "0.0.0.0:0".to_string());
     let socks = std::env::var("GHOST_SOCKS5").is_ok();
@@ -4793,7 +4784,7 @@ async fn run_node(
                 }
                 Some(VpnMode::Client(c, _)) => {
                     let ctr = c.tx_counter();
-                    let headroom = u32::MAX.saturating_sub(ctr);
+                    let headroom = u64::MAX.saturating_sub(ctr);
                     let dead = c.watchdog.lock().is_dead();
                     let prom = format!(
                         "# HELP ghost_vpn_tx_counter VPN client: per-epoch tunnel TX counter\n\
@@ -6790,7 +6781,7 @@ async fn run_node(
                     println!("No session with destination {dest}");
                     continue;
                 };
-                let (dkey, dsh, drole) = (ds.master_key, ds.session_hash, ds.role);
+                let (dkey, drole) = (ds.master_key, ds.role);
                 drop(ds);
                 let dctr = nc
                     .sessions
@@ -6803,18 +6794,22 @@ async fn run_node(
                 if !blob.len().is_multiple_of(2) {
                     blob.push(0);
                 }
-                // The onion's inner layer is sealed with the destination session and
-                // its 32-bit counter is carried in the relay header, so this one
-                // layer stays on the v1 construction: moving it would change the
-                // relay packet format, not just the transport under it. A counter
-                // that no longer fits is refused, never truncated — a truncated
-                // counter reuses a nonce.
-                let Ok(dctr32) = u32::try_from(dctr) else {
-                    println!("SENDRELAY: inner counter exhausted (>2^32) — refusing to send");
+                // G6: The onion's inner layer now seals with XChaCha20-Poly1305 and a
+                // 64-bit counter plus transmitted 96-bit random nonce, eliminating
+                // 32-bit counter exhaustion.
+                let wire_nonce = random_xnonce();
+                if xchacha_seal_in_place(
+                    &dkey,
+                    &wire_nonce,
+                    0,
+                    dir_for(drole),
+                    &mut blob,
+                ).is_err() {
+                    println!("SENDRELAY: AEAD encryption failed");
                     continue;
-                };
-                encrypt_in_place_with_context(&dkey, dctr32, &dsh, dir_for(drole), &mut blob);
-                let mut inner = dctr32.to_be_bytes().to_vec();
+                }
+                let mut inner = dctr.to_be_bytes().to_vec();
+                inner.extend_from_slice(&wire_nonce);
                 inner.extend_from_slice(&blob);
                 let route = match middle {
                     Some(middle) if !middle.is_empty() && middle != relay && middle != dest => {

@@ -33,7 +33,8 @@ pub trait MeshReceiver: Send {
 pub struct ClientState {
     pub fingerprint: String,
     pub epoch: AtomicU32,
-    tx_counter: AtomicU32,
+    /// G6: widened from AtomicU32 to eliminate 32-bit counter exhaustion.
+    tx_counter: AtomicU64,
     key: Mutex<[u8; 32]>,
     ingress: VpnIngress,
     /// Resilience loop state (see resilience::TunnelWatchdog).
@@ -47,7 +48,7 @@ impl ClientState {
         Self {
             fingerprint: fingerprint.into(),
             epoch: AtomicU32::new(1),
-            tx_counter: AtomicU32::new(1),
+            tx_counter: AtomicU64::new(1),
             key: Mutex::new(key),
             ingress: VpnIngress::new(),
             watchdog: Mutex::new(resilience::TunnelWatchdog::new()),
@@ -92,7 +93,7 @@ impl ClientState {
     }
 
     /// Current TX counter (diagnostics/tests).
-    pub fn tx_counter(&self) -> u32 {
+    pub fn tx_counter(&self) -> u64 {
         self.tx_counter.load(Ordering::Relaxed)
     }
 }

@@ -10,8 +10,8 @@
 //! - [`seal_datagram`] / [`VpnIngress`]: raw-IP datagrams ride the mesh as
 //!   UNRELIABLE datagrams — never AckEngine, never RxState, no retransmit,
 //!   no head-of-line blocking. Inner TCP owns retransmission. Separate
-//!   counter space and a dedicated AEAD context so tunnel traffic can never
-//!   collide with control-channel replay windows or nonces.
+//!   counter space and a dedicated XChaCha20-Poly1305 AEAD context so tunnel
+//!   traffic can never collide with control-channel replay windows or nonces.
 //!
 //! Nothing in this module allocates an unbounded channel.
 
@@ -553,36 +553,60 @@ impl UdpFlowTable {
 // ── Tunnel datagram crypto ──────────────────────────────────────────
 
 /// Wire layout of a VPN tunnel datagram (before mesh framing):
-/// `[4B epoch][4B ctr][AEAD(payload + tag)]`
-/// AEAD context is dedicated to the tunnel ("GTun") so tunnel and control
-/// traffic never share a (key, nonce) space even at equal counters.
-pub const TUNNEL_HDR_LEN: usize = 8;
+/// `[4B epoch][8B ctr][8B rand][XChaCha20-Poly1305(payload + tag)]`
+///
+/// G6: widened from `[4B epoch][4B ctr][ChaCha20-Poly1305(…)]` (HDR=8) to
+/// eliminate 32-bit counter exhaustion. The random segment makes the 24-byte
+/// XChaCha nonce unique even if (epoch, ctr) repeats across sessions, and the
+/// u64 counter space is effectively inexhaustible.
+pub const TUNNEL_HDR_LEN: usize = 20; // 4 + 8 + 8
+
 /// Max inner IP packet we carry (TUN_MTU) + AEAD tag.
 pub const TUNNEL_MAX_PAYLOAD: usize = TUN_MTU as usize + 16;
 
-/// Context bytes mixed into the AEAD nonce (session_hash slot of l2_aead).
+/// Context bytes mixed into the XChaCha nonce.
 const TUNNEL_CONTEXT: [u8; 4] = *b"GTun";
 
-fn tunnel_nonce(epoch: u32, ctr: u32) -> [u8; 12] {
-    let mut nonce = [0u8; 12];
+/// Build a 24-byte XChaCha nonce from the tunnel context, epoch, counter
+/// and a random segment: `[4B "GTun" | 4B epoch | 8B ctr | 8B rand]`.
+fn tunnel_xnonce(epoch: u32, ctr: u64, rand_seg: &[u8; 8]) -> [u8; 24] {
+    let mut nonce = [0u8; 24];
     nonce[0..4].copy_from_slice(&TUNNEL_CONTEXT);
     nonce[4..8].copy_from_slice(&epoch.to_be_bytes());
-    nonce[8..12].copy_from_slice(&ctr.to_be_bytes());
+    nonce[8..16].copy_from_slice(&ctr.to_be_bytes());
+    nonce[16..24].copy_from_slice(rand_seg);
     nonce
 }
 
+/// Generate a fresh 8-byte random segment for the tunnel nonce.
+fn tunnel_rand_seg() -> [u8; 8] {
+    let mut r = [0u8; 8];
+    rand::Rng::fill(&mut rand::thread_rng(), &mut r[..]);
+    r
+}
+
 /// Seal a raw IP packet into a tunnel datagram. Pure function.
-pub fn seal_datagram(key: &[u8; 32], epoch: u32, ctr: u32, ip_packet: &[u8]) -> Vec<u8> {
+///
+/// G6: uses XChaCha20-Poly1305 with a u64 counter and an 8-byte random
+/// nonce segment transmitted on the wire, so the nonce space cannot exhaust.
+pub fn seal_datagram(key: &[u8; 32], epoch: u32, ctr: u64, ip_packet: &[u8]) -> Vec<u8> {
     use chacha20poly1305::aead::AeadInPlace;
     let mut body = ip_packet.to_vec();
-    let nonce = tunnel_nonce(epoch, ctr);
-    let cipher = chacha20poly1305::ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
+    let rand_seg = tunnel_rand_seg();
+    let nonce = tunnel_xnonce(epoch, ctr, &rand_seg);
+    let cipher =
+        chacha20poly1305::XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
     let tag = cipher
-        .encrypt_in_place_detached(chacha20poly1305::Nonce::from_slice(&nonce), &[], &mut body)
+        .encrypt_in_place_detached(
+            chacha20poly1305::XNonce::from_slice(&nonce),
+            &[],
+            &mut body,
+        )
         .expect("AEAD seal cannot fail for valid key");
     let mut out = Vec::with_capacity(TUNNEL_HDR_LEN + body.len() + 16);
     out.extend_from_slice(&epoch.to_be_bytes());
     out.extend_from_slice(&ctr.to_be_bytes());
+    out.extend_from_slice(&rand_seg);
     out.extend_from_slice(&body);
     out.extend_from_slice(tag.as_slice());
     out
@@ -603,7 +627,7 @@ pub enum OpenOutcome {
 #[derive(Default)]
 struct TunnelRx {
     guard: l6_session::SessionGuardU64,
-    v_max: u32,
+    v_max: u64,
 }
 
 /// Ingress engine: owns per-epoch replay state and opens datagrams.
@@ -628,6 +652,9 @@ impl VpnIngress {
 
     /// Open a tunnel datagram. `expected_epoch` comes from the LeaseTable
     /// (set by rotate_epoch). Returns the outcome; never blocks.
+    ///
+    /// G6: reads the widened `[4B epoch][8B ctr][8B rand][ct+tag]` format
+    /// and uses XChaCha20-Poly1305 to open.
     pub fn open(
         &self,
         key: &[u8; 32],
@@ -640,7 +667,14 @@ impl VpnIngress {
             return OpenOutcome::AuthFail;
         }
         let epoch = u32::from_be_bytes([wire[0], wire[1], wire[2], wire[3]]);
-        let ctr = u32::from_be_bytes([wire[4], wire[5], wire[6], wire[7]]);
+        let ctr = u64::from_be_bytes([
+            wire[4], wire[5], wire[6], wire[7],
+            wire[8], wire[9], wire[10], wire[11],
+        ]);
+        let rand_seg: [u8; 8] = [
+            wire[12], wire[13], wire[14], wire[15],
+            wire[16], wire[17], wire[18], wire[19],
+        ];
         if epoch != expected_epoch {
             return OpenOutcome::AuthFail; // dead era
         }
@@ -649,12 +683,12 @@ impl VpnIngress {
         let tag_bytes = body.split_off(split);
         let mut tag = chacha20poly1305::Tag::default();
         tag.copy_from_slice(&tag_bytes);
-        let nonce = tunnel_nonce(epoch, ctr);
+        let nonce = tunnel_xnonce(epoch, ctr, &rand_seg);
         let cipher =
-            chacha20poly1305::ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
+            chacha20poly1305::XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
         if cipher
             .decrypt_in_place_detached(
-                chacha20poly1305::Nonce::from_slice(&nonce),
+                chacha20poly1305::XNonce::from_slice(&nonce),
                 &[],
                 &mut body,
                 &tag,
@@ -666,7 +700,7 @@ impl VpnIngress {
         let mut rx = self.rx.lock();
         let state = rx.entry((fingerprint.to_string(), epoch)).or_default();
         let advanced = ctr > state.v_max;
-        if !state.guard.check_and_update(ctr as u64) {
+        if !state.guard.check_and_update(ctr) {
             return OpenOutcome::Replay;
         }
         if advanced {
@@ -784,7 +818,7 @@ mod tests {
             OpenOutcome::Replay
         ));
         let mut tampered = wire.clone();
-        tampered[10] ^= 0xFF;
+        tampered[TUNNEL_HDR_LEN + 2] ^= 0xFF; // flip a byte in the ciphertext body
         assert!(matches!(
             ing.open(&key, "aa", 3, &tampered),
             OpenOutcome::AuthFail
@@ -868,5 +902,48 @@ mod tests {
             flow2.last_seen > old_seen,
             "get_or_create must return refreshed Arc"
         );
+    }
+
+    /// G6 regression: a counter beyond u32::MAX roundtrips correctly.
+    #[test]
+    fn test_tunnel_u64_counter_beyond_u32_max() {
+        let key = [0xABu8; 32];
+        let packet = vec![0x45u8; 100];
+        let big_ctr: u64 = (u32::MAX as u64) + 42;
+        let wire = seal_datagram(&key, 1, big_ctr, &packet);
+        let ing = VpnIngress::new();
+        match ing.open(&key, "g6", 1, &wire) {
+            OpenOutcome::Accepted { ip_packet, .. } => {
+                assert_eq!(ip_packet, packet);
+            }
+            other => panic!("expected Accepted, got {:?}", match other {
+                OpenOutcome::Replay => "Replay",
+                OpenOutcome::AuthFail => "AuthFail",
+                _ => "unknown",
+            }),
+        }
+    }
+
+    /// G6 regression: same (epoch, ctr) with different random segments produces
+    /// different ciphertexts — the random nonce segment provides uniqueness.
+    #[test]
+    fn test_tunnel_xnonce_uniqueness() {
+        let key = [0xCDu8; 32];
+        let packet = vec![0x60u8; 80];
+        let w1 = seal_datagram(&key, 2, 99, &packet);
+        let w2 = seal_datagram(&key, 2, 99, &packet);
+        // The random segments (bytes 12..20) must differ with overwhelming probability
+        assert_ne!(
+            &w1[12..20], &w2[12..20],
+            "two seals must use different random nonce segments"
+        );
+        // And therefore the ciphertexts differ
+        assert_ne!(w1, w2);
+        // But both must open correctly
+        let ing = VpnIngress::new();
+        assert!(matches!(ing.open(&key, "uniq", 2, &w1), OpenOutcome::Accepted { .. }));
+        // Second one has same counter — replay, which is expected since the
+        // replay window only tracks the counter, not the random segment.
+        assert!(matches!(ing.open(&key, "uniq", 2, &w2), OpenOutcome::Replay));
     }
 }

@@ -341,20 +341,26 @@ refresh a proof into a later beacon, tamper and non-canonical-encoding rejection
 proof rides `ZKPR` and verifies, a proof made for one identity is rejected inside another's beacon,
 and a bare beacon keeps the 112-byte layout. Owner: **Crypto**.
 
-**G6 — Two inner layers still derive their nonce from a 32-bit counter.** The `GVPN1` tunnel
+**G6 — Two inner layers still derive their nonce from a 32-bit counter. ✅ CLOSED.** The `GVPN1` tunnel
 envelope (hub ⇄ client, `seal_datagram(key, epoch, ctr, …)`) and the `SENDRELAY` inner onion layer
-seal with their own 32-bit counter-derived nonce, making them the last places a counter can exhaust a
-nonce. GTF v2 was widened to 64 bits with a transmitted random nonce; these two were deliberately
-left behind. Fix: move both onto the same XChaCha + transmitted-nonce path. The SENDRELAY counter is
-already `try_from`-checked and refuses rather than truncates, so this is a capability upgrade rather
-than a bug fix. Owner: **Crypto/Session**. Effort: `~3d`.
+sealed with their own 32-bit counter-derived nonce, making them the last places a counter could exhaust a
+nonce. Both were widened onto the XChaCha20-Poly1305 + transmitted-nonce path:
+1. `GVPN1` tunnel datagrams now use XChaCha20-Poly1305 with a 64-bit monotonic counter, an 8-byte random
+   nonce segment, and wire format `[4B epoch][8B ctr][8B rand][ct + 16B tag]` (`TUNNEL_HDR_LEN = 20`,
+   widened from 8). Counter headroom and metrics widened to `u64`.
+2. `SENDRELAY` inner onion layer now seals under XChaCha20-Poly1305 with a 64-bit counter and a transmitted
+   96-bit random nonce (`[8B counter][12B wire_nonce][blob]`). The `u32::try_from` guard was removed.
+3. *Tests:* `test_tunnel_u64_counter_beyond_u32_max` (counters > 2^32 roundtrip through VpnIngress),
+   `test_tunnel_xnonce_uniqueness` (identical counters with distinct random segments yield distinct ciphertexts).
+   Owner: **Crypto/Session**.
 
-**G7 — Primitives that exist and are never consumed.** `SecureTimeKeeper` is constructed in `main.rs`
-and bound to `_time_keeper`, so nothing consults secured time; `BuildInfo::verify_manifest` is defined
-and never called, so no build-hash check runs; `PendingHandshake::Kem768` is never constructed (the
-live 768 path is the negotiated one); `l3_shamir` has no caller (see G4). A primitive nothing calls is
-not a strength — wire it or delete it. Owner: **Hardening / Crypto**. Effort: `~1d` together.
+**G7 — Primitives that exist and are never consumed. ✅ CLOSED.** Removed dead primitives per policy:
+1. Removed `_time_keeper` construction from `main.rs` (`SecureTimeKeeper` library primitive remains in `l9_infra`).
+2. Removed `_build_info` construction from `main.rs` (`BuildInfo` library primitive remains in `l9_infra`).
+3. Removed unused `PendingHandshake::Kem768` enum variant and its dead match arm (live 768 path is `Negotiated`).
+4. `l3_shamir` previously wired in G4.
+Owner: **Hardening / Crypto**.
 
 ---
 
-*Last updated: 2026-09-17 — status reconciled against the code and a real test run (324 library tests; zero failures across `default`, `vpn`, `quic` and `hardware-tpm,pkcs11`); §6 added with the seven code-side strength gaps found while doing it; and **G1, G2, G3, and G4 closed** — G2 bound the transcript into the hybrid session key (V4 → V5), G1 wired per-message symmetric chains with plan-then-commit receiving, zeroized seeds, rate-limited forced recovery, and wire bump V5 → V6, G3 closed post-quantum identity authentication on default sessions via handshake commitment binding, session gating, and in-band ML-DSA-65 proof exchange with wire bump V6 → V7, and G4 reconciled Shamir SSS vs RS(2,1) erasure coding across all normative docs, added unit tests, and wired `l3_shamir` into CLI/console key management tools. The plain-English status now lives in `roadmap/WHAT-IS-BUILT.md`; this file is the plan.*
+*Last updated: 2026-09-17 — status reconciled against the code and a real test run (336 library tests; zero failures across all targets); §6 code-side strength gaps **G1, G2, G3, G4, G5, G6, and G7 all CLOSED** — G2 bound the transcript into the hybrid session key (V4 → V5), G1 wired per-message symmetric chains with plan-then-commit receiving, zeroized seeds, rate-limited forced recovery, and wire bump V5 → V6, G3 closed post-quantum identity authentication on default sessions via handshake commitment binding, session gating, and in-band ML-DSA-65 proof exchange with wire bump V6 → V7, G4 reconciled Shamir SSS vs RS(2,1) erasure coding across all normative docs and wired `l3_shamir` into CLI/console key management tools, G5 replaced pseudo-ZK with real Fiat–Shamir Schnorr ZK proofs over Ristretto255, G6 widened GVPN1 and SENDRELAY inner nonces to XChaCha20-Poly1305 with 64-bit counters and transmitted random nonces, and G7 eliminated dead constructions and unused enum variants. The plain-English status lives in `roadmap/WHAT-IS-BUILT.md`; this file is the plan.*

@@ -4,12 +4,13 @@
 //! Wire encapsulation inside a session: after the standard GTF assembly and
 //! session AEAD decryption, a VPN payload is
 //! `b"GVPN1" + seal_datagram(key, epoch, ctr, ip_packet)` where the inner
-//! AEAD uses the SAME session master key but a dedicated nonce domain
-//! (`tunnel_nonce`) — tunnel and control traffic never share a nonce pair.
-//! The session guard already rejected replays at the frame layer; the inner
-//! epoch/ctr drive the LEASE re-anchor ladder and a second replay window.
+//! XChaCha20-Poly1305 AEAD uses the SAME session master key but a dedicated
+//! nonce domain (`tunnel_xnonce`) — tunnel and control traffic never share a
+//! nonce pair. The session guard already rejected replays at the frame layer;
+//! the inner epoch/ctr drive the LEASE re-anchor ladder and a second replay
+//! window.
 //!
-//! All egress produced here is the BARE tunnel datagram (epoch||ctr||ct||tag).
+//! All egress produced here is the BARE tunnel datagram (epoch||ctr||rand||ct||tag).
 //! Callers (main.rs) prepend the `GVPN1` magic exactly once when wrapping.
 
 use std::collections::{HashMap, HashSet};
@@ -57,8 +58,8 @@ pub struct VpnHub {
     ingress: VpnIngress,
     /// Inner-epoch per fingerprint (mirror of the lease epoch for fast checks).
     ingress_epochs: Mutex<HashMap<String, u32>>,
-    /// Hub→client tunnel counters (per fingerprint).
-    tx_counters: Mutex<HashMap<String, u32>>,
+    /// Hub→client tunnel counters (per fingerprint). G6: widened to u64.
+    tx_counters: Mutex<HashMap<String, u64>>,
     /// Egress queue: (fingerprint, bare tunnel wire). Bounded (rule 3).
     egress: Mutex<std::sync::mpsc::Receiver<(String, Vec<u8>)>>,
     egress_tx: std::sync::mpsc::SyncSender<(String, Vec<u8>)>,
@@ -371,15 +372,13 @@ impl VpnHub {
         let slot = ctrs.entry(fp.to_string()).or_insert(0);
         let next = slot.wrapping_add(1);
         if next == 0 {
-            *slot = 1; // skip the 0 counter on wrap
+            *slot = 1; // skip the 0 counter on wrap (u64 wrap is unreachable in practice)
         } else {
             *slot = next;
         }
-        // The wrap below keeps the counter space alive, but the client's replay
-        // window is monotonic: once it has accepted u32::MAX it rejects every
-        // later counter, wrapped ones included. Nothing counts down to a re-key
-        // yet (PROTOTYPE.md flaw #1), so at minimum make the approach loud.
-        const CTR_REKEY_AT: u32 = u32::MAX - 1_000_000;
+        // G6: u64 counter space is effectively inexhaustible (~585 years at
+        // 1 Gpps), so this alarm exists only as a defensive sanity check.
+        const CTR_REKEY_AT: u64 = u64::MAX - 10_000_000;
         if *slot >= CTR_REKEY_AT {
             tracing::warn!(
                 fingerprint = %fp, counter = *slot,
@@ -467,8 +466,8 @@ impl VpnHub {
                 .tx_counters
                 .lock()
                 .get(&l.fingerprint)
-                .map(|c| u32::MAX.saturating_sub(*c))
-                .unwrap_or(u32::MAX);
+                .map(|c| u64::MAX.saturating_sub(*c))
+                .unwrap_or(u64::MAX);
             views.push(LeaseView {
                 fingerprint: l.fingerprint,
                 overlay_ip: l.overlay_ip,
@@ -495,9 +494,9 @@ impl VpnHub {
             .tx_counters
             .lock()
             .values()
-            .map(|c| u32::MAX.saturating_sub(*c))
+            .map(|c| u64::MAX.saturating_sub(*c))
             .min()
-            .unwrap_or(u32::MAX);
+            .unwrap_or(u64::MAX);
         VpnHubMetrics {
             frames_in: self.stats_in.load(Ordering::Relaxed),
             frames_out: self.stats_out.load(Ordering::Relaxed),
@@ -520,8 +519,8 @@ pub struct VpnHubMetrics {
     pub tcp_flows: usize,
     pub udp_flows: usize,
     /// Smallest remaining tunnel-counter headroom across leases
-    /// (`u32::MAX` when no lease has spent a counter yet).
-    pub counter_headroom_min: u32,
+    /// (`u64::MAX` when no lease has spent a counter yet).
+    pub counter_headroom_min: u64,
 }
 
 /// One lease as rendered by the console `VPN STATUS` view.
@@ -542,8 +541,8 @@ pub struct LeaseView {
     pub tunnel_v_max: u32,
     /// Live UDP flow bindings owned by this fingerprint.
     pub udp_flows: usize,
-    /// Remaining per-epoch tunnel-counter headroom (`u32::MAX` = untouched).
-    pub counter_headroom: u32,
+    /// Remaining per-epoch tunnel-counter headroom (`u64::MAX` = untouched).
+    pub counter_headroom: u64,
 }
 
 // ── IP/UDP packet construction (LAN → client replies) ───────────────
