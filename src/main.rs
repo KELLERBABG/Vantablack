@@ -75,7 +75,10 @@ use vantablack::ghost::{
             DerpRelay,
         },
         routing::{ContactPlan, PoissonReputationMatrix},
-        security::{LockedMemory, RevocationList, RevocationReason, ZkAuthenticator},
+        security::{
+            LockedMemory, RevocationList, RevocationReason, ZkAuthenticator, ZK_CONTEXT_LEN,
+            ZK_PROOF_LEN,
+        },
         send_gtf, send_gtf_v2, unframe, upnp, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX,
         GTF_BULK_SIZE,
     },
@@ -2096,13 +2099,16 @@ fn unix_now_secs() -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Legacy fixed beacon layouts, still accepted from older peers.
+/// The legacy fixed beacon layout, still accepted from older peers. The 208-byte
+/// variant that carried a ZK block at fixed offsets is gone with the hard switch
+/// (SOTA §6 G5): a datagram that long is now read as a bare, identity-only
+/// beacon, never as a peer that proved membership.
 const BEACON_LEGACY_LEN: usize = 112;
-const BEACON_LEGACY_ZK_LEN: usize = 208;
 
 /// Optional sections carried by an extended beacon.
 struct BeaconSections<'a> {
-    /// `(commitment, proof)` when a ZK membership proof is present.
+    /// `(context, proof)` when a ZK membership proof is present. The context is
+    /// the timestamp the proof is bound to; the proof is `R ‖ z` (SOTA §6 G5).
     zk: Option<(&'a [u8; 32], &'a [u8])>,
     /// The sender's ICE offer, as produced by `ice::IceOffer::encode`.
     ice_offer: Option<&'a str>,
@@ -2114,12 +2120,10 @@ struct BeaconSections<'a> {
 
 /// Parse the trailing optional sections of a beacon.
 ///
-/// Returns `None` when the datagram uses a legacy fixed layout. This is
-/// deliberately strict: a legacy ZK commitment is 32 random bytes, so a
-/// coincidence could make it look like a section magic. Requiring the sections
-/// to tile the datagram exactly (and the ZK section to be the right size) makes
-/// that coincidence fall back to the legacy interpretation instead of failing
-/// verification.
+/// Returns `None` when the datagram does not tile as sections. That fallback is
+/// what keeps the parser honest about older layouts — the trailing bytes of a
+/// legacy beacon are arbitrary, and a coincidence must be read as a legacy
+/// beacon rather than as a section whose contents were never intended.
 fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
     let mut pos = BEACON_LEGACY_LEN;
     let mut zk = None;
@@ -2138,11 +2142,11 @@ fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
             return None;
         }
         if magic == BEACON_SECTION_ZK {
-            if len != 96 {
+            if len != ZK_CONTEXT_LEN + ZK_PROOF_LEN {
                 return None;
             }
-            let commitment: &[u8; 32] = buf[start..start + 32].try_into().ok()?;
-            zk = Some((commitment, &buf[start + 32..end]));
+            let context: &[u8; 32] = buf[start..start + ZK_CONTEXT_LEN].try_into().ok()?;
+            zk = Some((context, &buf[start + ZK_CONTEXT_LEN..end]));
         } else if magic == BEACON_SECTION_ICE {
             ice_offer = Some(std::str::from_utf8(&buf[start..end]).ok()?);
         } else if magic == BEACON_SECTION_RELAY {
@@ -2179,10 +2183,17 @@ fn push_beacon_section(buf: &mut Vec<u8>, magic: &[u8; 4], payload: &[u8]) {
     buf.extend_from_slice(payload);
 }
 
+/// Assemble a beacon from its signed prefix and optional sections.
+///
+/// `zk` is the membership proof to carry, already created for this identity: the
+/// builder never sees the PSK, so it cannot be asked for a proof it has no secret
+/// to make. The boolean this replaced could not tell "no proof wanted" from "no
+/// secret to prove with", and emitted a signature-shaped block for neither
+/// (SOTA §6 G5).
 fn build_beacon_packet(
     pk: &[u8; 32],
     signer: impl Fn(&[u8]) -> [u8; 64],
-    with_zk: bool,
+    zk: Option<([u8; 32], [u8; 64])>,
     ice_offer: Option<&str>,
     relay_capable: bool,
     pq_commitment: Option<&[u8; 32]>,
@@ -2194,24 +2205,15 @@ fn build_beacon_packet(
     let sig = signer(&buf[16..48]);
     buf[48..112].copy_from_slice(&sig);
 
-    if ice_offer.is_none() && !relay_capable && with_zk && pq_commitment.is_none() {
-        // Nothing new to carry: keep the exact legacy 208-byte layout so peers on
-        // older builds still verify this beacon. A node that advertises relay
-        // capability is by definition on the new layout, and an older build
-        // rejects its beacon rather than reading the ZK block at fixed offsets —
-        // which is why capability is opt-in (`GHOST_RELAY=1`) and not the default.
-        let (zk_proof, commitment) = ZkAuthenticator::create_proof(pk, &signer);
-        buf.resize(BEACON_LEGACY_ZK_LEN, 0);
-        buf[112..144].copy_from_slice(&commitment);
-        buf[144..BEACON_LEGACY_ZK_LEN].copy_from_slice(&zk_proof[..64]);
-        return buf;
-    }
-
-    if with_zk {
-        let (zk_proof, commitment) = ZkAuthenticator::create_proof(pk, &signer);
-        let mut section = Vec::with_capacity(96);
-        section.extend_from_slice(&commitment);
-        section.extend_from_slice(&zk_proof[..64]);
+    if let Some((context, proof)) = zk {
+        // A membership proof, already created for this identity. The builder
+        // never sees the PSK, so it cannot be asked for a proof it has no secret
+        // to make — the old boolean could not tell "no proof wanted" from "no
+        // secret to prove with" and would emit a signature-shaped block for
+        // neither (SOTA §6 G5).
+        let mut section = Vec::with_capacity(ZK_CONTEXT_LEN + ZK_PROOF_LEN);
+        section.extend_from_slice(&context);
+        section.extend_from_slice(&proof);
         push_beacon_section(&mut buf, BEACON_SECTION_ZK, &section);
     }
     if let Some(offer) = ice_offer {
@@ -5807,10 +5809,35 @@ async fn run_node(
                     // what a discoverer can remember and check against the key we
                     // later prove on the carrier.
                     let pq_commitment = nc.identity.pq_commitment();
+                    // A membership proof needs a membership secret. Without a
+                    // GHOST_PSK there is none to prove with, and a peer that
+                    // shares this setting has none to verify with either, so
+                    // this is a misconfiguration that stops discovery: it is
+                    // reported once instead of being papered over with a block
+                    // that proves nothing (SOTA §6 G5).
+                    let zk_proof = if zk_enabled {
+                        match psk.as_ref() {
+                            Some(psk) => Some(ZkAuthenticator::create_proof(
+                                &nc.identity.public_key_bytes(),
+                                psk,
+                            )),
+                            None => {
+                                static WARNED: std::sync::Once = std::sync::Once::new();
+                                WARNED.call_once(|| {
+                                    tracing::warn!(
+                                        "GHOST_ZK_DISCOVERY=1 without GHOST_PSK: no membership proof can be attached, and peers that require one will drop this node"
+                                    );
+                                });
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let beacon = build_beacon_packet(
                         &nc.identity.public_key_bytes(),
                         |d| nc.identity.sign(d).to_bytes(),
-                        zk_enabled,
+                        zk_proof,
                         offer_text.as_deref(),
                         advertises_relay,
                         Some(&pq_commitment),
@@ -5842,6 +5869,14 @@ async fn run_node(
             let zk_required = std::env::var("GHOST_ZK_DISCOVERY")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
+            // The membership proof is a proof about a shared secret, so without
+            // the secret nothing can be verified: this fails closed, and says so
+            // once instead of dropping every beacon in silence (SOTA §6 G5).
+            if zk_required && psk.is_none() {
+                tracing::error!(
+                    "GHOST_ZK_DISCOVERY=1 without GHOST_PSK: no beacon can carry a verifiable membership proof, so discovery will accept nothing — set GHOST_PSK or unset GHOST_ZK_DISCOVERY"
+                );
+            }
             let listen_sock = match (|| -> std::io::Result<UdpSocket> {
                 let s2 = socket2::Socket::new(
                     socket2::Domain::IPV4,
@@ -5867,7 +5902,14 @@ async fn run_node(
                     return;
                 }
             };
-            let mut buf = vec![0u8; 256]; // signed beacons are 112 bytes (or 208 with ZK proof)
+            // A beacon is the 112-byte signed prefix plus optional sections, and
+            // the ICE offer is the long one. 256 bytes truncated every beacon big
+            // enough to matter, and a truncated datagram does not tile as
+            // sections — so the offer and the PQ commitment were silently lost
+            // and only the bare prefix survived. 1472 is the bound the plan
+            // states for a beacon and the largest thing that fits an Ethernet MTU
+            // without fragmenting.
+            let mut buf = vec![0u8; 1472];
             let local_fp = nc.fingerprint();
             while nc.running.load(Ordering::Relaxed) {
                 if let Ok((amt, src)) = listen_sock.recv_from(&mut buf).await {
@@ -5887,10 +5929,9 @@ async fn run_node(
                         continue;
                     }
 
-                    // Optional trailing sections (Phase 1 P1-1): a ZK membership
+                    // Optional trailing sections (Phase 1 P1-1): a membership
                     // proof, the sender's ICE offer, and whether the sender is
-                    // willing to relay. A beacon with none of them keeps the
-                    // legacy fixed layout.
+                    // willing to relay.
                     let mut advertises_relay = false;
                     let beacon_fp = hex::encode(&pk[..8]);
                     let peer_offer = match parse_beacon_sections(&buf, amt) {
@@ -5903,14 +5944,24 @@ async fn run_node(
                                 carrier_pins.pin_commitment(&beacon_fp, *commitment);
                             }
                             match sections.zk {
-                                Some((commitment, proof)) => {
-                                    if !ZkAuthenticator::verify_proof(&pk, proof, commitment) {
-                                        tracing::warn!(peer = %src, "Beacon ZK proof verification failed — dropped");
+                                Some((context, proof)) => {
+                                    // A Schnorr proof that the sender knows the
+                                    // membership secret for exactly this identity
+                                    // (SOTA §6 G5). It needs the PSK, because the
+                                    // statement is about the PSK: a node without
+                                    // one cannot verify and does not pretend to.
+                                    if !ZkAuthenticator::verify_proof(
+                                        &pk,
+                                        psk.as_ref(),
+                                        context,
+                                        proof,
+                                    ) {
+                                        tracing::warn!(peer = %src, "Beacon membership proof failed — dropped");
                                         continue;
                                     }
                                 }
                                 None if zk_required => {
-                                    tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a ZK proof");
+                                    tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a membership proof");
                                     continue;
                                 }
                                 None => {}
@@ -5918,17 +5969,15 @@ async fn run_node(
                             sections.ice_offer.map(str::to_string)
                         }
                         None => {
-                            // Legacy layout: the ZK block sits at fixed offsets.
-                            if amt >= BEACON_LEGACY_ZK_LEN {
-                                let mut commitment = [0u8; 32];
-                                commitment.copy_from_slice(&buf[112..144]);
-                                let zk_proof = &buf[144..BEACON_LEGACY_ZK_LEN];
-                                if !ZkAuthenticator::verify_proof(&pk, zk_proof, &commitment) {
-                                    tracing::warn!(peer = %src, "Beacon ZK proof verification failed — dropped");
-                                    continue;
-                                }
-                            } else if zk_required {
-                                tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a ZK proof");
+                            // The datagram does not tile as sections: either a bare
+                            // 112-byte beacon, or an older peer's 208-byte one whose
+                            // trailing block is a signature over a discarded nonce.
+                            // Under the hard switch that block is not verified —
+                            // and cannot be, since it commits to nothing — so such
+                            // a peer is an identity-only beacon and never a proven
+                            // member.
+                            if zk_required {
+                                tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a membership proof");
                                 continue;
                             }
                             None
@@ -7194,10 +7243,17 @@ mod beacon_section_tests {
         [9u8; 64]
     }
 
-    /// A real identity, because a ZK proof *is* an Ed25519 signature over the
-    /// commitment — a stub signer can never produce a verifiable one.
+    /// A real identity, because the beacon's prefix signature must verify against
+    /// the key it names — a stub signer can never produce one. The membership
+    /// proof itself no longer involves the signing key at all: it is a Schnorr
+    /// proof about the PSK and the public key (SOTA §6 G5).
     fn real_identity() -> l0_identity::GhostIdentity {
         l0_identity::GhostIdentity::generate_fresh()
+    }
+
+    /// The mesh membership secret these tests prove knowledge of.
+    fn test_psk() -> [u8; 32] {
+        [0x33; 32]
     }
 
     /// Build an offer through the real encoder, so these tests cannot drift away
@@ -7227,7 +7283,7 @@ mod beacon_section_tests {
 
     #[test]
     fn a_plain_beacon_keeps_the_legacy_112_byte_layout() {
-        let b = build_beacon_packet(&test_pk(), stub_signer, false, None, false, None);
+        let b = build_beacon_packet(&test_pk(), stub_signer, None, None, false, None);
         assert_eq!(b.len(), BEACON_LEGACY_LEN);
         assert_eq!(&b[..16], BEACON_PREFIX);
         let sections = parse_beacon_sections(&b, b.len()).expect("parses with no sections");
@@ -7236,32 +7292,88 @@ mod beacon_section_tests {
     }
 
     #[test]
-    fn a_zk_beacon_without_an_offer_stays_byte_compatible_with_old_peers() {
-        // An older build verifies the ZK block at fixed offsets, so a beacon
-        // with no offer to carry must not switch to the sectioned format.
+    fn a_membership_proof_beacon_uses_the_sectioned_layout() {
+        // Hard switch (SOTA §6 G5): the 208-byte layout that carried a
+        // signature-shaped block at fixed offsets is gone, so a node with nothing
+        // else to say still says this in a section.
         let identity = real_identity();
         let pk = identity.public_key_bytes();
-        let b = build_beacon_packet(&pk, |d| identity.sign(d).to_bytes(), true, None, false, None);
-        assert_eq!(b.len(), BEACON_LEGACY_ZK_LEN);
+        let psk = test_psk();
+        let b = build_beacon_packet(
+            &pk,
+            |d| identity.sign(d).to_bytes(),
+            Some(ZkAuthenticator::create_proof(&pk, &psk)),
+            None,
+            false,
+            None,
+        );
+        assert!(b.len() > BEACON_LEGACY_LEN);
 
-        // And the legacy positional read must still verify it.
-        let mut commitment = [0u8; 32];
-        commitment.copy_from_slice(&b[112..144]);
+        let sections = parse_beacon_sections(&b, b.len()).expect("the section must tile");
+        let (context, proof) = sections.zk.expect("a membership proof is present");
         assert!(ZkAuthenticator::verify_proof(
             &pk,
-            &b[144..BEACON_LEGACY_ZK_LEN],
-            &commitment
+            Some(&psk),
+            context,
+            proof
+        ));
+        // A verifier checking the wrong identity, or holding a different
+        // membership secret, accepts nothing.
+        assert!(!ZkAuthenticator::verify_proof(
+            &test_pk(),
+            Some(&psk),
+            context,
+            proof
+        ));
+        assert!(!ZkAuthenticator::verify_proof(
+            &pk,
+            Some(&[0x44; 32]),
+            context,
+            proof
+        ));
+    }
+
+    #[test]
+    fn a_proof_made_for_one_identity_is_not_accepted_in_another_beacon() {
+        // The statement names the pk it was made for, so even a member of the
+        // same mesh — holding the same PSK — cannot lift its own proof into
+        // another node's beacon. What ties the pk to the sender is the beacon's
+        // prefix signature, and this test asserts the split rather than hiding
+        // it (SOTA §6 G5).
+        let mine = real_identity();
+        let theirs = real_identity();
+        let psk = test_psk();
+        let (context, proof) = ZkAuthenticator::create_proof(&mine.public_key_bytes(), &psk);
+        let b = build_beacon_packet(
+            &theirs.public_key_bytes(),
+            |d| theirs.sign(d).to_bytes(),
+            Some((context, proof)),
+            None,
+            false,
+            None,
+        );
+        let sections = parse_beacon_sections(&b, b.len()).expect("the section must tile");
+        let (ctx, pr) = sections.zk.expect("a membership proof is present");
+        assert!(
+            !ZkAuthenticator::verify_proof(&theirs.public_key_bytes(), Some(&psk), ctx, pr),
+            "a proof made for another identity must not verify against this beacon"
+        );
+        assert!(ZkAuthenticator::verify_proof(
+            &mine.public_key_bytes(),
+            Some(&psk),
+            ctx,
+            pr
         ));
     }
 
     #[test]
     fn an_offer_beacon_round_trips_through_its_sections() {
         let offer = sample_offer(true);
-        let b = build_beacon_packet(&test_pk(), stub_signer, false, Some(&offer), false, None);
+        let b = build_beacon_packet(&test_pk(), stub_signer, None, Some(&offer), false, None);
         assert!(b.len() > BEACON_LEGACY_LEN);
 
         let sections = parse_beacon_sections(&b, b.len()).expect("sections must tile exactly");
-        assert!(sections.zk.is_none(), "no ZK was requested");
+        assert!(sections.zk.is_none(), "no proof was attached");
         assert_eq!(sections.ice_offer, Some(offer.as_str()));
 
         // And it decodes back into a usable offer, candidates included.
@@ -7280,20 +7392,21 @@ mod beacon_section_tests {
         let offer = sample_offer(false);
         let identity = real_identity();
         let pk = identity.public_key_bytes();
+        let psk = test_psk();
         let b = build_beacon_packet(
             &pk,
             |d| identity.sign(d).to_bytes(),
-            true,
+            Some(ZkAuthenticator::create_proof(&pk, &psk)),
             Some(&offer),
             false,
             None,
         );
         let sections = parse_beacon_sections(&b, b.len()).expect("both sections must parse");
 
-        let (commitment, proof) = sections.zk.expect("ZK section present");
+        let (context, proof) = sections.zk.expect("membership proof present");
         assert!(
-            ZkAuthenticator::verify_proof(&pk, proof, commitment),
-            "the proof must verify against the identity that signed it"
+            ZkAuthenticator::verify_proof(&pk, Some(&psk), context, proof),
+            "the proof must verify for the identity it was made for"
         );
         assert_eq!(sections.ice_offer, Some(offer.as_str()));
         let decoded =
@@ -7310,7 +7423,7 @@ mod beacon_section_tests {
         let b = build_beacon_packet(
             &pk,
             |d| identity.sign(d).to_bytes(),
-            false,
+            None,
             None,
             false,
             Some(&commitment),
@@ -7321,7 +7434,7 @@ mod beacon_section_tests {
         // remembers it can check the key the peer later proves on the carrier.
         assert_eq!(commitment, l0_identity::pq_commitment(&identity.pq_public_key_bytes()));
         // A section with no commitment anywhere is not invented.
-        let plain = build_beacon_packet(&pk, stub_signer, false, None, false, None);
+        let plain = build_beacon_packet(&pk, stub_signer, None, None, false, None);
         assert_eq!(plain.len(), BEACON_LEGACY_LEN);
         assert!(parse_beacon_sections(&plain, plain.len())
             .expect("a bare beacon parses")

@@ -84,7 +84,7 @@ Every symbol below is `pub`, compiles, and in most cases has its own unit tests 
 | `Tpm2Backend` | `open()` and `open_path()` **unconditionally return `Err`**. `sign()` returns `[0u8; 64]`. Not programmable hardware support. |
 | `Pkcs11Backend` | `open()` unconditionally returns `Err`. `sign()` returns `[0u8; 64]`. |
 | `create_hsm_backend()` / `create_hsm_backend_from_key()` | Always fall through to `SoftwareTpm`. |
-| `ZkAuthenticator` | **Wired** — `create_proof` and `verify_proof` wired into beacon discovery (208-byte ZK beacons) and strictly enforced when `GHOST_ZK_DISCOVERY=1` is set. |
+| `ZkAuthenticator` | **Wired, and no longer a mock** — the discovery proof is a real Schnorr proof of knowledge over Ristretto255 of the mesh membership secret, bound to the beacon's identity key and a ±300 s timestamp (SOTA §6 G5). Enforced strictly when `GHOST_ZK_DISCOVERY=1`; requires `GHOST_PSK`, and fails closed without it. The block it replaced was a signature over the hash of a discarded nonce. |
 | `TleDistributor` | **Wired** — Instantiated in `main.rs`, periodically checking `should_gossip()` and broadcasting orbital TLE records across known peers. |
 | `LockedMemory` / `SecureMemGuard` | **Wired** — `LockedMemory` pinned via `VirtualLock`/`mlock` in `src/main.rs` to protect derived hybrid session master keys from swap/pagefile leakage. |
 | `RevocationList` | **Wired & Cryptographically Enforced** — Handshakes from revoked nodes are rejected, and `revoke_with_issuer_pk` verifies Ed25519 signatures from the issuing authority (Bug B7 fixed). |

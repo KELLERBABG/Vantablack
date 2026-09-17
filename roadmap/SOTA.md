@@ -296,14 +296,50 @@ and wired into operator utilities via CLI subcommands (`ggn split-key`, `ggn joi
 console commands (`SHAMIR SPLIT`, `SHAMIR JOIN`) for splitting/joining root secrets (such as `GHOST_PSK`
 or backup credentials) across 3 custodians. Owner: **Privacy/Transport**.
 
-**G5 — `ZkAuthenticator` is not zero-knowledge, and it is live.** `create_proof` returns
-`(sign(SHA256(nonce)), SHA256(nonce))` where `nonce` is a random value that is then **discarded**: the
-"commitment" commits to nothing anyone can open, and the "proof" is a signature over the hash of a
-thrown-away nonce. That is a weak — and transferable — proof of key possession, not a ZK proof, and
-it is on the live discovery path (`main.rs` creates beacon proofs at ~2087/2095 and verifies them at
-~5661/5680). Fix: implement the Schnorr shape the name promises, or deprecate it and rename the
-discovery check to what it actually is. Owner: **Crypto**. Effort: `~1w` (real ZK) or `~1h` (honest
-rename + deprecate).
+**G5 — `ZkAuthenticator` was not zero-knowledge, and it is live. ✅ CLOSED.** What it did was
+`(sign(SHA256(nonce)), SHA256(nonce))` with the nonce discarded: a "commitment" that opened nothing, a
+signature over the hash of a value nobody could recover, and — because nothing bound the block to the
+beacon, to the identity or to any moment in time — a proof that could be lifted out of one beacon and
+presented in another. It proved key possession, redundantly with the beacon's own signature, and it
+rode the live discovery path. It is now a real **Schnorr proof of knowledge over Ristretto255
+(RFC 9496) with Fiat–Shamir**, on the statement the name and the normative docs both claim: that the
+sender knows the mesh *membership* secret for the identity its beacon carries.
+1. `x = HKDF-SHA256(salt = "GGN_ZK_MEMBERSHIP_v1", ikm = GHOST_PSK ‖ ed25519_pk)`, `X = x·B`. `X` is
+   **derived** by the verifier and never transmitted, so only a holder of the PSK can check the
+   statement at all. `curve25519-dalek` becomes a direct dependency for the group arithmetic — the same
+   crate `ed25519-dalek` already pins, so no second copy of curve25519 enters the graph.
+2. `R = r·B` with `r` from the OS CSPRNG, `c = SHA-256("GGN_ZK_SCHNORR_CHALLENGE_v1" ‖ pk ‖ R ‖ X ‖ ts)`,
+   `z = r + c·x (mod ℓ)`. The block keeps its size and changes meaning: `context[ts_be ‖ 0^24] ‖
+   proof[R ‖ z]` — 96 bytes, the two scalars and the point that are all a Schnorr proof needs.
+3. Zero-knowledge because `z` is uniform given `c`; bound to the identity because `x` mixes the PSK
+   with `pk` and the challenge covers `pk`; bound to the moment because the challenge covers `ts`, with
+   a ±300 s freshness window. A beacon is a broadcast, so there is no verifier to hand out a nonce: the
+   window **bounds** replay rather than preventing it, and that limit is stated in `SPECIFICATIONS.md`
+   along with the other two — the identity in a beacon is public and signed, so this proves membership
+   and not anonymity; and any PSK holder can compute `x` for any `pk`, so the prefix signature, not
+   this proof, is what asserts who is speaking. A receiver must require both.
+4. **Hard switch, as decided:** the signature-shaped block is neither emitted nor accepted. The legacy
+   208-byte emission and the fixed-offset read are deleted rather than kept as a fallback, so a peer
+   still sending one is read as a bare, identity-only beacon and never credited with a proof. A beacon
+   with nothing to carry but a proof always uses the sectioned `ZKPR` layout.
+5. **Fails closed without a secret.** A membership proof needs a membership secret: with no `GHOST_PSK`
+   no proof can be made, and none can be verified either, because the statement is about the PSK. So
+   `GHOST_ZK_DISCOVERY=1` without `GHOST_PSK` logs an error and accepts nothing, rather than carrying a
+   block that proves nothing. The builder cannot be asked for a proof it has no secret to make:
+   `with_zk: bool` became `Option<([u8; 32], [u8; 64])>`, created by the caller that holds the PSK.
+
+**One defect found on the way, and fixed with it.** The beacon listener's receive buffer was **256
+bytes**, while a sectioned beacon carrying an ICE offer is routinely longer — so every beacon big
+enough to matter was truncated, failed to tile as sections, and silently lost its offer and its
+post-quantum commitment (the membership proof included) while only the bare prefix survived. The
+buffer is now 1472 bytes, the bound this plan already states for a beacon. *Tests:*
+`src/ghost/net/security.rs` — 10 unit tests, including
+`test_zk_proof_is_not_the_old_signature_over_a_discarded_nonce` (the G5 regression itself: the old
+block must no longer verify), freshness at and beyond the window in both directions, refusal to
+refresh a proof into a later beacon, tamper and non-canonical-encoding rejection, and the honest
+`test_zk_proof_alone_does_not_assert_an_identity` split. `src/main.rs::beacon_section_tests` — the
+proof rides `ZKPR` and verifies, a proof made for one identity is rejected inside another's beacon,
+and a bare beacon keeps the 112-byte layout. Owner: **Crypto**.
 
 **G6 — Two inner layers still derive their nonce from a 32-bit counter.** The `GVPN1` tunnel
 envelope (hub ⇄ client, `seal_datagram(key, epoch, ctr, …)`) and the `SENDRELAY` inner onion layer

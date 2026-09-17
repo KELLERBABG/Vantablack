@@ -88,6 +88,24 @@ systematic Reed-Solomon RS(2,1) exclusively for path diversity and packet-loss r
 confidentiality rests on L2 AEAD authenticated encryption rather than erasure coding.
 *Tests:* `src/ghost/layers/l3_shamir.rs` (4 unit tests) and `tests/layer_tests.rs` (2 integration tests).
 
+**Discovery proves mesh membership in zero knowledge instead of signing a discarded nonce.** The
+beacon's membership block is a Schnorr proof of knowledge over Ristretto255 (Fiat–Shamir) that the
+sender knows the membership secret for exactly the identity its beacon names — `x = HKDF(GHOST_PSK ‖
+ed25519_pk)`, `X = x·B`, `z = r + c·x`, with the challenge binding the public key, `R`, `X` and a
+±300 s timestamp. It reveals nothing about that secret, it cannot be moved to another identity or
+refreshed into a later beacon, and only a holder of `GHOST_PSK` can verify it at all. The block it
+replaced (`(sign(SHA256(nonce)), SHA256(nonce))`, nonce discarded) committed to nothing anyone could
+open and was replayable straight out of one beacon into another. What the new proof does *not* do is
+hide who is speaking, and it does not by itself assert an identity: the beacon's Ed25519 prefix
+signature is what binds the key to the sender, so a receiver must require both. It is a hard switch —
+the legacy 208-byte block is no longer emitted or read.
+*Tests:* `src/ghost/net/security.rs` (10 unit tests: an honest proof verifies; the old
+signature-shaped block no longer does; wrong identity, wrong secret and stale or moved timestamps are
+rejected; tampering and non-canonical encodings are rejected; two proofs for one identity differ) and
+`src/main.rs` (`beacon_section_tests`: the proof rides the `ZKPR` section, a proof made for one
+identity is rejected inside another's beacon, and a beacon with nothing else to carry keeps the bare
+112-byte layout).
+
 **Three-hop onion routing with an exit policy.** Traffic can be wrapped in three layers so each
 relay in the chain can only decrypt its own layer and learn only the next hop. Exits must present a
 signed, expiring voucher (`EXITAUTH`) or the request is denied.

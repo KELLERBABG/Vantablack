@@ -2,7 +2,7 @@
 ///
 /// Implements several security subsystems from the roadmap:
 /// 1. Decentralized Capability Revocation List (line 24)
-/// 2. Zero-Knowledge Authentication During Discovery (line 25)
+/// 2. Zero-Knowledge Membership Authentication During Discovery (line 25)
 /// 3. Decentralized Two-Line Element Distribution (line 28)
 /// 4. Memory Guard & Secure Zeroing (line 23)
 /// 5. Fixed-Slot Temporal Isolation (line 26)
@@ -11,9 +11,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use curve25519_dalek::ristretto::{CompressedRistretto, RistrettoPoint};
+use curve25519_dalek::scalar::Scalar;
 use ml_kem::kem::Decapsulate;
 use ml_kem::{Ciphertext, DecapsulationKey512, MlKem512};
 use tracing::{debug, info, warn};
+use zeroize::Zeroize;
+
+/// Seconds since the Unix epoch, saturating at 0 before it.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 // ── Platform-specific memory locking ──────────────────────────────────
 //
@@ -279,42 +290,215 @@ impl RevocationList {
     }
 }
 
-// ── 2. Zero-Knowledge Authentication ─────────────────────────────────
+// ── 2. Zero-Knowledge Membership Authentication ──────────────────────
+//
+// Discovery used to carry `(sign(SHA256(nonce)), SHA256(nonce))` with `nonce`
+// thrown away: a "commitment" that opened nothing, a signature over a hash of a
+// discarded value, and — since nothing tied the block to the beacon, to the
+// identity or to any moment in time — a proof that could be lifted out of one
+// beacon and replayed in another. It proved key possession, redundantly with the
+// beacon's own signature, and it was not zero-knowledge (SOTA §6 G5).
+//
+// What replaces it is a Schnorr proof of knowledge over Ristretto255 with
+// Fiat–Shamir, on the statement that the sender knows the mesh *membership*
+// secret for the identity whose Ed25519 key the beacon carries:
+//
+//     x = HKDF-SHA256(salt = ZK_MEMBER_LABEL, ikm = GHOST_PSK ‖ ed25519_pk) → Scalar
+//     X = x·B                                  (never sent: a member derives it)
+//     r ← random;  R = r·B
+//     c = SHA-256(ZK_CHALLENGE_LABEL ‖ pk ‖ R ‖ X ‖ ts)
+//     z = r + c·x  (mod ℓ)
+//     block = context[ts_be ‖ 0^24] ‖ proof[R ‖ z]
+//
+// Three properties the old block did not have:
+//
+//   * **Zero-knowledge.** `z` is uniform given `c` because `r` is, so no bit of
+//     `x` — and no bit of the PSK behind it — leaks: the simulator answers with
+//     a random `z` and `R = z·B − c·X`, a distribution no verifier can tell from
+//     an honest proof. The old block handed over a signature, which is a
+//     *transferable* possession proof — whoever held it could present it again.
+//   * **Bound to the identity and to the moment.** `x` mixes the PSK with the
+//     beacon's own Ed25519 key, so one member's proof is not another member's
+//     and cannot be moved to a different `pk`; the challenge covers `pk`, `R`,
+//     `X` and the timestamp, so a captured proof cannot be refreshed into a
+//     later beacon.
+//   * **Members only.** An outsider cannot derive `X` without the PSK, so it
+//     cannot verify the proof — let alone forge one. (It can still read the
+//     beacon: the identity in it is public and signed. This proves membership;
+//     it does not hide who is speaking — the zero-knowledge here is about the
+//     membership credential, not about anonymity.)
+//
+// Freshness is a ±ZK_FRESHNESS_SECS window rather than a nonce, because a beacon
+// is a broadcast and there is no verifier to hand one out; that bounds replay to
+// the window. The timestamp rides in the block's 32-byte context because the
+// 112-byte signed prefix has no timestamp field and adding one would change a
+// layout peers verify at fixed offsets.
+//
+// The block stays 96 bytes (`context[32] ‖ proof[64]`) and changes meaning. This
+// is a hard switch: the signature-shaped block is neither emitted nor accepted
+// (SPECIFICATIONS.md §"Beacon sections"), so a peer that still sends one is
+// understood only as a bare identity-only beacon and never gets credit for a
+// membership proof.
 
-pub struct ZkAuthResult {
-    pub verified: bool,
-    pub fingerprint: Option<String>,
-}
+/// Domain label for the membership scalar derivation.
+const ZK_MEMBER_LABEL: &[u8] = b"GGN_ZK_MEMBERSHIP_v1";
+/// Domain label for the Fiat–Shamir challenge.
+const ZK_CHALLENGE_LABEL: &[u8] = b"GGN_ZK_SCHNORR_CHALLENGE_v1";
+/// How far a proof's timestamp may sit from the verifier's clock, in seconds.
+pub const ZK_FRESHNESS_SECS: u64 = 300;
+/// The context field carried beside the proof: `timestamp_be ‖ 0^24`.
+pub const ZK_CONTEXT_LEN: usize = 32;
+/// The proof itself: `R ‖ z`, one compressed Ristretto point and one scalar.
+pub const ZK_PROOF_LEN: usize = 64;
 
-/// Zero-knowledge proof of mesh membership via Schnorr-like signature proof.
+/// Zero-knowledge proof of mesh membership, on the discovery path.
 pub struct ZkAuthenticator;
 
 impl ZkAuthenticator {
-    /// Create a non-interactive ZK proof: (proof_bytes, commitment_[u8; 32]).
-    pub fn create_proof(
-        _public_key_bytes: &[u8; 32],
-        sign_fn: impl Fn(&[u8]) -> [u8; 64],
-    ) -> (Vec<u8>, [u8; 32]) {
-        use sha2::{Digest, Sha256};
-        let nonce = rand::random::<[u8; 32]>();
-        let d = Sha256::digest(nonce);
-        let mut commitment = [0u8; 32];
-        commitment.copy_from_slice(&d.as_slice()[..32]);
-        let proof = sign_fn(d.as_ref());
-        (proof.to_vec(), commitment)
+    /// `x = HKDF-SHA256(salt = ZK_MEMBER_LABEL, ikm = PSK ‖ pk)`, reduced onto
+    /// the Ristretto255 scalar field. Secret: it is the membership credential
+    /// for exactly one identity.
+    fn membership_scalar(public_key_bytes: &[u8; 32], psk: &[u8; 32]) -> Scalar {
+        let mut ikm = [0u8; 64];
+        ikm[..32].copy_from_slice(psk);
+        ikm[32..].copy_from_slice(public_key_bytes);
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(ZK_MEMBER_LABEL), &ikm);
+        let mut okm = [0u8; 64];
+        hk.expand(ZK_MEMBER_LABEL, &mut okm)
+            .expect("64 bytes is inside HKDF-SHA256's output limit");
+        let x = Scalar::from_bytes_mod_order_wide(&okm);
+        // The input keying material is the PSK: neither it nor the derived
+        // scalar may be left in a heap or stack buffer after this returns.
+        ikm.zeroize();
+        okm.zeroize();
+        x
     }
 
-    pub fn verify_proof(public_key_bytes: &[u8; 32], proof: &[u8], commitment: &[u8; 32]) -> bool {
-        if proof.len() != 64 {
+    /// The public half of the statement, `X = x·B`. Derived, not transmitted:
+    /// only a holder of the PSK can compute it.
+    fn member_point(public_key_bytes: &[u8; 32], psk: &[u8; 32]) -> RistrettoPoint {
+        RistrettoPoint::mul_base(&Self::membership_scalar(public_key_bytes, psk))
+    }
+
+    /// `c = SHA-256(label ‖ pk ‖ R ‖ X ‖ ts)`, reduced onto the scalar field.
+    /// Binding `pk` is what stops a proof moving between identities; binding the
+    /// timestamp is what stops it being replayed later.
+    fn challenge(
+        public_key_bytes: &[u8; 32],
+        r_point: &RistrettoPoint,
+        x_point: &RistrettoPoint,
+        ts_be: &[u8; 8],
+    ) -> Scalar {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(ZK_CHALLENGE_LABEL);
+        h.update(public_key_bytes);
+        h.update(r_point.compress().as_bytes());
+        h.update(x_point.compress().as_bytes());
+        h.update(ts_be);
+        let digest = h.finalize();
+        let mut wide = [0u8; 32];
+        wide.copy_from_slice(&digest);
+        Scalar::from_bytes_mod_order(wide)
+    }
+
+    /// Create a membership proof for `public_key_bytes` under the mesh PSK.
+    ///
+    /// Returns `(context, proof)`: the 32-byte context is the timestamp the
+    /// proof is bound to (big-endian, zero-padded), the 64-byte proof is
+    /// `R ‖ z`. Nothing here is a signature, and nothing reveals the PSK.
+    pub fn create_proof(public_key_bytes: &[u8; 32], psk: &[u8; 32]) -> ([u8; 32], [u8; 64]) {
+        let x = Self::membership_scalar(public_key_bytes, psk);
+        let x_point = RistrettoPoint::mul_base(&x);
+
+        // `r` is the one value that must be unpredictable: it is what makes `z`
+        // uniform and therefore what makes the proof zero-knowledge. Drawn from
+        // the OS CSPRNG and reduced onto the scalar field (a 512-bit draw, so the
+        // reduction is not measurably biased).
+        let mut r_bytes = [0u8; 64];
+        {
+            use rand::RngCore;
+            rand::rngs::OsRng.fill_bytes(&mut r_bytes);
+        }
+        let r = Scalar::from_bytes_mod_order_wide(&r_bytes);
+        r_bytes.zeroize();
+        let r_point = RistrettoPoint::mul_base(&r);
+
+        let ts_be = now_secs().to_be_bytes();
+        let c = Self::challenge(public_key_bytes, &r_point, &x_point, &ts_be);
+
+        let z = r + c * x;
+        let mut context = [0u8; ZK_CONTEXT_LEN];
+        context[..8].copy_from_slice(&ts_be);
+        let mut proof = [0u8; ZK_PROOF_LEN];
+        proof[..32].copy_from_slice(r_point.compress().as_bytes());
+        proof[32..].copy_from_slice(z.as_bytes());
+        (context, proof)
+    }
+
+    /// Verify a membership proof against the verifier's current clock.
+    pub fn verify_proof(
+        public_key_bytes: &[u8; 32],
+        psk: Option<&[u8; 32]>,
+        context: &[u8; 32],
+        proof: &[u8],
+    ) -> bool {
+        Self::verify_proof_at(public_key_bytes, psk, context, proof, now_secs())
+    }
+
+    /// Verify at an explicit time, so the freshness window is testable without
+    /// sleeping and without a clock seam in the caller.
+    pub fn verify_proof_at(
+        public_key_bytes: &[u8; 32],
+        psk: Option<&[u8; 32]>,
+        context: &[u8; 32],
+        proof: &[u8],
+        now: u64,
+    ) -> bool {
+        use subtle::ConstantTimeEq;
+
+        if proof.len() != ZK_PROOF_LEN || context.len() != ZK_CONTEXT_LEN {
             return false;
         }
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes.copy_from_slice(&proof[..64]);
-        crate::ghost::layers::l0_identity::verify_peer_signature(
-            public_key_bytes,
-            commitment,
-            &sig_bytes,
-        )
+        // Membership is only checkable by a member. Without the PSK there is no
+        // `X` to check the statement against, so this refuses rather than
+        // pretending to have verified something.
+        let Some(psk) = psk else {
+            return false;
+        };
+        // The context is `ts_be ‖ 0^24`: a non-zero reserved byte is not a
+        // canonical encoding of this block, so it is refused rather than ignored
+        // (a block that verified with a mutated context would be malleable).
+        if context[8..].iter().any(|b| *b != 0) {
+            return false;
+        }
+        let mut ts_be = [0u8; 8];
+        ts_be.copy_from_slice(&context[..8]);
+        let ts = u64::from_be_bytes(ts_be);
+        let skew = now.saturating_sub(ts).max(ts.saturating_sub(now));
+        if skew > ZK_FRESHNESS_SECS {
+            return false;
+        }
+
+        let mut r_bytes = [0u8; 32];
+        r_bytes.copy_from_slice(&proof[..32]);
+        let Some(r_point) = CompressedRistretto(r_bytes).decompress() else {
+            return false;
+        };
+        let mut z_bytes = [0u8; 32];
+        z_bytes.copy_from_slice(&proof[32..]);
+        let z = Scalar::from_canonical_bytes(z_bytes);
+        if !bool::from(z.is_some()) {
+            return false;
+        }
+        let z = z.unwrap_or(Scalar::ZERO);
+
+        let x_point = Self::member_point(public_key_bytes, psk);
+        let c = Self::challenge(public_key_bytes, &r_point, &x_point, &ts_be);
+        // z·B == R + c·X
+        let lhs = RistrettoPoint::mul_base(&z);
+        let rhs = r_point + c * x_point;
+        bool::from(lhs.ct_eq(&rhs))
     }
 
     pub fn private_fingerprint_comparison(
@@ -650,26 +834,216 @@ mod tests {
         assert!(rl.is_revoked(&fp));
     }
 
+    fn zk_psk() -> [u8; 32] {
+        [0x5A; 32]
+    }
+
+    fn zk_ts(context: &[u8; 32]) -> u64 {
+        u64::from_be_bytes(context[..8].try_into().expect("8-byte timestamp"))
+    }
+
     #[test]
     fn test_zk_proof_basic() {
         let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
         let pk = identity.public_key_bytes();
-        let (proof, commitment) =
-            ZkAuthenticator::create_proof(&pk, |d| identity.sign(d).to_bytes());
-        assert!(ZkAuthenticator::verify_proof(&pk, &proof, &commitment));
+        let (context, proof) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+        assert!(ZkAuthenticator::verify_proof(
+            &pk,
+            Some(&zk_psk()),
+            &context,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_zk_proof_is_not_the_old_signature_over_a_discarded_nonce() {
+        // G5: the block that shipped before this was
+        // `(sign(SHA256(nonce)), SHA256(nonce))` with the nonce thrown away — a
+        // possession proof over a value nobody could open, and one that any
+        // holder of it could present again. It must no longer verify; that
+        // assertion *is* the closed gap.
+        use sha2::{Digest, Sha256};
+        let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let nonce = rand::random::<[u8; 32]>();
+        let mut context = [0u8; 32];
+        context.copy_from_slice(&Sha256::digest(nonce));
+        let proof = identity.sign(&context).to_bytes();
+        assert!(
+            !ZkAuthenticator::verify_proof(&pk, Some(&zk_psk()), &context, &proof),
+            "a signature over a discarded nonce is not a membership proof"
+        );
     }
 
     #[test]
     fn test_zk_proof_wrong_key() {
         let i1 = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
         let i2 = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
-        let (proof, commitment) =
-            ZkAuthenticator::create_proof(&i1.public_key_bytes(), |d| i1.sign(d).to_bytes());
+        let (context, proof) = ZkAuthenticator::create_proof(&i1.public_key_bytes(), &zk_psk());
         assert!(!ZkAuthenticator::verify_proof(
             &i2.public_key_bytes(),
-            &proof,
-            &commitment
+            Some(&zk_psk()),
+            &context,
+            &proof
         ));
+    }
+
+    #[test]
+    fn test_zk_proof_wrong_membership_secret() {
+        let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let (context, proof) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+        assert!(!ZkAuthenticator::verify_proof(
+            &pk,
+            Some(&[0x99; 32]),
+            &context,
+            &proof
+        ));
+    }
+
+    #[test]
+    fn test_zk_proof_needs_the_membership_secret_to_verify() {
+        // An outsider cannot recompute X, so it cannot check the statement at
+        // all — and this says so rather than accepting on the strength of the
+        // beacon's own signature.
+        let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let (context, proof) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+        assert!(!ZkAuthenticator::verify_proof(&pk, None, &context, &proof));
+    }
+
+    #[test]
+    fn test_zk_proof_alone_does_not_assert_an_identity() {
+        // A member holds the PSK, so it *can* compute a membership proof for
+        // another node's key. What stops that from impersonating that node is
+        // the beacon's Ed25519 signature over its own key — which is why the
+        // discovery path requires both, and why this test asserts the split
+        // rather than hiding it.
+        let mine = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let theirs = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let (context, proof) = ZkAuthenticator::create_proof(&theirs.public_key_bytes(), &zk_psk());
+        assert!(ZkAuthenticator::verify_proof(
+            &theirs.public_key_bytes(),
+            Some(&zk_psk()),
+            &context,
+            &proof
+        ));
+        assert!(!crate::ghost::layers::l0_identity::verify_peer_signature(
+            &theirs.public_key_bytes(),
+            &theirs.public_key_bytes(),
+            &mine.sign(&theirs.public_key_bytes()).to_bytes()
+        ));
+    }
+
+    #[test]
+    fn test_zk_proof_is_fresh_only_inside_the_window() {
+        let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let (context, proof) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+        let ts = zk_ts(&context);
+
+        assert!(ZkAuthenticator::verify_proof_at(
+            &pk,
+            Some(&zk_psk()),
+            &context,
+            &proof,
+            ts
+        ));
+        // Skew is tolerated in both directions inside the window...
+        assert!(ZkAuthenticator::verify_proof_at(
+            &pk,
+            Some(&zk_psk()),
+            &context,
+            &proof,
+            ts + ZK_FRESHNESS_SECS
+        ));
+        assert!(ZkAuthenticator::verify_proof_at(
+            &pk,
+            Some(&zk_psk()),
+            &context,
+            &proof,
+            ts.saturating_sub(ZK_FRESHNESS_SECS)
+        ));
+        // ...and refused outside it, which is what bounds replay.
+        assert!(!ZkAuthenticator::verify_proof_at(
+            &pk,
+            Some(&zk_psk()),
+            &context,
+            &proof,
+            ts + ZK_FRESHNESS_SECS + 1
+        ));
+        assert!(!ZkAuthenticator::verify_proof_at(
+            &pk,
+            Some(&zk_psk()),
+            &context,
+            &proof,
+            ts.saturating_sub(ZK_FRESHNESS_SECS + 1)
+        ));
+    }
+
+    #[test]
+    fn test_zk_proof_cannot_be_refreshed_into_a_later_beacon() {
+        // The timestamp is inside the challenge, not merely beside it: moving it
+        // by one second invalidates the proof even though the window would still
+        // have accepted that timestamp.
+        let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let (context, proof) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+        let mut moved = context;
+        moved[..8].copy_from_slice(&(zk_ts(&context) + 1).to_be_bytes());
+        assert!(!ZkAuthenticator::verify_proof_at(
+            &pk,
+            Some(&zk_psk()),
+            &moved,
+            &proof,
+            zk_ts(&context) + 1
+        ));
+    }
+
+    #[test]
+    fn test_zk_proof_rejects_tampering_and_non_canonical_context() {
+        let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let (context, proof) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+
+        for byte in [0usize, 31, 32, 63] {
+            let mut bad = proof;
+            bad[byte] ^= 0x01;
+            assert!(
+                !ZkAuthenticator::verify_proof(&pk, Some(&zk_psk()), &context, &bad),
+                "a flipped proof byte at {byte} must not verify"
+            );
+        }
+
+        let mut bad_context = context;
+        bad_context[8] = 0x01; // the reserved 24 bytes must be zero
+        assert!(!ZkAuthenticator::verify_proof(
+            &pk,
+            Some(&zk_psk()),
+            &bad_context,
+            &proof
+        ));
+
+        assert!(!ZkAuthenticator::verify_proof(
+            &pk,
+            Some(&zk_psk()),
+            &context,
+            &proof[..63]
+        ));
+    }
+
+    #[test]
+    fn test_zk_proof_is_recomputed_per_call() {
+        // `r` is fresh every time, so two proofs for the same identity in the
+        // same second are different — the block carries no stable value an
+        // observer could track a node by.
+        let identity = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let (c1, p1) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+        let (c2, p2) = ZkAuthenticator::create_proof(&pk, &zk_psk());
+        assert_ne!(p1, p2);
+        assert_eq!(c1[8..], [0u8; 24]);
+        assert_eq!(c2[8..], [0u8; 24]);
     }
 
     #[test]

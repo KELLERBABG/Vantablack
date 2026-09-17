@@ -168,7 +168,7 @@ Discovery beacons are the only datagrams accepted from an unauthenticated source
 
 That is not the same as making discovery quantum-safe, and the gap is stated rather than glossed: a beacon is verified by the classical half alone, so an adversary who can forge Ed25519 can also publish a commitment of their own to a receiver that has never seen this node before. The pin only protects a receiver that has seen the node once (which is exactly the shape of the today's fingerprint trust — first contact is trust on first use). Closing it properly means proving possession of the committed key inside the handshake, so the commitment is bound into the session's own authentication; that exchange is *not* built (see `roadmap/WHAT-IS-BUILT.md`, §3).
 
-Two legacy layouts extend this without any section metadata and remain accepted verbatim: the bare 112-byte beacon, and the 208-byte beacon carrying a 32-byte ZK commitment at `112..143` followed by a 64-byte proof at `144..207`.
+One legacy layout extends this without any section metadata and remains accepted verbatim: the bare 112-byte beacon. The 208-byte layout that carried a 32-byte ZK block at `112..143` and a 64-byte proof at `144..207` is **no longer read and no longer emitted** — see the `ZKPR` note below — and a datagram of that shape is treated as a bare, identity-only beacon.
 
 #### Extension sections (optional, appended)
 
@@ -176,16 +176,42 @@ Every section is `[magic: 4][len: u16 BE][payload: len]`, appended immediately a
 
 | Magic | Payload | Description |
 |---|---|---|
-| `ZKPR` | `commitment[32] \|\| proof[64]` (`len = 96`) | ZK membership proof |
+| `ZKPR` | `context[32] \|\| proof[64]` (`len = 96`) | Zero-knowledge membership proof (below) |
 | `ICEO` | UTF-8 text, see below | Sender's ICE offer |
 | `RLYC` | empty (`len = 0`) | This node will relay for others (`GHOST_RELAY=1`) |
 | `PQK!` | `commitment[32]` (`len = 32`) | SHA-256 commitment to the sender's ML-DSA-65 public key (P2-1) |
 
-`RLYC` is a *capability*, not an address: a relay is reached at the address its beacon arrived from — the same socket it forwards on — so carrying an address would let a peer advertise someone else's. Its presence is the whole message, which is why a non-empty payload is a parse error. A node that advertises it leaves the legacy layouts behind (see the tiling note below), which is what keeps `GHOST_RELAY` opt-in rather than a silent compatibility break.
+`RLYC` is a *capability*, not an address: a relay is reached at the address its beacon arrived from — the same socket it forwards on — so carrying an address would let a peer advertise someone else's. Its presence is the whole message, which is why a non-empty payload is a parse error. A node that advertises it leaves the bare 112-byte layout behind (see the tiling note below), which is what keeps `GHOST_RELAY` opt-in rather than a silent compatibility break.
 
-**Tiling rule.** A datagram is interpreted as *sectioned* only when the sections consume it exactly: every section header must be fully present, every declared length must fit inside the datagram, every magic must be known, and the `ZKPR` payload must be exactly 96 bytes. Any violation makes the parser fall back to the legacy fixed-layout interpretation rather than reject the beacon. This is what makes the format backward compatible — a legacy 32-byte ZK commitment is uniformly random, so requiring exact tiling is what stops a coincidence from being mistaken for a section magic.
+**Tiling rule.** A datagram is interpreted as *sectioned* only when the sections consume it exactly: every section header must be fully present, every declared length must fit inside the datagram, every magic must be known, and the `ZKPR` payload must be exactly 96 bytes. Any violation makes the parser fall back to the 112-byte interpretation rather than reject the beacon: the trailing bytes of a datagram that is not a tiling of known sections are not the message they might otherwise be read as.
 
-When a ZK proof and an ICE offer are both present they are emitted as two sections in that order; a beacon with a ZK proof but nothing else to carry keeps the **legacy 208-byte layout** byte-for-byte, so peers on builds older than this section still verify it. A `RLYC` section is the one exception: a node that advertises relay capability has something new to say by definition, so it always uses the sectioned layout, and a peer that predates it will reject that beacon rather than misread it at fixed offsets.
+Sections are emitted in the order of the table above. A node with nothing to carry but a membership proof still uses the sectioned layout — there is no fixed-offset form of this block left to stay compatible with.
+
+#### Membership proof payload (`ZKPR`)
+
+A non-interactive Schnorr proof of knowledge over Ristretto255 (RFC 9496) with Fiat–Shamir, on the statement that the sender knows the mesh **membership secret** for the identity its beacon carries:
+
+```
+x = HKDF-SHA256(salt = "GGN_ZK_MEMBERSHIP_v1", ikm = GHOST_PSK ‖ ed25519_pk) → Scalar
+X = x·B                      (derived by the verifier; never transmitted)
+r ← random; R = r·B
+c = SHA-256("GGN_ZK_SCHNORR_CHALLENGE_v1" ‖ pk ‖ R ‖ X ‖ ts)
+z = r + c·x  (mod ℓ)
+proof = R ‖ z                context = ts_be ‖ 0^24
+```
+
+| Byte Range | Field | Description |
+|---|---|---|
+| `00..07` | `ts` | Big-endian Unix seconds the proof is bound to |
+| `08..31` | reserved | Zero |
+| `32..63` | `R` | Compressed Ristretto point `r·B` |
+| `64..95` | `z` | Scalar `r + c·x`, canonical 32-byte encoding |
+
+Verification derives `X` from the PSK and the beacon's public key, recomputes `c`, and accepts only if `z·B = R + c·X`, the reserved bytes are zero, and `|now − ts| ≤ 300 s`. A verifier without the PSK cannot derive `X` and therefore cannot verify at all — that is the point, and it fails closed: `GHOST_ZK_DISCOVERY=1` without `GHOST_PSK` means no beacon can carry a verifiable proof and discovery accepts nothing.
+
+Three things are stated rather than implied. **The identity is not hidden**: the Ed25519 key that owns the beacon is in the clear and signed, so this proves membership, it does not make the sender anonymous. **A proof alone does not assert an identity**: any holder of the PSK can compute `x` for any public key, so what binds a beacon to its sender is the prefix signature over `pk` — `ZKPR` is the membership claim, the prefix is the identity claim, and a receiver must require both. **Freshness is a window, not a nonce**: a beacon is a broadcast and there is no verifier to hand out a challenge, so replay is bounded to ±300 s rather than prevented outright.
+
+This block replaced a signature over the SHA-256 of a discarded nonce, which committed to nothing, was not zero-knowledge, and could be lifted out of one beacon and presented in another. The replacement is a **hard switch**: the old block is neither emitted nor accepted, so a peer still sending the legacy 208-byte shape is read as a bare identity-only beacon and never credited with a proof.
 
 #### ICE offer payload (`ICEO`)
 
