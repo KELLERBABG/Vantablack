@@ -1803,6 +1803,138 @@ async fn send_frame_to_peer(
     }
 }
 
+// ── Post-Quantum In-Band Authentication (SOTA G3) ───────────────────
+
+pub const PQ_AUTH_CHUNK_MAGIC: &[u8; 14] = b"PQ_AUTH_CHUNK:";
+pub const PQ_AUTH_ACK_MAGIC: &[u8; 14] = b"PQ_AUTH_ACK__:";
+pub const PQ_AUTH_CHUNK_PAYLOAD_SIZE: usize = 500;
+
+/// Transmit this node's 5,358-byte hybrid identity proof in encrypted chunks over the session.
+async fn send_pq_auth_proof(
+    nc: &Arc<GhostNode>,
+    sock: &UdpSocket,
+    src: &SocketAddr,
+    fallback: Option<&Fallback>,
+    peer_fp: &str,
+) {
+    let binding = {
+        let Some(sess) = nc.sessions.get(peer_fp) else { return; };
+        l0_identity::create_identity_binding(&nc.identity, &sess.master_key)
+    };
+    let chunks: Vec<&[u8]> = binding.chunks(PQ_AUTH_CHUNK_PAYLOAD_SIZE).collect();
+    let total_chunks = chunks.len() as u8;
+
+    for (idx, chunk) in chunks.iter().enumerate() {
+        let Some(sess) = nc.sessions.get(peer_fp) else { return; };
+        let ctx = SealCtx::from_session(&sess);
+        drop(sess);
+
+        let mut payload = Vec::with_capacity(14 + 1 + 1 + 2 + chunk.len());
+        payload.extend_from_slice(PQ_AUTH_CHUNK_MAGIC);
+        payload.push(idx as u8);
+        payload.push(total_chunks);
+        payload.extend_from_slice(&(chunk.len() as u16).to_be_bytes());
+        payload.extend_from_slice(chunk);
+
+        let frame = seal_single(&ctx, &payload);
+        send_frame_to_peer(nc, sock, src, fallback, peer_fp, frame).await;
+    }
+}
+
+/// Handle incoming chunked PQ authentication control messages.
+async fn handle_pq_auth_pdu(
+    node: &Arc<GhostNode>,
+    sock: &UdpSocket,
+    src: &SocketAddr,
+    fallback: Option<&Fallback>,
+    peer_fp: &str,
+    payload: &[u8],
+) -> bool {
+    let is_chunk = payload.starts_with(PQ_AUTH_CHUNK_MAGIC);
+    let is_ack = payload.starts_with(PQ_AUTH_ACK_MAGIC);
+    if !is_chunk && !is_ack {
+        return false;
+    }
+    let Some(sess) = node.sessions.get(peer_fp) else {
+        return true;
+    };
+    if is_chunk {
+        let hlen = PQ_AUTH_CHUNK_MAGIC.len();
+        if payload.len() < hlen + 4 {
+            tracing::warn!(peer = %peer_fp, "malformed PQ auth chunk PDU");
+            return true;
+        }
+        let chunk_idx = payload[hlen];
+        let total_chunks = payload[hlen + 1];
+        let chunk_len =
+            u16::from_be_bytes([payload[hlen + 2], payload[hlen + 3]]) as usize;
+        let data_start = hlen + 4;
+        if payload.len() < data_start + chunk_len {
+            tracing::warn!(peer = %peer_fp, "truncated PQ auth chunk data");
+            return true;
+        }
+        let chunk_data = payload[data_start..data_start + chunk_len].to_vec();
+
+        // Send ACK back to peer
+        let mut ack_pdu = Vec::with_capacity(PQ_AUTH_ACK_MAGIC.len() + 1);
+        ack_pdu.extend_from_slice(PQ_AUTH_ACK_MAGIC);
+        ack_pdu.push(chunk_idx);
+        let ctx = SealCtx::from_session(&sess);
+        let ack_frame = seal_single(&ctx, &ack_pdu);
+        send_frame_to_peer(node, sock, src, fallback, peer_fp, ack_frame).await;
+
+        if let Some(full_binding) = sess.store_pq_chunk(chunk_idx, total_chunks, chunk_data) {
+            let pinned_pk = sess.peer_identity_pk();
+            let pinned_pq_comm = sess.peer_pq_commitment();
+            let master_key = sess.master_key;
+            drop(sess);
+
+            if let Some(pk) = pinned_pk {
+                match l0_identity::verify_hybrid_binding(
+                    &pk,
+                    pinned_pq_comm.as_ref(),
+                    &master_key,
+                    &full_binding,
+                ) {
+                    Ok(pq_pk) => {
+                        if let Some(s) = node.sessions.get(peer_fp) {
+                            s.set_pq_authenticated(true);
+                            s.set_peer_pq_pk(pq_pk);
+                        }
+                        tracing::info!(
+                            peer = %peer_fp,
+                            "Post-quantum hybrid authentication SUCCEEDED (ML-DSA-65) — session elevated to active"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            peer = %peer_fp,
+                            error = %err,
+                            "Post-quantum hybrid authentication FAILED — evicting session"
+                        );
+                        if let Some(s) = node.sessions.get(peer_fp) {
+                            s.set_pq_authenticated(false);
+                        }
+                        node.sessions.remove(peer_fp);
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    peer = %peer_fp,
+                    "Cannot verify PQ auth: missing pinned peer identity PK"
+                );
+                node.sessions.remove(peer_fp);
+            }
+        }
+        return true;
+    }
+    if is_ack {
+        tracing::debug!(peer = %peer_fp, "PQ auth chunk acknowledged by peer");
+        return true;
+    }
+    false
+}
+
 /// Initiate a mesh handshake to `t` (PEER command and the VPN client
 /// watchdog share this path). Inserts into `pending_hs`; the response
 /// completes asynchronously in handle_pkt.
@@ -1856,6 +1988,7 @@ async fn initiate_handshake(
     let pdu = build_negotiated_handshake_pdu(
         &supported,
         &nc.identity.public_key_bytes(),
+        &nc.identity.pq_commitment(),
         |d| nc.identity.sign(d).to_bytes(),
         &xp,
         &keys,
@@ -2153,9 +2286,9 @@ async fn handle_pkt(
         let responder_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
         let responder_public = x25519_dalek::PublicKey::from(&responder_secret);
         let x_shared = responder_secret.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
-        // SOTA G2: bind the transcript into the KDF. The initiator's public key comes
+        // SOTA G2/G3: bind the transcript into the KDF. The initiator's public key comes
         // from the offer, ours is the ephemeral just generated, and the ciphertext is
-        // the one about to be sent back — so both peers hash identical bytes.
+        // the one about to be sent back — both peers hash identical bytes and both PQ commitments.
         let master = derive_hybrid_master_key_with_transcript(
             selected,
             x_shared.as_bytes(),
@@ -2164,10 +2297,13 @@ async fn handle_pkt(
             &hs.x25519_pub,
             responder_public.as_bytes(),
             &ct,
+            &hs.pq_commitment,
+            &node.identity.pq_commitment(),
         );
         let response = build_negotiated_response_pdu(
             selected,
             &node.identity.public_key_bytes(),
+            &node.identity.pq_commitment(),
             |m| node.identity.sign(m).to_bytes(),
             responder_public.as_bytes().try_into().expect("x25519 key length"),
             &ct,
@@ -2183,8 +2319,11 @@ async fn handle_pkt(
         let mut session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
         session.set_cipher_suite(selected);
         session.pin_peer_identity(hs.identity_pk);
-        node.sessions.insert(fp, session);
+        session.pin_peer_pq_commitment(hs.pq_commitment);
+        node.sessions.insert(fp.clone(), session);
         tracing::info!(peer = %src, suite = selected.wire_id(), "Explicit suite-negotiated session established");
+        // SOTA G3: Immediately transmit local post-quantum authentication chunks
+        send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
         return;
     }
 
@@ -2497,7 +2636,7 @@ async fn handle_pkt(
             }
         };
         // Our own public key has to be captured *before* `diffie_hellman` consumes the
-        // secret, and it is part of the transcript (SOTA G2).
+        // secret, and it is part of the transcript (SOTA G2/G3).
         let initiator_public = x25519_dalek::PublicKey::from(&x_secret);
         let x_shared = x_secret.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
         let master = derive_hybrid_master_key_with_transcript(
@@ -2508,14 +2647,19 @@ async fn handle_pkt(
             initiator_public.as_bytes(),
             &resp.x25519_pub,
             &resp.kyber_ct,
+            &node.identity.pq_commitment(),
+            &resp.pq_commitment,
         );
         let fp = hex::encode(&resp.identity_pk[..8]);
         peers.insert(fp.clone(), *src);
         let mut session = Session::new(master, fp.clone());
         session.set_cipher_suite(resp.suite);
         session.pin_peer_identity(resp.identity_pk);
-        node.sessions.insert(fp, session);
+        session.pin_peer_pq_commitment(resp.pq_commitment);
+        node.sessions.insert(fp.clone(), session);
         tracing::info!(peer = %src, suite = resp.suite.wire_id(), "Explicit suite-negotiated session established (initiator)");
+        // SOTA G3: Immediately transmit local post-quantum authentication chunks
+        send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
         return;
     }
 
@@ -2762,6 +2906,27 @@ async fn handle_pkt(
             if handle_ratchet_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
                 return;
             }
+        }
+
+        // ── Post-Quantum Identity Authentication (SOTA G3) ──
+        if let Some(payload) = frame_payload(pt) {
+            if handle_pq_auth_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
+                return;
+            }
+        }
+
+        // Gate all application traffic on post-quantum identity verification (SOTA G3).
+        let is_pq_auth = node
+            .sessions
+            .get(&peer_fp)
+            .map(|s| s.is_pq_authenticated())
+            .unwrap_or(false);
+        if !is_pq_auth {
+            tracing::debug!(
+                peer = %peer_fp,
+                "Application traffic dropped: session post-quantum authentication pending"
+            );
+            return;
         }
 
         // ── VPN tunnel payload: [len][GVPN1][epoch u32][ctr u32][ct][tag] ──

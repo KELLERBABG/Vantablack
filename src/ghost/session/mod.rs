@@ -25,7 +25,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use ml_kem::kem::{KeyExport, TryKeyInit};
 use ml_kem::EncapsulationKey512;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -109,6 +109,17 @@ pub struct Session {
     /// authentication ran at handshake time, so this is where the proof is kept.
     /// `None` means the step is **refused**, never accepted on trust.
     peer_identity_pk: Mutex<Option<[u8; 32]>>,
+    // ── Post-Quantum Hybrid Identity Authentication (SOTA G3) ────────
+    /// 0 = Pending, 1 = Authenticated, 2 = Failed
+    pub pq_auth_state: AtomicU8,
+    /// The peer's pinned 32-byte SHA-256 PQ commitment from the handshake negotiation.
+    peer_pq_commitment: Mutex<Option<[u8; 32]>>,
+    /// The peer's verified ML-DSA-65 public key (1952 bytes).
+    peer_pq_pk: Mutex<Option<Vec<u8>>>,
+    /// Received chunks of the peer's hybrid identity binding.
+    pq_incoming_chunks: Mutex<std::collections::HashMap<u8, Vec<u8>>>,
+    /// When PQ auth was initiated.
+    pub pq_auth_requested_at: Instant,
 }
 
 /// A responder's reply to a ratchet step.
@@ -227,6 +238,11 @@ impl Session {
             ratchet_in_progress: AtomicBool::new(false),
             forced_ratchet_due: AtomicBool::new(false),
             peer_identity_pk: Mutex::new(None),
+            pq_auth_state: AtomicU8::new(0),
+            peer_pq_commitment: Mutex::new(None),
+            peer_pq_pk: Mutex::new(None),
+            pq_incoming_chunks: Mutex::new(std::collections::HashMap::new()),
+            pq_auth_requested_at: Instant::now(),
         }
     }
 
@@ -249,6 +265,84 @@ impl Session {
             .peer_identity_pk
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Check whether this session has completed post-quantum hybrid identity verification (SOTA G3).
+    /// If no PQ commitment was negotiated (e.g. legacy compatibility or uncommitted unit tests),
+    /// this returns true. If a PQ commitment was negotiated, the session is gated until verified.
+    pub fn is_pq_authenticated(&self) -> bool {
+        self.peer_pq_commitment().is_none() || self.pq_auth_state.load(Ordering::Acquire) == 1
+    }
+
+    /// Read the raw PQ auth state (0 = Pending, 1 = Authenticated, 2 = Failed).
+    pub fn pq_auth_state(&self) -> u8 {
+        self.pq_auth_state.load(Ordering::Acquire)
+    }
+
+    /// Mark the post-quantum authentication result.
+    pub fn set_pq_authenticated(&self, valid: bool) {
+        let state = if valid { 1 } else { 2 };
+        self.pq_auth_state.store(state, Ordering::Release);
+    }
+
+    /// Pin the peer's post-quantum commitment from the handshake transcript.
+    pub fn pin_peer_pq_commitment(&self, commitment: [u8; 32]) {
+        *self
+            .peer_pq_commitment
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(commitment);
+    }
+
+    /// The peer's pinned PQ commitment, if recorded during handshake.
+    pub fn peer_pq_commitment(&self) -> Option<[u8; 32]> {
+        *self
+            .peer_pq_commitment
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Pin the verified ML-DSA-65 public key once proof is authenticated.
+    pub fn set_peer_pq_pk(&self, pk: Vec<u8>) {
+        *self
+            .peer_pq_pk
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(pk);
+    }
+
+    /// The peer's verified ML-DSA-65 public key.
+    pub fn peer_pq_pk(&self) -> Option<Vec<u8>> {
+        self.peer_pq_pk
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Store an incoming chunk of the peer's PQ identity binding.
+    /// If all chunks have arrived, returns the complete concatenated payload.
+    pub fn store_pq_chunk(
+        &self,
+        chunk_idx: u8,
+        total_chunks: u8,
+        data: Vec<u8>,
+    ) -> Option<Vec<u8>> {
+        let mut guard = self
+            .pq_incoming_chunks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.insert(chunk_idx, data);
+        if guard.len() == total_chunks as usize {
+            let mut assembled = Vec::new();
+            for idx in 0..total_chunks {
+                if let Some(chunk) = guard.get(&idx) {
+                    assembled.extend_from_slice(chunk);
+                } else {
+                    return None;
+                }
+            }
+            Some(assembled)
+        } else {
+            None
+        }
     }
 
     /// Allocate a new stream for multiplexed data.
@@ -638,8 +732,18 @@ impl Session {
             .check_and_update(counter)
     }
 
-    /// Check if the session is still valid (no timeout expiry).
+    /// Check if the session is still valid (no timeout expiry, and PQ auth not failed/timed-out).
     pub fn is_valid(&self) -> bool {
+        let pq_state = self.pq_auth_state.load(Ordering::Acquire);
+        if pq_state == 2 {
+            return false;
+        }
+        if self.peer_pq_commitment().is_some()
+            && pq_state == 0
+            && self.pq_auth_requested_at.elapsed() > Duration::from_secs(5)
+        {
+            return false;
+        }
         self.guard
             .lock()
             .unwrap_or_else(|e| e.into_inner())

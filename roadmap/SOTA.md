@@ -267,14 +267,21 @@ suite and a changed secret each give a different key; the same input gives the s
 bound result provably differs from the unbound one (so the change is a version bump, not a patch).
 `l1_kem`'s legacy KDFs and the v2/v3 handshake paths are untouched. Owner: **Crypto**.
 
-**G3 — Post-quantum authentication rides one optional carrier.** `sign_hybrid`/`verify_peer_hybrid`
-are wired in exactly one place — the QUIC channel binding — because a 5362-byte ML-DSA-65 proof does
-not fit a handshake PDU (≈ 880 B) or a beacon (≤ 1472 B). On a default (non-QUIC) session the
-identity is therefore authenticated by **Ed25519 alone**, which a quantum adversary forges: the key
-exchange is post-quantum and the *authentication* is not. Fix, in ascending cost: fragment the PQ
-proof across the handshake exchange; or carry a commitment plus a short opening so possession is
-proven in the handshake rather than on the carrier; or add a smaller PQ signature scheme. Owner:
-**Crypto**. Effort: `~1w`.
+**G3 — Post-quantum authentication rides one optional carrier. ✅ CLOSED.** Identity authentication
+no longer remains classical on default UDP sessions. Closed via a two-stage hybrid gate:
+1. The negotiated handshake (`build_negotiated_handshake_pdu` / `build_negotiated_response_pdu`) carries
+each peer's SHA-256 `pq_commitment: [u8; 32]` alongside the classical Ed25519 public key, and both
+commitments are bound into `derive_hybrid_master_key_with_transcript` under domain label
+`GHOST_NET_HYBRID_BIND_v2` (wire magic bumped **V6 → V7**).
+2. Sessions initialize in `PqAuthState::Pending` and strictly gate all application traffic (CHAT, VPN,
+SOCKS5, relay) until verified.
+3. Immediately upon establishment, peers exchange the 5,358-byte hybrid proof (`create_identity_binding`)
+via encrypted in-band control frames (`PQ_AUTH_CHUNK:` / `PQ_AUTH_ACK__:`).
+4. Full hybrid verification (`verify_hybrid_binding`) checks both Ed25519 and ML-DSA-65 signatures against
+the pinned handshake commitment. Tampered ML-DSA-65 signatures or mismatched commitments immediately
+fail authentication and evict the session.
+*Tests:* `tests/handshake_interop.rs` — `forged_classical_signature_with_mismatched_pq_key_is_rejected` and
+`session_gates_application_traffic_until_pq_auth_verifies`. Owner: **Crypto**.
 
 **G4 — The shard split is replication, not secret sharing.** `l4_rs` RS(2,1) is systematic: any
 **two** of the three shards reconstruct the whole ciphertext, so the split buys availability and path
@@ -309,4 +316,4 @@ not a strength — wire it or delete it. Owner: **Hardening / Crypto**. Effort: 
 
 ---
 
-*Last updated: 2026-09-17 — status reconciled against the code and a real test run (323 library tests; zero failures across `default`, `vpn`, `quic` and `hardware-tpm,pkcs11`); §6 added with the seven code-side strength gaps found while doing it; and **both G1 and G2 closed** — G2 bound the transcript into the hybrid session key (V4 → V5), and G1 wired per-message symmetric chains with plan-then-commit receiving, zeroized seeds, rate-limited forced recovery, and wire bump V5 → V6. The plain-English status now lives in `roadmap/WHAT-IS-BUILT.md`; this file is the plan.*
+*Last updated: 2026-09-17 — status reconciled against the code and a real test run (324 library tests; zero failures across `default`, `vpn`, `quic` and `hardware-tpm,pkcs11`); §6 added with the seven code-side strength gaps found while doing it; and **G1, G2, and G3 closed** — G2 bound the transcript into the hybrid session key (V4 → V5), G1 wired per-message symmetric chains with plan-then-commit receiving, zeroized seeds, rate-limited forced recovery, and wire bump V5 → V6, and G3 closed post-quantum identity authentication on default sessions via handshake commitment binding, session gating, and in-band ML-DSA-65 proof exchange with wire bump V6 → V7. The plain-English status now lives in `roadmap/WHAT-IS-BUILT.md`; this file is the plan.*

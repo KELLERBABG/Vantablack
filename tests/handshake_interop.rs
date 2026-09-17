@@ -20,7 +20,9 @@
 //! before. Signature coverage lives in the `l1_kem` unit tests.
 
 use ml_kem::kem::KeyExport;
-use vantablack::ghost::layers::l0_identity::GhostIdentity;
+use vantablack::ghost::layers::l0_identity::{
+    create_identity_binding, verify_hybrid_binding, GhostIdentity,
+};
 use vantablack::ghost::layers::l1_kem::{
     build_negotiated_handshake_pdu, build_negotiated_response_pdu,
     derive_hybrid_master_key_with_suite, derive_hybrid_master_key_with_transcript,
@@ -29,6 +31,7 @@ use vantablack::ghost::layers::l1_kem::{
     parse_handshake_pdu_suite, parse_negotiated_handshake_pdu, parse_negotiated_response_pdu,
     HybridCipherSuite,
 };
+use vantablack::ghost::session::Session;
 use x25519_dalek::PublicKey as XPublicKey;
 
 const SUITE_512: HybridCipherSuite = HybridCipherSuite::X25519MlKem512V2;
@@ -53,6 +56,7 @@ fn offer(
     let pdu = build_negotiated_handshake_pdu(
         suites,
         &id.public_key_bytes(),
+        &id.pq_commitment(),
         |d| id.sign(d).to_bytes(),
         &x_pub,
         &keys,
@@ -73,6 +77,7 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
     let parsed = parse_negotiated_handshake_pdu(&offer_pdu).expect("the offer parses");
     assert_eq!(parsed.supported, vec![SUITE_768, SUITE_512]);
     assert_eq!(parsed.identity_pk, alice.public_key_bytes());
+    assert_eq!(parsed.pq_commitment, alice.pq_commitment());
     assert_eq!(parsed.kyber_keys.len(), 2, "one KEM public key per advertised suite");
 
     let chosen = negotiate_cipher_suite(&[SUITE_768, SUITE_512], &wire_ids(&parsed.supported))
@@ -92,6 +97,7 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
     let response_pdu = build_negotiated_response_pdu(
         chosen,
         &bob.public_key_bytes(),
+        &bob.pq_commitment(),
         |d| bob.sign(d).to_bytes(),
         bob_x_pub.as_bytes(),
         &ct,
@@ -103,6 +109,7 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
     let answer = parse_negotiated_response_pdu(&response_pdu).expect("the response parses");
     assert_eq!(answer.suite, chosen);
     assert_eq!(answer.identity_pk, bob.public_key_bytes());
+    assert_eq!(answer.pq_commitment, bob.pq_commitment());
     assert_eq!(
         answer.suite,
         negotiate_cipher_suite(&[SUITE_768, SUITE_512], &wire_ids(&[SUITE_768, SUITE_512]))
@@ -116,7 +123,7 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
     let bob_x_shared = bob_x_secret.diffie_hellman(&XPublicKey::from(parsed.x25519_pub));
 
     // Both sides bind the *same* transcript: initiator public key, responder public
-    // key, and the ciphertext — the order is canonical, not "mine then yours".
+    // key, the ciphertext, and both PQ commitments — the order is canonical, not "mine then yours".
     let alice_key = derive_hybrid_master_key_with_transcript(
         SUITE_768,
         alice_x_shared.as_bytes(),
@@ -125,6 +132,8 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
         &parsed.x25519_pub,
         &answer.x25519_pub,
         &answer.kyber_ct,
+        &parsed.pq_commitment,
+        &answer.pq_commitment,
     );
     let bob_key = derive_hybrid_master_key_with_transcript(
         SUITE_768,
@@ -134,6 +143,8 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
         &parsed.x25519_pub,
         bob_x_pub.as_bytes(),
         &ct,
+        &alice.pq_commitment(),
+        &bob.pq_commitment(),
     );
 
     assert_eq!(
@@ -217,6 +228,8 @@ fn the_session_key_is_bound_to_the_transcript() {
     let initiator_pub = [0x33u8; 32];
     let responder_pub = [0x44u8; 32];
     let ct = [0x55u8; 64];
+    let initiator_pq = [0x66u8; 32];
+    let responder_pq = [0x77u8; 32];
 
     let base = derive_hybrid_master_key_with_transcript(
         SUITE_768,
@@ -226,6 +239,8 @@ fn the_session_key_is_bound_to_the_transcript() {
         &initiator_pub,
         &responder_pub,
         &ct,
+        &initiator_pq,
+        &responder_pq,
     );
 
     // Deterministic for identical inputs — a binding that varied per call would still
@@ -240,6 +255,8 @@ fn the_session_key_is_bound_to_the_transcript() {
             &initiator_pub,
             &responder_pub,
             &ct,
+            &initiator_pq,
+            &responder_pq,
         ),
         "the same transcript must give the same key"
     );
@@ -256,6 +273,8 @@ fn the_session_key_is_bound_to_the_transcript() {
             &responder_pub,
             &initiator_pub,
             &ct,
+            &responder_pq,
+            &initiator_pq,
         ),
         "the transcript order must be part of the key"
     );
@@ -273,8 +292,48 @@ fn the_session_key_is_bound_to_the_transcript() {
             &initiator_pub,
             &responder_pub,
             &ct_flipped,
+            &initiator_pq,
+            &responder_pq,
         ),
         "the ciphertext must be bound"
+    );
+
+    // Flipped initiator PQ commitment must differ (SOTA G3).
+    let mut init_pq_flipped = initiator_pq;
+    init_pq_flipped[0] ^= 0x01;
+    assert_ne!(
+        base,
+        derive_hybrid_master_key_with_transcript(
+            SUITE_768,
+            &x_shared,
+            &kyber_shared,
+            None,
+            &initiator_pub,
+            &responder_pub,
+            &ct,
+            &init_pq_flipped,
+            &responder_pq,
+        ),
+        "the initiator PQ commitment must be bound (SOTA G3)"
+    );
+
+    // Flipped responder PQ commitment must differ (SOTA G3).
+    let mut resp_pq_flipped = responder_pq;
+    resp_pq_flipped[0] ^= 0x01;
+    assert_ne!(
+        base,
+        derive_hybrid_master_key_with_transcript(
+            SUITE_768,
+            &x_shared,
+            &kyber_shared,
+            None,
+            &initiator_pub,
+            &responder_pub,
+            &ct,
+            &initiator_pq,
+            &resp_pq_flipped,
+        ),
+        "the responder PQ commitment must be bound (SOTA G3)"
     );
 
     // And a changed public key, or a changed suite, or a changed secret.
@@ -290,6 +349,8 @@ fn the_session_key_is_bound_to_the_transcript() {
             &initiator_pub,
             &pub_flipped,
             &ct,
+            &initiator_pq,
+            &responder_pq,
         ),
         "the responder public key must be bound"
     );
@@ -303,6 +364,8 @@ fn the_session_key_is_bound_to_the_transcript() {
             &initiator_pub,
             &responder_pub,
             &ct,
+            &initiator_pq,
+            &responder_pq,
         ),
         "the suite must stay part of the derivation"
     );
@@ -318,6 +381,8 @@ fn the_session_key_is_bound_to_the_transcript() {
             &initiator_pub,
             &responder_pub,
             &ct,
+            &initiator_pq,
+            &responder_pq,
         ),
         "the shared secret must still be an input"
     );
@@ -328,5 +393,91 @@ fn the_session_key_is_bound_to_the_transcript() {
         base,
         derive_hybrid_master_key_with_suite(SUITE_768, &x_shared, &kyber_shared, None),
         "the transcript-bound KDF must not agree with the unbound one"
+    );
+}
+
+/// SOTA G3: A quantum attacker who has computed Alice's Ed25519 private key cannot
+/// authenticate without possessing her ML-DSA-65 private key or substituting their own.
+#[test]
+fn forged_classical_signature_with_mismatched_pq_key_is_rejected() {
+    let alice = GhostIdentity::generate_fresh();
+    let mallory = GhostIdentity::generate_fresh();
+    let channel_binding = b"quantum-adversary-mitm-test";
+
+    // Scenario A: Mallory creates a binding using her own PQ key alongside Alice's classical key
+    // Mallory's binding has Mallory's PQ key, but Alice's commitment is pinned in the handshake.
+    let mallory_binding = create_identity_binding(&mallory, channel_binding);
+
+    // Verifying Mallory's binding against Alice's pinned commitment fails with mismatched PQ commitment
+    let result = verify_hybrid_binding(
+        &alice.public_key_bytes(),
+        Some(&alice.pq_commitment()),
+        channel_binding,
+        &mallory_binding,
+    );
+    assert!(result.is_err(), "mismatched PQ key must be rejected");
+
+    // Scenario B: Mallory tries to bind Alice's Ed25519 key and Alice's PQ key, but cannot forge the ML-DSA signature
+    let alice_binding = create_identity_binding(&alice, channel_binding);
+    let mut tampered = alice_binding.clone();
+    // Tamper with the ML-DSA signature (the last 3309 bytes)
+    let len = tampered.len();
+    tampered[len - 10] ^= 0x42;
+
+    let res_tampered = verify_hybrid_binding(
+        &alice.public_key_bytes(),
+        Some(&alice.pq_commitment()),
+        channel_binding,
+        &tampered,
+    );
+    assert!(res_tampered.is_err(), "forged/tampered ML-DSA-65 signature must fail verification");
+}
+
+/// SOTA G3: Sessions gate application traffic until post-quantum identity verification passes.
+#[test]
+fn session_gates_application_traffic_until_pq_auth_verifies() {
+    let bob = GhostIdentity::generate_fresh();
+    let master_key = [0x42u8; 32];
+
+    let session = Session::new(master_key, bob.fingerprint());
+    session.pin_peer_identity(bob.public_key_bytes());
+    session.pin_peer_pq_commitment(bob.pq_commitment());
+
+    // Before PQ auth is completed, application traffic is blocked
+    assert!(
+        !session.is_pq_authenticated(),
+        "session must not be authenticated before PQ proof exchange"
+    );
+
+    // Exchange chunked binding
+    let binding = create_identity_binding(&bob, &master_key);
+    let chunk_size = 500;
+    let chunks: Vec<&[u8]> = binding.chunks(chunk_size).collect();
+    let total_chunks = chunks.len() as u8;
+
+    let mut assembled = None;
+    for (idx, chunk) in chunks.iter().enumerate() {
+        assembled = session.store_pq_chunk(idx as u8, total_chunks, chunk.to_vec());
+    }
+
+    let full = assembled.expect("all chunks must assemble");
+    assert_eq!(full.len(), binding.len());
+
+    // Verify proof
+    let pq_pk = verify_hybrid_binding(
+        &session.peer_identity_pk().unwrap(),
+        session.peer_pq_commitment().as_ref(),
+        &session.master_key,
+        &full,
+    )
+    .expect("binding verification must succeed");
+
+    session.set_pq_authenticated(true);
+    session.set_peer_pq_pk(pq_pk);
+
+    // After PQ auth succeeds, traffic is permitted
+    assert!(
+        session.is_pq_authenticated(),
+        "session must be authenticated after valid PQ verification"
     );
 }

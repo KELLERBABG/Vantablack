@@ -37,6 +37,9 @@ one they share, and the whole exchange is signed.
 *Tests:* `tests/layer_tests.rs` (identity + handshake), `l1_kem` unit tests, and `l1_kem`'s
 `test_uniform_handshake_and_response_use_random_authenticated_prefixes`.
 
+**Post-quantum authentication on every session (SOTA G3).** Default sessions are not left on classical Ed25519 alone. The negotiated handshake binds each peer's ML-DSA-65 public key commitment into the KDF transcript (V7), blocks application traffic in `PqAuthState::Pending`, and immediately exchanges the 5.3 KB hybrid proof in encrypted in-band control frames (`PQ_AUTH_CHUNK:` / `PQ_AUTH_ACK__:`). Tampered signatures or mismatched PQ commitments immediately evict the session.
+*Tests:* `tests/handshake_interop.rs` — `session_gates_application_traffic_until_pq_auth_verifies` and `forged_classical_signature_with_mismatched_pq_key_is_rejected`.
+
 **Nobody can talk you down to a weaker suite.** If both sides support ML-KEM-768, a responder that
 answers with ML-KEM-512 is refused. This is the security hole that suite negotiation exists to
 close, and it is checked two ways: the initiator recomputes what the strongest shared suite should
@@ -157,9 +160,7 @@ Each has a concrete reason, not a vague one.
 - **Apple signing and the macOS network extension.** Needs an Apple developer account and
   provisioning; documented, not built.
 - **A physical iOS or Android handover test.** Needs devices.
-- **Proving you hold your post-quantum key, inside the handshake.** Today that proof only rides the
-  QUIC channel binding, so a peer that never uses QUIC gets pinned but never proven. The handshake
-  and beacon messages are too small to carry the proof.
+- **Proving you hold your post-quantum key, inside the handshake payload directly.** Because a 5.3 KB proof exceeds standard packet MTU, proof exchange runs immediately in-band over the encrypted session under a strict verification gate (SOTA G3), rather than expanding raw pre-session handshake UDP datagrams.
 - **Hybrid signatures on revocations and capability vouchers.** Those are still classical-only.
 - **Cover traffic aimed at peers you have no session with.** Cover is currently scoped to
   established sessions; fabricating unrelated decoys needs a relay-aware envelope and its own

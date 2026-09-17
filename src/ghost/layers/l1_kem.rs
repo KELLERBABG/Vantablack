@@ -144,10 +144,10 @@ pub fn derive_hybrid_master_key_with_suite(
     master_key
 }
 
-/// Domain-separation label for the transcript-bound hybrid KDF (SOTA G2).
-pub const HYBRID_BIND_LABEL: &[u8] = b"GHOST_NET_HYBRID_BIND_v1";
+/// Domain-separation label for the transcript-bound hybrid KDF (SOTA G2/G3).
+pub const HYBRID_BIND_LABEL: &[u8] = b"GHOST_NET_HYBRID_BIND_v2";
 
-/// Hybrid KDF **with transcript binding** (SOTA G2).
+/// Hybrid KDF **with transcript binding** (SOTA G2/G3).
 ///
 /// The unbound form above ties the session key to two shared secrets and to nothing
 /// else — not to the public keys that produced them, not to the ciphertext, not to
@@ -156,9 +156,9 @@ pub const HYBRID_BIND_LABEL: &[u8] = b"GHOST_NET_HYBRID_BIND_v1";
 /// side has anything to check the other against beyond the secrets themselves.
 ///
 /// X-Wing and NIST's dual-PRF guidance both bind the transcript for exactly this
-/// reason, so this folds `x25519_pub_initiator ‖ x25519_pub_responder ‖ kyber_ct`
+/// reason, so this folds `x25519_pub_initiator ‖ x25519_pub_responder ‖ kyber_ct ‖ initiator_pq_commitment ‖ responder_pq_commitment`
 /// into the IKM under a domain-separation label. The order is **canonical** — the
-/// *initiator's* public key first — because both sides must build identical bytes
+/// *initiator's* public key and commitment first — because both sides must build identical bytes
 /// from the same handshake and only the roles are common between them: each peer
 /// knows which of the two keys is the other's, not the byte order in which the
 /// other happened to hash them.
@@ -166,7 +166,7 @@ pub const HYBRID_BIND_LABEL: &[u8] = b"GHOST_NET_HYBRID_BIND_v1";
 /// This is a *session-key* change, so it is a wire-format change: a peer running the
 /// old derivation would compute a different key from the same handshake and every
 /// frame would fail to open. The negotiated handshake's magic is therefore bumped
-/// with it, so the mismatch surfaces as "no such handshake" rather than as traffic
+/// with it (V6 -> V7), so the mismatch surfaces as "no such handshake" rather than as traffic
 /// that silently never decrypts.
 pub fn derive_hybrid_master_key_with_transcript(
     suite: HybridCipherSuite,
@@ -176,9 +176,18 @@ pub fn derive_hybrid_master_key_with_transcript(
     initiator_x_pub: &[u8; 32],
     responder_x_pub: &[u8; 32],
     kyber_ct: &[u8],
+    initiator_pq_commitment: &[u8; 32],
+    responder_pq_commitment: &[u8; 32],
 ) -> [u8; 32] {
     let mut ikm = Vec::with_capacity(
-        HYBRID_BIND_LABEL.len() + 32 + kyber_shared.len() + 32 + 32 + kyber_ct.len(),
+        HYBRID_BIND_LABEL.len()
+            + 32
+            + kyber_shared.len()
+            + 32
+            + 32
+            + kyber_ct.len()
+            + 32
+            + 32,
     );
     ikm.extend_from_slice(HYBRID_BIND_LABEL);
     ikm.extend_from_slice(x25519_shared);
@@ -186,6 +195,8 @@ pub fn derive_hybrid_master_key_with_transcript(
     ikm.extend_from_slice(initiator_x_pub);
     ikm.extend_from_slice(responder_x_pub);
     ikm.extend_from_slice(kyber_ct);
+    ikm.extend_from_slice(initiator_pq_commitment);
+    ikm.extend_from_slice(responder_pq_commitment);
 
     let salt = match psk {
         Some(key) => *key,
@@ -622,8 +633,8 @@ pub fn parse_response_pdu(data: &[u8]) -> Option<ResponseBlob> {
 /// they cannot be told apart by trying them — hence the separate magic. A V5 build
 /// no longer answers a V4 offer (and vice versa); the versions are separate
 /// protocols rather than one protocol with an optional hardening.
-pub const HANDSHAKE_NEGOTIATION_MAGIC: &[u8; 16] = b"GHOST_HS_NEG_V6_";
-pub const RESPONSE_NEGOTIATION_MAGIC: &[u8; 16] = b"GHOST_RSP_NEG_V6";
+pub const HANDSHAKE_NEGOTIATION_MAGIC: &[u8; 16] = b"GHOST_HS_NEG_V7_";
+pub const RESPONSE_NEGOTIATION_MAGIC: &[u8; 16] = b"GHOST_RSP_NEG_V7";
 
 #[derive(Debug, Clone)]
 pub struct NegotiatedHandshakeBlob {
@@ -631,6 +642,7 @@ pub struct NegotiatedHandshakeBlob {
     pub x25519_pub: [u8; 32],
     pub kyber_keys: Vec<(HybridCipherSuite, Vec<u8>)>,
     pub identity_pk: [u8; 32],
+    pub pq_commitment: [u8; 32],
     pub signature: [u8; 64],
 }
 
@@ -640,6 +652,7 @@ pub struct NegotiatedResponseBlob {
     pub x25519_pub: [u8; 32],
     pub kyber_ct: Vec<u8>,
     pub identity_pk: [u8; 32],
+    pub pq_commitment: [u8; 32],
     pub signature: [u8; 64],
 }
 
@@ -662,6 +675,7 @@ fn negotiation_material(
     x25519_pub: &[u8; 32],
     kyber_keys: &[(HybridCipherSuite, Vec<u8>)],
     identity_pk: &[u8; 32],
+    pq_commitment: &[u8; 32],
 ) -> Option<Vec<u8>> {
     if supported.is_empty() || supported.len() > 2 || kyber_keys.len() != supported.len() {
         return None;
@@ -681,17 +695,20 @@ fn negotiation_material(
         out.extend_from_slice(key);
     }
     out.extend_from_slice(identity_pk);
+    out.extend_from_slice(pq_commitment);
     Some(out)
 }
 
 pub fn build_negotiated_handshake_pdu(
     supported: &[HybridCipherSuite],
     identity_pk: &[u8; 32],
+    pq_commitment: &[u8; 32],
     identity_sign: impl Fn(&[u8]) -> [u8; 64],
     x_pub: &XPublicKey,
     kyber_keys: &[(HybridCipherSuite, Vec<u8>)],
 ) -> Option<Vec<u8>> {
-    let material = negotiation_material(supported, x_pub.as_bytes(), kyber_keys, identity_pk)?;
+    let material =
+        negotiation_material(supported, x_pub.as_bytes(), kyber_keys, identity_pk, pq_commitment)?;
     let sig = identity_sign(&material);
     let mut out = material;
     out.extend_from_slice(&sig);
@@ -699,11 +716,11 @@ pub fn build_negotiated_handshake_pdu(
 }
 
 pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshakeBlob> {
-    if data.len() < 16 + 1 + 32 + 32 + 64 || !data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC) {
+    if data.len() < 16 + 1 + 32 + 32 + 32 + 64 || !data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC) {
         return None;
     }
     let count = data[16] as usize;
-    if count == 0 || count > 2 || data.len() <= 17 + 32 + 64 {
+    if count == 0 || count > 2 || data.len() <= 17 + 32 + 32 + 64 {
         return None;
     }
     let mut at = 17;
@@ -735,12 +752,21 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
     }
     let identity_pk: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
     at += 32;
+    let pq_commitment: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
+    at += 32;
     let signature: [u8; 64] = data.get(at..at + 64)?.try_into().ok()?;
     if at + 64 != data.len() || kyber_keys.iter().map(|(s, _)| s).collect::<Vec<_>>()
         != supported.iter().collect::<Vec<_>>() {
         return None;
     }
-    Some(NegotiatedHandshakeBlob { supported, x25519_pub, kyber_keys, identity_pk, signature })
+    Some(NegotiatedHandshakeBlob {
+        supported,
+        x25519_pub,
+        kyber_keys,
+        identity_pk,
+        pq_commitment,
+        signature,
+    })
 }
 
 fn response_material(
@@ -748,49 +774,61 @@ fn response_material(
     x25519_pub: &[u8; 32],
     kyber_ct: &[u8],
     identity_pk: &[u8; 32],
+    pq_commitment: &[u8; 32],
 ) -> Option<Vec<u8>> {
     if kyber_ct.len() != suite_ct_len(suite) {
         return None;
     }
-    let mut out = Vec::with_capacity(16 + 1 + 32 + kyber_ct.len() + 32);
+    let mut out = Vec::with_capacity(16 + 1 + 32 + kyber_ct.len() + 32 + 32);
     out.extend_from_slice(RESPONSE_NEGOTIATION_MAGIC);
     out.push(suite.wire_id());
     out.extend_from_slice(x25519_pub);
     out.extend_from_slice(kyber_ct);
     out.extend_from_slice(identity_pk);
+    out.extend_from_slice(pq_commitment);
     Some(out)
 }
 
 pub fn build_negotiated_response_pdu(
     suite: HybridCipherSuite,
     identity_pk: &[u8; 32],
+    pq_commitment: &[u8; 32],
     identity_sign: impl Fn(&[u8]) -> [u8; 64],
     x_pub_bytes: &[u8; 32],
     ct_bytes: &[u8],
 ) -> Option<Vec<u8>> {
-    let mut out = response_material(suite, x_pub_bytes, ct_bytes, identity_pk)?;
+    let mut out = response_material(suite, x_pub_bytes, ct_bytes, identity_pk, pq_commitment)?;
     let sig = identity_sign(&out);
     out.extend_from_slice(&sig);
     Some(out)
 }
 
 pub fn parse_negotiated_response_pdu(data: &[u8]) -> Option<NegotiatedResponseBlob> {
-    if data.len() < 16 + 1 + 32 + 32 + 64 || !data.starts_with(RESPONSE_NEGOTIATION_MAGIC) {
+    if data.len() < 16 + 1 + 32 + 32 + 32 + 64 || !data.starts_with(RESPONSE_NEGOTIATION_MAGIC) {
         return None;
     }
     let suite = HybridCipherSuite::from_wire_id(data[16])?;
     let ct_start = 49;
     let ct_len = suite_ct_len(suite);
     let identity_start = ct_start + ct_len;
-    let total = identity_start + 32 + 64;
+    let pq_start = identity_start + 32;
+    let total = pq_start + 32 + 64;
     if data.len() != total {
         return None;
     }
     let x25519_pub: [u8; 32] = data[17..49].try_into().ok()?;
     let kyber_ct = data[ct_start..identity_start].to_vec();
-    let identity_pk: [u8; 32] = data[identity_start..identity_start + 32].try_into().ok()?;
-    let signature: [u8; 64] = data[identity_start + 32..].try_into().ok()?;
-    Some(NegotiatedResponseBlob { suite, x25519_pub, kyber_ct, identity_pk, signature })
+    let identity_pk: [u8; 32] = data[identity_start..pq_start].try_into().ok()?;
+    let pq_commitment: [u8; 32] = data[pq_start..pq_start + 32].try_into().ok()?;
+    let signature: [u8; 64] = data[pq_start + 32..].try_into().ok()?;
+    Some(NegotiatedResponseBlob {
+        suite,
+        x25519_pub,
+        kyber_ct,
+        identity_pk,
+        pq_commitment,
+        signature,
+    })
 }
 
 // ── P2-2 Double-Ratchet KDFs ────────────────────────────────────────
@@ -1191,6 +1229,7 @@ mod tests {
     #[test]
     fn test_explicit_suite_list_selects_strongest_common_and_binds_all_keys() {
         let identity = [0x31u8; 32];
+        let pq_comm = [0x77u8; 32];
         let (_, x_public) = generate_x25519_keypair();
         let (pk512, _) = generate_kyber_keypair();
         let (pk768, _) = generate_kyber768_keypair();
@@ -1205,6 +1244,7 @@ mod tests {
         let wire = build_negotiated_handshake_pdu(
             &supported,
             &identity,
+            &pq_comm,
             |_| [0x44; 64],
             &x_public,
             &keys,
@@ -1212,6 +1252,8 @@ mod tests {
         .expect("suite list builds");
         let parsed = parse_negotiated_handshake_pdu(&wire).expect("suite list parses");
         assert_eq!(parsed.supported, supported);
+        assert_eq!(parsed.identity_pk, identity);
+        assert_eq!(parsed.pq_commitment, pq_comm);
         assert_eq!(parsed.kyber_keys[0].1.len(), 1184);
         assert_eq!(parsed.kyber_keys[1].1.len(), 800);
         let remote = [HybridCipherSuite::X25519MlKem512V2.wire_id()];
@@ -1228,11 +1270,13 @@ mod tests {
     #[test]
     fn test_explicit_suite_list_rejects_duplicate_or_malformed_entries() {
         let identity = [0x31u8; 32];
+        let pq_comm = [0x77u8; 32];
         let (_, x_public) = generate_x25519_keypair();
         let (pk512, _) = generate_kyber_keypair();
         let wire = build_negotiated_handshake_pdu(
             &[HybridCipherSuite::X25519MlKem512V2],
             &identity,
+            &pq_comm,
             |_| [0x44; 64],
             &x_public,
             &[(HybridCipherSuite::X25519MlKem512V2, pk512.to_bytes().to_vec())],

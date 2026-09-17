@@ -417,6 +417,71 @@ pub fn verify_peer_hybrid(
         && verify_pq_signature(peer_pq_pk_bytes, data, &signature.pq)
 }
 
+/// Version byte for the hybrid identity binding payload (SOTA G3).
+pub const BINDING_VERSION_HYBRID: u8 = 0x02;
+
+/// Length of the full hybrid identity binding wire payload (5,358 bytes).
+pub const BINDING_LEN_HYBRID: usize =
+    1 + 32 + ML_DSA_65_PK_LEN + ED25519_SIG_LEN + ML_DSA_65_SIG_LEN;
+
+/// Construct the signed payload material for an identity binding.
+pub fn identity_binding_material(channel_binding: &[u8], pq_pk: &[u8]) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(channel_binding.len() + pq_pk.len());
+    msg.extend_from_slice(channel_binding);
+    msg.extend_from_slice(pq_pk);
+    msg
+}
+
+/// Construct a full 5,358-byte hybrid identity binding signing the given channel binding.
+pub fn create_identity_binding(identity: &GhostIdentity, channel_binding: &[u8]) -> Vec<u8> {
+    let pq_pk = identity.pq_public_key_bytes();
+    let msg = identity_binding_material(channel_binding, &pq_pk);
+    let sig = identity.sign_hybrid(&msg);
+    let mut out = Vec::with_capacity(BINDING_LEN_HYBRID);
+    out.push(BINDING_VERSION_HYBRID);
+    out.extend_from_slice(&identity.public_key_bytes());
+    out.extend_from_slice(&pq_pk);
+    out.extend_from_slice(&sig.ed25519);
+    out.extend_from_slice(&sig.pq);
+    out
+}
+
+/// Verify a peer's hybrid identity binding against its pinned Ed25519 key,
+/// optional expected PQ commitment, and channel binding.
+/// Returns the peer's ML-DSA-65 public key on success.
+pub fn verify_hybrid_binding(
+    peer_ed_pk: &[u8; 32],
+    expected_pq_commitment: Option<&[u8; 32]>,
+    channel_binding: &[u8],
+    binding: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    if binding.len() != BINDING_LEN_HYBRID || binding[0] != BINDING_VERSION_HYBRID {
+        return Err("invalid binding length or version");
+    }
+    if &binding[1..33] != peer_ed_pk {
+        return Err("mismatched peer Ed25519 key");
+    }
+    let pq_pk = &binding[33..33 + ML_DSA_65_PK_LEN];
+    if let Some(expected_com) = expected_pq_commitment {
+        if &pq_commitment(pq_pk) != expected_com {
+            return Err("mismatched PQ commitment");
+        }
+    }
+    let ed_sig = &binding[33 + ML_DSA_65_PK_LEN..33 + ML_DSA_65_PK_LEN + ED25519_SIG_LEN];
+    let pq_sig = &binding[33 + ML_DSA_65_PK_LEN + ED25519_SIG_LEN..];
+    let material = identity_binding_material(channel_binding, pq_pk);
+    let Ok(ed_sig_arr) = <&[u8; ED25519_SIG_LEN]>::try_from(ed_sig) else {
+        return Err("invalid Ed25519 signature format");
+    };
+    if !verify_peer_signature(peer_ed_pk, &material, ed_sig_arr) {
+        return Err("Ed25519 signature invalid");
+    }
+    if !verify_pq_signature(pq_pk, &material, pq_sig) {
+        return Err("ML-DSA-65 signature invalid");
+    }
+    Ok(pq_pk.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,4 +691,50 @@ mod tests {
         assert!(GhostIdentity::parse_identity_file(&bad_version).is_err());
     }
 
+    #[test]
+    fn test_hybrid_identity_binding_roundtrip() {
+        let alice = GhostIdentity::generate_fresh();
+        let bob = GhostIdentity::generate_fresh();
+        let channel = b"test-channel-binding-1234";
+
+        let binding = create_identity_binding(&alice, channel);
+        assert_eq!(binding.len(), BINDING_LEN_HYBRID);
+
+        // Valid verification
+        let pq_pk = verify_hybrid_binding(
+            &alice.public_key_bytes(),
+            Some(&alice.pq_commitment()),
+            channel,
+            &binding,
+        )
+        .expect("valid binding must verify");
+        assert_eq!(pq_pk, alice.pq_public_key_bytes());
+
+        // Mismatched channel binding fails
+        assert!(verify_hybrid_binding(
+            &alice.public_key_bytes(),
+            Some(&alice.pq_commitment()),
+            b"different-channel",
+            &binding,
+        )
+        .is_err());
+
+        // Mismatched Ed25519 key fails
+        assert!(verify_hybrid_binding(
+            &bob.public_key_bytes(),
+            Some(&alice.pq_commitment()),
+            channel,
+            &binding,
+        )
+        .is_err());
+
+        // Mismatched PQ commitment fails
+        assert!(verify_hybrid_binding(
+            &alice.public_key_bytes(),
+            Some(&bob.pq_commitment()),
+            channel,
+            &binding,
+        )
+        .is_err());
+    }
 }
