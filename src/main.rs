@@ -6,18 +6,22 @@
 use rand::RngCore;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+// Only the optional-transport paths name a local address (multipath, B23), so the
+// type is imported where it is used rather than in every build.
+#[cfg(feature = "quic")]
+use std::net::IpAddr;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
 use ml_kem::kem::Decapsulate;
-use ml_kem::{Ciphertext, DecapsulationKey512, MlKem512};
+use ml_kem::{Ciphertext, DecapsulationKey512, DecapsulationKey768, KeyExport, MlKem512};
 #[cfg(all(feature = "tray", not(feature = "webview")))]
 mod tray;
 #[cfg(feature = "webview")]
@@ -33,11 +37,28 @@ use vantablack::ghost::{
     layers::{
         l0_identity,
         l1_kem::{
-            build_handshake_pdu, build_response_pdu, derive_hybrid_master_key_with_psk,
-            generate_kyber_keypair, generate_x25519_keypair, kyber_encapsulate,
-            parse_handshake_pdu, parse_response_pdu, HANDSHAKE_BLOB_LEN, RESPONSE_BLOB_LEN,
+            build_handshake_pdu, build_negotiated_handshake_pdu,
+            build_negotiated_response_pdu, build_response_pdu, build_response_pdu_suite,
+            build_uniform_handshake_pdu, build_uniform_response_pdu,
+            derive_hybrid_master_key_with_psk, derive_hybrid_master_key_with_suite,
+            derive_hybrid_master_key_with_transcript,
+            generate_kyber768_keypair, generate_kyber_keypair, negotiate_cipher_suite,
+            generate_x25519_keypair, kyber768_decapsulate, kyber768_encapsulate,
+            kyber_encapsulate,            parse_handshake_pdu, parse_negotiated_handshake_pdu,
+            parse_negotiated_response_pdu, parse_uniform_handshake_pdu,
+            parse_uniform_response_pdu, uniform_handshake_signed_material,
+            uniform_response_signed_material,
+
+            parse_handshake_pdu_suite, parse_response_pdu, parse_response_pdu_suite,
+            HybridCipherSuite, HANDSHAKE_NEGOTIATION_MAGIC, HANDSHAKE_V3_MAGIC,
+            RESPONSE_NEGOTIATION_MAGIC, RESPONSE_V3_MAGIC, HANDSHAKE_BLOB_LEN,
+            RESPONSE_BLOB_LEN,
         },
-        l2_aead::{decrypt_in_place_with_context, encrypt_in_place_with_context, NonceDirection},
+        l2_aead::{
+            decrypt_in_place_with_context, encrypt_in_place_with_context, xchacha_open,
+            xchacha_open_with_aad, xchacha_seal_in_place, xchacha_seal_in_place_with_aad,
+            NonceDirection,
+        },
         l4_rs,
         l7_ldpc::LdpcCodec,
         l8_memsec::{VerifiedRingBuffer, XtsMemoryEncryptor},
@@ -48,21 +69,37 @@ use vantablack::ghost::{
         fallback::{self, Fallback, FallbackPath, TurnPath},
         frame_shard,
         mesh::{ExitIpRotator, TitForTatEnforcer},
-        parse_packet_counter,
         relay::{
-            self, build_relay_packet, parse_relay_header, spawn_store_forward_task, BundleBuffer,
+            self, build_onion_route, build_relay_packet, parse_relay_header,
+            spawn_store_forward_task, BundleBuffer, MixBatch,
             DerpRelay,
         },
         routing::{ContactPlan, PoissonReputationMatrix},
         security::{LockedMemory, RevocationList, RevocationReason, ZkAuthenticator},
-        send_gtf, unframe, upnp, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BULK_SIZE,
-        OFFSET_PAYLOAD_START,
+        send_gtf, send_gtf_v2, unframe, upnp, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX,
+        GTF_BULK_SIZE,
     },
-    session::{Session, SessionRole},
+    session::{
+        build_ratchet_step_pdu, build_rekey_response_pdu, parse_rekey_pdu,
+        parse_rekey_response_pdu,
+        rekey_answer_signed_material, rekey_init_signed_material, RatchetAnswer, Session,
+        SessionRole, REKEY_MAGIC, REKEY_RESPONSE_MAGIC,
+    },
     GhostNode,
 };
 
-type PendingHandshakes = Arc<DashMap<String, (x25519_dalek::EphemeralSecret, DecapsulationKey512)>>;
+enum PendingHandshake {
+    Kem512(x25519_dalek::EphemeralSecret, DecapsulationKey512),
+    Kem768(x25519_dalek::EphemeralSecret, DecapsulationKey768),
+    Negotiated {
+        x_secret: x25519_dalek::EphemeralSecret,
+        kem512: DecapsulationKey512,
+        kem768: DecapsulationKey768,
+        offered: Vec<HybridCipherSuite>,
+    },
+}
+
+type PendingHandshakes = Arc<DashMap<String, PendingHandshake>>;
 
 /// Hard cap on the shard-reassembly spool (per-node). Entries with fewer than
 /// two shards are pruned when the cap is exceeded (anti-memory-DoS).
@@ -81,8 +118,8 @@ const MAX_PENDING_HANDSHAKES: usize = 512;
 const EMBEDDED_SEEDS: &[&str] = &[];
 
 async fn assemble(
-    pool: &DashMap<u32, Vec<Option<Vec<u8>>>>,
-    ctr: u32,
+    pool: &DashMap<u64, Vec<Option<Vec<u8>>>>,
+    ctr: u64,
     idx: usize,
     data: Vec<u8>,
 ) -> Option<Vec<u8>> {
@@ -132,20 +169,238 @@ async fn assemble(
 // `frame_shard` / `unframe` live in `ghost::net` (canonical, SOTA P0-1) and are
 // imported below.
 
-fn enc_split(
-    key: &[u8; 32],
-    ctr: u32,
-    session_hash: &[u8; 4],
+/// Everything one outgoing v2 message is sealed with (SOTA P2-2).
+///
+/// Taken as one snapshot from the session so the epoch key and the epoch number
+/// cannot straddle a ratchet step: sealing under one epoch's key with another
+/// epoch's number produces a frame no receiver can open.
+#[derive(Clone)]
+struct SealCtx {
+    key: [u8; 32],
+    epoch: u64,
+    counter: u64,
+    nonce: [u8; 12],
     direction: NonceDirection,
-    pay: &[u8],
-) -> (Vec<Vec<u8>>, [u8; 16]) {
+    session_hash: [u8; 4],
+    /// This message filled its epoch: the caller should start a ratchet step.
+    ratchet_due: bool,
+}
+
+impl SealCtx {
+    fn from_session(s: &Session) -> Self {
+        let m = s.seal_material();
+        Self {
+            key: m.key,
+            epoch: m.epoch,
+            counter: m.counter,
+            nonce: m.nonce,
+            direction: m.direction,
+            session_hash: s.session_hash,
+            ratchet_due: m.ratchet_due,
+        }
+    }
+
+    /// The v2 header for one shard of this message. All shards of a message share
+    /// counter, epoch and nonce — they are pieces of one AEAD ciphertext.
+    ///
+    /// SOTA P3-1: this is also the single place the jitter tail is attached. It is
+    /// derived here rather than passed in, so every privacy frame gets the same
+    /// tail the sealer authenticated as associated data, and no call site had to
+    /// learn a new argument.
+    fn header(&self, shard_index: u8, bulk: bool, flags: u8) -> net::GtfV2Header {
+        net::GtfV2Header {
+            session_hash: self.session_hash,
+            counter: self.counter,
+            epoch: self.epoch,
+            nonce: self.nonce,
+            shard_index,
+            flags,
+            bulk,
+            tail: net::tail_for(&self.key, &self.nonce, self.epoch, self.direction),
+        }
+    }
+
+    fn data_header(&self, shard_index: u8, bulk: bool, flags: u8) -> net::GtfV2Header {
+        let flags = if std::env::var("GHOST_SHARDSEC").is_ok() {
+            flags | net::FLAG_SHARDSEC
+        } else {
+            flags
+        };
+        self.header(shard_index, bulk, flags)
+    }
+}
+
+/// What a v2 frame header tells the receiver beyond the payload region: which
+/// ratchet epoch sealed it, with which nonce, and the jitter tail it carries.
+#[derive(Clone, Copy)]
+struct V2FrameMeta {
+    epoch: u64,
+    nonce: [u8; 12],
+    /// Whether this is an MTU-sized bulk frame, which carries no tail at all.
+    bulk: bool,
+    /// The jitter tail **exactly as it arrived on the wire** (SOTA P3-1).
+    tail: [u8; net::JITTER_MAX],
+    /// ShardSec frames authenticate each RS shard independently and are opened
+    /// before reconstruction; they do not use the legacy message-level AEAD.
+    shardsec: bool,
+}
+
+impl V2FrameMeta {
+    /// Read the seal metadata out of a raw datagram, if it is a v2 frame.
+    fn of(frame: &[u8]) -> Option<Self> {
+        net::parse_gtf_v2_header(frame).map(|h| Self {
+            epoch: h.epoch,
+            nonce: h.nonce,
+            bulk: h.bulk,
+            tail: h.tail,
+            shardsec: (h.flags & net::FLAG_SHARDSEC) != 0,
+        })
+    }
+}
+
+/// A lock-free snapshot of everything needed to *open* frames from one session.
+///
+/// Snapshotted before the DashMap iterator is dropped for the same reason the old
+/// code snapshotted the master key: taking a `get_mut` (for the replay guard) while
+/// an iterator is alive deadlocks the task. The epoch keys are copied rather than
+/// borrowed, so the ratchet's lock is never held across the receive path.
+/// A lock-free snapshot of everything needed to *open* frames from one session.
+struct OpenCtx {
+    peer_fp: String,
+    master_key: [u8; 32],
+    session_hash: [u8; 4],
+    role: SessionRole,
+}
+
+impl OpenCtx {
+    fn of(s: &Session) -> Self {
+        Self {
+            peer_fp: s.peer_fingerprint.clone(),
+            master_key: s.master_key,
+            session_hash: s.session_hash,
+            role: s.role,
+        }
+    }
+
+    fn snapshot_of(sessions: &DashMap<String, Session>) -> Vec<OpenCtx> {
+        let mut out: Vec<OpenCtx> = sessions.iter().map(|e| OpenCtx::of(&e)).collect();
+        out.shrink_to_fit();
+        out
+    }
+}
+
+/// Open the ciphertext carried by one received frame, for one session, whichever
+/// wire version it arrived in.
+fn open_received_frame(
+    ctx: &OpenCtx,
+    sess: &Session,
+    data: &[u8],
+    ctr: u64,
+    v2: Option<V2FrameMeta>,
+) -> Option<Vec<u8>> {
+    let ours = ctx.role.seal_direction();
+    match v2 {
+        Some(meta) => {
+            for dir in [ours.peer_direction(), ours] {
+                let plan = sess.plan_open(meta.epoch, dir, ctr);
+                let key = match &plan {
+                    vantablack::ghost::session::ratchet::OpenPlan::Forward { key, .. } => *key,
+                    vantablack::ghost::session::ratchet::OpenPlan::Cached { key, .. } => *key,
+                    vantablack::ghost::session::ratchet::OpenPlan::Refused => {
+                        if sess.gap_exceeds_max_skip(meta.epoch, dir, ctr) {
+                            sess.trigger_forced_ratchet_step();
+                        }
+                        continue;
+                    }
+                };
+                let mut buf = data.to_vec();
+                let aad: &[u8] = if meta.bulk { &[] } else { &meta.tail };
+                if xchacha_open_with_aad(&key, &meta.nonce, meta.epoch, dir, &mut buf, aad).is_ok() {
+                    sess.commit_open(meta.epoch, dir, plan);
+                    return Some(buf);
+                }
+            }
+            None
+        }
+        None => {
+            // v1: the nonce is derived from the counter and the key is the seed.
+            // The counter is 32-bit on that wire, so a v2-only value cannot be
+            // mistaken for it.
+            let Ok(ctr32) = u32::try_from(ctr) else {
+                return None;
+            };
+            for dir in [
+                NonceDirection::InitiatorToResponder,
+                NonceDirection::ResponderToInitiator,
+            ] {
+                let mut buf = data.to_vec();
+                if decrypt_in_place_with_context(
+                    &ctx.master_key,
+                    ctr32,
+                    &ctx.session_hash,
+                    dir,
+                    &mut buf,
+                )
+                .is_ok()
+                {
+                    return Some(buf);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
+    if std::env::var("GHOST_SHARDSEC").is_ok() {
+        let pay_len = pay.len() as u16;
+        let mut framed = pay_len.to_be_bytes().to_vec();
+        framed.extend_from_slice(pay);
+        if !framed.len().is_multiple_of(2) {
+            framed.push(0);
+        }
+        let plaintext_shards = l4_rs::encode(&mut framed);
+        let frames = plaintext_shards
+            .into_iter()
+            .enumerate()
+            .map(|(index, shard)| {
+                let sealed = vantablack::ghost::net::shardsec::seal_shard(
+                    &ctx.key,
+                    ctx.epoch,
+                    &ctx.nonce,
+                    ctx.direction,
+                    index as u8,
+                    shard,
+                );
+                let mut wire = sealed.ciphertext;
+                wire.extend_from_slice(&sealed.tag);
+                frame_shard(&wire)
+            })
+            .collect();
+        // ShardSec authenticates inside each shard. The legacy GTF tag field is
+        // intentionally zero for this versioned mode and is never trusted.
+        return (frames, [0u8; 16]);
+    }
     let pay_len = pay.len() as u16;
     let mut framed = pay_len.to_be_bytes().to_vec();
     framed.extend_from_slice(pay);
     if !framed.len().is_multiple_of(2) {
         framed.push(0);
     }
-    encrypt_in_place_with_context(key, ctr, session_hash, direction, &mut framed);
+    // SOTA P3-1: the privacy frame's jitter tail is authenticated as AEAD
+    // associated data, so the sealer covers the exact bytes the frame will carry.
+    // `tail_for` is a keyed PRF of the seal metadata, which is why the frame
+    // builder can recompute the same value instead of it being threaded through
+    // every `enc_split`/`send3` call site.
+    xchacha_seal_in_place_with_aad(
+        &ctx.key,
+        &ctx.nonce,
+        ctx.epoch,
+        ctx.direction,
+        &mut framed,
+        &net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction),
+    )
+    .expect("sealing an owned buffer cannot fail");
     let t = if framed.len() >= 16 {
         let mut x = [0u8; 16];
         x.copy_from_slice(&framed[framed.len() - 16..]);
@@ -157,17 +412,254 @@ fn enc_split(
     (raw.iter().map(|s| frame_shard(s)).collect(), t)
 }
 
-async fn send3(
-    sock: &UdpSocket,
+/// One opaque frame waiting in the bounded cross-message mix batch.
+struct MixWireFrame {
+    socket: Arc<UdpSocket>,
+    destination: SocketAddr,
+    frame: Vec<u8>,
+    done: oneshot::Sender<std::io::Result<()>>,
+}
+
+/// The mix is deliberately process-local and bounded: at most three messages
+/// (nine frames) wait for the same flush. A 20 ms deadline prevents a quiet link
+/// from turning mixing into an outage, while a full batch gives the observer no
+/// stable relation between application-message order and wire order.
+static MIX_WIRE_QUEUE: OnceLock<Arc<std::sync::Mutex<MixBatch<MixWireFrame>>>> = OnceLock::new();
+
+fn flush_mixed_frames(frames: Vec<MixWireFrame>) {
+    for item in frames {
+        tokio::spawn(async move {
+            let result = item
+                .socket
+                .send_to(&item.frame, item.destination)
+                .await
+                .map(|_| ());
+            let _ = item.done.send(result);
+        });
+    }
+}
+
+fn enqueue_mixed_frame(
+    socket: &Arc<UdpSocket>,
+    destination: SocketAddr,
+    frame: Vec<u8>,
+) -> oneshot::Receiver<std::io::Result<()>> {
+    let (done, receiver) = oneshot::channel();
+    let queue = MIX_WIRE_QUEUE
+        .get_or_init(|| {
+            Arc::new(std::sync::Mutex::new(MixBatch::new(
+                9,
+                Duration::from_millis(20),
+            )))
+        })
+        .clone();
+
+    let (ready, start_timer) = {
+        let mut guard = queue.lock().unwrap_or_else(|poison| poison.into_inner());
+        let start_timer = guard.is_empty();
+        let ready = guard.push(MixWireFrame {
+            socket: Arc::clone(socket),
+            destination,
+            frame,
+            done,
+        });
+        (ready, start_timer)
+    };
+    if let Some(frames) = ready {
+        flush_mixed_frames(frames);
+    } else if start_timer {
+        let timer_queue = Arc::clone(&queue);
+        tokio::spawn(async move {
+            sleep(Duration::from_millis(20)).await;
+            let frames = {
+                let mut guard = timer_queue
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                if guard.flush_due() {
+                    guard.drain_randomized()
+                } else {
+                    Vec::new()
+                }
+            };
+            if !frames.is_empty() {
+                flush_mixed_frames(frames);
+            }
+        });
+    }
+    receiver
+}
+
+async fn send3(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx, f: &[Vec<u8>], tag: &[u8; 16]) {
+    // Borrowed-socket callers (notably the relay ingress) stay on the direct
+    // path because their socket lifetime is owned by the receive task.
+    for i in 0..3 {
+        let _ = send_gtf_v2(sock, dst, &ctx.data_header(i as u8, false, 0), &f[i], tag).await;
+    }
+}
+
+/// Mixed variant for long-lived node-owned sockets. The queue holds only fully
+/// framed opaque datagrams, so batching cannot change authentication or routing.
+async fn send3_mixed(
+    sock: Arc<UdpSocket>,
     dst: &SocketAddr,
-    sh: [u8; 4],
-    ctr: u32,
+    ctx: &SealCtx,
     f: &[Vec<u8>],
     tag: &[u8; 16],
 ) {
+    let mut pending = Vec::with_capacity(3);
     for i in 0..3 {
-        let _ = send_gtf(sock, dst, sh, ctr, i as u8, &f[i], tag, false).await;
+        let header = ctx.data_header(i as u8, false, 0);
+        let frame = net::build_gtf_v2_frame(&header, &f[i], tag);
+        pending.push(enqueue_mixed_frame(&sock, *dst, frame));
     }
+    for result in pending {
+        let _ = result.await;
+    }
+}
+
+// ── Cover traffic (SOTA P3-1) ────────────────────────────────────────────────
+//
+// The other half of P3-1: constant-size frames removed the *length* channel, and
+// this removes the *silence*. Both are needed — a link whose frames are all the
+// same size but which only transmits when a user types is still trivially
+// classifiable, and that is what a DPI+timer pair is looking for.
+
+/// Target cover-traffic rate, in **frames** per second per session (SOTA P3-1).
+///
+/// The plan names "2 pkt/s". A cover *message* is a three-frame Reed-Solomon group,
+/// because that is what a data message is, so 2 frames/s is two-thirds of a message
+/// per second — roughly 1.2 KiB/s per established session. Small enough to ignore
+/// across a WAN, large enough that a link is never silent.
+const COVER_FRAMES_PER_SEC: f64 = 2.0;
+
+/// Frames per cover message: an RS(2,1) group, the same as any data message.
+const COVER_FRAMES_PER_MESSAGE: f64 = 3.0;
+
+/// How long until the next cover message (SOTA P3-1).
+///
+/// **Exponential, not fixed.** A fixed interval is a metronome and would be among
+/// the easiest things on the wire to classify; a constant *mean* rate with
+/// exponential gaps is what an ordinary Poisson stream looks like. The mean is what
+/// hides idleness — the gaps are what stop the padding becoming its own signature.
+///
+/// Pure on purpose: `uniform` in `[0, 1)` is supplied by the caller, so the
+/// distribution is testable without a clock, a spawned task or real waiting.
+fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
+    let per_message = frames_per_sec / COVER_FRAMES_PER_MESSAGE;
+    if !(per_message > 0.0) {
+        // "No cover" is a gap longer than any session, not a panic.
+        return Duration::from_secs(3600);
+    }
+    // Inverse transform for an exponential inter-arrival time: -ln(1-u)/λ.
+    let u = uniform.clamp(0.0, 1.0 - f64::EPSILON);
+    let secs = -(1.0 - u).ln() / per_message;
+    // Clamp both tails: a near-zero draw must not spin the loop, and a near-one
+    // draw must not stall cover for minutes on end.
+    Duration::from_secs_f64(secs.clamp(0.005, 30.0))
+}
+
+/// Send one cover message to `dst` (SOTA P3-1).
+///
+/// It rides the **real** data path — [`enc_split`], then three privacy frames — with
+/// a [`net::DUMMY_MAGIC`] payload, so on the wire it is an ordinary RS(2,1) group of
+/// 576-byte frames. That is deliberate: cover shaped differently from data would be
+/// worse than no cover, because it would announce itself.
+///
+/// The one thing it does *not* mimic is shard *carrying*: all three frames go to the
+/// same peer, where a data message may spread them across routes. Spreading cover
+/// would leak the very routing topology the shards exist to hide, so uniform
+/// treatment per peer is the conservative choice.
+async fn send_cover(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx) {
+    let (shards, tag) = enc_split(ctx, net::DUMMY_MAGIC);
+    let mut batch = MixBatch::new(3, Duration::ZERO);
+    let mut ready = None;
+    for i in 0..3 {
+        if let Some(flushed) = batch.push((i as u8, shards[i].clone())) {
+            ready = Some(flushed);
+        }
+    }
+    for (shard_index, payload) in ready.unwrap_or_else(|| batch.drain_randomized()) {
+        // The `FLAG_DUMMY` bit lets a receiver skip work early. It is *not* what the
+        // receiver decides on — see `FLAG_DUMMY` for why the header cannot be
+        // trusted, and `DUMMY_MAGIC` for what the decision actually rests on.
+        let header = ctx.data_header(shard_index, false, net::FLAG_DUMMY);
+        let _ = send_gtf_v2(sock, dst, &header, &payload, &tag).await;
+    }
+}
+
+/// Spawn the cover-traffic emitter (SOTA P3-1).
+///
+/// One drawn gap per message, for every session the node holds. Deliberately **not**
+/// gated on idleness: cover that appears only when the link is quiet would make the
+/// *rate* itself the signal, which is the failure this item exists to avoid. The
+/// cost is that cover also rides an already-busy link — 2 frames/s against a link
+/// moving megabytes per second, which is a trade worth stating rather than hiding.
+///
+/// These are real frames, so they *do* count toward `RATCHET_INTERVAL`; the plan's
+/// "a Dummy frame must not spend the ratchet epoch" cannot be honoured without
+/// creating frames the receiver refuses to count, which is a replay-window hole.
+/// The honest number instead: at 2 frames/s, spending a 1M-frame epoch on cover
+/// alone takes ~139 h, so cover can at most halve what an epoch carries, and only
+/// while the node is otherwise idle.
+fn spawn_cover_task(
+    node: Arc<GhostNode>,
+    addrs: Arc<DashMap<String, SocketAddr>>,
+    relay_role: Option<Arc<DerpRelay>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            sleep(cover_gap(rand::random::<f64>(), COVER_FRAMES_PER_SEC)).await;
+            // Collect first: a DashMap guard must never be held across an await,
+            // and every send below is one.
+            let work: Vec<(String, SealCtx)> = node
+                .sessions
+                .iter()
+                .map(|e| (e.peer_fingerprint.clone(), SealCtx::from_session(&e)))
+                .collect();
+            for (peer, ctx) in work {
+                let Some(dst) = addrs.get(&peer).map(|a| *a.value()) else {
+                    continue;
+                };
+                // When an authenticated third peer is available, send this
+                // cover message as a blind decoy through it. The target still
+                // receives a normal authenticated dummy frame, while the relay
+                // sees only an opaque envelope and the observer sees relay-shaped
+                // traffic rather than all cover terminating at one peer.
+                let me = node.fingerprint();
+                let decoy_sent = if std::env::var("GHOST_SHARDSEC").is_err() {
+                    relay_role
+                        .as_ref()
+                        .and_then(|relay| relay.pick_relay(&me, &peer))
+                        .map(|(relay_fp, relay_addr)| {
+                            let node_for_decoy = Arc::clone(&node);
+                            let ctx_for_decoy = ctx.clone();
+                            let peer_for_decoy = peer.clone();
+                            async move {
+                                let frame = seal_single(&ctx_for_decoy, net::DUMMY_MAGIC);
+                                send_datagram_via_relay(
+                                    &node_for_decoy,
+                                    &node_for_decoy.socket,
+                                    &relay_fp,
+                                    &relay_addr,
+                                    &peer_for_decoy,
+                                    &frame,
+                                )
+                                .await
+                            }
+                        })
+                } else {
+                    None
+                };
+                if let Some(future) = decoy_sent {
+                    if !future.await {
+                        send_cover(&node.socket, &dst, &ctx).await;
+                    }
+                } else {
+                    send_cover(&node.socket, &dst, &ctx).await;
+                }
+            }
+        }
+    })
 }
 
 /// How a message actually left this node (SOTA P1-1).
@@ -189,28 +681,30 @@ enum Routed {
 /// Seal `payload` as ONE self-contained GTF datagram.
 ///
 /// This is the single-datagram form the receive path already knows: a bulk frame
-/// with the tunnel bit (0x02) set, whose payload region holds
-/// `frame_shard(ciphertext)` — exactly what `unframe()` consumes. The tunnel bit
-/// is what stops the receiver waiting for Reed-Solomon siblings that will never
-/// arrive, which is the point: a relay hop carries one datagram at a time.
-fn seal_single(
-    key: &[u8; 32],
-    ctr: u32,
-    sh: &[u8; 4],
-    direction: NonceDirection,
-    payload: &[u8],
-) -> Vec<u8> {
+/// with the self-contained bit (0x02) set, whose payload region holds
+/// `frame_shard(ciphertext)` — exactly what `unframe()` consumes. That bit is what
+/// stops the receiver waiting for Reed-Solomon siblings that will never arrive,
+/// which is the point: a relay hop carries one datagram at a time, and a control
+/// PDU is a whole message rather than a shard of one.
+///
+/// The bypass that honours the bit is **not** VPN-gated (`RxContext::ingest`): for
+/// a while it was, which meant a default build spooled these frames as a single
+/// unrecoverable shard and dropped them. Any new caller of this function depends
+/// on that bypass staying unconditional.
+fn seal_single(ctx: &SealCtx, payload: &[u8]) -> Vec<u8> {
     let mut framed = (payload.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(payload);
     if !framed.len().is_multiple_of(2) {
         framed.push(0);
     }
-    encrypt_in_place_with_context(key, ctr, sh, direction, &mut framed);
+    xchacha_seal_in_place(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction, &mut framed)
+        .expect("sealing an owned buffer cannot fail");
     let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap_or([0u8; 16]);
     let carrier = frame_shard(&framed);
-    let mut frame = net::build_gtf_frame(*sh, ctr, 0, &carrier, &tag, true);
-    frame[net::OFFSET_FLAGS] |= 0x02;
-    frame
+    // The tunnel bit (0x02) rides in the v2 header's flags byte, which is the same
+    // byte v1 used — so a v2 frame's flags stay readable by the same helper, and
+    // the v2 marker is what tells the receiver the rest of the header moved.
+    net::build_gtf_v2_frame(&ctx.header(0, true, net::FLAG_TUNNEL), &carrier, &tag)
 }
 
 /// Hand one already-built GTF datagram to a relay peer, wrapped in a blind
@@ -238,18 +732,13 @@ async fn send_datagram_via_relay(
         tracing::warn!(relay = %relay_fp, "fallback: no session with the relay — cannot forward");
         return false;
     };
-    let (rkey, rsh, rrole) = (sess.master_key, sess.session_hash, sess.role);
+    // SOTA P2-2: one seal snapshot per forward, shared by whichever framing the
+    // envelope needs — a single bulk frame or three bulk shards of one ciphertext.
+    let ctx = SealCtx::from_session(&sess);
     drop(sess);
-    let dir = dir_for(rrole);
-    let next_ctr = || {
-        nc.sessions
-            .get(relay_fp)
-            .map(|s| s.next_tx_counter())
-            .unwrap_or(2)
-    };
 
-    if envelope.len() + 2 <= net::MAX_BULK_PAYLOAD_LEN {
-        let frame = seal_single(&rkey, next_ctr(), &rsh, dir, &envelope);
+    if envelope.len() + 2 <= net::V2_MAX_BULK_PAYLOAD_LEN {
+        let frame = seal_single(&ctx, &envelope);
         return match sock.send_to(&frame, relay_addr).await {
             Ok(_) => true,
             Err(e) => {
@@ -259,22 +748,11 @@ async fn send_datagram_via_relay(
         };
     }
 
-    let ctr = next_ctr();
-    let (carriers, tag) = enc_split(&rkey, ctr, &rsh, dir, &envelope);
+    let (carriers, tag) = enc_split(&ctx, &envelope);
     let mut ok = true;
     for i in 0..3 {
-        if let Err(e) = send_gtf(
-            sock,
-            relay_addr,
-            rsh,
-            ctr,
-            i as u8,
-            &carriers[i],
-            &tag,
-            true,
-        )
-        .await
-        {
+        let header = ctx.data_header(i as u8, true, 0);
+        if let Err(e) = send_gtf_v2(sock, relay_addr, &header, &carriers[i], &tag).await {
             tracing::warn!(relay = %relay_fp, "fallback: relay send failed: {e}");
             ok = false;
         }
@@ -294,8 +772,7 @@ async fn send3_adaptive(
     sock: &UdpSocket,
     primary_dst: &SocketAddr,
     primary_fp: &str,
-    sh: [u8; 4],
-    ctr: u32,
+    ctx: &SealCtx,
     f: &[Vec<u8>],
     tag: &[u8; 16],
     router: &vantablack::ghost::net::mesh::AdaptiveShardRouter,
@@ -312,15 +789,27 @@ async fn send3_adaptive(
     // The optional transport, when this build and this run have one (SOTA P1-2).
     carrier: Option<&Arc<net::carrier::Carrier>>,
 ) -> Routed {
+    if ctx.ratchet_due {
+        // Due, not broken (SOTA P2-2): the epoch is full and the *next* step is
+        // owed, but traffic keeps flowing on the current key until the step
+        // completes — a rotation that stalled the data path would be an outage.
+        // Starting the step is the caller's job; this is where the debt is
+        // observed.
+        tracing::debug!(
+            peer = %primary_fp,
+            epoch = ctx.epoch,
+            "session ratchet due — epoch key is spent"
+        );
+    }
     if let Some(path) = route {
-        return send3_via_fallback(nc, sock, primary_fp, sh, ctr, f, tag, path, turn).await;
+        return send3_via_fallback(nc, sock, primary_fp, ctx, f, tag, path, turn).await;
     }
     // A carrier link rides the address ICE already measured, so it is preferred
     // exactly where a direct path exists — and it is tried before the shard
     // router because QUIC's own loss recovery is better than three UDP shards
     // when the path is lossy, which is the case this transport exists for.
     if let Some(carrier) = carrier {
-        if send3_via_carrier(carrier, primary_fp, sh, ctr, f, tag).await {
+        if send3_via_carrier(carrier, primary_fp, ctx, f, tag).await {
             return Routed::Carrier;
         }
     }
@@ -352,75 +841,95 @@ async fn send3_adaptive(
             None => router.select_shard_targets(&available),
         };
         let routes = router.assign_shards(&selected);
-        // Enforce disjoint routing constraint across distinct network planes
+        // Enforce the three-shard route budget before sending.  `Ground` is a
+        // deliberately repeatable plane (three independent authenticated peers
+        // are still useful on terrestrial links), but the constraint prevents a
+        // fourth shard from being added if RS changes its shard count later.
         let mut disjoint_constraint = net::orbit::DisjointRouteConstraint::new();
         for route in routes {
             let idx = route.shard_index as usize;
-            if idx < f.len() {
-                // Reserve ground plane path
-                let _ = disjoint_constraint.reserve_plane(net::orbit::OrbitalPlane::Ground);
-                let target_addr = selected
-                    .iter()
-                    .find(|(fp, _, _)| *fp == route.peer_fingerprint)
-                    .map(|(_, addr, _)| *addr)
-                    .unwrap_or(*primary_dst);
-                let _ = send_gtf(
-                    sock,
-                    &target_addr,
-                    sh,
-                    ctr,
-                    route.shard_index,
-                    &f[idx],
-                    tag,
-                    false,
-                )
-                .await;
+            if idx >= f.len()
+                || !disjoint_constraint.reserve_plane(net::orbit::OrbitalPlane::Ground)
+            {
+                tracing::debug!(
+                    shard = route.shard_index,
+                    peer = %route.peer_fingerprint,
+                    "mesh: shard omitted because the disjoint route budget is exhausted"
+                );
+                continue;
+            }
+            let target_addr = selected
+                .iter()
+                .find(|(fp, _, _)| *fp == route.peer_fingerprint)
+                .map(|(_, addr, _)| *addr)
+                .unwrap_or(*primary_dst);
+            if let Err(error) = send_gtf_v2(
+                sock,
+                &target_addr,
+                &ctx.data_header(route.shard_index, false, 0),
+                &f[idx],
+                tag,
+            )
+            .await
+            {
+                router.record_loss(&route.peer_fingerprint);
+                tracing::debug!(
+                    shard = route.shard_index,
+                    peer = %route.peer_fingerprint,
+                    %error,
+                    "mesh: shard send failed"
+                );
             }
         }
     } else {
-        // Fallback to direct send
-        send3(sock, primary_dst, sh, ctr, f, tag).await;
+        // Fallback to direct send through the bounded cross-message mix queue.
+        // The queue carries complete opaque GTF frames, so it is safe even when
+        // the selected peer/session differs between neighboring messages.
+        send3_mixed(Arc::clone(&nc.socket), primary_dst, ctx, f, tag).await;
     }
     Routed::Direct
 }
 
-/// Ship the three RS carriers over the optional transport, one frame each.
+/// Ship the three RS carriers over the optional transport, spread across every
+/// live local path (SOTA P1-2 / B23).
 ///
 /// The bytes are built exactly as `send_gtf` builds them, so the peer parses
 /// what a UDP send would have delivered: the transport is a *carrier*, not a
 /// second wire format, and nothing about GTF, the sealing or the identity model
-/// changes on this path. Returns `false` when there is no link, which is the
+/// changes on this path. Returns `false` when no link carried them, which is the
 /// ordinary case and not a failure — the caller then keeps to UDP.
 ///
-/// A link that carried at least two of the three shards counts as carried: the
-/// pool reconstructs from any two, so re-sending the set over UDP would only
-/// duplicate bytes the peer already has.
+/// The registry decides how the three shards map onto paths: one per live local
+/// address before any path carries a second, so a Wi-Fi + LTE host sends shard 0
+/// over one interface and shard 1 over the other. With a single path this is the
+/// single-link send it has always been.
+///
+/// A send that carried at least two shards counts as carried: the pool
+/// reconstructs from any two, so re-sending the set over UDP would only duplicate
+/// bytes the peer already has.
 async fn send3_via_carrier(
     carrier: &Arc<net::carrier::Carrier>,
     target_fp: &str,
-    sh: [u8; 4],
-    ctr: u32,
+    ctx: &SealCtx,
     f: &[Vec<u8>],
     tag: &[u8; 16],
 ) -> bool {
     // A build or a run with no transport answers here, before anything is built.
     // The send below then doubles as the liveness check: a registry with no link
-    // for this peer returns `None` on every shard, which is the same answer a
+    // for this peer reports every shard as not carried, which is the same answer a
     // closed link gives, and both mean "keep to UDP".
     if !carrier.enabled() {
         return false;
     }
-    let mut carried = 0usize;
-    for i in 0..3 {
-        let frame = net::build_gtf_frame(sh, ctr, i as u8, &f[i], tag, false);
-        if carrier.send_frame(target_fp, &frame).await.is_some() {
-            carried += 1;
-        }
-    }
+    let frames: Vec<Vec<u8>> = (0..3)
+        .map(|i| net::build_gtf_v2_frame(&ctx.data_header(i as u8, false, 0), &f[i], tag))
+        .collect();
+    let carried = carrier.send_shards(target_fp, &frames).await;
     if carried < 3 {
         tracing::debug!(
             peer = %target_fp,
             carried,
+            paths = carrier.link_count(),
             "carrier: partial shard send"
         );
     }
@@ -431,6 +940,20 @@ async fn send3_via_carrier(
 ///
 /// Off unless `GHOST_QUIC=1`: a second transport is a second port and a second
 /// parse surface, so an operator opts in. `GHOST_QUIC_PORT` overrides the bind.
+///
+/// **Multipath** (B23) is a second opt-in, `GHOST_QUIC_MULTIPATH=1`, and it needs
+/// one more thing from the operator: the local addresses to use, in
+/// `GHOST_QUIC_LOCAL_ADDRS` (comma-separated). Sending across two paths is what
+/// needs a second outbound endpoint bound to the second address, and this crate
+/// enumerates no interfaces — no `getifaddrs`/`GetAdaptersAddresses` binding and no
+/// dependency added for one — so the address set is named, not guessed. An unset
+/// or unparsable list leaves one path: a degraded node, not a dead one.
+///
+/// Receiving on two paths needs the same opt-in on the *other* side: the listener
+/// accepts on every interface, but a connection's local address is the address the
+/// peer dialled, so two sessions to one of our addresses are one path (and are
+/// kept as one — see `net::carrier`). Two inbound sessions only stay two paths when
+/// the peer actually reaches us on two of our addresses.
 #[cfg(feature = "quic")]
 fn build_carrier(nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
     let enabled = std::env::var("GHOST_QUIC")
@@ -444,7 +967,10 @@ fn build_carrier(nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(vantablack::ghost::net::quic::QUIC_DEFAULT_PORT);
     let bind: SocketAddr = format!("0.0.0.0:{port}").parse().expect("valid bind");
-    match vantablack::ghost::net::quic::QuicTransport::listen(bind, Arc::clone(&nc.identity)) {
+    let carrier = match vantablack::ghost::net::quic::QuicTransport::listen(
+        bind,
+        Arc::clone(&nc.identity),
+    ) {
         Ok(t) => net::carrier::Carrier::new(Arc::new(t)),
         Err(e) => {
             // A transport that cannot bind is not a reason to refuse to run: the
@@ -454,9 +980,49 @@ fn build_carrier(nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
                 port,
                 "QUIC: cannot bind, continuing without the transport: {e}"
             );
-            Arc::new(net::carrier::Carrier::disabled())
+            return Arc::new(net::carrier::Carrier::disabled());
+        }
+    };
+
+    let multipath = std::env::var("GHOST_QUIC_MULTIPATH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !multipath {
+        return carrier;
+    }
+    // A name that does not parse is skipped with a warning rather than silently
+    // removing the path the operator asked for: multipath is the whole point of
+    // setting the switch, so a path that failed to bind has to be audible.
+    let named = std::env::var("GHOST_QUIC_LOCAL_ADDRS").unwrap_or_default();
+    let mut added = 0usize;
+    for raw in named.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let ip: IpAddr = match raw.parse() {
+            Ok(ip) => ip,
+            Err(_) => {
+                tracing::warn!(addr = %raw, "QUIC: not an IP address, ignoring this local path");
+                continue;
+            }
+        };
+        match carrier.add_local_path(ip) {
+            Ok(Some(_old)) => {
+                tracing::warn!(%ip, "QUIC: local path redefined, the previous endpoint was dropped");
+                added += 1;
+            }
+            Ok(None) => added += 1,
+            Err(e) => {
+                tracing::warn!(%ip, "QUIC: cannot bind a local path, skipping it: {e}");
+            }
         }
     }
+    if added == 0 {
+        tracing::warn!(
+            "QUIC: GHOST_QUIC_MULTIPATH is set but GHOST_QUIC_LOCAL_ADDRS names no bindable \
+             address — running on one path. Inbound multipath from peers is unaffected."
+        );
+    } else {
+        tracing::info!(paths = added, "QUIC: multipath enabled; shards spread across local paths");
+    }
+    carrier
 }
 
 /// A build with no optional transport compiled in.
@@ -511,8 +1077,20 @@ macro_rules! spawn_carrier_tasks {
                         };
                         let fp = link.peer_fingerprint().to_string();
                         let src = link.remote_address();
-                        if let Some(old) = carrier.register(fp.clone(), Arc::clone(&link)) {
-                            old.close();
+                        // The path this link arrived on is its local address, so a
+                        // peer that opens a second session on another of our
+                        // addresses lands beside the first rather than on top of it
+                        // (B23).
+                        let local = link.local_addr();
+                        match carrier.register(fp.clone(), Arc::clone(&link)) {
+                            Ok(Some(old)) => old.close(),
+                            Ok(None) => {}
+                            // The peer's post-quantum key contradicts the pin: the
+                            // link is already closed and nothing was registered.
+                            Err(e) => {
+                                tracing::warn!(peer = %fp, "carrier: inbound link refused: {e}");
+                                continue;
+                            }
                         }
                         let rx = Arc::clone(&rx);
                         let carrier = Arc::clone(&carrier);
@@ -521,10 +1099,10 @@ macro_rules! spawn_carrier_tasks {
                                 tracing::trace!(peer = %fp, len = frame.len(), "carrier: frame in");
                                 rx.ingest(&frame, src).await;
                             }
-                            // The link ended: forget it so the tunnel stops
-                            // preferring a carrier that is gone.
-                            carrier.forget(&fp);
-                            tracing::info!(peer = %fp, "carrier: link closed");
+                            // The link ended: forget *this* link, so a peer holding
+                            // a second path keeps it.
+                            carrier.forget_link(&fp, local);
+                            tracing::info!(peer = %fp, %local, "carrier: link closed");
                         });
                     }
                 }
@@ -534,29 +1112,30 @@ macro_rules! spawn_carrier_tasks {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(5)).await;
-                    let Some(transport) = carrier.transport().cloned() else {
+                    // The registry holds the endpoints; if the transport is gone the
+                    // task is done. `dial_paths` uses the wildcard endpoint and any
+                    // named local paths itself, so there is no transport to fetch
+                    // here.
+                    if !carrier.enabled() {
                         return;
-                    };
+                    }
                     for (fp, addr) in nat.local_cache() {
-                        if carrier.link(&fp).is_some() {
-                            continue;
-                        }
                         if !nc.sessions.contains_key(&fp) && !peers.contains_key(&fp) {
                             continue;
                         }
-                        match transport.connect(addr, &fp).await {
-                            Ok(link) => {
-                                tracing::info!(peer = %fp, %addr, "carrier: link established");
-                                if let Some(old) = carrier.register(fp.clone(), link) {
-                                    old.close();
-                                }
-                            }
-                            Err(e) => {
-                                // Expected against a peer running without the
-                                // transport, or behind a filter that drops a
-                                // second port. The UDP path is unaffected.
-                                tracing::debug!(peer = %fp, %addr, "carrier: dial failed: {e}");
-                            }
+                        // One dial per (peer, local address) that is not already
+                        // carrying this peer: the named local paths first, then the
+                        // wildcard endpoint when nothing else covers it (B23). A
+                        // peer that is fully covered costs no handshake at all.
+                        if carrier.covered(&fp) {
+                            continue;
+                        }
+                        let established = carrier.dial_paths(&fp, addr).await;
+                        if established == 0 {
+                            // Expected against a peer running without the
+                            // transport, or behind a filter that drops a second
+                            // port. The UDP path is unaffected.
+                            tracing::debug!(peer = %fp, %addr, "carrier: no new path established");
                         }
                     }
                 }
@@ -575,16 +1154,18 @@ async fn send3_via_fallback(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
     target_fp: &str,
-    sh: [u8; 4],
-    ctr: u32,
+    ctx: &SealCtx,
     f: &[Vec<u8>],
     tag: &[u8; 16],
     path: &FallbackPath,
     turn: Option<&Arc<TurnPath>>,
 ) -> Routed {
     let mut shipped = true;
+    // Every framing below carries the *same* seal, so a datagram that leaves by
+    // one route and a retry that leaves by another are interchangeable: the
+    // receiver reassembles shards of one ciphertext, not of two.
     for i in 0..3 {
-        let datagram = net::build_gtf_frame(sh, ctr, i as u8, &f[i], tag, false);
+        let datagram = net::build_gtf_v2_frame(&ctx.data_header(i as u8, false, 0), &f[i], tag);
         let ok = match path {
             // A route entry is only ever written when a direct path failed, so a
             // `Direct` value here would mean the route table contradicted itself.
@@ -646,8 +1227,8 @@ async fn send3_via_fallback(
 /// Per-direction receive state: next expected counter + reorder buffer.
 #[derive(Default)]
 struct RxState {
-    next: Option<u32>,
-    buf: BTreeMap<u32, Vec<u8>>,
+    next: Option<u64>,
+    buf: BTreeMap<u64, Vec<u8>>,
 }
 
 /// An active exit-side tunnel: decrypted remote data flows through `out_tx`.
@@ -664,7 +1245,7 @@ type SessionChannels = Arc<DashMap<[u8; 4], mpsc::UnboundedSender<Vec<u8>>>>;
 type ConnectAcks = Arc<DashMap<[u8; 4], bool>>;
 /// Initiator side: the exit's OK counter per session — anchors the reorder
 /// buffer so out-of-order tunnel frames are buffered, not dropped.
-type ConnectOkCtrs = Arc<DashMap<[u8; 4], u32>>;
+type ConnectOkCtrs = Arc<DashMap<[u8; 4], u64>>;
 /// Initiator side: per-session reorder state for exit data.
 type RxStateMap = Arc<DashMap<[u8; 4], RxState>>;
 
@@ -719,28 +1300,18 @@ async fn send_tunnel_frame(
         tracing::debug!(peer = %peer_fp, "VPN egress: no session yet — dropped");
         return;
     };
-    let ctr = sess.next_tx_counter();
-    let (key, sh, role) = (sess.master_key, sess.session_hash, sess.role);
+    // SOTA P2-2: the epoch key and a fresh 96-bit nonce replace the counter-derived
+    // nonce, so the counter is now a pure sequence number and there is no u32 wall
+    // to warn about — the exhaustion watchdog this function used to carry existed
+    // only because a wrapped counter would have collided with the nonce space.
+    let ctx = SealCtx::from_session(&sess);
     drop(sess);
-    // Counters near u32::MAX collide with the re-key sentinels reserved by
-    // `Session::try_next_tx_counter` (0xFFFF_FFFD / 0xFFFF_FFFE / u32::MAX).
-    const CTR_MAX: u32 = u32::MAX - 2;
-    // Warn well before the wall. The peer's replay window is monotonic, so once
-    // its counter space wraps, every later frame is rejected forever. Refusing
-    // to send is correct; doing it *silently* was PROTOTYPE.md flaw #1.
-    const CTR_REKEY_AT: u32 = u32::MAX - 1_000_000;
-    if ctr >= CTR_MAX {
-        nc.stats.drops.fetch_add(1, Ordering::Relaxed);
-        tracing::warn!(
-            peer = %peer_fp, counter = ctr,
-            "VPN egress: tunnel counter exhausted — frame dropped, session must re-key"
-        );
-        return;
-    }
-    if ctr >= CTR_REKEY_AT {
-        tracing::warn!(
-            peer = %peer_fp, counter = ctr,
-            "VPN egress: tunnel counter nearing exhaustion — re-key needed soon"
+    if ctx.ratchet_due {
+        // Due, not broken: traffic keeps flowing on this epoch until the step
+        // completes, which is what stops a rotation from becoming an outage.
+        tracing::debug!(
+            peer = %peer_fp, epoch = ctx.epoch,
+            "VPN egress: epoch full — ratchet step due"
         );
     }
     let mut payload = VPN_PAYLOAD_MAGIC.to_vec();
@@ -750,14 +1321,13 @@ async fn send_tunnel_frame(
     if !framed.len().is_multiple_of(2) {
         framed.push(0);
     }
-    encrypt_in_place_with_context(&key, ctr, &sh, dir_for(role), &mut framed);
+    xchacha_seal_in_place(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction, &mut framed)
+        .expect("sealing an owned buffer cannot fail");
     let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
     // The bulk payload region holds a [len u16][bytes] shard (exactly what
     // frame_shard produces and the receive path's unframe() consumes).
     let framed = frame_shard(&framed);
-    let frame = net::build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
-    let mut frame = frame; // set tunnel bit (bit 1) on top of bulk bit (bit 0)
-    frame[net::OFFSET_FLAGS] |= 0x02;
+    let frame = net::build_gtf_v2_frame(&ctx.header(0, true, net::FLAG_TUNNEL), &framed, &tag);
     // A peer with no direct path carries its tunnel traffic over the same
     // fallback the control frames use; otherwise a VPN session would connect and
     // then silently stop moving packets.
@@ -796,6 +1366,443 @@ fn frame_payload(pt: &[u8]) -> Option<&[u8]> {
     }
 }
 
+// ── PACKET RECEIVER (uses LocklessDispatcher for parallel dispatch) ──
+//
+// Everything the receive path needs, so that *any* socket carrying sealed GTF
+// frames for us can feed the same pipeline. Two sources exist in Phase 1: the mesh
+// socket, and a TURN allocation's socket once the server relays a peer's datagrams
+// to us. Giving them one entry point is what keeps a relayed frame
+// indistinguishable from a direct one — and keeps the two from drifting apart as
+// the receive path changes.
+//
+// Module-level rather than declared inside `main`: as a local type it could not be
+// constructed by a test, so `ingest` — the single entry point for every received
+// datagram — was the one part of the receive path with no coverage at all. Its
+// `#[cfg(feature = "vpn")]` on the self-contained-frame bypass is what that cost:
+// a default build spooled every single-frame control message as an unrecoverable
+// shard and dropped it silently, which no test could see while the only way to
+// call this was to run the binary and wait for a 1M-datagram epoch to fill.
+struct RxContext {
+    node: Arc<GhostNode>,
+    peers: Arc<DashMap<String, SocketAddr>>,
+    spool: Arc<DashMap<u64, Vec<Option<Vec<u8>>>>>,
+    pending_hs: PendingHandshakes,
+    revocation_list: Arc<RevocationList>,
+    reputation: Arc<PoissonReputationMatrix>,
+    vpn: Option<VpnMode>,
+    exit_tunnels: ExitTunnels,
+    sessions_rx: SessionChannels,
+    rx_state_map: RxStateMap,
+    connect_acks: ConnectAcks,
+    connect_ok_ctrs: ConnectOkCtrs,
+    trusted_exits: Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
+    psk: Option<[u8; 32]>,
+    tft: Arc<TitForTatEnforcer>,
+    rotator: Option<Arc<ExitIpRotator>>,
+    relay_role: Option<Arc<DerpRelay>>,
+    /// Which peers need a relay, and the allocation that carries them.
+    fallback: Option<Arc<Fallback>>,
+    dispatcher: Arc<net::dispatcher::LocklessDispatcher>,
+    /// The socket replies leave from. For a datagram the TURN server relayed to us
+    /// this is still the mesh socket: the peer reached us through the relay, so its
+    /// next frame arrives the same way, and the data path back to it is routed by
+    /// the fallback table rather than by this address.
+    socket: Arc<UdpSocket>,
+}
+
+impl RxContext {
+    /// Pipe one received datagram into the tunnel.
+    async fn ingest(&self, datagram: &[u8], src: SocketAddr) {
+        let amt = datagram.len();
+        if amt < net::MIN_FRAME_SIZE {
+            return;
+        }
+        let _ = self.node.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
+        let _ = self
+            .node
+            .stats
+            .bytes_recv
+            .fetch_add(amt as u64, Ordering::Relaxed);
+        // Dispatch through lockless multi-worker session hash queue
+        let _ = self.dispatcher.dispatch(datagram, src);
+        // SOTA P2-2: the frame is decoded through the *version-aware* extractors.
+        // The old code picked offsets by guessing bulk mode from the datagram's
+        // length; the v2 marker in the flags byte says so outright, and both
+        // versions keep the flags byte at offset 9.
+        let ctr = net::parse_packet_counter_u64(datagram);
+        let v2 = V2FrameMeta::of(datagram);
+        // A frame with the self-contained bit (0x02) is a whole message in one
+        // datagram: no RS sharding, no spool. It must bypass the 2-of-3 shard pool
+        // — in it a single shard never assembles and is silently dropped — and it
+        // must do so in **every** build, not only the VPN one. The bit means "the
+        // payload region is one complete shard", which is a property of the
+        // framing, not of the VPN feature; gating this bypass on `vpn` is what let
+        // a default build swallow every ratchet step PDU while a VPN build
+        // delivered it. `tests` below covers exactly that, in the default build.
+        if net::parse_flags(datagram) & net::FLAG_TUNNEL != 0 {
+            if let Some(sd) = unframe(net::extract_payload(datagram)) {
+                self.deliver(ctr, v2, sd, src).await;
+            }
+            return;
+        }
+        #[cfg(not(feature = "vpn"))]
+        let _ = &self.vpn;
+        let si = datagram[net::OFFSET_SHARD_INDEX] as usize;
+        if si > 2 {
+            return;
+        }
+        let Some(sd) = unframe(net::extract_payload(datagram)) else {
+            return;
+        };
+        if let Some(meta) = v2.filter(|meta| meta.shardsec) {
+            let index = si as u8;
+            let sealed = if sd.len() < 16 {
+                return;
+            } else {
+                vantablack::ghost::net::shardsec::SealedShard {
+                    index,
+                    ciphertext: sd[..sd.len() - 16].to_vec(),
+                    tag: sd[sd.len() - 16..].try_into().unwrap_or([0u8; 16]),
+                }
+            };
+            let mut opened = None;
+            for candidate in OpenCtx::snapshot_of(&self.node.sessions)
+                .into_iter()
+                .filter(|candidate| candidate.session_hash == net::parse_session_hash(datagram))
+            {
+                let Some(sess) = self.node.sessions.get(&candidate.peer_fp) else {
+                    continue;
+                };
+                let ours = candidate.role.seal_direction();
+                for direction in [ours.peer_direction(), ours] {
+                    let plan = sess.plan_open(meta.epoch, direction, ctr);
+                    let key = match &plan {
+                        vantablack::ghost::session::ratchet::OpenPlan::Forward { key, .. } => *key,
+                        vantablack::ghost::session::ratchet::OpenPlan::Cached { key, .. } => *key,
+                        vantablack::ghost::session::ratchet::OpenPlan::Refused => {
+                            if sess.gap_exceeds_max_skip(meta.epoch, direction, ctr) {
+                                sess.trigger_forced_ratchet_step();
+                            }
+                            continue;
+                        }
+                    };
+                    if let Ok(plain) = vantablack::ghost::net::shardsec::open_shard(
+                        &key, meta.epoch, &meta.nonce, direction, &sealed,
+                    ) {
+                        sess.commit_open(meta.epoch, direction, plan);
+                        opened = Some(plain);
+                        break;
+                    }
+                }
+                if opened.is_some() {
+                    break;
+                }
+            }
+            let Some(plain_shard) = opened else {
+                return;
+            };
+            if let Some(r) = assemble(&self.spool, ctr, si, plain_shard).await {
+                self.deliver(ctr, v2, r, src).await;
+            }
+            return;
+        }
+        // This path runs concurrently: `assemble` is what decides which of the (up
+        // to) three carriers completes a frame, and it takes the reconstructed
+        // ciphertext forward exactly once.
+        if let Some(r) = assemble(&self.spool, ctr, si, sd).await {
+            if std::env::var("GGN_DEBUG_RX").is_ok() {
+                tracing::info!("assembled frame ctr={ctr} si={si} len={}", r.len());
+            }
+            self.deliver(ctr, v2, r, src).await;
+        } else if std::env::var("GGN_DEBUG_RX").is_ok() {
+            tracing::info!("assemble dropped ctr={ctr} si={si}");
+        }
+    }
+
+    /// Hand a decrypted-frame candidate to `handle_pkt` on its own task.
+    ///
+    /// Spawned rather than awaited: `handle_pkt` can block on session locks and
+    /// tunnel writes, and the receive loop must stay able to read the socket while
+    /// that happens.
+    async fn deliver(
+        &self,
+        ctr: u64,
+        v2: Option<V2FrameMeta>,
+        payload: Vec<u8>,
+        src: SocketAddr,
+    ) {
+        let node = Arc::clone(&self.node);
+        let peers = Arc::clone(&self.peers);
+        let pending_hs = Arc::clone(&self.pending_hs);
+        let sock = Arc::clone(&self.socket);
+        let rl = Arc::clone(&self.revocation_list);
+        let rep = Arc::clone(&self.reputation);
+        let et = Arc::clone(&self.exit_tunnels);
+        let sc = Arc::clone(&self.sessions_rx);
+        let rsm = Arc::clone(&self.rx_state_map);
+        let ca = Arc::clone(&self.connect_acks);
+        let coc = Arc::clone(&self.connect_ok_ctrs);
+        let te = Arc::clone(&self.trusted_exits);
+        let tft = Arc::clone(&self.tft);
+        let rot = self.rotator.clone();
+        let relay_role = self.relay_role.clone();
+        let fallback_state = self.fallback.clone();
+        let vpn = self.vpn.clone();
+        let psk = self.psk;
+        tokio::spawn(async move {
+            handle_pkt(
+                node,
+                &peers,
+                &pending_hs,
+                &sock,
+                ctr,
+                &payload,
+                v2,
+                &src,
+                Some(&rl),
+                Some(&*rep),
+                &et,
+                &sc,
+                &rsm,
+                &ca,
+                &coc,
+                &te,
+                psk,
+                vpn.as_ref(),
+                Some(&*tft),
+                rot.as_deref(),
+                relay_role.as_deref(),
+                fallback_state.as_deref(),
+            )
+            .await;
+        });
+    }
+}
+
+/// How often the maintenance tick looks for sessions whose epoch is spent.
+const RATCHET_TICK: Duration = Duration::from_secs(5);
+/// How long one unanswered step may sit before it is abandoned and retried.
+///
+/// A step that is never answered costs a PDU and a retry — it must not wedge the
+/// session at the current epoch forever, which is why the bound exists at all.
+const RATCHET_STEP_STALL: Duration = Duration::from_secs(30);
+
+/// One pass of the ratchet maintenance tick (SOTA P2-2).
+///
+/// This is what makes the ratchet real rather than dormant: an epoch holds at most
+/// `RATCHET_INTERVAL` datagrams, and when one is spent the session pays for a fresh
+/// hybrid exchange. The step is *started* here and *completed* in `handle_pkt` when
+/// the peer's signed answer arrives — or, on the answering side, when the
+/// initiator's first frame in the new epoch authenticates.
+///
+/// Nothing stalls on it: traffic keeps flowing on the current epoch until the step
+/// lands, and a lost step is abandoned after `RATCHET_STEP_STALL` and retried on the
+/// next tick.
+///
+/// Extracted from the tick loop so the initiation site is callable as a unit — the
+/// alternative was a body reachable only by waiting five seconds inside a spawned
+/// task, which is how it stayed untested while it was wrong (see the self-contained
+/// bit's history in `RxContext::ingest`).
+async fn ratchet_maintenance_once(
+    nc: &Arc<GhostNode>,
+    addrs: &Arc<DashMap<String, SocketAddr>>,
+    fallback: &Arc<Fallback>,
+) {
+    // Collect first: a DashMap guard must never be held across an await, and every
+    // send below is one.
+    let mut work: Vec<(String, SocketAddr, Vec<u8>)> = Vec::new();
+    for e in nc.sessions.iter() {
+        if e.ratchet_step_stalled(RATCHET_STEP_STALL) {
+            tracing::warn!(
+                peer = %e.peer_fingerprint,
+                "ratchet step unanswered for {RATCHET_STEP_STALL:?} — abandoning and retrying"
+            );
+            e.abandon_ratchet_step();
+        }
+        if !e.ratchet_due() {
+            continue;
+        }
+        let fp = e.peer_fingerprint.clone();
+        // Reachability first. A step we cannot deliver would sit in flight for the
+        // whole stall window and block the next attempt, so a peer with neither a
+        // known address nor a fallback route is skipped rather than charged a
+        // round trip.
+        let addr = addrs.get(&fp).map(|v| *v.value());
+        if addr.is_none() && fallback.path(&fp).is_none() {
+            continue;
+        }
+        let addr = addr.unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
+        let Some((x_pub, kem_pub)) = e.begin_ratchet_step() else {
+            continue; // a step is already in flight
+        };
+        let Some(pdu) =
+            build_ratchet_step_pdu(|d| nc.identity.sign(d).to_bytes(), &x_pub, &kem_pub)
+        else {
+            // Our own freshly generated material failed to parse: a bug, but the
+            // step must not be left in flight over it.
+            e.abandon_ratchet_step();
+            continue;
+        };
+        work.push((fp, addr, pdu));
+    }
+    for (fp, addr, pdu) in work {
+        let Some(sess) = nc.sessions.get(&fp) else {
+            continue;
+        };
+        let ctx = SealCtx::from_session(&sess);
+        drop(sess);
+        let frame = seal_single(&ctx, &pdu);
+        tracing::debug!(peer = %fp, epoch = ctx.epoch, "sending ratchet step");
+        send_frame_to_peer(nc, &nc.socket, &addr, Some(fallback), &fp, frame).await;
+    }
+}
+
+/// Handle a ratchet-step PDU that arrived (decrypted) in `payload`.
+///
+/// Returns `true` when the payload *was* a step PDU — including when it was
+/// refused — so the caller stops interpreting it as application data.
+///
+/// Both directions live here because they are two halves of one exchange, and a
+/// step that is only half understood is worse than one that is not understood at
+/// all: a responder that acts on an unauthenticated step moves its epoch while the
+/// initiator does not, which breaks a working session.
+#[allow(clippy::too_many_arguments)]
+async fn handle_ratchet_pdu(
+    node: &Arc<GhostNode>,
+    sock: &UdpSocket,
+    src: &SocketAddr,
+    fallback: Option<&Fallback>,
+    peer_fp: &str,
+    payload: &[u8],
+) -> bool {
+    let is_init = payload.starts_with(REKEY_MAGIC);
+    let is_answer = payload.starts_with(REKEY_RESPONSE_MAGIC);
+    if !is_init && !is_answer {
+        return false;
+    }
+    let Some(sess) = node.sessions.get(peer_fp) else {
+        tracing::debug!(peer = %peer_fp, "ratchet PDU for an unknown peer — dropped");
+        return true;
+    };
+    // Fail closed. The step is authenticated by the peer's *identity* key, which
+    // is the same key the handshake verified; without a pinned key there is
+    // nothing to check the step against, so it is refused rather than trusted.
+    let Some(pk) = sess.peer_identity_pk() else {
+        tracing::warn!(
+            peer = %peer_fp,
+            "ratchet PDU from a session with no pinned identity key — refused"
+        );
+        return true;
+    };
+
+    if is_init {
+        let Some(blob) = parse_rekey_pdu(payload) else {
+            tracing::warn!(peer = %peer_fp, "malformed ratchet step PDU");
+            return true;
+        };
+        let material = rekey_init_signed_material(&blob.x25519_pub, &blob.kyber_pub);
+        if !l0_identity::verify_peer_signature(&pk, &material, &blob.signature) {
+            tracing::warn!(peer = %peer_fp, "ratchet step signature invalid — refused");
+            return true;
+        }
+        // A *crossed* pair of steps — both peers due in the same interval — is not a
+        // harmless duplicate: each side would complete its own step and install epoch
+        // `n+1` derived from its own secrets, so both would hold the same epoch number
+        // over different keys and nothing on the link would open again. The tie-break
+        // is the fingerprint order (see `Session::admit_peer_step`), applied before the
+        // step is answered so exactly one side advances.
+        if !sess.admit_peer_step(&node.fingerprint()) {
+            tracing::warn!(
+                peer = %peer_fp,
+                "crossed ratchet steps — our own step wins the tie-break; the arriving one is dropped"
+            );
+            return true;
+        }
+        let Some(answer) = sess.answer_ratchet_step(&blob.x25519_pub, &blob.kyber_pub) else {
+            tracing::warn!(peer = %peer_fp, "ratchet step could not be answered");
+            return true;
+        };
+        let pdu = build_rekey_response_pdu(
+            |d| node.identity.sign(d).to_bytes(),
+            &answer.x_public,
+            &answer.kem_ct,
+            &answer.confirm,
+        );
+        // Sealed on the epoch the peer still holds — we have only *prepared* the
+        // new one, so a reply on it would be unopenable to the sender of the step.
+        let ctx = SealCtx::from_session(&sess);
+        drop(sess);
+        let frame = seal_single(&ctx, &pdu);
+        send_frame_to_peer(node, sock, src, fallback, peer_fp, frame).await;
+        tracing::info!(
+            peer = %peer_fp,
+            epoch = answer.epoch,
+            "ratchet step answered (epoch prepared, not yet installed)"
+        );
+        return true;
+    }
+
+    let Some(blob) = parse_rekey_response_pdu(payload) else {
+        tracing::warn!(peer = %peer_fp, "malformed ratchet answer PDU");
+        return true;
+    };
+    let material = rekey_answer_signed_material(&blob.x25519_pub, &blob.kyber_ct, &blob.confirm);
+    if !l0_identity::verify_peer_signature(&pk, &material, &blob.signature) {
+        tracing::warn!(peer = %peer_fp, "ratchet answer signature invalid — refused");
+        return true;
+    }
+    let expected = sess.epoch() + 1;
+    let answer = RatchetAnswer {
+        x_public: blob.x25519_pub,
+        kem_ct: blob.kyber_ct,
+        confirm: blob.confirm,
+        epoch: expected,
+    };
+    match sess.finish_ratchet_step(&answer) {
+        Some(epoch) => tracing::info!(peer = %peer_fp, epoch, "ratchet step complete"),
+        None => tracing::warn!(
+            peer = %peer_fp,
+            "ratchet answer did not confirm the step — epoch unchanged"
+        ),
+    }
+    true
+}
+
+/// Route one already-built GTF datagram to a peer.
+///
+/// A ratchet step must travel by the same ladder as the data it protects: if the
+/// session exists because a relay or a TURN allocation made it possible, a direct
+/// reply to the source address would be filtered or unroutable, and the step would
+/// silently never complete.
+async fn send_frame_to_peer(
+    nc: &Arc<GhostNode>,
+    sock: &UdpSocket,
+    src: &SocketAddr,
+    fallback: Option<&Fallback>,
+    peer_fp: &str,
+    frame: Vec<u8>,
+) {
+    match fallback.and_then(|f| f.path(peer_fp)) {
+        Some(FallbackPath::MeshRelay {
+            relay_fp,
+            relay_addr,
+        }) => {
+            let _ =
+                send_datagram_via_relay(nc, sock, &relay_fp, &relay_addr, peer_fp, &frame).await;
+        }
+        Some(FallbackPath::Turn { peer_relayed }) => match fallback.and_then(|f| f.turn()) {
+            Some(t) => t.send_sealed(peer_relayed, frame),
+            None => tracing::warn!(
+                peer = %peer_fp,
+                "ratchet PDU: TURN route with no allocation — dropped"
+            ),
+        },
+        Some(FallbackPath::Direct) | None => {
+            let _ = sock.send_to(&frame, src).await;
+        }
+    }
+}
+
 /// Initiate a mesh handshake to `t` (PEER command and the VPN client
 /// watchdog share this path). Inserts into `pending_hs`; the response
 /// completes asynchronously in handle_pkt.
@@ -806,13 +1813,54 @@ async fn initiate_handshake(
     pending_hs: &PendingHandshakes,
 ) {
     let (xs, xp) = generate_x25519_keypair();
-    let (kp, ks) = generate_kyber_keypair();
-    let pdu = build_handshake_pdu(
+
+    // §2 spike: opt-in uniform mode intentionally uses the existing legacy
+    // ML-KEM-512 payload sizes so it can be compared on the wire without
+    // changing the transport fragmentation contract. It also avoids the
+    // explicit suite-list magic, which would defeat the experiment.
+    if uniform_handshake_enabled() {
+        let (kp, ks) = generate_kyber_keypair();
+        let pdu = build_uniform_handshake_pdu(
+            &nc.identity.public_key_bytes(),
+            |d| nc.identity.sign(d).to_bytes(),
+            &xp,
+            &kp,
+        );
+        let mut c = pdu;
+        let raw = l4_rs::encode(&mut c);
+        let tag = [0u8; 16];
+        for i in 0..3 {
+            let _ = send_gtf(sock, &t, [0, 0, 0, 0], 0, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+        }
+        if pending_hs.len() >= MAX_PENDING_HANDSHAKES {
+            tracing::warn!("Pending-handshake table full — uniform handshake skipped");
+            return;
+        }
+        pending_hs.insert(t.to_string(), PendingHandshake::Kem512(xs, ks));
+        tracing::info!(target = %t, "Uniform handshake sent");
+        return;
+    }
+    // Advertise both suites with a public KEM key for each. The responder can
+    // therefore select the strongest common suite rather than trusting a clear
+    // preference byte or being forced to use the initiator's first choice.
+    let (kp512, ks512) = generate_kyber_keypair();
+    let (kp768, ks768) = generate_kyber768_keypair();
+    let supported = vec![
+        HybridCipherSuite::X25519MlKem768V3,
+        HybridCipherSuite::X25519MlKem512V2,
+    ];
+    let keys = vec![
+        (HybridCipherSuite::X25519MlKem768V3, kp768.to_bytes().to_vec()),
+        (HybridCipherSuite::X25519MlKem512V2, kp512.to_bytes().to_vec()),
+    ];
+    let pdu = build_negotiated_handshake_pdu(
+        &supported,
         &nc.identity.public_key_bytes(),
         |d| nc.identity.sign(d).to_bytes(),
         &xp,
-        &kp,
-    );
+        &keys,
+    )
+    .expect("valid suite-list handshake");
     let mut c = pdu;
     let raw = l4_rs::encode(&mut c);
     let tag = [0u8; 16];
@@ -833,13 +1881,27 @@ async fn initiate_handshake(
         tracing::warn!("Pending-handshake table full — handshake skipped");
         return;
     }
-    pending_hs.insert(t.to_string(), (xs, ks));
+    pending_hs.insert(
+        t.to_string(),
+        PendingHandshake::Negotiated {
+            x_secret: xs,
+            kem512: ks512,
+            kem768: ks768,
+            offered: supported,
+        },
+    );
     tracing::info!(target = %t, "Handshake sent");
 }
 
 /// Insert a received frame into the reorder buffer; return frames that
 /// can be flushed in sequence order (duplicates/old frames are dropped).
-fn rx_push(state: &mut RxState, ctr: u32, payload: Vec<u8>) -> Vec<Vec<u8>> {
+fn uniform_handshake_enabled() -> bool {
+    std::env::var("GHOST_HANDSHAKE_UNIFORM")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+fn rx_push(state: &mut RxState, ctr: u64, payload: Vec<u8>) -> Vec<Vec<u8>> {
     let Some(next) = state.next else {
         state.next = Some(ctr + 1);
         return vec![payload];
@@ -877,6 +1939,15 @@ const BEACON_SECTION_ICE: &[u8; 4] = b"ICEO";
 /// peer advertise someone else's. Its presence is the whole message, which is
 /// why the payload must be empty.
 const BEACON_SECTION_RELAY: &[u8; 4] = b"RLYC";
+/// 32-byte SHA-256 commitment to the sender's ML-DSA-65 public key (P2-1).
+///
+/// A commitment and not the key: the key is 1952 bytes and its signature 3309,
+/// so a hybrid proof cannot travel in a 512–1472-byte datagram at all. What fits
+/// is the name of the key, and a verifier that remembers it (`Carrier::
+/// pin_commitment`) can then refuse a later session that presents a different
+/// post-quantum key — which is what stops a forger with the classical private key
+/// from substituting one of their own.
+const BEACON_SECTION_PQ_COMMIT: &[u8; 4] = b"PQK!";
 
 /// How long a measured direct contact stays valid before it must be re-observed.
 /// A NAT mapping is typically torn down after 30–120 s of silence, so a contact
@@ -904,6 +1975,8 @@ struct BeaconSections<'a> {
     ice_offer: Option<&'a str>,
     /// Whether the sender advertises relay capability.
     relay_capable: bool,
+    /// SHA-256 commitment to the sender's post-quantum public key (P2-1).
+    pq_commitment: Option<&'a [u8; 32]>,
 }
 
 /// Parse the trailing optional sections of a beacon.
@@ -919,6 +1992,7 @@ fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
     let mut zk = None;
     let mut ice_offer = None;
     let mut relay_capable = false;
+    let mut pq_commitment = None;
     while pos < amt {
         if pos + 6 > amt {
             return None;
@@ -943,6 +2017,15 @@ fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
                 return None;
             }
             relay_capable = true;
+        } else if magic == BEACON_SECTION_PQ_COMMIT {
+            // A commitment section of the wrong size is a malformed section, not a
+            // shorter commitment: fall back to the legacy reading (below), where it
+            // is ignored. A beacon without a usable commitment pins nothing, which
+            // is the same as a peer that never sent one.
+            if len != 32 {
+                return None;
+            }
+            pq_commitment = buf[start..end].try_into().ok();
         } else {
             return None;
         }
@@ -952,6 +2035,7 @@ fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
         zk,
         ice_offer,
         relay_capable,
+        pq_commitment,
     })
 }
 
@@ -968,6 +2052,7 @@ fn build_beacon_packet(
     with_zk: bool,
     ice_offer: Option<&str>,
     relay_capable: bool,
+    pq_commitment: Option<&[u8; 32]>,
 ) -> Vec<u8> {
     // Signed prefix: [16 magic][32 full Ed25519 pk][64 signature over pk].
     let mut buf = vec![0u8; BEACON_LEGACY_LEN];
@@ -976,7 +2061,7 @@ fn build_beacon_packet(
     let sig = signer(&buf[16..48]);
     buf[48..112].copy_from_slice(&sig);
 
-    if ice_offer.is_none() && !relay_capable && with_zk {
+    if ice_offer.is_none() && !relay_capable && with_zk && pq_commitment.is_none() {
         // Nothing new to carry: keep the exact legacy 208-byte layout so peers on
         // older builds still verify this beacon. A node that advertises relay
         // capability is by definition on the new layout, and an older build
@@ -1002,6 +2087,9 @@ fn build_beacon_packet(
     if relay_capable {
         push_beacon_section(&mut buf, BEACON_SECTION_RELAY, &[]);
     }
+    if let Some(commitment) = pq_commitment {
+        push_beacon_section(&mut buf, BEACON_SECTION_PQ_COMMIT, commitment);
+    }
     buf
 }
 
@@ -1010,8 +2098,11 @@ async fn handle_pkt(
     peers: &DashMap<String, SocketAddr>,
     pending_hs: &PendingHandshakes,
     sock: &UdpSocket,
-    ctr: u32,
+    ctr: u64,
     data: &[u8],
+    // The v2 header's seal metadata, when the frame has one (SOTA P2-2).
+    // `None` means a v1 frame: counter-derived nonce, seed key.
+    v2: Option<V2FrameMeta>,
     src: &SocketAddr,
     revocation_list: Option<&RevocationList>,
     reputation_matrix: Option<&PoissonReputationMatrix>,
@@ -1030,6 +2121,182 @@ async fn handle_pkt(
 ) {
     #[cfg(not(feature = "vpn"))]
     let _ = vpn_mode;
+    // Explicit suite-list negotiation handshake (counter == 0).
+    if ctr == 0 && data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC) {
+        let Some(hs) = parse_negotiated_handshake_pdu(data) else {
+            tracing::warn!(peer = %src, "Invalid suite-list handshake");
+            return;
+        };
+        let Some(material) = data.get(..data.len() - 64) else { return; };
+        if !l0_identity::verify_peer_signature(&hs.identity_pk, material, &hs.signature) {
+            tracing::warn!(peer = %src, "Suite-list handshake signature invalid");
+            return;
+        }
+        let local = [
+            HybridCipherSuite::X25519MlKem768V3,
+            HybridCipherSuite::X25519MlKem512V2,
+        ];
+        let Some(selected) = negotiate_cipher_suite(&local, &hs.supported.iter().map(|s| s.wire_id()).collect::<Vec<_>>()) else {
+            tracing::warn!(peer = %src, "No mutually supported cipher suite");
+            return;
+        };
+        let Some((_, peer_key)) = hs.kyber_keys.iter().find(|(suite, _)| *suite == selected) else { return; };
+        let kem = match selected {
+            HybridCipherSuite::X25519MlKem512V2 => kyber_encapsulate(peer_key)
+                .map(|(ct, ss)| (ct.to_vec(), ss)),
+            HybridCipherSuite::X25519MlKem768V3 => kyber768_encapsulate(peer_key),
+        };
+        let Ok((ct, kem_ss)) = kem else {
+            tracing::warn!(peer = %src, "Suite-list KEM encapsulation failed");
+            return;
+        };
+        let responder_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
+        let responder_public = x25519_dalek::PublicKey::from(&responder_secret);
+        let x_shared = responder_secret.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
+        // SOTA G2: bind the transcript into the KDF. The initiator's public key comes
+        // from the offer, ours is the ephemeral just generated, and the ciphertext is
+        // the one about to be sent back — so both peers hash identical bytes.
+        let master = derive_hybrid_master_key_with_transcript(
+            selected,
+            x_shared.as_bytes(),
+            &kem_ss,
+            psk.as_ref(),
+            &hs.x25519_pub,
+            responder_public.as_bytes(),
+            &ct,
+        );
+        let response = build_negotiated_response_pdu(
+            selected,
+            &node.identity.public_key_bytes(),
+            |m| node.identity.sign(m).to_bytes(),
+            responder_public.as_bytes().try_into().expect("x25519 key length"),
+            &ct,
+        ).expect("valid suite-list response");
+        let mut encoded = response;
+        let raw = l4_rs::encode(&mut encoded);
+        let tag = [0u8; 16];
+        for i in 0..3 {
+            let _ = send_gtf(sock, src, [0, 0, 0, 0], 1, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+        }
+        let fp = hex::encode(&hs.identity_pk[..8]);
+        peers.insert(fp.clone(), *src);
+        let mut session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
+        session.set_cipher_suite(selected);
+        session.pin_peer_identity(hs.identity_pk);
+        node.sessions.insert(fp, session);
+        tracing::info!(peer = %src, suite = selected.wire_id(), "Explicit suite-negotiated session established");
+        return;
+    }
+
+    // Versioned suite-negotiation handshake (counter == 0).
+    // The suite byte is authenticated as part of the handshake transcript.
+    // Both ML-KEM variants are accepted here; the response echoes the selected
+    // suite, so an initiator cannot be downgraded by rewriting cleartext.
+    if ctr == 0 && data.starts_with(HANDSHAKE_V3_MAGIC) {
+        let Some(hs) = parse_handshake_pdu_suite(data) else {
+            tracing::warn!(peer = %src, "Invalid suite-negotiation handshake");
+            return;
+        };
+        let mut signed = Vec::with_capacity(1 + 32 + hs.kyber_pub.len() + 32);
+        signed.push(hs.suite.wire_id());
+        signed.extend_from_slice(&hs.x25519_pub);
+        signed.extend_from_slice(&hs.kyber_pub);
+        signed.extend_from_slice(&hs.identity_pk);
+        if !l0_identity::verify_peer_signature(&hs.identity_pk, &signed, &hs.signature) {
+            tracing::warn!(peer = %src, "Suite handshake signature invalid");
+            return;
+        }
+        let kem_result = match hs.suite {
+            HybridCipherSuite::X25519MlKem512V2 => kyber_encapsulate(&hs.kyber_pub)
+                .map(|(ct, ss)| (ct.to_vec(), ss)),
+            HybridCipherSuite::X25519MlKem768V3 => kyber768_encapsulate(&hs.kyber_pub),
+        };
+        let (ct, ks) = match kem_result {
+            Ok(value) => value,
+            Err(_) => {
+                tracing::warn!(peer = %src, "Suite handshake KEM encapsulation failed");
+                return;
+            }
+        };
+        let bs = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
+        let bp = x25519_dalek::PublicKey::from(&bs);
+        let xs = bs.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
+        let d = derive_hybrid_master_key_with_suite(hs.suite, xs.as_bytes(), &ks, psk.as_ref());
+        let mut bp_arr = [0u8; 32];
+        bp_arr.copy_from_slice(bp.as_bytes());
+        let resp = build_response_pdu_suite(
+            hs.suite,
+            &node.identity.public_key_bytes(),
+            |m| node.identity.sign(m).to_bytes(),
+            &bp_arr,
+            &ct,
+        )
+        .expect("suite response layout");
+        let mut rc = resp;
+        let raw = l4_rs::encode(&mut rc);
+        let tag = [0u8; 16];
+        for i in 0..3 {
+            let _ = send_gtf(sock, src, [0, 0, 0, 0], 1, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+        }
+        peers.insert(hex::encode(&hs.identity_pk[..8]), *src);
+        let fp = hex::encode(&hs.identity_pk[..8]);
+        let mut session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
+        session.set_cipher_suite(hs.suite);
+        session.pin_peer_identity(hs.identity_pk);
+        node.sessions.insert(fp.clone(), session);
+        tracing::info!(peer = %src, fingerprint = %fp, suite = hs.suite.wire_id(), "Suite-negotiated session established");
+        return;
+    }
+
+    // Opt-in §2 uniform handshake. Its random prefix means it must be
+    // identified by the reserved handshake counter and exact legacy payload
+    // length, never by a magic string.
+    if uniform_handshake_enabled()
+        && ctr == 0
+        && data.len() >= vantablack::ghost::layers::l1_kem::UNIFORM_HANDSHAKE_BLOB_LEN
+    {
+        let wire = &data[..vantablack::ghost::layers::l1_kem::UNIFORM_HANDSHAKE_BLOB_LEN];
+        let Some(hs) = parse_uniform_handshake_pdu(wire) else { return; };
+        let Some(signed_material) = uniform_handshake_signed_material(wire) else { return; };
+        if !l0_identity::verify_peer_signature(&hs.identity_pk, &signed_material, &hs.signature) {
+            tracing::warn!(peer = %src, "Uniform handshake signature invalid");
+            return;
+        }
+        let fp = hex::encode(&hs.identity_pk[..8]);
+        if node.sessions.len() >= MAX_SESSIONS || node.sessions.contains_key(&fp) {
+            tracing::warn!(peer = %src, fingerprint = %fp, "Uniform handshake rejected — session limit or replay");
+            return;
+        }
+        let Ok((ct, ks)) = kyber_encapsulate(&hs.kyber_pub) else {
+            tracing::warn!(peer = %src, "Uniform handshake KEM encapsulation failed");
+            return;
+        };
+        let bs = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
+        let bp = x25519_dalek::PublicKey::from(&bs);
+        let xs = bs.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
+        let master = derive_hybrid_master_key_with_psk(xs.as_bytes(), &ks, psk.as_ref());
+        let mut bp_arr = [0u8; 32];
+        bp_arr.copy_from_slice(bp.as_bytes());
+        let resp = build_uniform_response_pdu(
+            &node.identity.public_key_bytes(),
+            |m| node.identity.sign(m).to_bytes(),
+            &bp_arr,
+            &ct,
+        );
+        let mut encoded = resp;
+        let raw = l4_rs::encode(&mut encoded);
+        let tag = [0u8; 16];
+        for i in 0..3 {
+            let _ = send_gtf(sock, src, [0, 0, 0, 0], 1, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+        }
+        peers.insert(fp.clone(), *src);
+        let session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
+        session.pin_peer_identity(hs.identity_pk);
+        node.sessions.insert(fp, session);
+        tracing::info!(peer = %src, "Uniform handshake session established");
+        return;
+    }
+
     // Handshake (counter == 0)
     if ctr == 0 && data.len() >= 16 && &data[..16] == b"GHOST_HANDSHAKE_" {
         if data.len() < HANDSHAKE_BLOB_LEN {
@@ -1153,10 +2420,11 @@ async fn handle_pkt(
             .await;
         }
         peers.insert(fp.clone(), *src);
-        node.sessions.insert(
-            fp.clone(),
-            Session::new_with_role(d, fp.clone(), SessionRole::Responder),
-        );
+        let responder_session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
+        // Pin the initiator's identity key: it is what a later ratchet step is
+        // verified against, and without it a step is refused rather than trusted.
+        responder_session.pin_peer_identity(hs.identity_pk);
+        node.sessions.insert(fp.clone(), responder_session);
         // Keep the relay's address book current: a session is also the strongest
         // statement that this peer is who it says it is, and its address may have
         // moved since the beacon that first authorized it.
@@ -1179,6 +2447,149 @@ async fn handle_pkt(
         if let Some(rep) = reputation_matrix {
             rep.record_interaction(&node.fingerprint(), &fp, true);
         }
+        return;
+    }
+
+    // Explicit suite-list negotiation response (counter == 1).
+    if ctr == 1 && data.starts_with(RESPONSE_NEGOTIATION_MAGIC) {
+        let Some(resp) = parse_negotiated_response_pdu(data) else {
+            tracing::warn!(peer = %src, "Invalid suite-list response");
+            return;
+        };
+        let Some(material) = data.get(..data.len() - 64) else { return; };
+        if !l0_identity::verify_peer_signature(&resp.identity_pk, material, &resp.signature) {
+            tracing::warn!(peer = %src, "Suite-list response signature invalid");
+            return;
+        }
+        let Some((_, pending)) = pending_hs.remove(&src.to_string()) else {
+            tracing::warn!(peer = %src, "Suite-list response has no pending handshake");
+            return;
+        };
+        let PendingHandshake::Negotiated { x_secret, kem512, kem768, offered } = pending else {
+            tracing::warn!(peer = %src, "Suite-list response matched a legacy pending handshake");
+            return;
+        };
+        let local = [
+            HybridCipherSuite::X25519MlKem768V3,
+            HybridCipherSuite::X25519MlKem512V2,
+        ];
+        let expected = negotiate_cipher_suite(
+            &local,
+            &offered.iter().map(|suite| suite.wire_id()).collect::<Vec<_>>(),
+        );
+        if expected != Some(resp.suite) {
+            tracing::warn!(
+                peer = %src,
+                selected = resp.suite.wire_id(),
+                expected = ?expected,
+                "Downgrade/unsupported suite response rejected"
+            );
+            return;
+        }
+        let kem_ss = match resp.suite {
+            HybridCipherSuite::X25519MlKem512V2 => {
+                let Ok(ct) = Ciphertext::<MlKem512>::try_from(resp.kyber_ct.as_slice()) else { return; };
+                kem512.decapsulate(&ct).as_slice().to_vec()
+            }
+            HybridCipherSuite::X25519MlKem768V3 => {
+                let Ok(ss) = kyber768_decapsulate(&kem768, &resp.kyber_ct) else { return; };
+                ss
+            }
+        };
+        // Our own public key has to be captured *before* `diffie_hellman` consumes the
+        // secret, and it is part of the transcript (SOTA G2).
+        let initiator_public = x25519_dalek::PublicKey::from(&x_secret);
+        let x_shared = x_secret.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
+        let master = derive_hybrid_master_key_with_transcript(
+            resp.suite,
+            x_shared.as_bytes(),
+            &kem_ss,
+            psk.as_ref(),
+            initiator_public.as_bytes(),
+            &resp.x25519_pub,
+            &resp.kyber_ct,
+        );
+        let fp = hex::encode(&resp.identity_pk[..8]);
+        peers.insert(fp.clone(), *src);
+        let mut session = Session::new(master, fp.clone());
+        session.set_cipher_suite(resp.suite);
+        session.pin_peer_identity(resp.identity_pk);
+        node.sessions.insert(fp, session);
+        tracing::info!(peer = %src, suite = resp.suite.wire_id(), "Explicit suite-negotiated session established (initiator)");
+        return;
+    }
+
+    // Versioned suite-negotiation response (counter == 1).
+    if ctr == 1 && data.starts_with(RESPONSE_V3_MAGIC) {
+        let Some(resp) = parse_response_pdu_suite(data) else {
+            tracing::warn!(peer = %src, "Invalid suite-negotiation response");
+            return;
+        };
+        let mut signed = Vec::with_capacity(1 + 32 + resp.kyber_ct.len() + 32);
+        signed.push(resp.suite.wire_id());
+        signed.extend_from_slice(&resp.x25519_pub);
+        signed.extend_from_slice(&resp.kyber_ct);
+        signed.extend_from_slice(&resp.identity_pk);
+        if !l0_identity::verify_peer_signature(&resp.identity_pk, &signed, &resp.signature) {
+            tracing::warn!(peer = %src, "Suite response signature invalid");
+            return;
+        }
+        let fp = hex::encode(&resp.identity_pk[..8]);
+        let Some((_, pending)) = pending_hs.remove(&src.to_string()) else {
+            tracing::warn!(peer = %src, "Suite response has no pending handshake");
+            return;
+        };
+        let Some((ax, ky_ss)) = (match (resp.suite, pending) {
+            (HybridCipherSuite::X25519MlKem512V2, PendingHandshake::Kem512(ax, dk)) => {
+                let ct = Ciphertext::<MlKem512>::try_from(resp.kyber_ct.as_slice()).ok();
+                ct.map(|ct| (ax, dk.decapsulate(&ct).as_slice().to_vec()))
+            }
+            (HybridCipherSuite::X25519MlKem768V3, PendingHandshake::Kem768(ax, dk)) => {
+                kyber768_decapsulate(&dk, &resp.kyber_ct).ok().map(|ss| (ax, ss))
+            }
+            _ => None,
+        }) else {
+            tracing::warn!(peer = %src, "Suite response does not match pending handshake");
+            return;
+        };
+        let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
+        let d = derive_hybrid_master_key_with_suite(resp.suite, xs.as_bytes(), &ky_ss, psk.as_ref());
+        peers.insert(fp.clone(), *src);
+        let mut session = Session::new(d, fp.clone());
+        session.set_cipher_suite(resp.suite);
+        session.pin_peer_identity(resp.identity_pk);
+        node.sessions.insert(fp.clone(), session);
+        tracing::info!(peer = %src, fingerprint = %fp, suite = %resp.suite.wire_id(), "Suite-negotiated session established (initiator)");
+        return;
+    }
+
+    // Opt-in §2 uniform response. Exact length and reserved response counter
+    // keep this separate from ordinary application frames.
+    if uniform_handshake_enabled()
+        && ctr == 1
+        && data.len() >= vantablack::ghost::layers::l1_kem::UNIFORM_RESPONSE_BLOB_LEN
+    {
+        let wire = &data[..vantablack::ghost::layers::l1_kem::UNIFORM_RESPONSE_BLOB_LEN];
+        let Some(resp) = parse_uniform_response_pdu(wire) else { return; };
+        let Some(signed_material) = uniform_response_signed_material(wire) else { return; };
+        if !l0_identity::verify_peer_signature(&resp.identity_pk, &signed_material, &resp.signature) {
+            tracing::warn!(peer = %src, "Uniform response signature invalid");
+            return;
+        }
+        let Some((_, PendingHandshake::Kem512(ax, dk))) = pending_hs.remove(&src.to_string()) else {
+            tracing::warn!(peer = %src, "Uniform response has no pending handshake");
+            return;
+        };
+        let ct = Ciphertext::<MlKem512>::from(resp.kyber_ct);
+        let ks = dk.decapsulate(&ct);
+        let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
+        let master = derive_hybrid_master_key_with_psk(xs.as_bytes(), ks.as_slice(), psk.as_ref());
+        let fp = hex::encode(&resp.identity_pk[..8]);
+        peers.insert(fp.clone(), *src);
+        let session = Session::new(master, fp.clone());
+        session.pin_peer_identity(resp.identity_pk);
+        node.sessions.insert(fp, session);
+        tracing::info!(peer = %src, "Uniform handshake session established (initiator)");
         return;
     }
 
@@ -1224,11 +2635,11 @@ async fn handle_pkt(
                 return;
             }
         }
-        if let Some((ax, dk)) = pending_hs.remove(&src.to_string()).map(|(_, v)| v) {
+        if let Some((_, PendingHandshake::Kem512(ax, dk))) = pending_hs.remove(&src.to_string()) {
             let ks = dk.decapsulate(&ct);
             let ky_ss: Vec<u8> = ks.as_slice().to_vec();
             let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
-            let d = derive_hybrid_master_key_with_psk(xs.as_bytes(), &ky_ss, psk.as_ref());
+            let d = derive_hybrid_master_key_with_suite(HybridCipherSuite::X25519MlKem512V2, xs.as_bytes(), &ky_ss, psk.as_ref());
 
             // WIRED: Pin key to physical RAM via LockedMemory (mlock / VirtualLock)
             if let Some(mut locked) = LockedMemory::allocate(32) {
@@ -1236,8 +2647,11 @@ async fn handle_pkt(
             }
 
             peers.insert(fp.clone(), *src);
-            node.sessions
-                .insert(fp.clone(), Session::new(d, fp.clone()));
+            let initiator_session = Session::new(d, fp.clone());
+            // Same pin on this side: the answer to a ratchet step is verified
+            // against the responder's identity key.
+            initiator_session.pin_peer_identity(resp.identity_pk);
+            node.sessions.insert(fp.clone(), initiator_session);
             if let Some(relay) = relay_role {
                 relay.authorize(&fp, *src);
             }
@@ -1265,54 +2679,91 @@ async fn handle_pkt(
     //
     // Collect candidate sessions FIRST: taking a write lock (get_mut for the
     // replay guard) while a DashMap iterator is alive deadlocks the task.
-    let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> = node
-        .sessions
-        .iter()
-        .map(|e| {
-            (
-                e.peer_fingerprint.clone(),
-                e.master_key,
-                e.session_hash,
-                e.role,
-            )
-        })
-        .collect();
-    for (peer_fp, key, sh, role) in candidates {
-        let mut msg = data.to_vec();
-        let pt: Option<&[u8]> = {
-            let r1 = decrypt_in_place_with_context(
-                &key,
-                ctr,
-                &sh,
-                NonceDirection::InitiatorToResponder,
-                &mut msg,
-            );
-            if r1.is_ok() {
-                r1.ok()
-            } else {
-                decrypt_in_place_with_context(
-                    &key,
-                    ctr,
-                    &sh,
-                    NonceDirection::ResponderToInitiator,
-                    &mut msg,
-                )
-                .ok()
+    let candidates = OpenCtx::snapshot_of(&node.sessions);
+    for cand in &candidates {
+        let peer_fp = cand.peer_fp.clone();
+        let key = cand.master_key;
+        let sh = cand.session_hash;
+        let role = cand.role;
+        let plain = if v2.is_some_and(|meta| meta.shardsec) {
+            if cand.session_hash != net::parse_session_hash(data) {
+                continue;
             }
+            data.to_vec()
+        } else {
+            let Some(sess) = node.sessions.get(&cand.peer_fp) else {
+                continue;
+            };
+            let Some(plain) = open_received_frame(cand, &sess, data, ctr, v2) else {
+                continue;
+            };
+            plain
         };
-        let Some(pt) = pt else { continue };
+        let pt: &[u8] = &plain;
 
-        // Replay protection: the per-session sliding-window guard must accept
-        // the counter; otherwise the frame is a replay or too stale — drop it.
-        let accepted = node
-            .sessions
-            .get_mut(&peer_fp)
-            .map(|mut s| s.guard.check_and_update(ctr))
-            .unwrap_or(false);
-        if !accepted {
-            tracing::debug!(peer = %peer_fp, counter = ctr, "Replay/out-of-window frame dropped");
+        // ── Cover traffic (SOTA P3-1) ──
+        //
+        // A placeholder frame exists only to keep the *rate* constant, so it must
+        // have no effect at all: no dispatch, no ratchet bookkeeping, and not even
+        // a replay-window slot — which is the plan's "does not disturb the replay
+        // window". Dropping it here also keeps it from installing a prepared epoch.
+        //
+        // The decision is taken on the decrypted marker, never on the header's
+        // `FLAG_DUMMY` bit: header flags sit outside the AEAD, so anyone on the
+        // path can flip them, and a receiver that trusted the bit could be made
+        // either to discard a real frame or to dispatch a placeholder. The marker
+        // is inside the ciphertext, so it is unforgeable and cannot be stripped.
+        if frame_payload(pt).is_some_and(net::is_dummy_payload) {
+            node.stats
+                .cover_recv
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::trace!(peer = %peer_fp, "cover-traffic frame dropped by design");
             return;
         }
+
+        // A frame that authenticated under a *prepared* epoch installs it. This is
+        // the responder's half of the step: it answers immediately but keeps
+        // sealing on the old epoch until the initiator demonstrably committed, so
+        // only a frame that actually opens under the new key moves it. A forged
+        // frame cannot: it has no key, so it never reaches here.
+        if let Some(meta) = v2 {
+            if let Some(s) = node.sessions.get(&peer_fp) {
+                if meta.epoch > s.epoch() {
+                    s.activate_epoch(meta.epoch);
+                }
+            }
+        }
+
+        // Replay protection: the per-session 64-bit sliding window must accept
+        // the counter for the current epoch (or v1); retired epochs already enforce
+        // single-use keys cryptographically in MsgChain and must not disturb the
+        // current epoch's replay window.
+        let is_retired = v2.is_some_and(|meta| {
+            node.sessions.get(&peer_fp).is_some_and(|s| meta.epoch < s.epoch())
+        });
+        if !is_retired {
+            let accepted = node
+                .sessions
+                .get(&peer_fp)
+                .map(|s| s.check_inbound(ctr))
+                .unwrap_or(false);
+            if !accepted {
+                tracing::debug!(peer = %peer_fp, counter = ctr, "Replay/out-of-window frame dropped");
+                return;
+            }
+        }
+
+        // ── Ratchet step (SOTA P2-2) ──
+        //
+        // Before any data handling, and before the tunnel check: these two magics
+        // are control PDUs for the ratchet, they are distinct from every other
+        // magic in the stack, and neither is ever a message for an application.
+        if let Some(payload) = frame_payload(pt) {
+            if handle_ratchet_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
+                return;
+            }
+        }
+
         // ── VPN tunnel payload: [len][GVPN1][epoch u32][ctr u32][ct][tag] ──
         // Hub: ingest client datagrams. Client: write hub replies into TUN.
         // Checked BEFORE all control-channel handling; tunnel traffic never
@@ -1447,10 +2898,41 @@ async fn handle_pkt(
                         .get(next)
                         .map(|s| s.next_tx_counter())
                         .unwrap_or(2);
-                    let rewrap =
-                        build_relay_packet(next, relay.remaining_hops - 1, &relay.inner_payload);
-                    let (f, tag) = enc_split(&key, hop_ctr, &sh, dir_for(role), &rewrap);
-                    send3(sock, &tgt, sh, hop_ctr, &f, &tag).await;
+                    // For a nested onion, the payload already contains the
+                    // next hop's authenticated routing header. Preserve that
+                    // header while changing only the transport encryption; if
+                    // this is the final relay layer, create the zero-hop form
+                    // consumed by the destination. Re-wrapping with `next`
+                    // again would make a three-hop route point back at the
+                    // middle relay and loop forever.
+                    let rewrap = if relay.remaining_hops > 1 {
+                        parse_relay_header(&relay.inner_payload)
+                            .map(|_| relay.inner_payload.clone())
+                            .unwrap_or_else(|| {
+                                build_relay_packet(
+                                    next,
+                                    relay.remaining_hops - 1,
+                                    &relay.inner_payload,
+                                )
+                            })
+                    } else {
+                        build_relay_packet(next, 0, &relay.inner_payload)
+                    };
+                    let hop_ctx = node
+                        .sessions
+                        .get(next)
+                        .map(|s| SealCtx::from_session(&s))
+                        .unwrap_or_else(|| SealCtx {
+                            key,
+                            epoch: 0,
+                            counter: hop_ctr,
+                            nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                            direction: dir_for(role),
+                            session_hash: sh,
+                            ratchet_due: false,
+                        });
+                    let (f, tag) = enc_split(&hop_ctx, &rewrap);
+                    send3(sock, &tgt, &hop_ctx, &f, &tag).await;
 
                     // WIRED: Record bytes forwarded for this peer in TFT enforcer
                     if let Some(enforcer) = tft {
@@ -1469,7 +2951,9 @@ async fn handle_pkt(
                         enforcer.forwarded_by(&peer_fp, inner.len() as u64);
                     }
 
-                    let ic = u32::from_be_bytes([inner[0], inner[1], inner[2], inner[3]]);
+                    let ic = u64::from(u32::from_be_bytes([
+                        inner[0], inner[1], inner[2], inner[3],
+                    ]));
                     let blob = inner[4..].to_vec();
                     let candidates: Vec<(String, [u8; 32], [u8; 4], SessionRole)> = node
                         .sessions
@@ -1484,23 +2968,35 @@ async fn handle_pkt(
                         })
                         .collect();
                     for (fp2, key, sh, role) in candidates {
-                        let mut msg = blob.clone();
-                        let pt2 = match decrypt_in_place_with_context(
-                            &key,
-                            ic,
-                            &sh,
-                            NonceDirection::InitiatorToResponder,
-                            &mut msg,
-                        ) {
-                            Ok(p) => Some(p),
-                            Err(_) => decrypt_in_place_with_context(
+                        // The onion's inner layer is the v1 construction (32-bit
+                        // counter carried in the relay header), so it takes the
+                        // narrowed counter, not the tunnel anchor's 64-bit one.
+                        // Each direction gets a fresh ciphertext copy: an AEAD
+                        // attempt may mutate its buffer before returning an error.
+                        let ic32 = ic as u32;
+                        let pt2 = {
+                            let mut first = blob.clone();
+                            match decrypt_in_place_with_context(
                                 &key,
-                                ic,
+                                ic32,
                                 &sh,
-                                NonceDirection::ResponderToInitiator,
-                                &mut msg,
-                            )
-                            .ok(),
+                                NonceDirection::InitiatorToResponder,
+                                &mut first,
+                            ) {
+                                Ok(plain) => Some(plain.to_vec()),
+                                Err(_) => {
+                                    let mut second = blob.clone();
+                                    decrypt_in_place_with_context(
+                                        &key,
+                                        ic32,
+                                        &sh,
+                                        NonceDirection::ResponderToInitiator,
+                                        &mut second,
+                                    )
+                                    .ok()
+                                    .map(|plain| plain.to_vec())
+                                }
+                            }
                         };
                         if let Some(pt2) = pt2 {
                             tracing::info!(peer = %fp2, "Relay payload delivered (final hop)");
@@ -1626,11 +3122,22 @@ async fn handle_exit_connect(
     peer_fp: &str,
     dest: &[u8],
     tunnels: &ExitTunnels,
-    connect_ctr: u32,
+    connect_ctr: u64,
     exit_rotator: Option<&ExitIpRotator>,
     fallback_state: Option<&Fallback>,
 ) {
-    let dest = String::from_utf8_lossy(dest).into_owned();
+    let request = String::from_utf8_lossy(dest).into_owned();
+    // Voucher-bearing requests use `EXITAUTH!<hex-voucher>!<host>:<port>`.
+    // The outer GHOST session still authenticates the sender; the voucher adds
+    // an explicit, signed capability when the exit requires one.
+    let (voucher, dest) = if let Some(rest) = request.strip_prefix("EXITAUTH!") {
+        match rest.split_once('!') {
+            Some((encoded, target)) => (hex::decode(encoded).ok(), target.to_string()),
+            None => (None, request.clone()),
+        }
+    } else {
+        (None, request.clone())
+    };
     let (host, port) = match dest.rsplit_once(':') {
         Some((h, p)) => match p.parse::<u16>() {
             Ok(port) => (h.to_string(), port),
@@ -1638,6 +3145,38 @@ async fn handle_exit_connect(
         },
         None => return,
     };
+
+    // Exit policy is evaluated before DNS resolution and before any socket is
+    // opened. This prevents a denied hostname from becoming a DNS oracle and
+    // keeps the allowlist enforcement on every exit path (rotated or default).
+    let exit_policy = vantablack::ghost::net::relay::ExitPolicy::from_env();
+    if !exit_policy.allows(&host) {
+        tracing::warn!(peer = %peer_fp, host = %host, "Exit: destination rejected by policy");
+        return;
+    }
+    let require_voucher = std::env::var("GHOST_EXIT_REQUIRE_VOUCHER")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if require_voucher {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let Some(raw_voucher) = voucher else {
+            tracing::warn!(peer = %peer_fp, host = %host, "Exit: capability voucher required");
+            return;
+        };
+        let Some(capability) = vantablack::ghost::net::relay::ExitCapability::decode(&raw_voucher) else {
+            tracing::warn!(peer = %peer_fp, host = %host, "Exit: malformed capability voucher");
+            return;
+        };
+        if capability.issuer_pk != node.identity.public_key_bytes()
+            || !capability.verify(now, peer_fp, &host)
+        {
+            tracing::warn!(peer = %peer_fp, host = %host, "Exit: invalid, untrusted, or expired capability voucher");
+            return;
+        }
+    }
 
     let stream = if let Some(rotator) = exit_rotator {
         if rotator.pool_size() > 0 {
@@ -1718,13 +3257,22 @@ async fn handle_exit_connect(
         }
     };
 
-    // Allocate our OK counter from the session's counter space.
-    let ok_ctr = node
+    // Seal the OK under the session's current epoch; the counter, epoch and nonce
+    // come from one snapshot so they cannot straddle a ratchet step.
+    let ok_ctx = node
         .sessions
         .get(peer_fp)
-        .map(|s| s.next_tx_counter())
-        .unwrap_or(2);
-    let (f, tag) = enc_split(key, ok_ctr, sh, NonceDirection::ResponderToInitiator, b"OK");
+        .map(|s| SealCtx::from_session(&s))
+        .unwrap_or_else(|| SealCtx {
+            key: *key,
+            epoch: 0,
+            counter: 2,
+            nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+            direction: NonceDirection::ResponderToInitiator,
+            session_hash: *sh,
+            ratchet_due: false,
+        });
+    let (f, tag) = enc_split(&ok_ctx, b"OK");
     // The initiator may have reached us *through* a relay, in which case `src` is
     // the relay's address and a direct reply would go nowhere. Route it the same
     // way the data path is routed.
@@ -1734,8 +3282,7 @@ async fn handle_exit_connect(
                 &node,
                 sock,
                 peer_fp,
-                *sh,
-                ok_ctr,
+                &ok_ctx,
                 &f,
                 &tag,
                 &path,
@@ -1743,7 +3290,7 @@ async fn handle_exit_connect(
             )
             .await;
         }
-        None => send3(sock, src, *sh, ok_ctr, &f, &tag).await,
+        None => send3(sock, src, &ok_ctx, &f, &tag).await,
     }
 
     let tkey = exit_tunnel_key(src, sh);
@@ -1792,25 +3339,26 @@ async fn handle_exit_connect(
                 match rd.read(&mut rbuf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let ctr = sessions2
+                        let ctx2 = sessions2
                             .get(&fp2)
-                            .map(|s| s.next_tx_counter())
-                            .unwrap_or(2);
-                        let (f, tag) = enc_split(
-                            &key2,
-                            ctr,
-                            &sh2,
-                            NonceDirection::ResponderToInitiator,
-                            &rbuf[..n],
-                        );
+                            .map(|s| SealCtx::from_session(&s))
+                            .unwrap_or_else(|| SealCtx {
+                                key: key2,
+                                epoch: 0,
+                                counter: 2,
+                                nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                direction: NonceDirection::ResponderToInitiator,
+                                session_hash: sh2,
+                                ratchet_due: false,
+                            });
+                        let (f, tag) = enc_split(&ctx2, &rbuf[..n]);
                         match route2.as_ref() {
                             Some(path) => {
                                 let _ = send3_via_fallback(
                                     &node3,
                                     &sock3,
                                     &fp2,
-                                    sh2,
-                                    ctr,
+                                    &ctx2,
                                     &f,
                                     &tag,
                                     path,
@@ -1818,7 +3366,7 @@ async fn handle_exit_connect(
                                 )
                                 .await;
                             }
-                            None => send3(&sock3, &addr2, sh2, ctr, &f, &tag).await,
+                            None => send3_mixed(Arc::clone(&sock3), &addr2, &ctx2, &f, &tag).await,
                         }
                     }
                 }
@@ -2046,7 +3594,11 @@ fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
         let ctr = 2 + i as u32;
 
         let t0 = std::time::Instant::now();
-        let (carrier_frames, _tag) = enc_split(&key, ctr, &session_hash, direction, &payload);
+        // The speedtest walks the real pipeline, so it seals the same way the
+        // data path does: v2, ratchet key, transmitted nonce, 64-bit counter.
+        let bench_session = Session::new_with_role(key, "speedtest".into(), SessionRole::Initiator);
+        let bench_ctx = SealCtx::from_session(&bench_session);
+        let (carrier_frames, _tag) = enc_split(&bench_ctx, &payload);
         send_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
 
         // Receive side: strip each carrier's length prefix, as the node does.
@@ -2075,8 +3627,14 @@ fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
         if l4_rs::reconstruct(&mut shards).is_ok() {
             if let (Some(a), Some(b)) = (shards[0].as_ref(), shards[1].as_ref()) {
                 let mut merged = [a.as_slice(), b.as_slice()].concat();
-                if decrypt_in_place_with_context(&key, ctr, &session_hash, direction, &mut merged)
-                    .is_ok()
+                if xchacha_open(
+                    &bench_ctx.key,
+                    &bench_ctx.nonce,
+                    bench_ctx.epoch,
+                    direction,
+                    &mut merged,
+                )
+                .is_ok()
                     && merged.len() >= 2
                 {
                     let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
@@ -2327,11 +3885,15 @@ async fn run_node(
     // WIRED: Category B - Verified SPSC Ring Buffer for packet staging
     let verified_ring = Arc::new(VerifiedRingBuffer::<Vec<u8>>::new(1024));
 
-    // WIRED: SecureTimeKeeper for NTS-secured time
+    // NOT WIRED: SecureTimeKeeper is constructed and then discarded (`_time_keeper` is
+    // never read), so no check in this daemon actually consults NTS-secured time. The
+    // comment here previously claimed "WIRED:", which was false. Either give it a
+    // consumer or stop constructing it — see roadmap/WHAT-IS-BUILT.md §4.
     let _time_keeper = Arc::new(vantablack::ghost::layers::l9_infra::SecureTimeKeeper::new(
         false,
     ));
-    // WIRED: BuildInfo for hash verification
+    // NOT WIRED: BuildInfo is constructed and discarded, and `verify_manifest()` is
+    // never called, so no build-hash verification runs. Previously mislabelled "WIRED:".
     let _build_info = vantablack::ghost::layers::l9_infra::BuildInfo::new();
 
     let ba = std::env::var("GHOST_BIND").unwrap_or_else(|_| "0.0.0.0:0".to_string());
@@ -2524,7 +4086,7 @@ async fn run_node(
 
     // ── BOOTSTRAP SEEDS ──
     let addrs: Arc<DashMap<String, SocketAddr>> = Arc::new(DashMap::new());
-    let spool: Arc<DashMap<u32, Vec<Option<Vec<u8>>>>> = Arc::new(DashMap::new());
+    let spool: Arc<DashMap<u64, Vec<Option<Vec<u8>>>>> = Arc::new(DashMap::new());
     let pending_hs: PendingHandshakes = Arc::new(DashMap::new());
 
     let exit_tunnels: ExitTunnels = Arc::new(DashMap::new());
@@ -2854,7 +4416,7 @@ async fn run_node(
                             )
                             .await;
                         }
-                        pending_hs.insert(t.to_string(), (xs, ks));
+                        pending_hs.insert(t.to_string(), PendingHandshake::Kem512(xs, ks));
                         tracing::info!(seed = %t, "Bootstrap handshake sent");
                     }
                     sleep(Duration::from_secs(5)).await;
@@ -3044,6 +4606,11 @@ async fn run_node(
         #[cfg(not(feature = "vpn"))]
         let vpn_m: Option<VpnMode> = None;
         let mp = metrics_port;
+        // The carrier registry, so the status page can show *measured* carrier
+        // links rather than an inferred path count (B23). Present in every build:
+        // without the transport it reports the same zeroes it would in a build that
+        // has none.
+        let carrier_m = Arc::clone(&carrier);
         tokio::spawn(async move {
             let bind_addr = format!("0.0.0.0:{}", mp);
             match tokio::net::TcpListener::bind(&bind_addr).await {
@@ -3086,6 +4653,7 @@ async fn run_node(
                             let cp_ref = c_path_m.clone();
                             let lan_host_ref = lan_host_m.clone();
                             let pair_uri_ref = pair_uri_m.clone();
+                            let carrier_ref = Arc::clone(&carrier_m);
                             tokio::spawn(async move {
                                 let mut buf = [0u8; 4096];
                                 if let Ok(n) = stream.read(&mut buf).await {
@@ -3183,6 +4751,18 @@ async fn run_node(
                                                 std::cmp::min(3, 1 + nc_ref.sessions.len().min(2))
                                             } else {
                                                 0
+                                            },
+                                            // The optional transport as it actually is, not
+                                            // as the line above infers it: links and local
+                                            // paths are counted from live entries, so with
+                                            // multipath on (`GHOST_QUIC_MULTIPATH=1`) two
+                                            // links to one peer show up as two paths.
+                                            "carrier": {
+                                                "enabled": carrier_ref.enabled(),
+                                                "label": carrier_ref.label(),
+                                                "local_paths": carrier_ref.path_count(),
+                                                "links": carrier_ref.link_count(),
+                                                "peers": carrier_ref.peer_count(),
                                             },
                                             "reed_solomon_active": true,
                                             "throughput": {
@@ -3733,18 +5313,34 @@ async fn run_node(
                             .get(&fp)
                             .map(|s| s.next_tx_counter())
                             .unwrap_or(2);
-                        let dest = format!("{}:{}", addr, port);
+                        let plain_dest = format!("{}:{}", addr, port);
+                        let dest = std::env::var("GHOST_EXIT_VOUCHER")
+                            .ok()
+                            .filter(|voucher| !voucher.is_empty())
+                            .map(|voucher| format!("EXITAUTH!{voucher}!{plain_dest}"))
+                            .unwrap_or(plain_dest);
                         tracing::info!(dest = %dest, "SOCKS5 CONNECT");
-                        let (f, tag) =
-                            enc_split(&key, connect_ctr, &sh, dir_for(role), dest.as_bytes());
+                        let connect_ctx = nn
+                            .sessions
+                            .get(&fp)
+                            .map(|s| SealCtx::from_session(&s))
+                            .unwrap_or_else(|| SealCtx {
+                                key,
+                                epoch: 0,
+                                counter: connect_ctr,
+                                nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                direction: dir_for(role),
+                                session_hash: sh,
+                                ratchet_due: false,
+                            });
+                        let (f, tag) = enc_split(&connect_ctx, dest.as_bytes());
                         match fallback_routes_proxy.path(&fp) {
                             Some(path) => {
                                 let _ = send3_via_fallback(
                                     &nn,
                                     &nn.socket,
                                     &fp,
-                                    sh,
-                                    connect_ctr,
+                                    &connect_ctx,
                                     &f,
                                     &tag,
                                     &path,
@@ -3752,7 +5348,7 @@ async fn run_node(
                                 )
                                 .await;
                             }
-                            None => send3(&nn.socket, &tgt, sh, connect_ctr, &f, &tag).await,
+                            None => send3_mixed(Arc::clone(&nn.socket), &tgt, &connect_ctx, &f, &tag).await,
                         }
                         // Wait for the exit's framed "OK" (delivered via handle_pkt).
                         let mut connected = false;
@@ -3804,13 +5400,20 @@ async fn run_node(
                                             .get(&fp_out)
                                             .map(|s| s.next_tx_counter())
                                             .unwrap_or(2);
-                                        let (f, tag) = enc_split(
-                                            &key_out,
-                                            c,
-                                            &sh_out,
-                                            NonceDirection::InitiatorToResponder,
-                                            &rbuf[..n],
-                                        );
+                                        let ctx_out = nn2
+                                            .sessions
+                                            .get(&fp_out)
+                                            .map(|s| SealCtx::from_session(&s))
+                                            .unwrap_or_else(|| SealCtx {
+                                                key: key_out,
+                                                epoch: 0,
+                                                counter: c,
+                                                nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                                direction: NonceDirection::InitiatorToResponder,
+                                                session_hash: sh_out,
+                                                ratchet_due: false,
+                                            });
+                                        let (f, tag) = enc_split(&ctx_out, &rbuf[..n]);
                                         let me = nn2.fingerprint();
                                         let plan = nn2.contact_plan.read().await;
                                         let route = routes_out.path(&fp_out);
@@ -3819,8 +5422,7 @@ async fn run_node(
                                             &nn2.socket,
                                             &tgt_out,
                                             &fp_out,
-                                            sh_out,
-                                            c,
+                                            &ctx_out,
                                             &f,
                                             &tag,
                                             &srouter,
@@ -3962,12 +5564,18 @@ async fn run_node(
                     // Carry our ICE offer so a discoverer can authenticate
                     // connectivity checks against us immediately.
                     let offer_text = offers.read().ok().map(|g| g.clone());
+                    // Our post-quantum commitment rides every beacon (P2-1): it is
+                    // 32 bytes and the key it names is 1952, so the commitment is
+                    // what a discoverer can remember and check against the key we
+                    // later prove on the carrier.
+                    let pq_commitment = nc.identity.pq_commitment();
                     let beacon = build_beacon_packet(
                         &nc.identity.public_key_bytes(),
                         |d| nc.identity.sign(d).to_bytes(),
                         zk_enabled,
                         offer_text.as_deref(),
                         advertises_relay,
+                        Some(&pq_commitment),
                     );
                     if let Err(e) = beacon_sock.send_to(&beacon, mc_addr).await {
                         tracing::debug!("Beacon send error: {e}");
@@ -3983,6 +5591,9 @@ async fn run_node(
         let nc = Arc::clone(&nc);
         let pending = Arc::clone(&pending_hs);
         let peers = Arc::clone(&addrs);
+        // The registry is where a post-quantum commitment can actually be
+        // enforced (it holds the links), so the beacon listener pins into it.
+        let carrier_pins = Arc::clone(&carrier);
         let rl = Arc::clone(&revocation_list);
         let nat_p = Arc::clone(&nat_puncher);
         let nat_sock = Arc::clone(&nat_socket);
@@ -4043,9 +5654,16 @@ async fn run_node(
                     // willing to relay. A beacon with none of them keeps the
                     // legacy fixed layout.
                     let mut advertises_relay = false;
+                    let beacon_fp = hex::encode(&pk[..8]);
                     let peer_offer = match parse_beacon_sections(&buf, amt) {
                         Some(sections) => {
                             advertises_relay = sections.relay_capable;
+                            // Trust on first use (P2-1): a beacon names the sender's
+                            // post-quantum key, and a later, different commitment for
+                            // the same fingerprint is logged rather than adopted.
+                            if let Some(commitment) = sections.pq_commitment {
+                                carrier_pins.pin_commitment(&beacon_fp, *commitment);
+                            }
                             match sections.zk {
                                 Some((commitment, proof)) => {
                                     if !ZkAuthenticator::verify_proof(&pk, proof, commitment) {
@@ -4256,7 +5874,7 @@ async fn run_node(
                             )
                             .await;
                         }
-                        pending.insert(t.to_string(), (xs, ks));
+                        pending.insert(t.to_string(), PendingHandshake::Kem512(xs, ks));
                         tracing::info!(target = %t, fingerprint = %beacon_fp, "Auto-handshake sent");
                     }
                 }
@@ -4264,157 +5882,13 @@ async fn run_node(
         });
     }
 
-    // ── PACKET RECEIVER (uses LocklessDispatcher for parallel dispatch) ──
+    // The receive pipeline (`RxContext`, below) is module-level on purpose: it
+    // used to be declared inside `main`, which made the one entry point every
+    // socket feeds **impossible to test** — and that is exactly where a
+    // `#[cfg(feature = "vpn")]` on the self-contained-frame bypass hid, dropping
+    // every ratchet step PDU in a default build. A receive path that cannot be
+    // driven from a test is a receive path whose branches are guesses.
     //
-    // Everything the receive path needs, so that *any* socket carrying sealed
-    // GTF frames for us can feed the same pipeline. Two sources exist in Phase 1:
-    // the mesh socket, and a TURN allocation's socket once the server relays a
-    // peer's datagrams to us. Giving them one entry point is what keeps a
-    // relayed frame indistinguishable from a direct one — and keeps the two from
-    // drifting apart as the receive path changes.
-    struct RxContext {
-        node: Arc<GhostNode>,
-        peers: Arc<DashMap<String, SocketAddr>>,
-        spool: Arc<DashMap<u32, Vec<Option<Vec<u8>>>>>,
-        pending_hs: PendingHandshakes,
-        revocation_list: Arc<RevocationList>,
-        reputation: Arc<PoissonReputationMatrix>,
-        vpn: Option<VpnMode>,
-        exit_tunnels: ExitTunnels,
-        sessions_rx: SessionChannels,
-        rx_state_map: RxStateMap,
-        connect_acks: ConnectAcks,
-        connect_ok_ctrs: ConnectOkCtrs,
-        trusted_exits: Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
-        psk: Option<[u8; 32]>,
-        tft: Arc<TitForTatEnforcer>,
-        rotator: Option<Arc<ExitIpRotator>>,
-        relay_role: Option<Arc<DerpRelay>>,
-        /// Which peers need a relay, and the allocation that carries them.
-        fallback: Option<Arc<Fallback>>,
-        dispatcher: Arc<net::dispatcher::LocklessDispatcher>,
-        /// The socket replies leave from. For a datagram the TURN server relayed
-        /// to us this is still the mesh socket: the peer reached us through the
-        /// relay, so its next frame arrives the same way, and the data path back
-        /// to it is routed by the fallback table rather than by this address.
-        socket: Arc<UdpSocket>,
-    }
-
-    impl RxContext {
-        /// Pipe one received datagram into the tunnel.
-        async fn ingest(&self, datagram: &[u8], src: SocketAddr) {
-            let amt = datagram.len();
-            if amt < net::MIN_FRAME_SIZE {
-                return;
-            }
-            let _ = self.node.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-            let _ = self
-                .node
-                .stats
-                .bytes_recv
-                .fetch_add(amt as u64, Ordering::Relaxed);
-            // Dispatch through lockless multi-worker session hash queue
-            let _ = self.dispatcher.dispatch(datagram, src);
-            let ctr = parse_packet_counter(datagram);
-            // Tunnel bulk frames (flags bit 1) are single-frame
-            // datagrams: no RS sharding, no spool. They must bypass the
-            // 2-of-3 shard pool — in it they would never assemble and be
-            // silently dropped. Dispatch straight to handle_pkt.
-            #[cfg(feature = "vpn")]
-            if net::parse_flags(datagram) & 0x02 != 0 {
-                let pe = net::BULK_OFFSET_AUTH_TAG_START.min(amt);
-                if pe <= net::BULK_OFFSET_PAYLOAD_START {
-                    return;
-                }
-                if let Some(sd) = unframe(&datagram[net::BULK_OFFSET_PAYLOAD_START..pe]) {
-                    self.deliver(ctr, sd, src).await;
-                }
-                return;
-            }
-            #[cfg(not(feature = "vpn"))]
-            let _ = &self.vpn;
-            let si = datagram[net::OFFSET_SHARD_INDEX] as usize;
-            if si > 2 {
-                return;
-            }
-            let ats = if amt >= GTF_BULK_SIZE {
-                net::BULK_OFFSET_AUTH_TAG_START
-            } else {
-                net::OFFSET_AUTH_TAG_START
-            };
-            let pe = ats.min(amt);
-            if pe <= OFFSET_PAYLOAD_START {
-                return;
-            }
-            let Some(sd) = unframe(&datagram[OFFSET_PAYLOAD_START..pe]) else {
-                return;
-            };
-            // This path runs concurrently: `assemble` is what decides which of
-            // the (up to) three carriers completes a frame, and it takes the
-            // reconstructed ciphertext forward exactly once.
-            if let Some(r) = assemble(&self.spool, ctr, si, sd).await {
-                if std::env::var("GGN_DEBUG_RX").is_ok() {
-                    tracing::info!("assembled frame ctr={ctr} si={si} len={}", r.len());
-                }
-                self.deliver(ctr, r, src).await;
-            } else if std::env::var("GGN_DEBUG_RX").is_ok() {
-                tracing::info!("assemble dropped ctr={ctr} si={si}");
-            }
-        }
-
-        /// Hand a decrypted-frame candidate to `handle_pkt` on its own task.
-        ///
-        /// Spawned rather than awaited: `handle_pkt` can block on session locks
-        /// and tunnel writes, and the receive loop must stay able to read the
-        /// socket while that happens.
-        async fn deliver(&self, ctr: u32, payload: Vec<u8>, src: SocketAddr) {
-            let node = Arc::clone(&self.node);
-            let peers = Arc::clone(&self.peers);
-            let pending_hs = Arc::clone(&self.pending_hs);
-            let sock = Arc::clone(&self.socket);
-            let rl = Arc::clone(&self.revocation_list);
-            let rep = Arc::clone(&self.reputation);
-            let et = Arc::clone(&self.exit_tunnels);
-            let sc = Arc::clone(&self.sessions_rx);
-            let rsm = Arc::clone(&self.rx_state_map);
-            let ca = Arc::clone(&self.connect_acks);
-            let coc = Arc::clone(&self.connect_ok_ctrs);
-            let te = Arc::clone(&self.trusted_exits);
-            let tft = Arc::clone(&self.tft);
-            let rot = self.rotator.clone();
-            let relay_role = self.relay_role.clone();
-            let fallback_state = self.fallback.clone();
-            let vpn = self.vpn.clone();
-            let psk = self.psk;
-            tokio::spawn(async move {
-                handle_pkt(
-                    node,
-                    &peers,
-                    &pending_hs,
-                    &sock,
-                    ctr,
-                    &payload,
-                    &src,
-                    Some(&rl),
-                    Some(&*rep),
-                    &et,
-                    &sc,
-                    &rsm,
-                    &ca,
-                    &coc,
-                    &te,
-                    psk,
-                    vpn.as_ref(),
-                    Some(&*tft),
-                    rot.as_deref(),
-                    relay_role.as_deref(),
-                    fallback_state.as_deref(),
-                )
-                .await;
-            });
-        }
-    }
-
     // Dispatcher's owned view of the VPN state (main keeps the original).
     #[cfg(feature = "vpn")]
     let vpn_rx: Option<VpnMode> = vpn_mode.as_ref().map(|m| match m {
@@ -4671,6 +6145,41 @@ async fn run_node(
         }
     });
 
+    // ── RATCHET MAINTENANCE (SOTA P2-2) ──
+    //
+    // This is what makes the ratchet real rather than dormant: an epoch holds at
+    // most `RATCHET_INTERVAL` datagrams, and when one is spent the session pays for
+    // a fresh hybrid exchange. The step is *started* here and *completed* in
+    // `handle_pkt` when the peer's signed answer arrives (or, on the answering
+    // side, when the initiator's first frame in the new epoch authenticates).
+    //
+    // Nothing stalls on it: traffic keeps flowing on the current epoch until the
+    // step lands, and a lost step is abandoned after `STEP_STALL` and retried on the
+    // next tick — the same shape as the old pre-wrap re-key, but with a bound on how
+    // long one attempt may sit unanswered.
+    {
+        let nc = Arc::clone(&nc);
+        let pa = Arc::clone(&addrs);
+        let fb = Arc::clone(&fallback_routes);
+        tokio::spawn(async move {
+            loop {
+                sleep(RATCHET_TICK).await;
+                ratchet_maintenance_once(&nc, &pa, &fb).await;
+            }
+        });
+    }
+
+    // ── COVER-TRAFFIC TASK (SOTA P3-1) ──
+    //
+    // Spawned unconditionally and never gated on idleness, so the frame rate is the
+    // same whether the node is in use or not. See `spawn_cover_task` for why gating
+    // it on idleness would defeat the purpose, and what it costs.
+    let _cover = spawn_cover_task(
+        Arc::clone(&nc),
+        Arc::clone(&addrs),
+        relay_role.clone(),
+    );
+
     // ── KEEPALIVE TASK ──
     {
         let nc = Arc::clone(&nc);
@@ -4682,8 +6191,13 @@ async fn run_node(
                 sleep(Duration::from_secs(60)).await;
                 let idle_timeout =
                     Duration::from_secs(nc.keepalive_interval_secs.load(Ordering::Relaxed));
-                for mut e in nc.sessions.iter_mut() {
-                    let idle = e.guard.last_activity.elapsed();
+                for e in nc.sessions.iter() {
+                    let idle = e
+                        .guard
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .last_activity
+                        .elapsed();
                     if idle > idle_timeout {
                         let sh = e.session_hash;
                         // Tunnel relays use their own counter space; a
@@ -4694,12 +6208,15 @@ async fn run_node(
                         let tunnel_busy = kc_sess.contains_key(&sh)
                             || kc_tunnels.iter().any(|t| t.value().session_hash == sh);
                         if tunnel_busy {
-                            e.guard.last_activity = std::time::Instant::now();
+                            e.guard
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .last_activity = std::time::Instant::now();
                             continue;
                         }
                         tracing::debug!("Sending keepalive to {}", e.peer_fingerprint);
-                        let ctr = e.next_tx_counter();
-                        let (f, tag) = enc_split(&e.master_key, ctr, &sh, dir_for(e.role), b"KA");
+                        let ka_ctx = SealCtx::from_session(&e);
+                        let (f, tag) = enc_split(&ka_ctx, b"KA");
                         let tgt = e.peer_fingerprint.clone();
                         let t = nc
                             .sessions
@@ -4712,8 +6229,11 @@ async fn run_node(
                                 }
                             })
                             .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                        send3(&nc.socket, &t, sh, ctr, &f, &tag).await;
-                        e.guard.last_activity = std::time::Instant::now();
+                        send3_mixed(Arc::clone(&nc.socket), &t, &ka_ctx, &f, &tag).await;
+                        e.guard
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .last_activity = std::time::Instant::now();
                     }
                 }
             }
@@ -4934,15 +6454,49 @@ async fn run_node(
                     }
                 }
             }
+            "EXITVOUCHER" => {
+                let subject = p.get(1).copied().unwrap_or("");
+                let scope = p.get(2).copied().unwrap_or("");
+                let ttl = p
+                    .get(3)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(3600);
+                if subject.is_empty() || scope.is_empty() {
+                    println!("Usage: EXITVOUCHER <peer_fp> <host> [ttl_seconds]");
+                    continue;
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                match vantablack::ghost::net::relay::ExitCapability::issue(
+                    &nc.identity,
+                    subject,
+                    scope,
+                    now.saturating_add(ttl),
+                )
+                .and_then(|capability| capability.encode())
+                {
+                    Some(encoded) => println!("EXITAUTH voucher (hex): {}", hex::encode(encoded)),
+                    None => println!("Could not issue voucher: subject or scope is too long"),
+                }
+            }
             "SENDRELAY" => {
-                // Multi-hop relay: SENDRELAY <dest_fp> <relay_fp> <payload>
-                //  inner = [ctr u32 BE][dest-session-encrypted payload]
-                //  outer = [RLY!][hops][dest_fp][inner] via the relay session
+                // Multi-hop relay:
+                //   SENDRELAY <dest_fp> <guard_fp> <payload>
+                //   SENDRELAY <dest_fp> <guard_fp> <middle_fp> <payload>
+                // The second form builds a real guard→middle→destination
+                // nested onion. The first remains wire-compatible with the
+                // original one-relay command.
                 let dest = p.get(1).copied().unwrap_or("");
                 let relay = p.get(2).copied().unwrap_or("");
-                let payload = p.get(3).copied().unwrap_or("");
+                let (middle, payload) = if p.len() >= 5 {
+                    (Some(p[3]), p[4])
+                } else {
+                    (None, p.get(3).copied().unwrap_or(""))
+                };
                 if dest.is_empty() || relay.is_empty() || payload.is_empty() {
-                    println!("Usage: SENDRELAY <dest_fp> <relay_fp> <payload>");
+                    println!("Usage: SENDRELAY <dest_fp> <guard_fp> [<middle_fp>] <payload>");
                     continue;
                 }
                 let Some(ds) = nc.sessions.get(dest) else {
@@ -4962,10 +6516,30 @@ async fn run_node(
                 if !blob.len().is_multiple_of(2) {
                     blob.push(0);
                 }
-                encrypt_in_place_with_context(&dkey, dctr, &dsh, dir_for(drole), &mut blob);
-                let mut inner = dctr.to_be_bytes().to_vec();
+                // The onion's inner layer is sealed with the destination session and
+                // its 32-bit counter is carried in the relay header, so this one
+                // layer stays on the v1 construction: moving it would change the
+                // relay packet format, not just the transport under it. A counter
+                // that no longer fits is refused, never truncated — a truncated
+                // counter reuses a nonce.
+                let Ok(dctr32) = u32::try_from(dctr) else {
+                    println!("SENDRELAY: inner counter exhausted (>2^32) — refusing to send");
+                    continue;
+                };
+                encrypt_in_place_with_context(&dkey, dctr32, &dsh, dir_for(drole), &mut blob);
+                let mut inner = dctr32.to_be_bytes().to_vec();
                 inner.extend_from_slice(&blob);
-                let relay_pkt = build_relay_packet(dest, 1, &inner);
+                let route = match middle {
+                    Some(middle) if !middle.is_empty() && middle != relay && middle != dest => {
+                        build_onion_route(&[relay, middle, dest], &inner)
+                    }
+                    None => build_onion_route(&[relay, dest], &inner),
+                    _ => None,
+                };
+                let Some(relay_pkt) = route else {
+                    println!("SENDRELAY: invalid or duplicate relay route");
+                    continue;
+                };
                 let Some(rs) = nc.sessions.get(relay) else {
                     println!("No session with relay {relay}");
                     continue;
@@ -4977,12 +6551,25 @@ async fn run_node(
                     .get(relay)
                     .map(|s| s.next_tx_counter())
                     .unwrap_or(2);
-                let (f, tag) = enc_split(&rkey, rctr, &rsh, dir_for(rrole), &relay_pkt);
+                let relay_ctx = nc
+                    .sessions
+                    .get(relay)
+                    .map(|s| SealCtx::from_session(&s))
+                    .unwrap_or_else(|| SealCtx {
+                        key: rkey,
+                        epoch: 0,
+                        counter: rctr,
+                        nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                        direction: dir_for(rrole),
+                        session_hash: rsh,
+                        ratchet_due: false,
+                    });
+                let (f, tag) = enc_split(&relay_ctx, &relay_pkt);
                 let tgt = addrs
                     .get(relay)
                     .map(|v| *v.value())
                     .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                send3(&nc.socket, &tgt, rsh, rctr, &f, &tag).await;
+                send3_mixed(Arc::clone(&nc.socket), &tgt, &relay_ctx, &f, &tag).await;
                 println!("Relay sent: {payload} -> {dest} via {relay}");
             }
             "CHAT" => {
@@ -5018,7 +6605,20 @@ async fn run_node(
                     .unwrap_or(2);
                 let mut payload = b"CHAT!".to_vec();
                 payload.extend_from_slice(msg.as_bytes());
-                let (f, tag) = enc_split(&key, ctr, &sh, dir_for(role), &payload);
+                let chat_ctx = nc
+                    .sessions
+                    .get(dest)
+                    .map(|s| SealCtx::from_session(&s))
+                    .unwrap_or_else(|| SealCtx {
+                        key,
+                        epoch: 0,
+                        counter: ctr,
+                        nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                        direction: dir_for(role),
+                        session_hash: sh,
+                        ratchet_due: false,
+                    });
+                let (f, tag) = enc_split(&chat_ctx, &payload);
                 let tgt = addrs
                     .get(dest)
                     .map(|v| *v.value())
@@ -5031,8 +6631,7 @@ async fn run_node(
                     &nc.socket,
                     &tgt,
                     dest,
-                    sh,
-                    ctr,
+                    &chat_ctx,
                     &f,
                     &tag,
                     &shard_router,
@@ -5334,7 +6933,7 @@ mod beacon_section_tests {
 
     #[test]
     fn a_plain_beacon_keeps_the_legacy_112_byte_layout() {
-        let b = build_beacon_packet(&test_pk(), stub_signer, false, None, false);
+        let b = build_beacon_packet(&test_pk(), stub_signer, false, None, false, None);
         assert_eq!(b.len(), BEACON_LEGACY_LEN);
         assert_eq!(&b[..16], BEACON_PREFIX);
         let sections = parse_beacon_sections(&b, b.len()).expect("parses with no sections");
@@ -5348,7 +6947,7 @@ mod beacon_section_tests {
         // with no offer to carry must not switch to the sectioned format.
         let identity = real_identity();
         let pk = identity.public_key_bytes();
-        let b = build_beacon_packet(&pk, |d| identity.sign(d).to_bytes(), true, None, false);
+        let b = build_beacon_packet(&pk, |d| identity.sign(d).to_bytes(), true, None, false, None);
         assert_eq!(b.len(), BEACON_LEGACY_ZK_LEN);
 
         // And the legacy positional read must still verify it.
@@ -5364,7 +6963,7 @@ mod beacon_section_tests {
     #[test]
     fn an_offer_beacon_round_trips_through_its_sections() {
         let offer = sample_offer(true);
-        let b = build_beacon_packet(&test_pk(), stub_signer, false, Some(&offer), false);
+        let b = build_beacon_packet(&test_pk(), stub_signer, false, Some(&offer), false, None);
         assert!(b.len() > BEACON_LEGACY_LEN);
 
         let sections = parse_beacon_sections(&b, b.len()).expect("sections must tile exactly");
@@ -5393,6 +6992,7 @@ mod beacon_section_tests {
             true,
             Some(&offer),
             false,
+            None,
         );
         let sections = parse_beacon_sections(&b, b.len()).expect("both sections must parse");
 
@@ -5405,6 +7005,38 @@ mod beacon_section_tests {
         let decoded =
             vantablack::ghost::net::ice::IceOffer::decode(sections.ice_offer.unwrap()).unwrap();
         assert!(!decoded.controlling);
+    }
+
+    /// The post-quantum commitment rides its own section and round-trips (P2-1).
+    #[test]
+    fn a_pq_commitment_section_names_the_post_quantum_key() {
+        let identity = real_identity();
+        let pk = identity.public_key_bytes();
+        let commitment = identity.pq_commitment();
+        let b = build_beacon_packet(
+            &pk,
+            |d| identity.sign(d).to_bytes(),
+            false,
+            None,
+            false,
+            Some(&commitment),
+        );
+        let sections = parse_beacon_sections(&b, b.len()).expect("the section must tile exactly");
+        assert_eq!(sections.pq_commitment, Some(&commitment));
+        // And it is the commitment to *this* identity's key, so a verifier that
+        // remembers it can check the key the peer later proves on the carrier.
+        assert_eq!(commitment, l0_identity::pq_commitment(&identity.pq_public_key_bytes()));
+        // A section with no commitment anywhere is not invented.
+        let plain = build_beacon_packet(&pk, stub_signer, false, None, false, None);
+        assert_eq!(plain.len(), BEACON_LEGACY_LEN);
+        assert!(parse_beacon_sections(&plain, plain.len())
+            .expect("a bare beacon parses")
+            .pq_commitment
+            .is_none());
+        // A wrongly sized commitment section is malformed, not truncated.
+        let mut bad = vec![0u8; BEACON_LEGACY_LEN];
+        push_beacon_section(&mut bad, BEACON_SECTION_PQ_COMMIT, &commitment[..31]);
+        assert!(parse_beacon_sections(&bad, bad.len()).is_none());
     }
 
     #[test]
@@ -5445,5 +7077,639 @@ mod beacon_section_tests {
         let sections = parse_beacon_sections(&buf, amt).expect("tiles exactly");
         assert_eq!(sections.ice_offer, Some(""));
         assert!(vantablack::ghost::net::ice::IceOffer::decode("").is_err());
+    }
+}
+
+#[cfg(test)]
+mod ratchet_live_tests {
+    //! The ratchet end to end: two nodes, two real sockets, the real maintenance
+    //! tick, the real ingress (`RxContext::ingest`) and the real handler
+    //! (`handle_pkt`) — the epoch is observed to change on a *live* session.
+    //!
+    //! Why this exists at all, and why the other tests were not enough: they called
+    //! `handle_pkt` or the session API directly, so nothing ever exercised the path a
+    //! *datagram* takes between the socket and the handler. That path carried a
+    //! `#[cfg(feature = "vpn")]` on its self-contained-frame bypass, so the step PDU
+    //! was delivered under `--features vpn` and silently swallowed by the shard spool
+    //! in a default build — where a single frame is one shard of three and never
+    //! assembles. Both were "the ratchet works"; one of them was false, and only a
+    //! test that drives a datagram in can tell them apart.
+    use super::*;
+    use std::time::Instant as StdInstant;
+    // `PoissonReputationMatrix` and `RevocationList` come in through `super::*`, which
+    // is also what guarantees this test wires the pipeline with the same types `main`
+    // does rather than with lookalikes.
+    use vantablack::ghost::net::is_v2_frame;
+    use vantablack::ghost::session::ratchet::RATCHET_INTERVAL;
+
+    /// A real node, built by hand.
+    ///
+    /// Deliberately not `GhostNode::new`: that loads or **generates** an identity
+    /// file in the working directory and spawns four worker tasks, neither of which a
+    /// test should be doing to a developer's checkout. Everything else is the real
+    /// node type, driving the real code paths.
+    async fn node(id: Arc<l0_identity::GhostIdentity>) -> Arc<GhostNode> {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind loopback"));
+        let local_addr = socket.local_addr().expect("local addr").to_string();
+        // `dispatch_packet` indexes `workers`, so there has to be at least one, and a
+        // drained channel keeps the dispatcher from filling up mid-test.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        Arc::new(GhostNode {
+            identity: id,
+            sessions: Arc::new(DashMap::new()),
+            socket,
+            contact_plan: tokio::sync::RwLock::new(ContactPlan::default()),
+            created_at: StdInstant::now(),
+            local_addr,
+            flow_controller: Arc::new(net::FlowController::new(100)),
+            stats: Arc::new(net::ThroughputStats::new()),
+            running: std::sync::atomic::AtomicBool::new(true),
+            workers: vec![tx],
+            worker_idx: std::sync::atomic::AtomicUsize::new(0),
+            beacon_enabled: std::sync::atomic::AtomicBool::new(false),
+            keepalive_interval_secs: std::sync::atomic::AtomicU64::new(120),
+        })
+    }
+
+    /// The receive pipeline for one node, wired the way `main` wires it.
+    fn rx_for(
+        node: &Arc<GhostNode>,
+        peers: Arc<DashMap<String, SocketAddr>>,
+        fallback: Arc<Fallback>,
+    ) -> Arc<RxContext> {
+        let reputation = Arc::new(PoissonReputationMatrix::new());
+        Arc::new(RxContext {
+            node: Arc::clone(node),
+            peers,
+            spool: Arc::new(DashMap::new()),
+            pending_hs: Arc::new(DashMap::new()),
+            revocation_list: Arc::new(RevocationList::new()),
+            reputation: Arc::clone(&reputation),
+            vpn: None,
+            exit_tunnels: Arc::new(DashMap::new()),
+            sessions_rx: Arc::new(DashMap::new()),
+            rx_state_map: Arc::new(DashMap::new()),
+            connect_acks: Arc::new(DashMap::new()),
+            connect_ok_ctrs: Arc::new(DashMap::new()),
+            trusted_exits: Arc::new(std::sync::RwLock::new(std::collections::HashSet::new())),
+            psk: None,
+            tft: Arc::new(TitForTatEnforcer::new(
+                node.fingerprint(),
+                Arc::clone(&reputation),
+            )),
+            rotator: None,
+            relay_role: None,
+            fallback: Some(fallback),
+            dispatcher: Arc::new(net::dispatcher::LocklessDispatcher::new(1, 256)),
+            socket: Arc::clone(&node.socket),
+        })
+    }
+
+    /// Take one datagram off a socket, as the receive loop does.
+    async fn recv_one(sock: &UdpSocket) -> Vec<u8> {
+        let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
+        let (amt, _src) = tokio::time::timeout(Duration::from_secs(5), sock.recv_from(&mut buf))
+            .await
+            .expect("a datagram should have arrived")
+            .expect("recv_from");
+        buf.truncate(amt);
+        buf
+    }
+
+    /// `handle_pkt` runs on a spawned task, so effects are waited for rather than
+    /// assumed to have landed when `ingest` returns.
+    async fn wait_for(label: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = StdInstant::now() + Duration::from_secs(5);
+        while StdInstant::now() < deadline {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for {label}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_live_session_rotates_its_epoch_through_the_real_receive_path() {
+        let alice_id = Arc::new(l0_identity::GhostIdentity::generate_fresh());
+        let bob_id = Arc::new(l0_identity::GhostIdentity::generate_fresh());
+        let alice = node(Arc::clone(&alice_id)).await;
+        let bob = node(Arc::clone(&bob_id)).await;
+        let alice_addr = alice.socket.local_addr().expect("alice addr");
+        let bob_addr = bob.socket.local_addr().expect("bob addr");
+        let alice_fp = alice_id.fingerprint();
+        let bob_fp = bob_id.fingerprint();
+        assert_ne!(alice_addr, bob_addr);
+
+        // The two seats on one session, exactly as the handshake leaves them: one
+        // shared master key, complementary roles, and each peer's identity pinned.
+        let master = [0x5Au8; 32];
+        let a_sess = Session::new_with_role(master, bob_fp.clone(), SessionRole::Initiator);
+        a_sess.pin_peer_identity(bob_id.public_key_bytes());
+        let b_sess = Session::new_with_role(master, alice_fp.clone(), SessionRole::Responder);
+        b_sess.pin_peer_identity(alice_id.public_key_bytes());
+        let a_hash = a_sess.session_hash;
+        alice.sessions.insert(bob_fp.clone(), a_sess);
+        bob.sessions.insert(alice_fp.clone(), b_sess);
+        assert_eq!(
+            a_hash,
+            bob.sessions.get(&alice_fp).unwrap().session_hash,
+            "both seats derive one session"
+        );
+
+        // Address books, so the tick has a route to send the step down.
+        let alice_addrs = Arc::new(DashMap::new());
+        alice_addrs.insert(bob_fp.clone(), bob_addr);
+        let bob_addrs = Arc::new(DashMap::new());
+        bob_addrs.insert(alice_fp.clone(), alice_addr);
+        let alice_fb = Arc::new(Fallback::new(None));
+        let alice_rx = rx_for(&alice, Arc::clone(&alice_addrs), Arc::clone(&alice_fb));
+        let bob_rx = rx_for(&bob, Arc::clone(&bob_addrs), Arc::new(Fallback::new(None)));
+
+        // Spend a whole epoch: 1M datagrams is the trigger the interval names.
+        {
+            let s = alice.sessions.get(&bob_fp).expect("alice's session");
+            for _ in 0..RATCHET_INTERVAL {
+                s.note_sealed_frame();
+            }
+            assert!(s.ratchet_due(), "a spent epoch owes a step");
+            assert_eq!(s.epoch(), 0);
+        }
+
+        // ── The real tick body, one pass, on the real socket ─────────────────────
+        ratchet_maintenance_once(&alice, &alice_addrs, &alice_fb).await;
+        // The step goes alice → bob, so it is *bob's* socket that has it — reading
+        // it from alice's would only prove the send went nowhere.
+        let step_frame = recv_one(&bob.socket).await;
+        assert!(is_v2_frame(&step_frame), "the step is a v2 frame");
+        assert_ne!(
+            net::parse_flags(&step_frame) & net::FLAG_TUNNEL,
+            0,
+            "and a self-contained one: the ingress must not spool it"
+        );
+        assert_eq!(
+            net::parse_gtf_v2_header(&step_frame).expect("v2 header").epoch,
+            0,
+            "the step travels on the epoch that is still live"
+        );
+
+        // ── Into bob's ingress, the way the socket loop feeds it ────────────────
+        bob_rx.ingest(&step_frame, alice_addr).await; // src = alice, as recv_from reports
+        wait_for("bob to prepare epoch 1", || {
+            bob.sessions
+                .get(&alice_fp)
+                .map(|s| s.prepared_epoch())
+                == Some(Some(1))
+        })
+        .await;
+        {
+            let s = bob.sessions.get(&alice_fp).expect("bob's session");
+            assert_eq!(s.epoch(), 0, "answering prepares the epoch, it does not install it");
+            assert_eq!(s.ratchet_steps.load(Ordering::Relaxed), 0);
+        }
+
+        // ── The answer comes back into alice's ingress ──────────────────────────
+        let answer_frame = recv_one(&alice.socket).await;
+        alice_rx.ingest(&answer_frame, bob_addr).await;
+        wait_for("alice's epoch to rotate", || {
+            alice.sessions.get(&bob_fp).map(|s| s.epoch()) == Some(1)
+        })
+        .await;
+        {
+            let s = alice.sessions.get(&bob_fp).expect("alice's session");
+            assert_eq!(s.ratchet_steps.load(Ordering::Relaxed), 1);
+            assert!(
+                !s.ratchet_in_progress.load(Ordering::Relaxed),
+                "a completed step leaves nothing in flight"
+            );
+            assert_eq!(s.epoch_capacity_left(), RATCHET_INTERVAL, "a fresh epoch");
+        }
+
+        // ── A data frame in the new epoch makes bob install it ──────────────────
+        // Sent exactly the way the data path sends one: sealed once, Reed-Solomon
+        // split into three shards *without* the self-contained bit, so this also
+        // exercises the spool and the assembled branch of the ingress.
+        let (ctx, shards, tag) = {
+            let s = alice.sessions.get(&bob_fp).expect("alice's session");
+            let ctx = SealCtx::from_session(&s);
+            assert_eq!(ctx.epoch, 1, "the data path seals on the new epoch");
+            let (shards, tag) = enc_split(&ctx, b"epoch one");
+            (ctx, shards, tag)
+        };
+        send3_mixed(Arc::clone(&alice.socket), &bob_addr, &ctx, &shards, &tag).await;
+        for _ in 0..3 {
+            let f = recv_one(&bob.socket).await;
+            assert_eq!(
+                net::parse_flags(&f) & net::FLAG_TUNNEL,
+                0,
+                "a data frame is a shard, not a whole message"
+            );
+            bob_rx.ingest(&f, alice_addr).await;
+        }
+        wait_for("bob to install epoch 1", || {
+            bob.sessions.get(&alice_fp).map(|s| s.epoch()) == Some(1)
+        })
+        .await;
+
+        // ── And the two sides agree on the new epoch, one key per direction ─────
+        let a = alice.sessions.get(&bob_fp).expect("alice's session");
+        let b = bob.sessions.get(&alice_fp).expect("bob's session");
+        assert_eq!(a.epoch(), b.epoch());
+        assert_eq!(a.ratchet_steps.load(Ordering::Relaxed), 1);
+        assert_eq!(b.ratchet_steps.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            a.seal_key(NonceDirection::InitiatorToResponder),
+            b.open_key(1, NonceDirection::InitiatorToResponder, 1)
+                .expect("bob holds epoch 1"),
+            "alice seals epoch 1 with the key bob opens it under"
+        );
+        assert_eq!(
+            b.seal_key(NonceDirection::ResponderToInitiator),
+            a.open_key(1, NonceDirection::ResponderToInitiator, 0)
+                .expect("alice holds epoch 1"),
+            "and bob's sending key is the one alice opens"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_step_that_cannot_be_verified_never_moves_the_epoch() {
+        // The fail-closed half, through the same ingress: the step is authenticated
+        // by the identity pinned at handshake time, so a peer whose pin is absent
+        // gets a refusal and nothing else.
+        let alice_id = Arc::new(l0_identity::GhostIdentity::generate_fresh());
+        let bob_id = Arc::new(l0_identity::GhostIdentity::generate_fresh());
+        let alice = node(Arc::clone(&alice_id)).await;
+        let bob = node(Arc::clone(&bob_id)).await;
+        let alice_addr = alice.socket.local_addr().expect("alice addr");
+        let bob_addr = bob.socket.local_addr().expect("bob addr");
+        let alice_fp = alice_id.fingerprint();
+        let bob_fp = bob_id.fingerprint();
+
+        let master = [0x11u8; 32];
+        let a_sess = Session::new_with_role(master, bob_fp.clone(), SessionRole::Initiator);
+        a_sess.pin_peer_identity(bob_id.public_key_bytes());
+        // Bob deliberately has **no** pin: the session exists, the identity does not.
+        let b_sess = Session::new_with_role(master, alice_fp.clone(), SessionRole::Responder);
+        alice.sessions.insert(bob_fp.clone(), a_sess);
+        bob.sessions.insert(alice_fp.clone(), b_sess);
+
+        let alice_addrs = Arc::new(DashMap::new());
+        alice_addrs.insert(bob_fp.clone(), bob_addr);
+        let alice_fb = Arc::new(Fallback::new(None));
+        let alice_rx = rx_for(&alice, Arc::clone(&alice_addrs), Arc::clone(&alice_fb));
+        let bob_rx = rx_for(&bob, Arc::new(DashMap::new()), Arc::new(Fallback::new(None)));
+        let _ = &alice_rx;
+
+        {
+            let s = alice.sessions.get(&bob_fp).expect("alice's session");
+            for _ in 0..RATCHET_INTERVAL {
+                s.note_sealed_frame();
+            }
+        }
+        ratchet_maintenance_once(&alice, &alice_addrs, &alice_fb).await;
+        let step_frame = recv_one(&bob.socket).await;
+        bob_rx.ingest(&step_frame, alice_addr).await;
+
+        // Give it every chance to be acted on before concluding it was not.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let b = bob.sessions.get(&alice_fp).expect("bob's session");
+        assert_eq!(b.epoch(), 0, "an unverifiable step must not move the epoch");
+        assert_eq!(b.prepared_epoch(), None, "nor prepare one");
+        // Bob answered nothing either, so alice is still waiting (and will retry).
+        assert!(alice
+            .sessions
+            .get(&bob_fp)
+            .expect("alice's session")
+            .ratchet_in_progress
+            .load(Ordering::Relaxed));
+    }
+}
+
+#[cfg(test)]
+mod ratchet_transport_tests {
+    //! The ratchet's *transport* — the half that turns a complete-and-tested step
+    //! API into an epoch that a live session actually rotates.
+    //!
+    //! These tests deliberately re-run the byte path the two call sites use: the
+    //! maintenance tick's `begin_ratchet_step` → `build_ratchet_step_pdu` →
+    //! `seal_single`, and the receive path's open → `frame_payload` →
+    //! `parse_rekey_pdu` → signature check → `answer_ratchet_step`. Driving the
+    //! sessions directly would have passed while the PDU framing was wrong, which
+    //! is exactly the class of bug a "no transport" gap hides.
+    use super::*;
+    use vantablack::ghost::net::{extract_payload, is_v2_frame, parse_gtf_v2_header};
+    use vantablack::ghost::session::ratchet::RATCHET_INTERVAL;
+
+    /// A live session pair: real identities, pinned the way the handshake pins
+    /// them, and one shared master key — two seats on one session.
+    fn session_pair() -> (
+        Session,
+        Session,
+        l0_identity::GhostIdentity,
+        l0_identity::GhostIdentity,
+    ) {
+        let alice_id = l0_identity::GhostIdentity::generate_fresh();
+        let bob_id = l0_identity::GhostIdentity::generate_fresh();
+        let master = [0x5Au8; 32];
+        let alice = Session::new_with_role(master, bob_id.fingerprint(), SessionRole::Initiator);
+        let bob = Session::new_with_role(master, alice_id.fingerprint(), SessionRole::Responder);
+        alice.pin_peer_identity(bob_id.public_key_bytes());
+        bob.pin_peer_identity(alice_id.public_key_bytes());
+        (alice, bob, alice_id, bob_id)
+    }
+
+    /// Spend a whole epoch, which is what makes the tick act.
+    fn spend_the_epoch(s: &Session) {
+        for _ in 0..RATCHET_INTERVAL {
+            s.note_sealed_frame();
+        }
+        assert!(s.ratchet_due(), "a full epoch owes a step");
+        assert_eq!(s.epoch_capacity_left(), 0);
+    }
+
+    /// Open a frame the way the receive path does and hand back the payload the
+    /// ratchet handler sees.
+    fn open_like_the_receive_path(
+        opener: &Session,
+        frame: &[u8],
+        direction: NonceDirection,
+    ) -> Vec<u8> {
+        let h = parse_gtf_v2_header(frame).expect("a v2 header");
+        let plan = opener.plan_open(h.epoch, direction, h.counter);
+        let key = match plan {
+            vantablack::ghost::session::ratchet::OpenPlan::Forward { key, .. } => key,
+            vantablack::ghost::session::ratchet::OpenPlan::Cached { key, .. } => key,
+            _ => panic!("plan failed for counter {}", h.counter),
+        };
+        let mut carried = unframe(extract_payload(frame)).expect("a framed shard");
+        let opened = xchacha_open(&key, &h.nonce, h.epoch, direction, &mut carried)
+            .expect("the epoch key opens it");
+        opener.commit_open(h.epoch, direction, plan);
+        frame_payload(opened)
+            .expect("a framed payload")
+            .to_vec()
+    }
+
+    #[test]
+    fn a_full_epoch_makes_a_live_session_rotate_its_epoch() {
+        let (alice, bob, alice_id, bob_id) = session_pair();
+        assert_eq!(alice.epoch(), 0);
+        spend_the_epoch(&alice);
+
+        // ── The maintenance tick's body, line for line ──────────────────────────
+        let (x_pub, kem_pub) = alice
+            .begin_ratchet_step()
+            .expect("a due session starts a step");
+        assert!(
+            alice.begin_ratchet_step().is_none(),
+            "and does not start a second one while the first is in flight"
+        );
+        let pdu = build_ratchet_step_pdu(|d| alice_id.sign(d).to_bytes(), &x_pub, &kem_pub)
+            .expect("our own ephemeral material round-trips");
+        assert!(
+            pdu.len() > 458,
+            "a step PDU exceeds a privacy payload, so it needs a bulk frame"
+        );
+        let ctx = SealCtx::from_session(&alice);
+        assert_eq!(ctx.epoch, 0, "the step itself still travels on the live epoch");
+        let frame = seal_single(&ctx, &pdu);
+        assert!(is_v2_frame(&frame));
+        assert_eq!(frame.len(), GTF_BULK_SIZE);
+
+        // ── The receive path's body ────────────────────────────────────────────
+        let payload = open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
+        let blob = parse_rekey_pdu(&payload).expect("a step PDU");
+        assert!(
+            l0_identity::verify_peer_signature(
+                &alice_id.public_key_bytes(),
+                &rekey_init_signed_material(&blob.x25519_pub, &blob.kyber_pub),
+                &blob.signature,
+            ),
+            "the PDU is signed by the identity the session pinned"
+        );
+        // The material that arrived is the material the session handed out — both
+        // halves, so the PQ half of the exchange is bound too.
+        assert_eq!(blob.x25519_pub, x_pub);
+        assert_eq!(blob.kyber_pub.as_slice(), kem_pub.as_slice());
+
+        let answer = bob
+            .answer_ratchet_step(&blob.x25519_pub, &blob.kyber_pub)
+            .expect("the peer answers");
+        assert_eq!(bob.epoch(), 0, "answering prepares the epoch, it does not install it");
+        assert_eq!(bob.prepared_epoch(), Some(1));
+        let reply = build_rekey_response_pdu(
+            |d| bob_id.sign(d).to_bytes(),
+            &answer.x_public,
+            &answer.kem_ct,
+            &answer.confirm,
+        );
+        let rblob_raw = parse_rekey_response_pdu(&reply).expect("a well-formed answer");
+        assert!(
+            l0_identity::verify_peer_signature(
+                &bob_id.public_key_bytes(),
+                &rekey_answer_signed_material(
+                    &rblob_raw.x25519_pub,
+                    &rblob_raw.kyber_ct,
+                    &rblob_raw.confirm,
+                ),
+                &rblob_raw.signature,
+            ),
+            "the answer is signed by the responder's pinned identity"
+        );
+
+        // The reply is sealed on the epoch the peer still holds — bob has only
+        // *prepared* the new one, so a reply on it would be unopenable to alice.
+        let reply_ctx = SealCtx::from_session(&bob);
+        assert_eq!(reply_ctx.epoch, 0);
+        let reply_frame = seal_single(&reply_ctx, &reply);
+
+        // ── Back on the initiating side ────────────────────────────────────────
+        let reply_payload = open_like_the_receive_path(
+            &alice,
+            &reply_frame,
+            NonceDirection::ResponderToInitiator,
+        );
+        let rblob = parse_rekey_response_pdu(&reply_payload).expect("a step answer");
+        assert_eq!(
+            alice.finish_ratchet_step(&RatchetAnswer {
+                x_public: rblob.x25519_pub,
+                kem_ct: rblob.kyber_ct,
+                confirm: rblob.confirm,
+                epoch: alice.epoch() + 1,
+            }),
+            Some(1),
+            "the answer confirms the step and the epoch moves"
+        );
+        assert_eq!(alice.epoch(), 1);
+        assert!(
+            !alice.ratchet_in_progress.load(Ordering::Relaxed),
+            "a completed step leaves nothing in flight"
+        );
+
+        // The responder installs it only when a frame of the new epoch opens.
+        assert!(bob.activate_epoch(1));
+        assert_eq!(alice.epoch(), bob.epoch());
+        assert_eq!(
+            alice.seal_key(NonceDirection::InitiatorToResponder),
+            bob.open_key(1, NonceDirection::InitiatorToResponder, 0)
+                .expect("epoch 1 key"),
+            "one round trip, one epoch, one key"
+        );
+    }
+
+    #[test]
+    fn a_step_pdu_that_does_not_verify_never_moves_the_epoch() {
+        // The fail-closed half of the handler: the step is authenticated by the
+        // pinned identity key, so a PDU signed by somebody else is refused before
+        // `answer_ratchet_step` is ever reached and the epoch stays put.
+        let (alice, bob, _alice_id, _bob_id) = session_pair();
+        let impostor = l0_identity::GhostIdentity::generate_fresh();
+        spend_the_epoch(&alice);
+        let (x_pub, kem_pub) = alice.begin_ratchet_step().unwrap();
+        let pdu = build_ratchet_step_pdu(|d| impostor.sign(d).to_bytes(), &x_pub, &kem_pub)
+            .expect("a well-formed PDU from the wrong signer");
+        let frame = seal_single(&SealCtx::from_session(&alice), &pdu);
+        let payload = open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
+        let blob = parse_rekey_pdu(&payload).expect("well-formed on the wire");
+
+        // What `handle_ratchet_pdu` checks before answering.
+        let pinned = bob.peer_identity_pk().expect("the handshake pinned alice");
+        assert!(
+            !l0_identity::verify_peer_signature(
+                &pinned,
+                &rekey_init_signed_material(&blob.x25519_pub, &blob.kyber_pub),
+                &blob.signature,
+            ),
+            "the impostor's signature must not verify against the pinned key"
+        );
+        assert_eq!(bob.epoch(), 0);
+        assert_eq!(bob.prepared_epoch(), None, "nothing was prepared for an unauthenticated step");
+    }
+}
+
+#[cfg(test)]
+mod p3_1_cover_tests {
+    //! Cover traffic (SOTA P3-1): the flag reaches the wire, the shape is the same
+    //! as a data message, the receiver decides on the authenticated marker rather
+    //! than the header bit, and the gaps are drawn rather than fixed.
+    use super::*;
+
+    fn ctx(seed: u8) -> SealCtx {
+        let s = Session::new_with_role([seed; 32], "peer".into(), SessionRole::Initiator);
+        SealCtx::from_session(&s)
+    }
+
+    #[test]
+    fn the_cover_bit_reaches_the_wire_and_is_not_a_version_marker() {
+        use vantablack::ghost::net::{parse_gtf_v2_header, GTF_BASE_SIZE, JITTER_MAX};
+
+        let ctx = ctx(0x5A);
+        let (shards, tag) = enc_split(&ctx, net::DUMMY_MAGIC);
+        assert_eq!(shards.len(), 3, "cover is an ordinary RS(2,1) group, like data");
+
+        for i in 0..3 {
+            let frame =
+                net::build_gtf_v2_frame(&ctx.header(i as u8, false, net::FLAG_DUMMY), &shards[i], &tag);
+            let h = parse_gtf_v2_header(&frame).expect("a v2 header");
+            assert_ne!(
+                h.flags & net::FLAG_DUMMY,
+                0,
+                "the caller bit must survive the builder's mask — before P3-1 it was masked off"
+            );
+            assert_eq!(h.flags & net::FLAG_V2, 0, "the v2 marker is not a caller bit");
+            assert_eq!(
+                frame.len(),
+                GTF_BASE_SIZE + JITTER_MAX,
+                "cover is a privacy frame, not a bulk one: same shape as data"
+            );
+            assert!(!h.bulk);
+        }
+    }
+
+    #[test]
+    fn cover_traffic_is_recognised_by_its_marker_not_by_its_header_bit() {
+        use vantablack::ghost::net::{is_dummy_payload, tail_for, DUMMY_MAGIC};
+
+        let ctx = ctx(0x33);
+        let tail = tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
+
+        // Seal exactly what `enc_split` seals, then take the receiver's own two
+        // steps over it: open, then classify. `open_received_frame` strips the tag,
+        // which is why `frame_payload` sees `[len][payload]`.
+        let mut framed = (DUMMY_MAGIC.len() as u16).to_be_bytes().to_vec();
+        framed.extend_from_slice(DUMMY_MAGIC);
+        xchacha_seal_in_place_with_aad(
+            &ctx.key,
+            &ctx.nonce,
+            ctx.epoch,
+            ctx.direction,
+            &mut framed,
+            &tail,
+        )
+        .expect("seal");
+        let opened = xchacha_open_with_aad(
+            &ctx.key,
+            &ctx.nonce,
+            ctx.epoch,
+            ctx.direction,
+            &mut framed,
+            &tail,
+        )
+        .expect("opens");
+        assert!(
+            frame_payload(opened).is_some_and(is_dummy_payload),
+            "a cover frame must be recognised after decryption"
+        );
+
+        // A data payload is not cover, and neither is a near-miss of the marker.
+        let mut real = 4u16.to_be_bytes().to_vec();
+        real.extend_from_slice(b"data");
+        assert!(!frame_payload(&real).is_some_and(is_dummy_payload));
+        assert!(!is_dummy_payload(b"DUMMY"), "a prefix is not the marker");
+        assert!(!is_dummy_payload(b"DUMMY?"), "one byte off is not the marker");
+        assert!(!is_dummy_payload(b""));
+
+        // The decision takes only the payload, so a header bit can neither suppress
+        // a real frame nor promote a placeholder — which is the property the flag's
+        // own doc-comment claims, asserted here rather than left to inspection.
+        assert!(
+            !is_dummy_payload(frame_payload(&real).expect("a framed data payload")),
+            "FLAG_DUMMY on a real payload must not make it cover"
+        );
+    }
+
+    #[test]
+    fn cover_gaps_are_drawn_not_a_metronome() {
+        // An exponential inter-arrival time with rate λ has mean 1/λ, and a cover
+        // message is three frames — so at `COVER_FRAMES_PER_SEC` the mean gap is
+        // `COVER_FRAMES_PER_MESSAGE / COVER_FRAMES_PER_SEC`. Checking the mean alone
+        // would pass for a fixed interval, which is exactly what must be excluded,
+        // so the spread is checked too.
+        let draws = 20_000;
+        let mut total = 0.0f64;
+        let mut distinct = std::collections::HashSet::new();
+        for i in 0..draws {
+            let u = (i as f64 + 0.5) / draws as f64;
+            let gap = cover_gap(u, COVER_FRAMES_PER_SEC).as_secs_f64();
+            total += gap;
+            distinct.insert((gap * 1000.0) as u64);
+        }
+        let mean = total / draws as f64;
+        let expected = COVER_FRAMES_PER_MESSAGE / COVER_FRAMES_PER_SEC;
+        assert!(
+            (mean - expected).abs() < 0.15 * expected,
+            "mean gap {mean:.3}s should be near {expected:.3}s"
+        );
+        assert!(distinct.len() > 100, "gaps must vary, not repeat");
+
+        // Both tails are clamped, so neither a near-zero nor a near-one draw can
+        // spin the loop or stall cover.
+        for u in [0.0, 0.999_999] {
+            let g = cover_gap(u, COVER_FRAMES_PER_SEC);
+            assert!(g >= Duration::from_millis(5) && g <= Duration::from_secs(30));
+        }
+        // A non-positive rate means "no cover", expressed as an impossible gap.
+        assert_eq!(cover_gap(0.5, 0.0), Duration::from_secs(3600));
     }
 }

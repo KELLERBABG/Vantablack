@@ -8,11 +8,11 @@ use tokio::net::UdpSocket;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
-use crate::ghost::layers::l2_aead::encrypt_in_place;
+use crate::ghost::layers::l2_aead::xchacha_seal_in_place_with_aad;
 use crate::ghost::layers::l4_rs;
 use crate::ghost::net::cc;
 use crate::ghost::net::routing::{ContactPlan, PoissonReputationMatrix, RouteOptions, Timestamp};
-use crate::ghost::net::{frame_shard, ice, send_gtf, stun};
+use crate::ghost::net::{frame_shard, ice, send_gtf_v2, stun, GtfV2Header};
 use crate::ghost::session::Session;
 
 // ── Bootstrap Seeds & Embedded Default Config ──────────────────────
@@ -770,42 +770,81 @@ impl AdaptiveShardRouter {
         now: Timestamp,
         want: usize,
     ) -> Vec<(String, SocketAddr, f64)> {
-        let mut routed: Vec<(String, SocketAddr, f64, f64)> = Vec::new();
-        let mut unrouted: Vec<(String, SocketAddr, f64)> = Vec::new();
-        // Intermediate nodes already spoken for by an accepted peer.
-        let mut used_transit: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // First compute every candidate without exclusions.  Excluding while
+        // iterating the caller's registry made the result depend on DashMap's
+        // iteration order: a slower peer could reserve a relay before a faster
+        // peer was even considered.  Routing must be deterministic and greedy
+        // by earliest arrival, not by hash-table order.
+        let mut candidates: Vec<(String, SocketAddr, f64, f64, Vec<String>)> = available
+            .iter()
+            .filter(|(fp, _)| fp != me)
+            .filter_map(|(fp, addr)| {
+                let journey = plan.find_earliest_arrival_with(
+                    me,
+                    fp,
+                    now,
+                    &RouteOptions::default(),
+                )?;
+                Some((
+                    fp.clone(),
+                    *addr,
+                    self.path_fitness(fp),
+                    journey.arrival_time,
+                    journey.transit_nodes(),
+                ))
+            })
+            .collect();
+        // `sort_by` is stable: equal-arrival routes retain the caller's
+        // deterministic candidate order. This matters when two destinations
+        // share the same measured relay path; the first advertised route gets
+        // the uncontested slot and the other is deferred below.
+        candidates.sort_by(|a, b| {
+            a.3.partial_cmp(&b.3)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        for (fp, addr) in available {
-            if fp == me {
-                continue;
-            }
-            let mut opts = RouteOptions::default();
-            for node in &used_transit {
-                opts.excluded_nodes.insert(node.clone());
-            }
-            match plan.find_earliest_arrival_with(me, fp, now, &opts) {
-                Some(journey) => {
-                    for node in journey.transit_nodes() {
-                        used_transit.insert(node);
-                    }
-                    routed.push((
-                        fp.clone(),
-                        *addr,
-                        self.path_fitness(fp),
-                        journey.arrival_time,
-                    ));
-                }
-                None => unrouted.push((fp.clone(), *addr, self.path_fitness(fp))),
+        // Greedily accept the earliest route whose transit nodes do not overlap
+        // an already selected route.  This is the mesh-level disjointness gate:
+        // three shards get three peers and three divergent relay paths whenever
+        // the contact graph can provide them.
+        let mut used_transit = std::collections::HashSet::new();
+        let mut routed = Vec::new();
+        let mut deferred = Vec::new();
+        for candidate in candidates {
+            let overlaps = candidate
+                .4
+                .iter()
+                .any(|node| used_transit.contains(node));
+            if overlaps {
+                deferred.push(candidate);
+            } else {
+                used_transit.extend(candidate.4.iter().cloned());
+                routed.push(candidate);
             }
         }
 
-        routed.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
-        unrouted.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        // An overlapping route is still better than silently losing a shard.
+        // Keep it as a last-resort candidate, after all genuinely disjoint paths.
+        deferred.sort_by(|a, b| {
+            a.3.partial_cmp(&b.3)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        routed.extend(deferred);
 
         let mut out: Vec<(String, SocketAddr, f64)> = routed
             .into_iter()
-            .map(|(fp, addr, fitness, _)| (fp, addr, fitness))
+            .map(|(fp, addr, fitness, _, _)| (fp, addr, fitness))
             .collect();
+        let mut unrouted: Vec<(String, SocketAddr, f64)> = available
+            .iter()
+            .filter(|(fp, _)| fp != me && !out.iter().any(|(selected, _, _)| selected == fp))
+            .map(|(fp, addr)| (fp.clone(), *addr, self.path_fitness(fp)))
+            .collect();
+        unrouted.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         out.extend(unrouted);
         out.truncate(want.max(1));
         out
@@ -1241,6 +1280,11 @@ impl ExitIpRotator {
 /// Dispatch shards across multiple peer paths using the AdaptiveShardRouter,
 /// with relay headers for intermediate hops.
 ///
+/// This legacy helper remains available for v1 callers. The live v2 daemon path
+/// performs the same assignment with its session-owned epoch key and nonce in
+/// `send3_adaptive`; keeping this helper v1-shaped avoids inventing crypto state
+/// that belongs to the caller.
+///
 /// This implements the asymmetric shard allocation depicted in the mesh
 /// architecture: Shard 0 → Peer A, Shard 1 → Peer B, Parity → Peer C,
 /// where any 2 of 3 paths reconstruct at the destination via RS(2,1).
@@ -1357,9 +1401,12 @@ pub async fn forward_to_exit_tunnel(
         }
     };
 
-    let key = session_entry.master_key;
+    // SOTA P2-2: the ratchet's epoch key and a fresh 96-bit nonce, drawn once for
+    // this message so all three shards share it (they are pieces of one AEAD
+    // ciphertext, and spending a nonce per shard would encrypt the same plaintext
+    // three times under the same key).
+    let material = session_entry.seal_material();
     let sh = session_entry.session_hash;
-    let ctr = session_entry.next_tx_counter();
     let use_bulk = session_entry.use_bulk;
     drop(session_entry);
 
@@ -1371,7 +1418,30 @@ pub async fn forward_to_exit_tunnel(
         framed.push(0);
     }
 
-    encrypt_in_place(&key, ctr, &mut framed);
+    // SOTA P3-1: the jitter tail is authenticated as AEAD associated data, so it
+    // has to exist *before* the seal and then travel in the frame. A bulk frame
+    // carries no tail, and therefore no associated data either.
+    let tail = if use_bulk {
+        [0u8; crate::ghost::net::JITTER_MAX]
+    } else {
+        crate::ghost::net::tail_for(
+            &material.key,
+            &material.nonce,
+            material.epoch,
+            material.direction,
+        )
+    };
+    let aad: &[u8] = if use_bulk { &[] } else { &tail[..] };
+
+    xchacha_seal_in_place_with_aad(
+        &material.key,
+        &material.nonce,
+        material.epoch,
+        material.direction,
+        &mut framed,
+        aad,
+    )
+    .expect("sealing an owned buffer cannot fail");
 
     // Extract auth tag from the last 16 bytes of the ciphertext
     let tag = if framed.len() >= 16 {
@@ -1392,18 +1462,17 @@ pub async fn forward_to_exit_tunnel(
     // Send all 3 shards to the exit node
     for i in 0..3 {
         let shard_data = frame_shard(&shards[i]);
-        if let Err(e) = send_gtf(
-            sock,
-            &exit_addr,
-            sh,
-            ctr,
-            i as u8,
-            &shard_data,
-            &tag,
-            use_bulk,
-        )
-        .await
-        {
+        let header = GtfV2Header {
+            session_hash: sh,
+            counter: material.counter,
+            epoch: material.epoch,
+            nonce: material.nonce,
+            shard_index: i as u8,
+            flags: 0,
+            bulk: use_bulk,
+            tail,
+        };
+        if let Err(e) = send_gtf_v2(sock, &exit_addr, &header, &shard_data, &tag).await {
             debug!("Exit tunnel send error to {}: {}", exit_node_fingerprint, e);
             return false;
         }

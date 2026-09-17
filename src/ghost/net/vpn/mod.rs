@@ -15,6 +15,9 @@
 //!
 //! Nothing in this module allocates an unbounded channel.
 
+#[cfg(target_os = "macos")]
+pub mod apple;
+
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -262,6 +265,21 @@ impl LeaseTable {
         l.endpoint = endpoint;
         l.last_seen = Instant::now();
         Some(AnchorEvent::HandshakeRotation)
+    }
+
+    /// Adopt an authenticated tunnel epoch exactly, without assuming epochs
+    /// advance by one. This is used for loss-tolerant mobility where a client
+    /// may complete several re-anchors before the hub sees the next packet.
+    pub fn adopt_epoch(&self, fingerprint: &str, epoch: u32, endpoint: SocketAddr) -> bool {
+        let mut fps = self.by_fp.lock();
+        let Some(lease) = fps.get_mut(fingerprint) else {
+            return false;
+        };
+        lease.epoch = epoch;
+        lease.tunnel_v_max = 0;
+        lease.endpoint = endpoint;
+        lease.last_seen = Instant::now();
+        true
     }
 
     /// Current epoch for a fingerprint (0 if unleased).
@@ -663,6 +681,18 @@ impl VpnIngress {
     /// Evict all state for a fingerprint (epoch rotation cleanup).
     pub fn evict(&self, fingerprint: &str) {
         self.rx.lock().retain(|(fp, _), _| fp != fingerprint);
+    }
+
+    /// Retain only the authenticated current epoch for a fingerprint.
+    ///
+    /// Mobility can advance an inner tunnel epoch before the outer mesh
+    /// session is rebuilt. The candidate epoch must be authenticated first;
+    /// only then is older replay state removed. Keeping this operation separate
+    /// prevents an unauthenticated packet from forcing a destructive reset.
+    pub fn retain_epoch(&self, fingerprint: &str, epoch: u32) {
+        self.rx
+            .lock()
+            .retain(|(fp, e), _| fp != fingerprint || *e == epoch);
     }
 }
 

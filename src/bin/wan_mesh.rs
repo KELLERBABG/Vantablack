@@ -414,10 +414,9 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
         hex::encode(&identity.public_key_bytes()[..8])
     );
 
-    // Start local discovery beacon announcer
-    start_beacon_announcer(GhostIdentity {
-        long_term_signing: identity.long_term_signing.clone(),
-    });
+    // Start local discovery beacon announcer. The announcer signs with the same
+    // identity as the node (both keys: see `GhostIdentity`).
+    start_beacon_announcer(identity.clone());
 
     let exit_rotator = ExitIpRotator::new(vec![
         "198.51.100.10".parse()?,
@@ -651,9 +650,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
     );
 
     // Start discovery listeners & announcers
-    start_beacon_announcer(GhostIdentity {
-        long_term_signing: identity.long_term_signing.clone(),
-    });
+    start_beacon_announcer(identity.clone());
     start_beacon_listener(local_pk);
 
     // Bootstrap Peer Discovery: DNS seed, peers.cache, and static subnet carriers

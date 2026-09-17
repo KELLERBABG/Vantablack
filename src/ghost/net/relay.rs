@@ -16,16 +16,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rand::seq::SliceRandom;
+
 use dashmap::DashMap;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
-use crate::ghost::layers::l2_aead::encrypt_in_place;
+use crate::ghost::layers::l0_identity::{verify_peer_signature, GhostIdentity};
+use crate::ghost::layers::l2_aead::xchacha_seal_in_place_with_aad;
 use crate::ghost::layers::l4_rs;
 use crate::ghost::net::frame_shard;
-use crate::ghost::net::send_gtf;
+use crate::ghost::net::send_gtf_v2;
 use crate::ghost::net::FlowController;
+use crate::ghost::net::GtfV2Header;
 use crate::ghost::session::Session;
 
 /// Magic prefix for relay packets — distinguishes relay from direct data.
@@ -46,6 +50,238 @@ pub const MAX_HOPS: usize = 5;
 
 /// Maximum time (seconds) a bundle is held in store-and-forward before expiry.
 pub const BUNDLE_EXPIRY_SECS: u64 = 3600; // 1 hour
+
+/// Exit destination policy used by an exit node.
+///
+/// An unset policy keeps the historical open-exit behavior for compatibility;
+/// once `GHOST_EXIT_ALLOWLIST` is set, destinations must match an exact host or
+/// a leading-wildcard suffix (`*.example.test`). `any` explicitly opts into the
+/// open mode. Matching is performed on the parsed host, never on the raw
+/// `host:port` string, so a caller cannot smuggle a port or path through a rule.
+/// Signed, expiring capability authorizing one peer to use one exit scope.
+///
+/// The voucher is intentionally independent of the transport session: it can be
+/// issued by an exit operator, carried inside an authenticated request, and
+/// verified without trusting the requesting peer's claims. `scope` is normally
+/// a hostname or an exit-policy label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitCapability {
+    pub issuer_pk: [u8; 32],
+    pub subject: String,
+    pub scope: String,
+    pub expires_at: u64,
+    pub signature: [u8; 64],
+}
+
+impl ExitCapability {
+    const MAGIC: &'static [u8; 8] = b"EXITAUTH";
+    const VERSION: u8 = 1;
+    const MAX_SUBJECT: usize = 64;
+    const MAX_SCOPE: usize = 192;
+
+    fn signing_bytes(subject: &str, scope: &str, expires_at: u64) -> Option<Vec<u8>> {
+        if subject.is_empty()
+            || subject.len() > Self::MAX_SUBJECT
+            || scope.is_empty()
+            || scope.len() > Self::MAX_SCOPE
+        {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(32 + subject.len() + scope.len());
+        bytes.extend_from_slice(b"GGN_EXITAUTH_V1");
+        bytes.extend_from_slice(&expires_at.to_be_bytes());
+        bytes.push(subject.len() as u8);
+        bytes.extend_from_slice(subject.as_bytes());
+        bytes.extend_from_slice(&(scope.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(scope.as_bytes());
+        Some(bytes)
+    }
+
+    pub fn issue(
+        issuer: &GhostIdentity,
+        subject: impl Into<String>,
+        scope: impl Into<String>,
+        expires_at: u64,
+    ) -> Option<Self> {
+        let subject = subject.into();
+        let scope = scope.into();
+        let signing = Self::signing_bytes(&subject, &scope, expires_at)?;
+        Some(Self {
+            issuer_pk: issuer.public_key_bytes(),
+            subject,
+            scope,
+            expires_at,
+            signature: issuer.sign(&signing).to_bytes(),
+        })
+    }
+
+    pub fn verify(&self, now: u64, expected_subject: &str, required_scope: &str) -> bool {
+        if now > self.expires_at
+            || self.subject != expected_subject
+            || self.scope != required_scope
+        {
+            return false;
+        }
+        let Some(signing) = Self::signing_bytes(&self.subject, &self.scope, self.expires_at) else {
+            return false;
+        };
+        verify_peer_signature(&self.issuer_pk, &signing, &self.signature)
+    }
+
+    /// Compact binary encoding for an authenticated exit request.
+    pub fn encode(&self) -> Option<Vec<u8>> {
+        let mut out = Vec::new();
+        out.extend_from_slice(Self::MAGIC);
+        out.push(Self::VERSION);
+        out.extend_from_slice(&self.expires_at.to_be_bytes());
+        out.push(self.subject.len() as u8);
+        out.extend_from_slice(self.subject.as_bytes());
+        out.extend_from_slice(&(self.scope.len() as u16).to_be_bytes());
+        out.extend_from_slice(self.scope.as_bytes());
+        out.extend_from_slice(&self.issuer_pk);
+        out.extend_from_slice(&self.signature);
+        (self.subject.len() <= Self::MAX_SUBJECT && self.scope.len() <= Self::MAX_SCOPE)
+            .then_some(out)
+    }
+
+    pub fn decode(raw: &[u8]) -> Option<Self> {
+        let mut at = 9usize;
+        if raw.len() < Self::MAGIC.len() + 1 + 8 + 1 + 2 + 32 + 64
+            || &raw[..8] != Self::MAGIC
+            || raw[8] != Self::VERSION
+        {
+            return None;
+        }
+        let expires_at = u64::from_be_bytes(raw[at..at + 8].try_into().ok()?);
+        at += 8;
+        let subject_len = *raw.get(at)? as usize;
+        at += 1;
+        if subject_len == 0 || subject_len > Self::MAX_SUBJECT || at + subject_len > raw.len() {
+            return None;
+        }
+        let subject = String::from_utf8(raw[at..at + subject_len].to_vec()).ok()?;
+        at += subject_len;
+        let scope_len = u16::from_be_bytes(raw.get(at..at + 2)?.try_into().ok()?) as usize;
+        at += 2;
+        if scope_len == 0 || scope_len > Self::MAX_SCOPE || at + scope_len > raw.len() {
+            return None;
+        }
+        let scope = String::from_utf8(raw[at..at + scope_len].to_vec()).ok()?;
+        at += scope_len;
+        let issuer_pk: [u8; 32] = raw.get(at..at + 32)?.try_into().ok()?;
+        at += 32;
+        let signature: [u8; 64] = raw.get(at..at + 64)?.try_into().ok()?;
+        if at + 64 != raw.len() {
+            return None;
+        }
+        Some(Self { issuer_pk, subject, scope, expires_at, signature })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitPolicy {
+    rules: Vec<String>,
+    allow_any: bool,
+}
+
+impl ExitPolicy {
+    pub fn from_env() -> Self {
+        let raw = std::env::var("GHOST_EXIT_ALLOWLIST").unwrap_or_default();
+        let rules: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|rule| !rule.is_empty() && !rule.eq_ignore_ascii_case("any"))
+            .map(|rule| rule.to_ascii_lowercase())
+            .collect();
+        Self {
+            allow_any: raw.trim().is_empty()
+                || raw
+                    .split(',')
+                    .any(|rule| rule.trim().eq_ignore_ascii_case("any")),
+            rules,
+        }
+    }
+
+    pub fn new(rules: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        let rules: Vec<String> = rules
+            .into_iter()
+            .map(Into::into)
+            .map(|rule| rule.trim().to_ascii_lowercase())
+            .filter(|rule| !rule.is_empty())
+            .collect();
+        Self {
+            allow_any: rules.iter().any(|rule| rule == "any"),
+            rules,
+        }
+    }
+
+    pub fn allows(&self, host: &str) -> bool {
+        if self.allow_any {
+            return true;
+        }
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        self.rules.iter().any(|rule| {
+            if let Some(suffix) = rule.strip_prefix("*.") {
+                host.ends_with(&format!(".{suffix}")) && host.len() > suffix.len() + 1
+            } else {
+                host == rule.as_str()
+            }
+        })
+    }
+}
+
+/// Bounded, fixed-size batch used to randomize the emission order of one
+/// authenticated shard group.
+///
+/// A batch never grows beyond `capacity` and can be flushed by age. It is a
+/// transport-safe primitive: it only reorders already-authenticated opaque
+/// items, never combines ciphertexts or changes shard indices. Cross-message
+/// relay mixing can build on this without introducing a new wire format.
+pub struct MixBatch<T> {
+    items: Vec<(Instant, T)>,
+    capacity: usize,
+    max_delay: Duration,
+}
+
+impl<T> MixBatch<T> {
+    pub fn new(capacity: usize, max_delay: Duration) -> Self {
+        Self {
+            items: Vec::with_capacity(capacity.max(1)),
+            capacity: capacity.max(1),
+            max_delay,
+        }
+    }
+
+    pub fn push(&mut self, item: T) -> Option<Vec<T>> {
+        self.items.push((Instant::now(), item));
+        if self.items.len() >= self.capacity {
+            Some(self.drain_randomized())
+        } else {
+            None
+        }
+    }
+
+    pub fn flush_due(&self) -> bool {
+        self.items
+            .first()
+            .map(|(created, _)| created.elapsed() >= self.max_delay)
+            .unwrap_or(false)
+    }
+
+    pub fn drain_randomized(&mut self) -> Vec<T> {
+        let mut rng = rand::thread_rng();
+        self.items.shuffle(&mut rng);
+        self.items.drain(..).map(|(_, item)| item).collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
 
 /// A relay header prepended to the encrypted payload.
 ///
@@ -90,6 +326,39 @@ pub fn build_relay_packet(
         remaining_hops,
         inner_payload,
     )
+}
+
+/// Build a nested onion for a complete relay route.
+///
+/// `route[0]` is the first peer the caller sends to; each following entry is
+/// learned only after the preceding relay peels its layer.  The first hop is
+/// therefore not encoded as a header destination — it is selected by the
+/// transport — while every later hop is wrapped from the destination backwards.
+/// For example, `[guard, middle, exit]` produces `RLY!(middle, 2,
+/// RLY!(exit, 1, payload))`.
+///
+/// The fixed 40-byte envelope and the hop bound keep this suitable for the
+/// existing authenticated GTF payload path. The function is deliberately pure;
+/// per-hop session encryption remains in the transport, so a caller cannot
+/// accidentally reuse one key for all layers.
+pub fn build_onion_route(route: &[&str], payload: &[u8]) -> Option<Vec<u8>> {
+    if route.len() < 2
+        || route.len() > MAX_HOPS + 1
+        || route.iter().any(|fp| fp.is_empty())
+        || route
+            .iter()
+            .enumerate()
+            .any(|(index, fp)| route[..index].contains(fp))
+    {
+        return None;
+    }
+
+    let mut inner = payload.to_vec();
+    for index in (1..route.len()).rev() {
+        let remaining = (route.len() - index) as u32;
+        inner = build_relay_packet(route[index], remaining, &inner);
+    }
+    Some(inner)
 }
 
 /// `[magic][hops u32][fingerprint 32, null-padded][payload]`.
@@ -247,9 +516,11 @@ pub async fn try_forward_relay(
         }
     };
 
-    let key = session_entry.master_key;
+    // SOTA P2-2: seal with the ratchet's current epoch key and a fresh 96-bit
+    // nonce. The nonce is drawn once per *message*, so the three shards below all
+    // share it — they are pieces of one AEAD ciphertext, not three messages.
+    let material = session_entry.seal_material();
     let sh = session_entry.session_hash;
-    let ctr = session_entry.next_tx_counter();
     let use_bulk = session_entry.use_bulk;
     drop(session_entry);
 
@@ -277,7 +548,30 @@ pub async fn try_forward_relay(
     if needs_padding > 0 {
         framed.push(0);
     }
-    encrypt_in_place(&key, ctr, &mut framed);
+    // SOTA P3-1: the jitter tail is authenticated as AEAD associated data, so it
+    // has to exist *before* the seal and then travel in the frame. A bulk frame
+    // carries no tail, and therefore no associated data either.
+    let tail = if use_bulk {
+        [0u8; crate::ghost::net::JITTER_MAX]
+    } else {
+        crate::ghost::net::tail_for(
+            &material.key,
+            &material.nonce,
+            material.epoch,
+            material.direction,
+        )
+    };
+    let aad: &[u8] = if use_bulk { &[] } else { &tail[..] };
+
+    xchacha_seal_in_place_with_aad(
+        &material.key,
+        &material.nonce,
+        material.epoch,
+        material.direction,
+        &mut framed,
+        aad,
+    )
+    .expect("sealing an owned buffer cannot fail");
 
     // RS-encode the encrypted payload
     let tag = if framed.len() >= 16 {
@@ -292,18 +586,17 @@ pub async fn try_forward_relay(
     // Send shards to next hop
     for i in 0..3 {
         let shard_data = frame_shard(&shards[i]);
-        if let Err(e) = send_gtf(
-            socket,
-            &next_addr,
-            sh,
-            ctr,
-            i as u8,
-            &shard_data,
-            &tag,
-            use_bulk,
-        )
-        .await
-        {
+        let header = GtfV2Header {
+            session_hash: sh,
+            counter: material.counter,
+            epoch: material.epoch,
+            nonce: material.nonce,
+            shard_index: i as u8,
+            flags: 0,
+            bulk: use_bulk,
+            tail,
+        };
+        if let Err(e) = send_gtf_v2(socket, &next_addr, &header, &shard_data, &tag).await {
             debug!("Relay send error to {}: {}", next_fp, e);
             return false;
         }
@@ -390,6 +683,70 @@ mod tests {
     fn test_relay_header_bad_magic() {
         let data = b"BAD!......".to_vec();
         assert!(parse_relay_header(&data).is_none());
+    }
+
+    #[test]
+    fn test_three_hop_onion_peels_in_order() {
+        let onion = build_onion_route(&["guard", "middle", "exit"], b"payload")
+            .expect("valid three-hop route");
+        let outer = parse_relay_header(&onion).expect("guard header");
+        assert_eq!(outer.next_hop_fingerprint, "middle");
+        assert_eq!(outer.remaining_hops, 2);
+
+        let middle = parse_relay_header(&outer.inner_payload).expect("middle header");
+        assert_eq!(middle.next_hop_fingerprint, "exit");
+        assert_eq!(middle.remaining_hops, 1);
+        assert_eq!(middle.inner_payload, b"payload");
+    }
+
+    #[test]
+    fn test_onion_route_rejects_invalid_routes() {
+        assert!(build_onion_route(&[], b"payload").is_none());
+        assert!(build_onion_route(&["only"], b"payload").is_none());
+        assert!(build_onion_route(&["guard", ""], b"payload").is_none());
+        assert!(build_onion_route(&["guard", "guard"], b"payload").is_none());
+    }
+
+    #[test]
+    fn test_exit_policy_matches_exact_and_wildcard_hosts() {
+        let policy = ExitPolicy::new(["example.test", "*.allowed.test"]);
+        assert!(policy.allows("example.test"));
+        assert!(policy.allows("sub.allowed.test"));
+        assert!(!policy.allows("allowed.test"));
+        assert!(!policy.allows("evil.test"));
+        assert!(ExitPolicy::new(["any"]).allows("anything.invalid"));
+    }
+
+    #[test]
+    fn test_mix_batch_is_bounded_and_randomizable() {
+        let mut batch = MixBatch::new(3, Duration::from_secs(1));
+        assert!(batch.push(0u8).is_none());
+        assert!(batch.push(1u8).is_none());
+        let flushed = batch.push(2u8).expect("capacity flush");
+        assert_eq!(flushed.len(), 3);
+        assert!(batch.is_empty());
+        assert!(!batch.flush_due());
+    }
+
+    #[test]
+    fn test_exit_capability_roundtrip_and_expiry() {
+        let issuer = GhostIdentity::generate_fresh();
+        let subject = "peer-123";
+        let scope = "example.test";
+        let capability = ExitCapability::issue(&issuer, subject, scope, 200)
+            .expect("valid capability");
+        let encoded = capability.encode().expect("encodable capability");
+        let decoded = ExitCapability::decode(&encoded).expect("decodable capability");
+        assert!(decoded.verify(199, subject, scope));
+        assert!(!decoded.verify(200 + 1, subject, scope));
+        assert!(!decoded.verify(199, "other-peer", scope));
+        assert!(!decoded.verify(199, subject, "other.test"));
+
+        let mut tampered = encoded;
+        let n = tampered.len();
+        tampered[n - 1] ^= 1;
+        let decoded = ExitCapability::decode(&tampered).expect("shape remains valid");
+        assert!(!decoded.verify(199, subject, scope));
     }
 
     #[test]

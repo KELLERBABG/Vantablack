@@ -1,24 +1,84 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ml_dsa::{
+    signature::{Signer as PqSigner, Verifier as PqVerifier},
+    EncodedVerifyingKey, KeyExport, KeyInit, Keypair, MlDsa65, Seed as MlDsaSeed,
+    Signature as MlDsaSignature, SigningKey as MlDsaSigningKey, VerifyingKey as MlDsaVerifyingKey,
+};
 use rand::RngCore;
-/// L0 — Ed25519 Identity Layer
+/// L0 — Hybrid identity: Ed25519 + ML-DSA-65 (SOTA P2-1).
 ///
-/// The permanent cryptographic identity of a GhostNet node.
-/// Each device generates a fresh Ed25519 keypair at startup.
-/// The public key serves as the node's fingerprint, and the
-/// private key is used to sign handshake key material (Layer 1)
-/// to prove authorship and prevent key substitution attacks.
+/// The permanent cryptographic identity of a GhostNet node, and the reason it is
+/// **hybrid** rather than Ed25519-only: every other defence in this stack —
+/// ML-KEM-512 key agreement, ChaCha20-Poly1305 transport, RS sharding — rests on
+/// the identity being unforgeable, and Ed25519 alone is forgeable by Shor's
+/// algorithm on a cryptographically relevant quantum computer. A node whose name
+/// can be forged cannot be trusted to hold a session, however good the session's
+/// own cryptography is.
 ///
-/// Signature format: 64 bytes (Ed25519)
-/// Public key size: 32 bytes
-/// Fingerprint: first 8 bytes of public key (hex-encoded)
+/// ## Two keys, two independent secrets
+///
+/// * **Ed25519** — the classical half, and the one that defines the fingerprint
+///   (first 8 bytes of the public key, hex). Unchanged from v0.4.1, because every
+///   peer table, allowlist (`GHOST_VPN_CLIENTS`) and cached pairing is keyed on
+///   that string; re-deriving it would un-pair every existing node.
+/// * **ML-DSA-65** (FIPS 204, security category 3) — the post-quantum half. Its
+///   seed is drawn from its **own** entropy, never derived from the Ed25519 seed.
+///   That is not tidiness: a PQ key derived from the classical secret would be
+///   recovered by whoever breaks the classical key, which is exactly the event
+///   the PQ half exists to survive.
+///
+/// ## The file, and the migration
+///
+/// * **v1** (what v0.4.1 wrote): exactly 32 bytes — the Ed25519 seed.
+/// * **v2** (this): `GGNIDENT` + version byte + 32-byte Ed25519 seed + 32-byte
+///   ML-DSA seed = 73 bytes.
+///
+/// A v1 file is upgraded **in place** on first load: the Ed25519 key is preserved
+/// (so the fingerprint — and every pairing — is preserved), a fresh ML-DSA key is
+/// generated from new entropy, and the file is rewritten as v2. An unreadable file
+/// still means a fresh identity, which is the pre-existing behaviour and is
+/// reported on stderr rather than silently.
+///
+/// ## What proves what
+///
+/// [`GhostIdentity::sign`] is Ed25519 and stays 64 bytes, so the beacons and
+/// handshake PDUs that already carry it are untouched and interoperate with
+/// un-upgraded peers. [`GhostIdentity::sign_hybrid`] additionally signs with
+/// ML-DSA-65 and returns both signatures as one value; a hybrid signature is
+/// **valid only if both halves verify**, so the classical half cannot be used to
+/// downgrade a peer that checks both.
+///
+/// Signature format: 64 bytes (Ed25519), or 3373 bytes (hybrid: Ed25519 ‖ ML-DSA-65)
+/// Public key size: 32 bytes (Ed25519), 1952 bytes (ML-DSA-65)
+/// Fingerprint: first 8 bytes of the Ed25519 public key (hex-encoded)
 use std::fs;
 use std::path::Path;
 
-/// Default filename for the persistent Ed25519 identity key.
+/// Default filename for the persistent identity key.
 pub const IDENTITY_FILE: &str = "identity.key";
 
 /// Environment variable that overrides [`IDENTITY_FILE`].
 pub const IDENTITY_FILE_ENV: &str = "GHOST_IDENTITY_FILE";
+
+/// Magic at the head of an identity file written by this version.
+const IDENTITY_MAGIC: &[u8; 8] = b"GGNIDENT";
+/// Version byte for the hybrid (Ed25519 + ML-DSA-65) format.
+const IDENTITY_VERSION_HYBRID: u8 = 2;
+/// A v1 identity file is exactly the Ed25519 seed and nothing else.
+const IDENTITY_V1_LEN: usize = 32;
+/// v2: `GGNIDENT`(8) + version(1) + Ed25519 seed(32) + ML-DSA seed(32).
+const IDENTITY_V2_LEN: usize = 8 + 1 + 32 + 32;
+
+/// Encoded ML-DSA-65 signature length (FIPS 204). Asserted against the crate in
+/// tests, so a dependency change that alters it fails loudly instead of
+/// mis-parsing signatures written by the other side.
+pub const ML_DSA_65_SIG_LEN: usize = 3309;
+/// Encoded ML-DSA-65 verifying-key length.
+pub const ML_DSA_65_PK_LEN: usize = 1952;
+/// Ed25519 signature length.
+pub const ED25519_SIG_LEN: usize = 64;
+/// A hybrid signature is the Ed25519 half followed by the ML-DSA-65 half.
+pub const HYBRID_SIG_LEN: usize = ED25519_SIG_LEN + ML_DSA_65_SIG_LEN;
 
 /// Resolve the identity-key path for this process.
 ///
@@ -41,42 +101,157 @@ pub fn identity_file_path() -> String {
     }
 }
 
-/// A GhostNet identity backed by an Ed25519 signing key.
+/// An Ed25519 signature alongside an ML-DSA-65 signature over the same bytes.
+///
+/// Both halves sign the same message and both are required to verify. The value
+/// is deliberately a pair rather than a single byte string with a length prefix,
+/// so no caller can accidentally treat "the classical half that verified" as a
+/// complete proof.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HybridSignature {
+    /// Ed25519 signature (64 bytes).
+    pub ed25519: [u8; ED25519_SIG_LEN],
+    /// ML-DSA-65 signature ([`ML_DSA_65_SIG_LEN`] bytes).
+    pub pq: Vec<u8>,
+}
+
+impl HybridSignature {
+    /// Wire encoding: Ed25519 half first, then the ML-DSA-65 half.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(HYBRID_SIG_LEN);
+        out.extend_from_slice(&self.ed25519);
+        out.extend_from_slice(&self.pq);
+        out
+    }
+
+    /// Parse a wire encoding, rejecting anything of the wrong length.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != HYBRID_SIG_LEN {
+            return None;
+        }
+        let mut ed25519 = [0u8; ED25519_SIG_LEN];
+        ed25519.copy_from_slice(&bytes[..ED25519_SIG_LEN]);
+        Some(HybridSignature {
+            ed25519,
+            pq: bytes[ED25519_SIG_LEN..].to_vec(),
+        })
+    }
+}
+
+/// A GhostNet identity backed by an Ed25519 signing key and an independent
+/// ML-DSA-65 signing key.
+#[derive(Clone)]
 pub struct GhostIdentity {
-    /// The long-term signing key (private). Never leaves the device.
+    /// The long-term classical signing key (private). Never leaves the device.
     pub long_term_signing: SigningKey,
+    /// The post-quantum signing key (private), from entropy of its own.
+    pq_signing: MlDsaSigningKey<MlDsa65>,
 }
 
 impl GhostIdentity {
-    /// Generate a fresh identity with random entropy.
+    /// Generate a fresh identity with random entropy for **both** keys.
     pub fn generate_fresh() -> Self {
-        let mut seed = [0u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut seed);
-        let signing_key = SigningKey::from_bytes(&seed);
-        Self {
-            long_term_signing: signing_key,
-        }
+        let mut ed_seed = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut ed_seed);
+        let mut pq_seed = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut pq_seed);
+        Self::from_seeds(ed_seed, pq_seed)
+    }
+
+    /// Build an identity from the two independent seeds.
+    fn from_seeds(mut ed_seed: [u8; 32], mut pq_seed: [u8; 32]) -> Self {
+        use zeroize::Zeroize;
+        let identity = Self {
+            long_term_signing: SigningKey::from_bytes(&ed_seed),
+            pq_signing: MlDsaSigningKey::from_seed(&MlDsaSeed::from(pq_seed)),
+        };
+        ed_seed.zeroize();
+        pq_seed.zeroize();
+        identity
     }
 
     /// Load identity from a file, or generate a fresh one and save it.
+    ///
+    /// A v1 (32-byte, Ed25519-only) file is upgraded in place to the hybrid
+    /// format: the classical key — and therefore the fingerprint — is preserved,
+    /// and the post-quantum key is generated from fresh entropy. An unreadable
+    /// file is treated as absent, as before.
     pub fn load_or_generate(path: &str) -> Self {
         if Path::new(path).exists() {
             match fs::read(path) {
-                Ok(data) if data.len() == 32 => {
-                    let mut seed = [0u8; 32];
-                    seed.copy_from_slice(&data);
-                    let signing_key = SigningKey::from_bytes(&seed);
-                    return Self {
-                        long_term_signing: signing_key,
-                    };
-                }
-                _ => {
-                    eprintln!("Corrupted identity file at {}, generating fresh key", path);
+                Ok(data) => match Self::parse_identity_file(&data) {
+                    Ok((ed_seed, pq_seed, upgraded)) => {
+                        let identity = Self::from_seeds(ed_seed, pq_seed);
+                        if upgraded {
+                            // Persist the hybrid form so the PQ key is stable
+                            // across restarts: keeping it only in memory would
+                            // give this node a different PQ identity every boot,
+                            // which no peer could ever learn to expect.
+                            eprintln!(
+                                "Upgraded identity file at {} to the hybrid format (Ed25519 + ML-DSA-65); \
+                                 fingerprint {} is unchanged",
+                                path,
+                                identity.fingerprint()
+                            );
+                            identity.save(path);
+                        }
+                        return identity;
+                    }
+                    Err(why) => {
+                        eprintln!("Corrupted identity file at {}: {}", path, why);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Could not read identity file at {}: {}", path, e);
                 }
             }
         }
         let identity = Self::generate_fresh();
-        let seed = identity.long_term_signing.to_bytes();
+        identity.save(path);
+        identity
+    }
+
+    /// Parse either identity-file version.
+    ///
+    /// Returns the two seeds and whether the file was in the pre-hybrid format
+    /// (in which case it has to be written back out).
+    fn parse_identity_file(data: &[u8]) -> Result<([u8; 32], [u8; 32], bool), &'static str> {
+        if data.len() == IDENTITY_V1_LEN {
+            let mut ed_seed = [0u8; 32];
+            ed_seed.copy_from_slice(data);
+            // New entropy, not a KDF of the classical seed: see the module docs.
+            let mut pq_seed = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut pq_seed);
+            return Ok((ed_seed, pq_seed, true));
+        }
+        if data.len() == IDENTITY_V2_LEN {
+            if &data[..8] != IDENTITY_MAGIC {
+                return Err("wrong magic");
+            }
+            if data[8] != IDENTITY_VERSION_HYBRID {
+                return Err("unknown identity-file version");
+            }
+            let mut ed_seed = [0u8; 32];
+            ed_seed.copy_from_slice(&data[9..41]);
+            let mut pq_seed = [0u8; 32];
+            pq_seed.copy_from_slice(&data[41..73]);
+            return Ok((ed_seed, pq_seed, false));
+        }
+        Err("unexpected length")
+    }
+
+    /// Write this identity to `path` in the v2 (hybrid) format.
+    ///
+    /// The buffer holding both seeds is zeroized after the write: the file is the
+    /// only place a seed should ever sit, and a copy left in a heap allocation is
+    /// a copy an attacker with a memory dump can read.
+    fn save(&self, path: &str) {
+        use zeroize::Zeroize;
+        let mut buf = Vec::with_capacity(IDENTITY_V2_LEN);
+        buf.extend_from_slice(IDENTITY_MAGIC);
+        buf.push(IDENTITY_VERSION_HYBRID);
+        buf.extend_from_slice(&self.long_term_signing.to_bytes());
+        buf.extend_from_slice(self.pq_signing.to_bytes().as_slice());
         let write_res = {
             #[cfg(unix)]
             {
@@ -88,19 +263,19 @@ impl GhostIdentity {
                     .truncate(true)
                     .mode(0o600)
                     .open(path)
-                    .and_then(|mut file| file.write_all(&seed))
+                    .and_then(|mut file| file.write_all(&buf))
             }
             #[cfg(not(unix))]
             {
-                fs::write(path, seed)
+                fs::write(path, &buf)
             }
         };
+        buf.zeroize();
         if let Err(e) = write_res {
             eprintln!("Warning: could not save identity to {}: {}", path, e);
         } else {
-            eprintln!("Saved new identity to {}", path);
+            eprintln!("Saved identity to {}", path);
         }
-        identity
     }
 
     /// Get the public verifying key.
@@ -113,6 +288,11 @@ impl GhostIdentity {
         self.verifying_key().to_bytes()
     }
 
+    /// The post-quantum public key, encoded (1952 bytes for ML-DSA-65).
+    pub fn pq_public_key_bytes(&self) -> Vec<u8> {
+        self.pq_signing.verifying_key().to_bytes().as_slice().to_vec()
+    }
+
     /// Compute the human-readable fingerprint (first 8 bytes hex).
     pub fn fingerprint(&self) -> String {
         hex::encode(&self.public_key_bytes()[0..8])
@@ -120,8 +300,26 @@ impl GhostIdentity {
 
     /// Sign arbitrary data with the identity key.
     /// Returns a 64-byte Ed25519 signature.
+    ///
+    /// Unchanged in size and meaning: the beacon and handshake encodings that
+    /// already carry this signature keep working, including against peers that
+    /// have not been upgraded. Use [`Self::sign_hybrid`] where both proofs fit.
     pub fn sign(&self, data: &[u8]) -> Signature {
         self.long_term_signing.sign(data)
+    }
+
+    /// Sign with both keys, returning a proof that requires both to verify.
+    ///
+    /// `data` is signed verbatim by each key; the caller decides what is in it.
+    /// For a binding it must include the *other* key's public material, or the
+    /// proof binds the message to each key separately rather than binding the
+    /// keys to each other.
+    pub fn sign_hybrid(&self, data: &[u8]) -> HybridSignature {
+        let pq = self.pq_signing.sign(data);
+        HybridSignature {
+            ed25519: self.long_term_signing.sign(data).to_bytes(),
+            pq: pq.encode().as_slice().to_vec(),
+        }
     }
 
     /// Verify a signature against this identity's public key.
@@ -132,6 +330,45 @@ impl GhostIdentity {
     ) -> Result<(), ed25519_dalek::SignatureError> {
         self.verifying_key().verify(data, signature)
     }
+
+    /// SHA-256 commitment to the post-quantum public key.
+    ///
+    /// For planes that cannot carry a 5.4 kB hybrid proof — a beacon datagram is
+    /// 512–1472 bytes — the commitment is what fits: it names the PQ key without
+    /// revealing it, and a verifier that has it can then check the key a peer
+    /// proves possession of somewhere there *is* room (the QUIC binding today).
+    /// That check is what makes the post-quantum half load-bearing rather than
+    /// merely present: without a commitment to compare against, an adversary who
+    /// forges the classical half may substitute a PQ key of their own.
+    pub fn pq_commitment(&self) -> [u8; 32] {
+        pq_commitment(&self.pq_public_key_bytes())
+    }
+
+    /// Verify a hybrid signature against this identity's own keys.
+    ///
+    /// A self-check for callers and tests; a peer check goes through
+    /// [`verify_peer_hybrid`], which takes the peer's public material.
+    pub fn verify_hybrid(&self, data: &[u8], signature: &HybridSignature) -> bool {
+        verify_peer_hybrid(
+            &self.public_key_bytes(),
+            &self.pq_public_key_bytes(),
+            data,
+            signature,
+        )
+    }
+
+}
+
+/// SHA-256 commitment to an encoded ML-DSA-65 public key.
+///
+/// Domain-separated (`ggn-pq-commitment-v1`) so the digest cannot be confused with
+/// a hash of the same bytes in another role.
+pub fn pq_commitment(pq_public_key: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"ggn-pq-commitment-v1");
+    h.update(pq_public_key);
+    h.finalize().into()
 }
 
 /// Verify a signature from a peer's public key bytes.
@@ -141,4 +378,252 @@ pub fn verify_peer_signature(peer_pk_bytes: &[u8; 32], data: &[u8], signature: &
         return peer_pk.verify(data, &sig).is_ok();
     }
     false
+}
+
+/// Verify an ML-DSA-65 signature from a peer's encoded public key.
+///
+/// A key that does not decode, a signature of the wrong length, or a signature
+/// that does not verify are all `false`: the caller's decision is the same in
+/// every case, and distinguishing them would only invite treating one as a
+/// recoverable condition.
+pub fn verify_pq_signature(pq_pk_bytes: &[u8], data: &[u8], signature: &[u8]) -> bool {
+    if signature.len() != ML_DSA_65_SIG_LEN || pq_pk_bytes.len() != ML_DSA_65_PK_LEN {
+        return false;
+    }
+    // The key has to be decoded into its fixed-size encoding before the type can
+    // check it: this is where a truncated or over-long key is rejected.
+    let Ok(encoded_key) = EncodedVerifyingKey::<MlDsa65>::try_from(pq_pk_bytes) else {
+        return false;
+    };
+    let vk = MlDsaVerifyingKey::<MlDsa65>::new(&encoded_key);
+    let Ok(sig) = MlDsaSignature::<MlDsa65>::try_from(signature) else {
+        return false;
+    };
+    vk.verify(data, &sig).is_ok()
+}
+
+/// Verify a hybrid signature from a peer's public material.
+///
+/// **Both** halves must verify. There is no "either half" mode: a caller that
+/// accepted the classical half alone would be back to an identity that a quantum
+/// adversary can forge, which is the whole reason the second half exists.
+pub fn verify_peer_hybrid(
+    peer_pk_bytes: &[u8; 32],
+    peer_pq_pk_bytes: &[u8],
+    data: &[u8],
+    signature: &HybridSignature,
+) -> bool {
+    verify_peer_signature(peer_pk_bytes, data, &signature.ed25519)
+        && verify_pq_signature(peer_pq_pk_bytes, data, &signature.pq)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_path(name: &str) -> String {
+        let dir = std::env::temp_dir().join(format!(
+            "ggn-identity-{}-{}",
+            std::process::id(),
+            name
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir.join("identity.key").to_string_lossy().into_owned()
+    }
+
+    /// The lengths this module hard-codes must be the lengths the crate produces,
+    /// or a signature from another node would be mis-parsed rather than refused.
+    #[test]
+    fn the_declared_lengths_are_the_crates_lengths() {
+        let id = GhostIdentity::generate_fresh();
+        assert_eq!(id.pq_public_key_bytes().len(), ML_DSA_65_PK_LEN);
+        assert_eq!(id.sign_hybrid(b"m").pq.len(), ML_DSA_65_SIG_LEN);
+        assert_eq!(id.sign_hybrid(b"m").encode().len(), HYBRID_SIG_LEN);
+    }
+
+    /// The commitment names the PQ key: same key, same commitment; different key,
+    /// different commitment; and it is not the bare hash of the key.
+    #[test]
+    fn the_commitment_is_a_hash_of_the_pq_key_and_nothing_else() {
+        use sha2::Digest;
+        let id = GhostIdentity::generate_fresh();
+        assert_eq!(id.pq_commitment(), pq_commitment(&id.pq_public_key_bytes()));
+        let other = GhostIdentity::generate_fresh();
+        assert_ne!(id.pq_commitment(), other.pq_commitment());
+        let bare = sha2::Sha256::digest(&id.pq_public_key_bytes());
+        assert_ne!(id.pq_commitment().to_vec(), bare.to_vec());
+    }
+
+    #[test]
+    fn a_hybrid_signature_verifies_only_with_both_halves() {
+        let id = GhostIdentity::generate_fresh();
+        let other = GhostIdentity::generate_fresh();
+        let msg = b"handshake-material";
+        let sig = id.sign_hybrid(msg);
+
+        assert!(id.verify_hybrid(msg, &sig));
+        // The peer's own material is what a verifier has, so check that path too.
+        assert!(verify_peer_hybrid(
+            &id.public_key_bytes(),
+            &id.pq_public_key_bytes(),
+            msg,
+            &sig
+        ));
+        // A different message is refused.
+        assert!(!id.verify_hybrid(b"other-material", &sig));
+        // Someone else's Ed25519 key is refused...
+        assert!(!verify_peer_hybrid(
+            &other.public_key_bytes(),
+            &id.pq_public_key_bytes(),
+            msg,
+            &sig
+        ));
+        // ...and so is someone else's PQ key, even with the right classical half.
+        // This is the property a classical-only check cannot give: a peer that
+        // forges Ed25519 still cannot produce the PQ half.
+        assert!(!verify_peer_hybrid(
+            &id.public_key_bytes(),
+            &other.pq_public_key_bytes(),
+            msg,
+            &sig
+        ));
+    }
+
+    /// A tampered half must fail, whichever half is tampered with.
+    #[test]
+    fn neither_half_can_carry_a_tampered_signature() {
+        let id = GhostIdentity::generate_fresh();
+        let msg = b"material";
+        let mut sig = id.sign_hybrid(msg);
+        sig.ed25519[0] ^= 0x01;
+        assert!(!id.verify_hybrid(msg, &sig));
+
+        let mut sig = id.sign_hybrid(msg);
+        sig.pq[0] ^= 0x01;
+        assert!(!id.verify_hybrid(msg, &sig));
+    }
+
+    #[test]
+    fn the_wire_encoding_round_trips_and_rejects_other_lengths() {
+        let id = GhostIdentity::generate_fresh();
+        let sig = id.sign_hybrid(b"material");
+        let enc = sig.encode();
+        assert_eq!(HybridSignature::decode(&enc).as_ref(), Some(&sig));
+        assert!(HybridSignature::decode(&enc[..enc.len() - 1]).is_none());
+        assert!(HybridSignature::decode(&[]).is_none());
+    }
+
+    /// A truncated or oversized PQ signature is refused rather than guessed at.
+    #[test]
+    fn a_malformed_pq_signature_is_refused() {
+        let id = GhostIdentity::generate_fresh();
+        let msg = b"material";
+        assert!(!verify_pq_signature(&id.pq_public_key_bytes(), msg, &[]));
+        assert!(!verify_pq_signature(
+            &id.pq_public_key_bytes(),
+            msg,
+            &vec![0u8; ML_DSA_65_SIG_LEN - 1]
+        ));
+        // Right length, wrong bytes: a zero signature is not a valid one.
+        assert!(!verify_pq_signature(
+            &id.pq_public_key_bytes(),
+            msg,
+            &vec![0u8; ML_DSA_65_SIG_LEN]
+        ));
+        // Right signature, wrong key.
+        let other = GhostIdentity::generate_fresh();
+        let sig = id.sign_hybrid(msg);
+        assert!(!verify_pq_signature(&other.pq_public_key_bytes(), msg, &sig.pq));
+    }
+
+    /// The PQ key must not be derived from the classical secret: if it were, the
+    /// attacker who breaks Ed25519 (the event this half exists for) would get it
+    /// for free.
+    #[test]
+    fn the_pq_key_is_not_derived_from_the_classical_seed() {
+        let seed = [7u8; 32];
+        let path_a = tmp_path("independence-a");
+        let path_b = tmp_path("independence-b");
+        for path in [&path_a, &path_b] {
+            std::fs::write(path, seed).expect("write a v1 identity file");
+            let _ = std::fs::remove_file(path);
+            std::fs::write(path, seed).expect("write a v1 identity file");
+        }
+        let a = GhostIdentity::load_or_generate(&path_a);
+        let b = GhostIdentity::load_or_generate(&path_b);
+        // Same classical key — so the same fingerprint, and the same pairing —
+        // but the PQ halves must differ, because they came from their own entropy.
+        assert_eq!(a.fingerprint(), b.fingerprint());
+        assert_eq!(a.public_key_bytes(), b.public_key_bytes());
+        assert_ne!(a.pq_public_key_bytes(), b.pq_public_key_bytes());
+        let _ = std::fs::remove_file(&path_a);
+        let _ = std::fs::remove_file(&path_b);
+    }
+
+    /// A v1 file is upgraded in place, and the upgrade is durable.
+    #[test]
+    fn a_v1_identity_file_is_upgraded_without_changing_the_fingerprint() {
+        let path = tmp_path("migrate");
+        let seed = [3u8; 32];
+        std::fs::write(&path, seed).expect("write a v1 identity file");
+        assert_eq!(
+            std::fs::read(&path).expect("read").len(),
+            IDENTITY_V1_LEN,
+            "the fixture must start as a v1 file"
+        );
+
+        let upgraded = GhostIdentity::load_or_generate(&path);
+        let expected_fingerprint =
+            hex::encode(&SigningKey::from_bytes(&seed).verifying_key().to_bytes()[0..8]);
+        assert_eq!(
+            upgraded.fingerprint(),
+            expected_fingerprint,
+            "the classical half — and so every pairing — must survive the upgrade"
+        );
+        assert_eq!(
+            std::fs::read(&path).expect("read").len(),
+            IDENTITY_V2_LEN,
+            "the hybrid form must be written back"
+        );
+
+        // Reloading gives the same PQ identity; a PQ key that changed per boot
+        // would be one no peer could ever learn.
+        let reloaded = GhostIdentity::load_or_generate(&path);
+        assert_eq!(reloaded.public_key_bytes(), upgraded.public_key_bytes());
+        assert_eq!(
+            reloaded.pq_public_key_bytes(),
+            upgraded.pq_public_key_bytes()
+        );
+        let msg = b"after-a-restart";
+        assert!(reloaded.verify_hybrid(msg, &upgraded.sign_hybrid(msg)));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A file that is neither version is refused, and the node gets a fresh
+    /// identity rather than a panic or a half-read key.
+    #[test]
+    fn an_unreadable_identity_file_yields_a_fresh_identity() {
+        let path = tmp_path("corrupt");
+        std::fs::write(&path, b"not an identity").expect("write");
+        let id = GhostIdentity::load_or_generate(&path);
+        assert_eq!(id.fingerprint().len(), 16);
+        // And the fresh identity was written back in the hybrid format.
+        assert_eq!(std::fs::read(&path).expect("read").len(), IDENTITY_V2_LEN);
+        let _ = std::fs::remove_file(&path);
+
+        // Wrong magic, right length: also refused.
+        let mut bad = Vec::new();
+        bad.extend_from_slice(b"NOTGGNID");
+        bad.push(IDENTITY_VERSION_HYBRID);
+        bad.extend_from_slice(&[1u8; 32]);
+        bad.extend_from_slice(&[2u8; 32]);
+        assert!(GhostIdentity::parse_identity_file(&bad).is_err());
+        // Right magic, unknown version: refused rather than read as v2.
+        let mut bad_version = bad.clone();
+        bad_version[..8].copy_from_slice(IDENTITY_MAGIC);
+        bad_version[8] = 0x7f;
+        assert!(GhostIdentity::parse_identity_file(&bad_version).is_err());
+    }
+
 }

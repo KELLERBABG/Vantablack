@@ -1,0 +1,69 @@
+(*
+   GGN session model
+
+   This is a symbolic model of the protocol composition, not a replacement for
+   implementation tests. The two key-agreement components are represented by
+   independent shared secrets (classical and PQ); the hybrid KDF is abstracted
+   by hmaster. A ratchet step requires an authenticated peer signature and a
+   confirmation under the next epoch key.
+*)
+
+ free c: channel.
+
+ type skey.
+ type pkey.
+ type sig.
+ type epoch.
+
+ fun pk(skey): pkey.
+ fun sign(bitstring, skey): sig.
+ fun verify(bitstring, sig, pkey): bitstring.
+ reduc forall m:bitstring, s:skey; verify(m, sign(m,s), pk(s)) = m.
+
+ fun dh(bitstring, bitstring): bitstring.
+ fun pq(bitstring, bitstring): bitstring.
+ fun hmaster(bitstring, bitstring, bitstring): skey.
+ fun nextkey(skey, bitstring, epoch): skey.
+ fun confirm(skey, epoch): bitstring.
+
+ free attacker_secret: bitstring [private].
+ free alice_classical: skey [private].
+ free bob_classical: skey [private].
+ free alice_pq: bitstring [private].
+ free bob_pq: bitstring [private].
+
+ event established(pkey, pkey).
+ event rotated(pkey, pkey, epoch).
+
+ query attacker_secret.
+
+ (* A session key is only released over the private control channel after both
+    independent agreement components and both identity signatures verify. *)
+ let authenticated_session(a: skey, b: skey, apq: bitstring, bpq: bitstring,
+                           x: bitstring, y: bitstring) =
+   let classical = dh(x, y) in
+   let post_quantum = pq(apq, bpq) in
+   let master = hmaster(classical, post_quantum, attacker_secret) in
+   let material = (x, y, apq, bpq) in
+   let sa = sign(material, a) in
+   let sb = sign(material, b) in
+   if verify(material, sa, pk(a)) = material then
+   if verify(material, sb, pk(b)) = material then
+     (event established(pk(a), pk(b)); master).
+
+ (* The attacker may observe public values and signatures, but cannot construct
+    a valid confirmation for a fresh epoch without the derived next key. *)
+ let ratchet(master: skey, peer: skey, x: bitstring, y: bitstring, e: epoch) =
+   let candidate = nextkey(master, dh(x, y), e) in
+   let tag = confirm(candidate, e) in
+   if verify((x, y, e, tag), sign((x, y, e, tag), peer), pk(peer))
+      = (x, y, e, tag) then
+     (event rotated(pk(peer), pk(peer), e); candidate).
+
+ process
+   new x: bitstring;
+   new y: bitstring;
+   let m = authenticated_session(alice_classical, bob_classical,
+                                  alice_pq, bob_pq, x, y) in
+   let _ = ratchet(m, bob_classical, x, y, 1) in
+   0

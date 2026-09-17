@@ -23,8 +23,9 @@
 set -u
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-BIN="$ROOT/target/debug/vantablack.exe"
-[ -f "$BIN" ] || BIN="$ROOT/target/debug/vantablack"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+BIN="$TARGET_DIR/debug/vantablack.exe"
+[ -f run_node ] || BIN="$TARGET_DIR/debug/vantablack"
 
 T="$ROOT/target/vpn_selftest"
 rm -rf "$T"; mkdir -p "$T"
@@ -57,7 +58,23 @@ cleanup(){
 trap cleanup EXIT
 
 say "ensuring binary is built (debug, --features vpn)"
+if ! command -v cargo >/dev/null 2>&1; then
+  bad "cargo is not on PATH (add ~/.cargo/bin to Git Bash PATH)"
+  exit 1
+fi
 cargo build --features vpn || { bad "cargo build --features vpn"; exit 1; }
+[ -f "$BIN" ] || { bad "binary missing: $BIN"; exit 1; }
+
+# Git Bash can try to load a Windows GNU executable through the MSYS runtime,
+# which makes Windows API-set DLLs appear missing. Launch Windows binaries via
+# cmd.exe when available; retain direct execution for Linux/WSL.
+run_node() {
+  if command -v cmd.exe >/dev/null 2>&1; then
+    cmd.exe /c "$BIN"
+  else
+    "$BIN"
+  fi
+}
 
 # ── phase 1: learn the hub fingerprint ──────────────────────────────────────
 # The hub's identity persists in GHOST_IDENTITY_FILE, so its fingerprint is
@@ -65,7 +82,7 @@ cargo build --features vpn || { bad "cargo build --features vpn"; exit 1; }
 # test possible at all — before it, both nodes had to run from separate CWDs.)
 say "phase 1: hub fingerprint"
 GHOST_VPN=hub GHOST_BIND="127.0.0.1:$HUB_PORT" GHOST_IDENTITY_FILE="$T/hub.key" \
-  GHOST_METRICS_ENABLED=0 RUST_LOG=info "$BIN" </dev/null >"$T/p1.log" 2>&1 &
+  GHOST_METRICS_ENABLED=0 RUST_LOG=info run_node </dev/null >"$T/p1.log" 2>&1 &
 P1=$!
 sleep 7
 kill "$P1" 2>/dev/null; sleep 3; P1=""
@@ -77,7 +94,7 @@ say "phase 2: fake-TUN client (no admin, no OS interface)"
 touch "$T/cmds.txt"
 GHOST_VPN=client GHOST_VPN_FAKE_TUN=1 GHOST_VPN_HUB_FP="$FP_HUB" GHOST_VPN_LOCAL_IP=10.66.0.10 \
   GHOST_BIND="127.0.0.1:$CLIENT_PORT" GHOST_IDENTITY_FILE="$T/client.key" \
-  GHOST_METRICS_ENABLED=0 RUST_LOG=info "$BIN" < <(tail -f "$T/cmds.txt") >"$T/client.log" 2>&1 &
+  GHOST_METRICS_ENABLED=0 RUST_LOG=info run_node < <(tail -f "$T/cmds.txt") >"$T/client.log" 2>&1 &
 PC=$!
 sleep 7
 FP_CLIENT=$(fp_of "$T/client.log")
@@ -91,7 +108,7 @@ fi
 # ── phase 3: hub with the client allowlisted ────────────────────────────────
 say "phase 3: hub restarted with the client allowlisted"
 GHOST_VPN=hub GHOST_VPN_CLIENTS="$FP_CLIENT" GHOST_BIND="127.0.0.1:$HUB_PORT" \
-  GHOST_IDENTITY_FILE="$T/hub.key" GHOST_METRICS_ENABLED=0 RUST_LOG=info "$BIN" </dev/null >"$T/hub.log" 2>&1 &
+  GHOST_IDENTITY_FILE="$T/hub.key" GHOST_METRICS_ENABLED=0 RUST_LOG=info run_node </dev/null >"$T/hub.log" 2>&1 &
 PH=$!
 sleep 7
 if clean "$T/hub.log" | grep -q "address=127.0.0.1:$HUB_PORT"; then

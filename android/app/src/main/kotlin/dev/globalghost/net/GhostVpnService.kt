@@ -1,10 +1,15 @@
 ﻿package dev.globalghost.net
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.VpnService
+import android.os.Build
+import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import java.net.InetSocketAddress
 import java.net.SocketAddress
@@ -27,11 +32,16 @@ class GhostVpnService : VpnService() {
     @Volatile private var running = false
     private var hubFp: String = ""
     private var hubAddr: SocketAddress = InetSocketAddress("192.0.2.1", 0)
+    private var dnsServer: String = "10.66.0.1"
+    private var searchDomain: String? = null
+    private var activeNetwork: Network? = null
+    private val tunnelLock = Any()
 
     private val cm by lazy { getSystemService(ConnectivityManager::class.java) }
 
     override fun onCreate() {
         super.onCreate()
+        startForegroundServiceNotification()
         // Handover: re-bind + re-protect on any network change. The Rust core
         // is untouched; only startTunnel runs again with the new socket fd.
         cm.registerNetworkCallback(
@@ -45,8 +55,14 @@ class GhostVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         hubFp = intent?.getStringExtra(EXTRA_HUB_FP) ?: hubFp
         intent?.getStringExtra(EXTRA_HUB_ADDR)?.let {
-            hubAddr = InetSocketAddress(it.substringBeforeLast(':'), it.substringAfterLast(':').toInt())
+            val host = it.substringBeforeLast(':')
+            val port = it.substringAfterLast(':').toIntOrNull() ?: 0
+            if (port in 1..65535) hubAddr = InetSocketAddress(host, port)
         }
+        dnsServer = intent?.getStringExtra(EXTRA_DNS) ?: dnsServer
+        searchDomain = intent?.getStringExtra(EXTRA_SEARCH_DOMAIN)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
         if (hubFp.isEmpty()) { stopSelf(); return START_NOT_STICKY }
         if (ptr == 0L) {
             ptr = GhostCore.init(hubFp)
@@ -60,7 +76,8 @@ class GhostVpnService : VpnService() {
         return START_STICKY
     }
 
-    private fun startTunnel() {
+    @Synchronized
+    private fun startTunnel(network: Network? = activeNetwork) {
         stopPumps()
         try { channel?.close() } catch (_: Throwable) {}
         try { tun?.close() } catch (_: Throwable) {}
@@ -73,8 +90,8 @@ class GhostVpnService : VpnService() {
             .addAddress("10.66.0.10", 24)
             .addRoute("192.168.1.0", 24)   // the home LAN
             .addRoute("10.66.0.0", 24)     // the overlay itself
-            .addDnsServer("192.168.1.1")
-            .addSearchDomain("fritz.box")
+            .addDnsServer(dnsServer)
+            .apply { searchDomain?.let { addSearchDomain(it) } }
             .setMtu(1280)
             .establish()
         val tunFd = tun?.fd ?: run { stopSelf(); return }
@@ -84,6 +101,12 @@ class GhostVpnService : VpnService() {
         val ch = DatagramChannel.open()
         ch.configureBlocking(true)
         ch.socket().bind(null)
+        // Bind to the callback's network before protect/connect. This prevents
+        // Android from silently moving the protected socket back to Wi-Fi after
+        // a Wi-Fi -> LTE transition.
+        network?.let {
+            try { it.bindSocket(ch.socket()) } catch (_: Throwable) { /* best effort on older OEMs */ }
+        }
         protect(ch.socket()) // protect BEFORE connect: no packet may ever leave unprotected
         ch.connect(hubAddr)
         val sockFd = ParcelFileDescriptor.fromDatagramSocket(ch.socket()).detachFd()
@@ -99,6 +122,8 @@ class GhostVpnService : VpnService() {
 
         // 4. Pumps: TUNâ†’mesh and meshâ†’TUN (map the desktop binary's pumps).
         running = true
+        isRunning = true
+        activeNetwork = network
         pumpThread = Thread {
             while (running) {
                 try { GhostCore.pump(ptr) } catch (_: Throwable) { break }
@@ -113,10 +138,15 @@ class GhostVpnService : VpnService() {
 
     private val handoverCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            // New network: rebuild the socket + re-protect. TUN fd, epoch,
-            // lease and pump state survive; the Rust core re-anchors the hub
-            // endpoint from the first authenticated packet (window advance).
-            if (running) startTunnel()
+            // Prefer the newly available validated network. Rebuild only once
+            // the callback supplies a different network; the TUN, epoch, lease,
+            // and pumps remain alive while the Rust core re-anchors on the first
+            // authenticated window-advancing packet.
+            if (running && activeNetwork != network) startTunnel(network)
+        }
+
+        override fun onLost(network: Network) {
+            if (activeNetwork == network) activeNetwork = null
         }
     }
 
@@ -130,10 +160,29 @@ class GhostVpnService : VpnService() {
         drainThread = null
     }
 
-    override fun onRevoke() { shutdown() }
+    override fun onRevoke() { shutdown(); stopSelf() }
+
+    private fun startForegroundServiceNotification() {
+        val channelId = "ggn-vpn"
+        val manager = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(channelId, "Global Ghost Net VPN", NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+        val notification = Notification.Builder(this, channelId)
+            .setContentTitle("Global Ghost Net")
+            .setContentText("Secure mesh tunnel active")
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setOngoing(true)
+            .build()
+        startForeground(2270, notification)
+    }
 
     private fun shutdown() {
         stopPumps()
+        isRunning = false
+        activeNetwork = null
         try { channel?.close() } catch (_: Throwable) {}
         try { tun?.close() } catch (_: Throwable) {}
         if (ptr != 0L) { GhostCore.destroy(ptr); ptr = 0 }
@@ -148,6 +197,8 @@ class GhostVpnService : VpnService() {
     companion object {
         const val EXTRA_HUB_FP = "hub_fp"
         const val EXTRA_HUB_ADDR = "hub_addr"
+        const val EXTRA_DNS = "dns_server"
+        const val EXTRA_SEARCH_DOMAIN = "search_domain"
         @Volatile var isRunning = false
     }
 }

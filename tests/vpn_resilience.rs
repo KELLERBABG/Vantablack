@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use vantablack::ghost::layers::l2_aead::NonceDirection;
 use vantablack::ghost::net::vpn::client::resilience::build_keepalive;
 use vantablack::ghost::net::vpn::client::{open_to_tun, seal_from_tun, ClientState};
+use vantablack::ghost::net::vpn::seal_datagram;
 use vantablack::ghost::net::vpn::hub::VpnHub;
 use vantablack::ghost::net::vpn::tun::{FakeTun, TunDevice};
 
@@ -131,4 +132,32 @@ fn keepalive_roundtrip_then_rekey_reanchors_fresh_epoch() {
     let tun3 = FakeTun::new();
     let (ok, _) = open_to_tun(&phone, &reply3, &tun3);
     assert!(ok, "re-keyed client accepts hub traffic");
+}
+
+#[test]
+fn unauthenticated_future_epoch_cannot_poison_mobility_state() {
+    let hub = VpnHub::start(vantablack::ghost::net::vpn::VpnConfig {
+        role: vantablack::ghost::net::vpn::VpnRole::Hub,
+        allowed_fingerprints: vec![FP.to_string()],
+        ..Default::default()
+    });
+    let endpoint: SocketAddr = "198.51.100.30:41030".parse().unwrap();
+    hub.on_handshake(FP, endpoint);
+
+    let packet = vec![0x45u8; 40];
+    let valid = seal_datagram(&KEY, 1, 1, &packet);
+    hub.handle_tunnel_payload(FP, &KEY, SH, &valid, endpoint);
+    assert_eq!(hub.lease_views()[0].epoch, 1);
+
+    // Rewriting only the clear epoch header invalidates the AEAD nonce. It
+    // must not advance the lease or evict epoch-1 replay state.
+    let mut forged = valid.clone();
+    forged[..4].copy_from_slice(&99u32.to_be_bytes());
+    hub.handle_tunnel_payload(FP, &KEY, SH, &forged, endpoint);
+    assert_eq!(hub.lease_views()[0].epoch, 1);
+
+    // The original epoch remains usable after the failed future-epoch probe.
+    let next = seal_datagram(&KEY, 1, 2, &packet);
+    hub.handle_tunnel_payload(FP, &KEY, SH, &next, endpoint);
+    assert_eq!(hub.lease_views()[0].epoch, 1);
 }

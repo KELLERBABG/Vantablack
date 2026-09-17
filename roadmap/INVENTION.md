@@ -6,6 +6,10 @@
 
 How to use: Each concept is a **2-week spike** with a kill gate. If it doesn't show measurable advantage over `Tor / Tailscale / Nym / Mullvad` on its stated experiment in 14 days, kill it and try the next. 2–3 spikes in parallel, max. When a spike graduates, it gets a real spec in `docs/` and a line in `SOTA.md Phase N+1`.
 
+## Graduation ledger — 2026-09-17
+
+The current SOTA implementation baseline has graduated the repository-side portions of **§1 ShardSec** and **§13 Zero-RST Mobility**: both are live behind the documented protocol/configuration paths and have code-level regression coverage. Their remaining entries are validation gates, not invitations to claim hardware, network, or device proof from compilation alone. The next invention-track work therefore begins at **§2 Ghost Handshake — Magic-less PQ Deniability**, unless a separate product decision selects another spike.
+
 ---
 
 ## How these 20 were chosen
@@ -31,7 +35,7 @@ If an idea doesn't need one of those, it probably belongs in another product.
 
 **Why novel:** Tor has 1 circuit key. Nym has 1 Sphinx key. Nobody splits trust across planes *and* keys. Your `disjoint + RS` makes the 1-shard=0-bytes claim information-theoretic, not hand-wavy.
 
-**First experiment (3d):** Fork `enc_split` → `enc_split_shardsec`, measure `frame_size` stays 576B, prove `l4_rs::reconstruct` with any 2 decrypts, 1 shard reports `auth_fail + 0 bytes recovered` under `attack_harness`.
+**First experiment (3d):** `net::shardsec::seal_message` now forks the `enc_split` design: RS shards are sealed independently with HKDF-derived per-shard keys and shard-indexed nonces. `open_message` authenticates before reconstruction, reconstructs from any two valid shards, and rejects a single captured/tampered shard. The remaining migration gate is replacing the legacy single-tag `enc_split` wire contract in every daemon egress/ingress path while preserving the 576-byte privacy-frame invariant.
 
 **Kill if:** overhead >8% or single-shard brute force reveals length via `frame_shard` prefix.
 

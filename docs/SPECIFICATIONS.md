@@ -8,13 +8,26 @@ This document defines the low-level protocols, cryptographic guarantees, frame f
 
 Global Ghost Net uses a dual classical and post-quantum hybrid cryptographic design:
 
-- **Identity Layer (L0):** Ed25519 permanent signing key pair generated on first run and stored locally (`identity.key`). Used for authenticating identity beacons, capability vouchers, and peer exchange.
+- **Identity Layer (L0):** **hybrid** identity — Ed25519 *and* ML-DSA-65 (FIPS 204, security category 3) — generated on first run and stored locally (`identity.key`). Used for authenticating identity beacons, capability vouchers, and peer exchange. The two keys are independent secrets: the ML-DSA seed is drawn from its own entropy, never derived from the Ed25519 seed, because a post-quantum key derived from the classical secret is recovered by whoever breaks the classical secret — precisely the event it exists to survive. The **fingerprint stays the first 8 bytes of the Ed25519 public key**, so every peer table, `GHOST_VPN_CLIENTS` entry and cached pairing survives the upgrade. Where a proof has room, both keys sign (`HybridSignature`, §11.2); where it does not (a beacon datagram), the classical half alone is carried and that is stated rather than implied (see §2.4).
+
+### 1.1 Identity File Format
+
+| Version | Bytes | Layout |
+| :-- | --: | :-- |
+| v1 (≤ v0.4.1) | 32 | Ed25519 seed |
+| v2 (this) | 73 | `GGNIDENT`(8) \| version = 2 (1) \| Ed25519 seed (32) \| ML-DSA-65 seed (32) |
+
+A v1 file is upgraded **in place** on first load: the Ed25519 key is read from the same 32 bytes (so the fingerprint, and every pairing, is unchanged), a fresh ML-DSA-65 key is drawn from new entropy, and the file is rewritten as v2 so the post-quantum half is stable across restarts. A file that is neither size (or whose magic/version is unrecognised) is treated as absent and replaced by a fresh identity, reported on stderr — the pre-existing behaviour. Both seeds are held in one buffer that is zeroized after the write, and the private keys zeroize on drop (`ml-dsa` with its `zeroize` feature).
 - **Key Agreement (L1):** Hybrid Ephemeral Key Exchange:
   - Classical: X25519 ECDH.
   - Post-Quantum: ML-KEM-512 (Kyber-512 / FIPS 203) Key Encapsulation Mechanism.
   - Salt & Pre-Shared Key: HKDF-SHA256 mixes both shared secrets with an optional 32-byte pre-shared key (`GHOST_PSK`).
-- **Authenticated Encryption (L2):** ChaCha20-Poly1305 (RFC 8439) with a 256-bit symmetric key.
-  - Nonce generation incorporates the 4-byte session hash, direction bitmask (initiator vs responder), and a monotonic packet counter to eliminate nonce collision risks.
+- **Authenticated Encryption (L2):** **XChaCha20-Poly1305** with a 256-bit symmetric key and a **transmitted 96-bit random nonce** (GTF v2, SOTA P2-2). The 24-byte XChaCha nonce is assembled as `[12 transmitted random bytes \| 8-byte ratchet epoch BE \| 1-byte direction \| 3 reserved]`, so uniqueness comes from the random half while the derived half binds the nonce to the key generation and the direction — a frame's epoch field cannot be rewritten into another epoch's namespace and still authenticate. XChaCha20 is chosen because HChaCha20 mixes the first 16 nonce bytes into the key, which makes a *random* nonce safe; RFC 8439 ChaCha20-Poly1305 wants a guaranteed-unique 96-bit nonce and would be at the birthday bound after $2^{48}$ frames under one key.
+  - **Session ratchet.** Every AEAD key comes from a **hybrid DH ratchet** (`src/ghost/session/ratchet.rs`): two directional chain keys, each advanced by a one-way `kdf_ck` step per epoch, reseeded by `kdf_rk_hybrid` — HKDF-SHA256 salted with the previous root key over a fresh X25519 shared secret *and* a fresh ML-KEM-512 shared secret. The symmetric steps give **forward secrecy** (the chain only moves forward, and a retired epoch's keys are zeroized), the DH step gives **break-in recovery** (an attacker holding the whole state at epoch $n$ is locked out at $n+1$, because the secrets that produced $n+1$ did not exist when they took their copy). Both halves are mixed because the classical half alone is what a quantum adversary walks through.
+  - **How a step travels.** A step is due when an epoch has carried `RATCHET_INTERVAL` = 1M datagrams, and a 5 s maintenance tick starts one for every session in that state — traffic keeps flowing on the current key until the step completes, because a rotation that stalled the data path would be an outage. The step is a signed control PDU (`REKEY_MAGIC` on the initiating side, `REKEY_RESPONSE_MAGIC` on the answering side) carried in **one bulk v2 frame each way**, sealed on the epoch the peer still holds, and dispatched by the receive path *before* any application magic is examined. The **Ed25519 signature is checked against the identity key the handshake pinned**, so a session with no pin refuses the step outright. The responder **prepares** the new epoch and installs it only when a frame actually authenticates under it (`epoch > current` → `activate_epoch`), an answer is verified by the confirmation tag before the initiator commits, and a step unanswered for 30 s is abandoned and retried on the next tick.
+  - **Crossed steps.** Both peers can become due in the same interval, and that is not a duplicate: each side finishing *its own* step would install epoch $n+1$ over different root keys — one epoch number, two keys, nothing opens again and no later step can repair it. The tie-break is the fingerprint order (`Session::admit_peer_step`): the side with the lower fingerprint keeps its step, the other abandons its own and answers the arriving one. Both sides compute the same comparison with the labels swapped, so exactly one yields and no extra message is needed.
+  - **Epochs.** An epoch key seals at most `RATCHET_INTERVAL` = 1,000,000 datagrams before a step is due; the session keeps the current epoch plus `RATCHET_RETAINED_EPOCHS` = 2 retired epochs so frames in flight across a step still open, and every frame names the epoch that sealed it (GTF v2 field `18..25`). A step is a fresh hybrid exchange; the responder returns a **confirmation tag** derived from the new epoch key (never the key itself), and the initiator verifies it before the epoch advances — X25519 returns a shared secret for a wrong or low-order peer key rather than an error, so without that check a step could "succeed" on both sides with different keys and only surface later as traffic nobody can open.
+  - The v1 construction (`nonce = session_hash[0..2] \| direction \| counter`, 32-bit counter, seed key) is still **accepted** on receive and still used by the non-VPN inner layers; §2.1 documents both formats.
 - **Erasure Coding (L4):** Reed-Solomon RS(2,1) over Galois Field $\text{GF}(2^8)$. Plaintexts are split into two primary data shards and one parity shard. Any 2 of 3 shards reconstruct the original payload.
 - **Memory Hardening (L8):** Ephemeral session keys and decrypted memory buffers are wiped using volatile zeroization on drop and protected with AES-256-XTS memory encryption.
 
@@ -26,24 +39,56 @@ Global Ghost Net uses a dual classical and post-quantum hybrid cryptographic des
 
 All standard mesh datagrams travel encapsulated in uniform UDP datagrams.
 
-#### Privacy Mode Frame (512 Bytes)
-In privacy mode, all datagrams are fixed to 512 bytes with randomized trailing jitter padding (16 to 64 bytes) to defeat packet-length traffic analysis:
+#### Privacy Mode Frame — v2 (576 Bytes) — **current**
+In privacy mode, every datagram is a **constant 576 bytes** — 512 bytes of authenticated frame plus a full-length 64-byte tail — so packet length carries no information to analyse. (Before SOTA P3-1 the tail was `0..64` bytes, which made the *length itself* the fingerprint.) `GTF_VERSION = 2`:
 
 | Byte Range | Field | Type | Description |
 |---|---|---|---|
 | `00..03` | Session Hash | `[u8; 4]` | Truncated session identifier for fast lookup |
-| `04..07` | Packet Counter | `u32` (BE) | Monotonic counter used for replay protection |
+| `04..07` | Reserved | `[u8; 4]` | Zero. Holds v1's counter, kept zero so bytes `00..10` stay v1-shaped |
 | `08` | Shard Index | `u8` | Shard indicator (`0`, `1`, or `2` for RS parity) |
-| `09` | Flags | `u8` | Bit flags (`0x00`: privacy, `0x01`: bulk transfer, `0x02`: VPN datagram) |
+| `09` | Flags | `u8` | `0x80` = **v2 marker**, `0x01` bulk, `0x02` self-contained datagram |
+| `10..17` | Packet Counter | `u64` (BE) | Monotone sequence number for replay protection — **no longer a nonce** |
+| `18..25` | Ratchet Epoch | `u64` (BE) | The key generation that sealed this frame |
+| `26..37` | Nonce | `[u8; 12]` | Random 96-bit nonce, carried verbatim |
+| `38..495` | Encrypted Shard | `[u8; 458]` | XChaCha20-Poly1305 ciphertext with the canonical 2-byte length prefix (`[len u16 BE][shard]`), padded up to byte 496 |
+| `496..511`| Auth Tag | `[u8; 16]` | Poly1305 authentication tag (also carried with the ciphertext, for retransmit bookkeeping) |
+| `512..575`| Jitter Padding | `[u8; 64]` | **Fixed-length, and authenticated** (SOTA P3-1). Its length is a constant, so the frame size is not a signal — and it rides as AEAD **associated data**, so Poly1305 covers it without encrypting it. A rewritten tail now fails the tag instead of being silently ignored |
+
+The 22 bytes the v2 header costs come out of the payload region: the 512-byte authenticated frame is unchanged (that region is where the header lives, not a coincidence) and the Reed-Solomon shard that rides in it shrinks from 486 to 458. RS(2,1) is size-agnostic, so nothing else had to change to pay for it.
+
+What P3-1 changed is only the *tail*, and it changed it twice. First the **length** stopped varying: `512..576` is always present rather than `0..64` bytes long, which closes the length channel — and because 576 B was already the accepted maximum, no parser or receiver change was needed for that. Then the tail became **authenticated**: it is passed to the AEAD as associated data, so the receiver checks the bytes that actually arrived rather than a value it recomputed, and a single flipped byte makes the frame fail to open.
+
+Two consequences worth stating, because they are the reason the tail is *derived* rather than drawn:
+
+* the three shards of one message share **one** AEAD tag, so they must share one tail — a per-shard random tail could not be authenticated by a single tag;
+* the sealer and the frame-builder are separate functions that never see each other's value, so it is recomputed from the seal metadata (`tail_for` = a keyed HMAC-SHA256 of key ‖ nonce ‖ epoch ‖ direction) rather than threaded through every call site.
+
+Because the tail is inside the tag's input but *outside* the ciphertext, the frame layout, every offset and the 576-byte size are all unchanged — this is a change of tag *input*, not of wire format, and it needs no version marker.
+
+##### Version discrimination
+The two versions cannot be told apart by inspecting a counter field — a v1 counter of 2 would look exactly like a version byte. They are distinguished by the **flags byte at offset 9**: a v1 sender only ever writes `0x00`, `0x01`, `0x02` or `0x03` there, so bit 7 is free, and v2 sets it (`FLAG_V2`). Both versions keep the session hash at `0..4`, the shard index at `8` and the flags byte at `9`, so one parser reads the prefix of either and the marker decides the rest.
+
+#### Privacy Mode Frame — v1 (512 Bytes) — **accepted, not sent**
+The pre-P2-2 layout. A v2 node still opens these frames: the counter-derived nonce and the seed key are kept for exactly this acceptance path (§1, and `tests/simulation.rs` which pins v1 end to end).
+
+| Byte Range | Field | Type | Description |
+|---|---|---|---|
+| `00..03` | Session Hash | `[u8; 4]` | Truncated session identifier for fast lookup |
+| `04..07` | Packet Counter | `u32` (BE) | Monotonic counter, and the source of the AEAD nonce |
+| `08` | Shard Index | `u8` | Shard indicator (`0`, `1`, or `2` for RS parity) |
+| `09` | Flags | `u8` | Bit flags (`0x00`: privacy, `0x01`: bulk transfer, `0x02`: self-contained datagram) |
 | `10..495` | Encrypted Shard | `[u8; 486]` | ChaCha20-Poly1305 ciphertext payload with canonical 2-byte big-endian length prefix (`[len u16 BE][shard]`), padded up to byte 496 |
 | `496..511`| Auth Tag | `[u8; 16]` | Poly1305 authentication MAC tag |
-| `512..576`| Jitter Padding | `[u8; 16..64]` | Variable pseudorandom noise bytes |
+| `512..576`| Jitter Padding | `[u8; 0..64]` | Variable pseudorandom noise bytes |
+
+**Why v2 exists** (each change was forced, not stylistic): the v1 nonce is derived from the counter, so the counter's *width* is a security parameter — a repeated nonce in ChaCha20-Poly1305 loses both confidentiality and the Poly1305 one-time key — and a 32-bit counter under one key is a real ceiling. Carrying a random 96-bit nonce and naming the ratchet epoch removes both problems at once, and the counter becomes a pure sequence number, which is why the 64-bit width is now affordable and the near-exhaustion watchdog v1 needed is unnecessary.
 
 #### Shard Length-Prefix Invariant
-To ensure binary-safe extraction across variable-size application datagrams packed into fixed 486-byte GTF payload slices, every shard is framed via `frame_shard()` (`[len: u16 BE][shard]`) before GTF encapsulation and restored via `unframe()` upon reception before Reed-Solomon inversion.
+To ensure binary-safe extraction across variable-size application datagrams packed into fixed GTF payload slices (458 bytes of shard region in v2, 486 in v1), every shard is framed via `frame_shard()` (`[len: u16 BE][shard]`) before GTF encapsulation and restored via `unframe()` upon reception before Reed-Solomon inversion. The extractors (`extract_payload`/`extract_auth_tag`) branch on the v2 marker, so one receive path reads both versions.
 
 #### Bulk Mode Frame (1472 Bytes)
-For high-bandwidth file transfers and TUN VPN traffic across verified links, MTU-aligned 1472-byte frames maximize payload throughput without IP fragmentation.
+For high-bandwidth file transfers and TUN VPN traffic across verified links, MTU-aligned 1472-byte frames maximize payload throughput without IP fragmentation. The header is identical to the privacy frame's (same fields, same offsets, same v2 marker); only the payload region and tag position differ — `38..1455` for the ciphertext (1 418 bytes in v2, 1 446 in v1) and `1456..1471` for the tag. A bulk frame carries no jitter tail, which is what makes it MTU-aligned.
 
 ---
 
@@ -118,6 +163,10 @@ Discovery beacons are the only datagrams accepted from an unauthenticated source
 | `16..47` | Public key | `[u8; 32]` | Full Ed25519 public key |
 | `48..111` | Signature | `[u8; 64]` | Ed25519 signature over bytes `16..47` |
 
+**Signed with the classical half only, deliberately.** A beacon is a 512–1472-byte datagram and a hybrid proof is 5362 bytes (§11.2: 1952-byte ML-DSA-65 key plus a 3309-byte signature), so it cannot travel here. What fits is a 32-byte **commitment** (`PQK!`, above): the beacon names the sender's post-quantum key without being able to prove possession of it, and the proof travels where there is room — the QUIC carrier's channel binding (§11.2). A receiver that remembers the commitment pins it (`Carrier::pin_commitment`, trust on first use) and then **refuses any later session presenting a different post-quantum key**, which is what stops a forger who has the classical private key from substituting one.
+
+That is not the same as making discovery quantum-safe, and the gap is stated rather than glossed: a beacon is verified by the classical half alone, so an adversary who can forge Ed25519 can also publish a commitment of their own to a receiver that has never seen this node before. The pin only protects a receiver that has seen the node once (which is exactly the shape of the today's fingerprint trust — first contact is trust on first use). Closing it properly means proving possession of the committed key inside the handshake, so the commitment is bound into the session's own authentication; that exchange is *not* built (see `roadmap/WHAT-IS-BUILT.md`, §3).
+
 Two legacy layouts extend this without any section metadata and remain accepted verbatim: the bare 112-byte beacon, and the 208-byte beacon carrying a 32-byte ZK commitment at `112..143` followed by a 64-byte proof at `144..207`.
 
 #### Extension sections (optional, appended)
@@ -129,6 +178,7 @@ Every section is `[magic: 4][len: u16 BE][payload: len]`, appended immediately a
 | `ZKPR` | `commitment[32] \|\| proof[64]` (`len = 96`) | ZK membership proof |
 | `ICEO` | UTF-8 text, see below | Sender's ICE offer |
 | `RLYC` | empty (`len = 0`) | This node will relay for others (`GHOST_RELAY=1`) |
+| `PQK!` | `commitment[32]` (`len = 32`) | SHA-256 commitment to the sender's ML-DSA-65 public key (P2-1) |
 
 `RLYC` is a *capability*, not an address: a relay is reached at the address its beacon arrived from — the same socket it forwards on — so carrying an address would let a peer advertise someone else's. Its presence is the whole message, which is why a non-empty payload is a parse error. A node that advertises it leaves the legacy layouts behind (see the tiling note below), which is what keeps `GHOST_RELAY` opt-in rather than a silent compatibility break.
 
@@ -398,7 +448,8 @@ identity:
 | macOS | `~/Library/Application Support/GlobalGhostNet` |
 | Linux | `$XDG_DATA_HOME/global-ghost-net` (or `~/.local/share/global-ghost-net`) |
 
-The files are `identity.key` (the Ed25519 node key), `peers.cache`, `ghost-consumer.json`
+The files are `identity.key` (the hybrid Ed25519 + ML-DSA-65 node key — see §1.1),
+`peers.cache`, `ghost-consumer.json`
 (device names, egress mode, bypass list), `ghost-topology.json` and `ghost.log`.
 
 `GHOST_DATA_DIR` overrides the whole directory; the older per-file overrides
@@ -492,7 +543,7 @@ A real-time observability and remote control engine is embedded directly within 
       "peers": [...]
     }
     ```
-    Honesty invariant: every numeric field is measured on this node, and anything this build does not measure is `null` rather than a plausible-looking constant. `latency_ms` is `null` (no per-peer RTT probe runs) and `active_carrier_paths` is derived from live session count, not hard-coded.
+    Honesty invariant: every numeric field is measured on this node, and anything this build does not measure is `null` rather than a plausible-looking constant. `latency_ms` is `null` (no per-peer RTT probe runs) and `active_carrier_paths` is derived from live session count, not hard-coded. The `carrier` object reports the optional transport as it actually is (`enabled`, `label`, `local_paths`, `links`, `peers`) — counted from live registry entries — so a multipath host can be seen to hold two links to one peer instead of being taken on trust.
   - `POST /api/connect`: Toggles or updates mesh connection status (`{"connected": true|false}`).
   - `POST /api/mode`: Sets operating mode (`{"mode": "public"|"private"}`).
   - `GET /api/peers`: Returns array of discovered and connected peer objects, each carrying `name`, `custom_name`, `os` and `status` (`online` if a session is established, `idle` if only discovered, `offline` otherwise).
@@ -542,12 +593,39 @@ identity is a **channel binding** (RFC 5705):
 
 1. both ends derive 32 bytes of keying material from the TLS session itself
    (`Connection::export_keying_material`, label `ggn-quic-identity-binding`);
-2. each end sends `[Ed25519 public key (32 B)][Ed25519 signature (64 B) over that
-   keying material]` — 96 bytes, `BINDING_LEN` — on a bidirectional stream the peer reads before
-   any data flows;
-3. each end verifies the signature **and** that the key belongs to the fingerprint the mesh
-   already authenticated (dialling end against its expected peer, accepting end against its
-   admission rule).
+2. each end sends `[version = 2 (1 B)][Ed25519 pk (32 B)][ML-DSA-65 pk (1952 B)]`
+   `[Ed25519 sig (64 B)][ML-DSA-65 sig (3309 B)]` — 5362 bytes, `BINDING_LEN_V2` — on a
+   bidirectional stream the peer reads before any data flows. Both signatures are over
+   `keying_material ‖ ML-DSA-65 pk`, so the two keys are bound *to each other* and to this
+   session, not merely presented together;
+3. each end verifies **both** signatures **and** that the classical key belongs to the
+   fingerprint the mesh already authenticated (dialling end against its expected peer, accepting
+   end against its admission rule).
+
+The proof is large because the PQ half has to be: this is the one place in the stack with room
+for it (a beacon is ≤ 1472 bytes, a handshake PDU ≈ 880).
+
+### 11.2a The self-contained datagram bit (`0x02`)
+
+A frame with `0x02` set carries **one whole message in one datagram**: its payload region holds
+`[len u16][ciphertext][tag]`, not one third of a Reed-Solomon group. The receive path therefore
+delivers it straight to the handler and never puts it in the 2-of-3 shard spool — where a lone
+shard can never assemble and would be dropped without a trace.
+
+That bypass is **not** feature-gated, and that is a correction rather than a detail: it used to sit
+behind `#[cfg(feature = "vpn")]`, which was wrong twice over. The bit describes *framing*, so it has
+nothing to do with whether a build has the VPN feature; and the messages that rely on it are not
+VPN messages — the ratchet step PDU (`§1`, `REKEY_MAGIC`) and a relay hop's blind envelope (`§10`)
+both travel as single datagrams. The effect of the gate was that a **default build** spooled every
+one of them as an unrecoverable shard and dropped it silently, while `--features vpn` worked: a
+split-brain behaviour that no test could see while the only way to reach the ingress was to run the
+binary. `ratchet_live_tests` now drives a datagram through `RxContext::ingest` and fails if the
+bypass is ever gated again. A **version-1 binding —
+`[Ed25519 pk][Ed25519 sig]`, 96 bytes — is refused** with `ClassicalOnlyBinding` rather than
+accepted: honoring it would let anyone strip the post-quantum half and hand a peer back the
+Ed25519-only identity P2-1 exists to replace. That is a downgrade, not a compatibility win, so it
+is an error the caller sees. A migration window would need an explicit policy flag; this build has
+none.
 
 A man in the middle who terminates TLS on both sides gets a **different** channel binding on each
 side, so the two signatures cannot both be valid. That is the property a self-signed certificate
@@ -557,16 +635,47 @@ session closed.
 
 ### 11.3 Where the carrier sits in the live path
 
-`net::carrier::Carrier` is a registry of established links keyed by **peer fingerprint**, never by
-address: a peer that reconnects from a new address replaces its own entry, and no address change
-can inherit someone else's link. A link that has already closed is evicted on lookup, so the
-tunnel cannot be handed a dead carrier.
+`net::carrier::Carrier` is a registry of established links keyed by **`(peer fingerprint, local
+address)`** — never by address alone: the fingerprint is the identity the mesh authenticated, so a
+peer that reconnects from a new address replaces its own entry, and no address change can inherit
+someone else's link. A link that has already closed is evicted on lookup, so the tunnel cannot be
+handed a dead carrier.
 
 Egress consults it in `send3_adaptive`, *after* the fallback decision and *before* the shard
 router: a carrier link rides the address ICE already measured, so it is only usable where a
 direct path exists, and it is preferred there because QUIC's own loss recovery beats three UDP
 shards on a lossy path. A frame that the carrier did not take leaves the shards to UDP unchanged.
 The whole sequence is `route?` → carrier → CGR/fitness shard dispatch → UDP.
+
+### 11.4 Multipath: one shard per local path (B23)
+
+A link's local address is its **path**, and that is what makes multipath possible: a host with two
+local addresses holds two links to the same peer, and `Carrier::send_shards` gives shard *i* to
+path `i mod n` — one shard per path before any path carries a second — retrying a shard a path
+refuses on the next live path. With a single path this reduces to the whole set on that one link,
+which is the pre-multipath behaviour exactly.
+
+| Variable | Effect |
+| :-- | :-- |
+| `GHOST_QUIC=1` | Enables the carrier at all (requires `--features quic`). |
+| `GHOST_QUIC_PORT` | Bind port of the single listening endpoint (default `2271`, on `0.0.0.0`). |
+| `GHOST_QUIC_MULTIPATH=1` | Enables spreading shards across local paths. |
+| `GHOST_QUIC_LOCAL_ADDRS` | Comma-separated local addresses, one outbound endpoint each (e.g. `192.168.1.5,10.4.3.2`). |
+
+The address set is **named, not discovered**: this crate enumerates no interfaces and adds no
+dependency to do it, so an unset or unparsable list means one path (a warning is logged). The
+listener needs no second port — it already accepts on every interface — but a connection's local
+address is the address the *peer* dialled, so two sessions to one of our addresses are one path,
+and both ends must name their addresses for both directions of a transfer to be spread.
+
+Two limits are stated here rather than implied away. **Dispersal needs three paths:** three shards
+over two paths split only as 2 + 1, so a single observer on the path carrying two shards holds a
+reconstructable (2,1) pair — two paths buy resilience (a dead path costs at most one shard), not
+the "any single path reveals nothing" property of §3. And **a path must be nameable**: the local
+half of a link's key comes from the endpoint's bound address, falling back to the connection's
+reported local IP, falling back to `0.0.0.0` — an honest "unknown path" kept distinct from every
+named one, because quinn reports `local_ip()` as `None` for client connections on the platforms
+this has been tested on.
 
 Ingress is the same pipeline a UDP datagram enters: a frame read from a link goes to
 `RxContext::ingest`, so a carrier frame is indistinguishable downstream from one that arrived on
@@ -591,8 +700,12 @@ framing held fixed and prints payload/wire MiB and MiB/s per row. The bench runs
 the one path where UDP is at its best and where loss recovery cannot show up — so it measures what
 the framing costs, not which carrier is faster on a real path.
 
-**Not implemented:** multipath-QUIC (SOTA P1-2 names it for a multi-homed Wi-Fi+LTE host). The
-registry holds one link per peer fingerprint; a second path would need the key to be
-`(fingerprint, local path)` and the shard router to spread carriers across links. See
-`docs/UNWIRED.md`.
+**Multipath (B23, built).** The registry keys links by `(peer fingerprint, local address)`, so a
+multi-homed host holds one link per path and `Carrier::send_shards` gives shard *i* to path
+`i mod n` — one RS shard per path before any path carries a second, with a shard a path refuses
+retried on the next live path. Paths are named by the operator (`GHOST_QUIC_MULTIPATH=1`,
+`GHOST_QUIC_LOCAL_ADDRS`), each an endpoint bound to that address; see §11.4 for the rules and the
+limits, which are load-bearing: three paths are needed for the whitepaper's dispersal claim (three
+shards over two paths split 2 + 1), the address set is named rather than discovered, and the gate
+is loopback-only.
 

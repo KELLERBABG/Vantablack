@@ -158,37 +158,31 @@ impl VpnHub {
             },
         );
 
-        // Adopt a NEW inner epoch before open(): a fresh epoch means the
-        // client re-handshook (precedence 1) — evict all its per-epoch state.
+        // Authenticate a candidate epoch before adopting it. Previously the
+        // epoch/lease/replay state was rotated from the clear tunnel header
+        // before AEAD verification, so a malformed packet could evict the
+        // working mobility state and black-hole the next valid packet.
         let epoch = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
         let ctr = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
-        let mut epochs = self.ingress_epochs.lock();
-        let adopted = match epochs.get(fp) {
-            None => {
-                epochs.insert(fp.to_string(), epoch);
-                self.leases.rotate_epoch(fp, src);
-                self.ingress.evict(fp);
-                true
-            }
-            Some(&e) if e != epoch => {
-                epochs.insert(fp.to_string(), epoch);
-                self.leases.rotate_epoch(fp, src);
-                self.ingress.evict(fp);
-                true
-            }
-            Some(_) => false,
-        };
-        drop(epochs);
-        if adopted {
-            tracing::info!(peer = %fp, epoch, "VPN epoch adopted — lease re-anchored, state evicted");
+        let current_epoch = self.ingress_epochs.lock().get(fp).copied();
+        if current_epoch.is_some_and(|current| epoch < current) {
+            tracing::debug!(peer = %fp, epoch, current = ?current_epoch, "VPN stale epoch dropped");
+            return;
         }
-
-        let expected = self.ingress_epochs.lock().get(fp).copied().unwrap_or(epoch);
+        // A forward epoch is a legitimate authenticated mobility/re-key
+        // candidate; open it in its own replay namespace, then retain only it.
+        let expected = epoch;
         match self.ingress.open(master_key, fp, expected, payload) {
             OpenOutcome::Accepted {
                 ip_packet,
                 advanced,
             } => {
+                if current_epoch != Some(epoch) {
+                    self.ingress_epochs.lock().insert(fp.to_string(), epoch);
+                    self.leases.adopt_epoch(fp, epoch, src);
+                    self.ingress.retain_epoch(fp, epoch);
+                    tracing::info!(peer = %fp, epoch, "VPN authenticated epoch adopted — lease re-anchored");
+                }
                 self.leases.observe_tunnel_packet(fp, epoch, ctr, src);
                 let _ = advanced;
                 self.stats_in.fetch_add(1, Ordering::Relaxed);
@@ -399,7 +393,7 @@ impl VpnHub {
 
     /// Drain one pending egress item. Returns an `EgressUnit` the caller
     /// sends over the mesh (session-encrypted, GVPN1-wrapped).
-    /// Seals at drain time (Flaw #4 / THINKTANK §2.2), reading current session
+    /// Seals at drain time rather than at produce time, reading the current session
     /// key, epoch, and counter when handing the unit to the wire.
     pub fn poll_egress(&self) -> Option<EgressUnit> {
         loop {

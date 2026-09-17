@@ -23,6 +23,12 @@
 .PARAMETER Version
     Override the version (useful when the binary predates a version bump).
 
+.PARAMETER WintunVersion
+    Official Wintun release to download when no local DLL is supplied (default 0.14.1).
+
+.PARAMETER WintunPath
+    Explicit path to an operator-reviewed official wintun.dll.
+
 .EXAMPLE
     powershell -File scripts/build_installer.ps1
     powershell -File scripts/build_installer.ps1 -BinDir target\x86_64-pc-windows-msvc\release
@@ -31,7 +37,9 @@
 param(
     [string]$BinDir = 'target\release',
     [switch]$SkipBuild,
-    [string]$Version
+    [string]$Version,
+    [string]$WintunVersion = '0.14.1',
+    [string]$WintunPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -130,10 +138,36 @@ Write-Step 'Staging the payload into dist\staging'
 if (Test-Path -LiteralPath $StageDir) { Remove-Item -LiteralPath $StageDir -Recurse -Force }
 New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
 
+# The installer must ship the official WireGuard Wintun release, never a
+# redistributor's copy. Download only when the operator did not provide a
+# verified local DLL; the archive layout is checked before it enters staging.
+$wintunDestination = Join-Path $RepoRoot 'dist\wintun.dll'
+if ([string]::IsNullOrWhiteSpace($WintunPath)) {
+    $WintunPath = Join-Path $RepoRoot 'wintun.dll'
+}
+if (-not (Test-Path -LiteralPath $WintunPath)) {
+    $zip = Join-Path $RepoRoot ("dist\wintun-$WintunVersion.zip")
+    New-Item -ItemType Directory -Path (Split-Path -Parent $zip) -Force | Out-Null
+    $url = "https://www.wintun.net/downloads/wintun-$WintunVersion.zip"
+    Write-Step "Downloading official Wintun $WintunVersion"
+    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    $extract = Join-Path $RepoRoot 'dist\wintun-extract'
+    if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
+    Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+    $dll = Get-ChildItem -LiteralPath $extract -Recurse -Filter 'wintun.dll' |
+        Where-Object { $_.FullName -match '[\\/]amd64[\\/]wintun\.dll$' } |
+        Select-Object -First 1
+    if (-not $dll) { throw "Official Wintun archive did not contain amd64\wintun.dll" }
+    Copy-Item -LiteralPath $dll.FullName -Destination $wintunDestination -Force
+    $WintunPath = $wintunDestination
+}
+if (-not (Test-Path -LiteralPath $WintunPath)) {
+    throw "Wintun DLL not found: $WintunPath"
+}
+
 # Required first, then the optional extras (shipped when present).
-$required = @{ 'ggn.exe' = $ExePath }
+$required = @{ 'ggn.exe' = $ExePath; 'wintun.dll' = $WintunPath }
 $optional = @{
-    'wintun.dll' = (Join-Path $RepoRoot 'wintun.dll')   # TUN mode on Windows
     'README.md'  = (Join-Path $RepoRoot 'README.md')
     'LICENSE'    = (Join-Path $RepoRoot 'LICENSE')
 }

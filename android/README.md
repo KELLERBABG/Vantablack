@@ -67,7 +67,9 @@ the master key and wraps all traffic in GTF bulk wire frames (`0x02` tunnel bit)
 
 - **Unit & Layer Gates:** 100% green (`cargo check --target aarch64-linux-android --features vpn`).
 - **Physical Device:** Tested on Xiaomi 2506BPN68G (Android 14). `GhostVpnService` active, `tun0` interface allocated (`10.66.0.10`), `ggn-pump` and `ggn-drain` threads verified via `dumpsys` and `ps -T`.
-- **Pending:** Physical cross-subnet Wi-Fi→LTE roaming gate pending network route alignment.
+- **Automated handover path:** `ConnectivityManager.NetworkCallback` rebinds the protected UDP socket to the newly available `Network` before reconnecting; the TUN fd, Rust session epoch, lease and pumps remain intact.
+- **DNS policy:** the Android shell defaults to the hub overlay resolver `10.66.0.1` and accepts an optional search domain from the service intent; it never silently falls back to the handset's LAN DNS.
+- **Pending:** Physical cross-subnet Wi-Fi→LTE roaming gate pending network route alignment and OEM-specific callback behavior.
 
 ## Invariants (from PROTOTYPE.md — do not break)
 
@@ -75,8 +77,9 @@ the master key and wraps all traffic in GTF bulk wire frames (`0x02` tunnel bit)
    core's own mesh traffic loops into the TUN and the tunnel dies instantly.
 2. MTU 1280 (`setMtu`) must match `AndroidTun::mtu()`; the mesh never
    fragments tunnel packets.
-3. On network change (Wi-Fi → LTE): rebuild the protected socket and call
-   `start` again — never tear down the TUN, the epoch, or the native core.
+3. On network change (Wi-Fi → LTE): bind the new socket to the callback's
+   `Network`, protect it before connect, and call `start` again — never tear
+   down the TUN, the epoch, or the native core.
    The hub re-anchors the endpoint on the first window-advancing packet.
 4. Pumps are unreliable-datagram movers: no ACK/retransmit/queue growth
    anywhere in the path (inner TCP owns reliability).

@@ -97,6 +97,15 @@ gf256 = { version = "0.3", features = ["shamir", "thread-rng"] }
 rand = "0.8.5"
 x25519-dalek = "2.0.1"
 ml-kem = { version = "0.3", features = ["getrandom"] }
+# Post-quantum identity (SOTA P2-1). The identity is hybrid — Ed25519 *and*
+# ML-DSA-65 — because a node whose name can be forged cannot be trusted to hold a
+# session, and Ed25519 is forgeable by Shor's algorithm on a cryptographically
+# relevant quantum computer. Pure Rust (RustCrypto), `no_std` + `alloc`.
+# `zeroize` makes the private key wipe itself on drop, and is a direct dependency
+# here only so the identity layer's own seed buffers can be wiped too (it already
+# arrives transitively via chacha20poly1305/ed25519-dalek).
+ml-dsa = { version = "0.1", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = "1"
 ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
 subtle = "2.6"
 hex = "0.4"

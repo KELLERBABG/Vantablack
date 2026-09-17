@@ -77,8 +77,6 @@ mod wintun {
         }
         if let Ok(sysroot) = std::env::var("SystemRoot") {
             candidates.push(PathBuf::from(sysroot).join("System32").join("wintun.dll"));
-            // Tailscale ships a copy — convenient dev fallback
-            candidates.push(PathBuf::from("C:\\Program Files\\Tailscale\\wintun.dll"));
         }
         if let Ok(path) = std::env::var("PATH") {
             for dir in std::env::split_paths(&path) {

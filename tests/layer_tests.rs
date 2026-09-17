@@ -779,3 +779,59 @@ fn test_full_encrypt_shard_reconstruct_decrypt() {
         "Full encrypt→RS-shard→reconstruct→decrypt should match original"
     );
 }
+
+// ─────────────────────────────────────────────────────────
+// P2-3 — ML-KEM constant-time decapsulation audit (integration)
+// ─────────────────────────────────────────────────────────
+//
+// The unit tests in `ghost::net::security` cover the same property; this is the
+// public-API half of the audit, driving `security::TemporalIsolator` exactly as
+// the fuzz target does.
+//
+// The audit finding, written down so it is not re-litigated: the only
+// non-constant-time thing in this path was the *removed* dummy-decapsulation
+// loop, which was a fixed additive cost that hid nothing. `ml-kem` 0.3.2's own
+// `decapsulate` does FIPS 203 §7.3 implicit rejection with `subtle`
+// (`cp.ct_eq(encapsulated_key)` + `CtOption::ct_select`), so there is no
+// secret-dependent branch or memory access left to give a timing oracle.
+
+#[test]
+fn test_p2_3_temporal_isolator_round_trips_the_shared_secret() {
+    use ml_kem::kem::Encapsulate;
+    use subtle::ConstantTimeEq;
+    use vantablack::ghost::net::security::TemporalIsolator;
+
+    let (ek, dk) = l1_kem::generate_kyber_keypair();
+    let (ct, ss) = ek.encapsulate();
+    let ct_bytes: [u8; 768] = ct.into();
+
+    let got = TemporalIsolator::fixed_time_decapsulate(&ct_bytes, &dk).expect("decapsulates");
+    assert_eq!(got.len(), 32);
+    assert!(
+        bool::from(got.as_slice().ct_eq(ss.as_slice())),
+        "one decapsulation must return exactly the encapsulator's secret"
+    );
+}
+
+#[test]
+fn test_p2_3_temporal_isolator_implicitly_rejects_a_tampered_ciphertext() {
+    use ml_kem::kem::Encapsulate;
+    use subtle::ConstantTimeEq;
+    use vantablack::ghost::net::security::TemporalIsolator;
+
+    let (ek, dk) = l1_kem::generate_kyber_keypair();
+    let (ct, ss) = ek.encapsulate();
+    let mut ct_bytes: [u8; 768] = ct.into();
+    ct_bytes[767] ^= 0xFF;
+
+    // No `Err`, no panic: the failure path is the same shape as the success
+    // path, which is the whole point of implicit rejection — and is why the
+    // old padding loop could not have been hiding anything.
+    let got = TemporalIsolator::fixed_time_decapsulate(&ct_bytes, &dk)
+        .expect("implicit rejection is not an error");
+    assert_eq!(got.len(), 32);
+    assert!(
+        !bool::from(got.as_slice().ct_eq(ss.as_slice())),
+        "a tampered ciphertext must not yield the true shared secret"
+    );
+}

@@ -1,0 +1,30 @@
+[Unit]
+Description=Global Ghost Net mesh node
+Documentation=https://github.com/KELLERBABG/Global-Ghost-Net
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ggn-headless --no-default-features
+Restart=on-failure
+RestartSec=3
+# State and logs belong to the service account, never the installation directory.
+User=ggn
+Group=ggn
+StateDirectory=globalghostnet
+LogsDirectory=globalghostnet
+Environment=GHOST_LOG=off
+Environment=GHOST_WEB_BIND=127.0.0.1
+Environment=GHOST_WEB_PORT=2270
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/globalghostnet /var/log/globalghostnet
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

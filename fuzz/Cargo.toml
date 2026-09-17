@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 libfuzzer-sys = "0.4"
-vantablack = { path = "..", features = ["fuzzing"] }
+vantablack = { path = "..", features = ["fuzzing", "quic"] }
 
 [[bin]]
 name = "fuzz_handle_pkt"
@@ -42,5 +42,11 @@ doc = false
 [[bin]]
 name = "fuzz_build_gtf_frame"
 path = "fuzz_targets/fuzz_build_gtf_frame.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_parse_quic_binding"
+path = "fuzz_targets/fuzz_parse_quic_binding.rs"
 test = false
 doc = false

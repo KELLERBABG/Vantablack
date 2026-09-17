@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Global Ghost Net
+Comment=Post-quantum mesh network control center
+Exec=ggn
+Terminal=false
+Categories=Network;Security;
+StartupNotify=true

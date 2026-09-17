@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
@@ -179,7 +180,11 @@ class MainActivity : Activity() {
                 putExtra(GhostVpnService.EXTRA_HUB_FP, hubFp)
                 putExtra(GhostVpnService.EXTRA_HUB_ADDR, hubAddr)
             }
-            startService(serviceIntent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
             GhostVpnService.isRunning = true
             updateUiState(true)
         } else {

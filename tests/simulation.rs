@@ -1,6 +1,13 @@
 /// Virtual Network Simulation — Multi-Node GhostNet Mesh Tests
 ///
-/// Mirrors the production protocol from the ghost library exactly:
+/// **This harness is pinned to the v1 wire format** (SOTA P2-2 bumped GTF to v2).
+/// It mirrors the v1 protocol from the ghost library exactly — counter-derived
+/// nonces, 32-bit counters, v1 frame offsets — because a node that speaks v2 must
+/// still open the frames v1 peers send, and that acceptance path has no other
+/// end-to-end coverage. The v2 format has its own tests in the library
+/// (`ghost::net::wire_v2_tests`, `ghost::session::ratchet`) and in
+/// `tests/p2_wire.rs`.
+///
 /// - Builds signed handshake PDUs (944 bytes) and signed response PDUs (912 bytes)
 /// - Uses binary-safe length-prefixed frame_shard() / unframe() for RS shard transport
 /// - Uses the full encrypt-send-receive-decrypt pipeline with length-prefix framing
@@ -413,7 +420,12 @@ impl SimNode {
     async fn send_msg(&self, hub: &mut VirtualNetHub, peer_fp: &str, msg: &str) {
         if let Some(st) = self.node.sessions.get(peer_fp) {
             let k = st.master_key;
-            let ctr = st.next_tx_counter();
+            // This harness pins the **v1** wire format deliberately (SOTA P2-2):
+            // v1 is the format a v2 node still has to *accept*, and these helpers
+            // are the only place that acceptance is exercised end to end. v1
+            // counters are 32-bit, so the 64-bit session counter is narrowed here
+            // rather than at each helper signature.
+            let ctr = st.next_tx_counter() as u32;
             drop(st);
 
             // Use binary-safe frame_encrypt with length-prefix

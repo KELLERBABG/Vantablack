@@ -108,7 +108,10 @@ impl GhostNode {
                         .bytes_recv
                         .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
-                    let counter = net::parse_packet_counter(&packet);
+                    // The wire counter is 64-bit in GTF v2; the v1 4-byte read is
+                    // still here for legacy frames, and the guard takes the wider
+                    // of the two so a v1 frame cannot alias a v2 counter.
+                    let counter = net::parse_packet_counter_u64(&packet);
                     let shard_index = packet[net::OFFSET_SHARD_INDEX] as usize;
                     if shard_index > 2 {
                         continue;
@@ -127,7 +130,7 @@ impl GhostNode {
 
                         // Try to find session by hash prefix
                         let mut found = false;
-                        for mut entry in sessions.iter_mut() {
+                        for entry in sessions.iter() {
                             let s_hash =
                                 hex::encode(&entry.session_hash[..4.min(entry.session_hash.len())]);
                             if s_hash == hash_key {
@@ -140,7 +143,7 @@ impl GhostNode {
                                 }
 
                                 // Verify replay guard
-                                if !entry.guard.check_and_update(counter) {
+                                if !entry.check_inbound(counter) {
                                     warn!(
                                         "Worker {}: replay rejected counter={} from {}",
                                         i, counter, src_addr
@@ -149,12 +152,15 @@ impl GhostNode {
                                     break;
                                 }
 
-                                // Decrypt payload
+                                // Decrypt payload (v1 frames on this path still
+                                // use the counter-derived nonce and the seed key).
                                 let key = entry.master_key;
                                 let mut msg = payload.clone();
-                                if let Ok(plaintext) =
-                                    layers::l2_aead::decrypt_in_place(&key, counter, &mut msg)
-                                {
+                                if let Ok(plaintext) = layers::l2_aead::decrypt_in_place(
+                                    &key,
+                                    counter as u32,
+                                    &mut msg,
+                                ) {
                                     if let Ok(text) = std::str::from_utf8(plaintext) {
                                         let text = text.trim_end_matches('\0');
                                         info!(

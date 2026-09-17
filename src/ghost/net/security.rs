@@ -575,28 +575,55 @@ pub use hsm::Tpm2Backend;
 #[cfg(feature = "pkcs11")]
 pub use hsm::Pkcs11Backend;
 
+// DPE/TPM-shaped attestation envelope (SOTA P2-3). This is the *format and its
+// verification*, deliberately hardware-free — no device is touched, and the
+// module says so in its own doc. `hsm.rs` is where a real `tss-esapi`/`cryptoki`
+// backend will eventually produce a quote to place inside it.
+pub mod attest;
+
+pub use attest::{AttestError, AttestationEnvelope};
+
 // ── 6. Fixed-Slot Temporal Isolation ─────────────────────────────────
 
 pub struct TemporalIsolator;
 
 impl TemporalIsolator {
+    /// Decapsulate an ML-KEM-512 ciphertext.
+    ///
+    /// ## Why there is no longer a "timing padding" loop here (SOTA P2-3)
+    ///
+    /// This used to run the real decapsulation and then do 10 *dummy* ones
+    /// (`DUMMY_ITERATIONS`) on a zero key/ciphertext, on the theory that more
+    /// work hides the timing of the real one. It hid nothing and cost 10×: the
+    /// padding is a fixed **additive** term, so whatever variation the real
+    /// decapsulation has is still sitting on top of it, fully visible. Constant
+    /// time is a property of the decapsulation itself, not of how much extra
+    /// work is stapled to it.
+    ///
+    /// ML-KEM already has that property. FIPS 203 §7.3 mandates **implicit
+    /// rejection**: a ciphertext that does not re-encrypt to itself yields a
+    /// pseudorandom secret instead of an error, so the failure path is
+    /// indistinguishable from the success path. `ml-kem` 0.3.2 implements it
+    /// with `subtle` — `Kbar.ct_select(&Kp, cp.ct_eq(encapsulated_key))`
+    /// (`ml-kem-0.3.2/src/decapsulation_key.rs`) — with no secret-dependent
+    /// branch and no secret-dependent memory access. So the correct
+    /// implementation is *exactly one* decapsulation; the loop was cargo-cult
+    /// that made the function slower without making it more constant-time.
+    ///
+    /// ## Contract
+    ///
+    /// A malformed but correctly-sized ciphertext is **not** an error: implicit
+    /// rejection means the caller gets a secret that simply is not the peer's,
+    /// which the AEAD/confirmation step then rejects. The `Result` is retained
+    /// for signature stability (the fuzz target calls this shape); the function
+    /// has no `Err` path today because the length is fixed by the array type.
     pub fn fixed_time_decapsulate(
-        _ciphertext: &[u8; 768],
-        _secret_key: &DecapsulationKey512,
+        ciphertext: &[u8; 768],
+        secret_key: &DecapsulationKey512,
     ) -> Result<Vec<u8>, &'static str> {
-        const DUMMY_ITERATIONS: usize = 10;
-
-        let ct = Ciphertext::<MlKem512>::from(*_ciphertext);
-        let shared_secret = _secret_key.decapsulate(&ct);
-        let result: Vec<u8> = shared_secret.as_slice().to_vec();
-
-        // Dummy iterations for timing padding
-        let dummy_sk = DecapsulationKey512::from_seed([0u8; 64].into());
-        let dummy_ct = Ciphertext::<MlKem512>::from([0u8; 768]);
-        for _ in 0..DUMMY_ITERATIONS {
-            let _ = dummy_sk.decapsulate(&dummy_ct);
-        }
-        Ok(result)
+        let ct = Ciphertext::<MlKem512>::from(*ciphertext);
+        let shared_secret = secret_key.decapsulate(&ct);
+        Ok(shared_secret.as_slice().to_vec())
     }
 }
 
@@ -684,5 +711,61 @@ mod tests {
         let retrieved = tle_dist.get_tle(12345);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().name, "TestSat");
+    }
+
+    // ── SOTA P2-3: constant-time ML-KEM decapsulation ──────────────────
+    //
+    // These pin the property the removed dummy loop was *assuming*: that
+    // decapsulation is already constant-time and total, so one call is both
+    // correct and sufficient.
+
+    #[test]
+    fn test_constant_time_decapsulate_round_trips() {
+        use ml_kem::kem::Encapsulate;
+        use subtle::ConstantTimeEq;
+        let (ek, dk) = crate::ghost::layers::l1_kem::generate_kyber_keypair();
+        let (ct, ss) = ek.encapsulate();
+        let ct_bytes: [u8; 768] = ct.into();
+
+        let got = TemporalIsolator::fixed_time_decapsulate(&ct_bytes, &dk)
+            .expect("a well-sized ciphertext decapsulates");
+        assert_eq!(got.len(), 32, "ML-KEM-512 shared secret is 32 bytes");
+        assert!(
+            bool::from(got.as_slice().ct_eq(ss.as_slice())),
+            "decapsulation must return exactly the encapsulator's secret"
+        );
+    }
+
+    #[test]
+    fn test_constant_time_decapsulate_never_errors_on_a_tampered_ciphertext() {
+        // FIPS 203 §7.3 implicit rejection: a ciphertext that does not
+        // re-encrypt to itself must yield a *different* secret — not an `Err`,
+        // not a panic. That is what makes the failure path the same shape as
+        // the success path, and it is why the old dummy-padding loop was
+        // padding nothing observable.
+        use ml_kem::kem::Encapsulate;
+        use subtle::ConstantTimeEq;
+        let (ek, dk) = crate::ghost::layers::l1_kem::generate_kyber_keypair();
+        let (ct, ss) = ek.encapsulate();
+        let mut ct_bytes: [u8; 768] = ct.into();
+        ct_bytes[0] ^= 0x01; // flip one byte
+
+        let got = TemporalIsolator::fixed_time_decapsulate(&ct_bytes, &dk)
+            .expect("implicit rejection returns a secret, never an error");
+        assert_eq!(got.len(), 32);
+        assert!(
+            !bool::from(got.as_slice().ct_eq(ss.as_slice())),
+            "a tampered ciphertext must not yield the true shared secret"
+        );
+    }
+
+    #[test]
+    fn test_constant_time_decapsulate_a_zeroed_ciphertext_is_total() {
+        // The shape the fuzz target feeds it: an all-zero ciphertext must not
+        // panic and must not error — it is a normal (rejected) decapsulation.
+        let (_ek, dk) = crate::ghost::layers::l1_kem::generate_kyber_keypair();
+        let got = TemporalIsolator::fixed_time_decapsulate(&[0u8; 768], &dk)
+            .expect("an all-zero ciphertext is handled, not rejected");
+        assert_eq!(got.len(), 32);
     }
 }

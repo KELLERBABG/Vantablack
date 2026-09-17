@@ -24,7 +24,6 @@ __pycache__/
 *.dll
 *.pdb
 *.rlib
-.freebuff/
 .reasonix/
 *reasonix*
 *.bundle
