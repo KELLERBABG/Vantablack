@@ -534,7 +534,6 @@ pub struct TleData {
 
 pub struct TleDistributor {
     tle_store: Arc<Mutex<HashMap<u32, TleData>>>,
-    requested_from: Arc<Mutex<Vec<String>>>,
     last_gossip: Arc<Mutex<Instant>>,
 }
 
@@ -542,7 +541,6 @@ impl Default for TleDistributor {
     fn default() -> Self {
         Self {
             tle_store: Arc::new(Mutex::new(HashMap::new())),
-            requested_from: Arc::new(Mutex::new(Vec::new())),
             last_gossip: Arc::new(Mutex::new(Instant::now())),
         }
     }
@@ -613,7 +611,6 @@ impl TleDistributor {
         );
         Self {
             tle_store: Arc::new(Mutex::new(store)),
-            requested_from: Arc::new(Mutex::new(Vec::new())),
             last_gossip: Arc::new(Mutex::new(Instant::now())),
         }
     }

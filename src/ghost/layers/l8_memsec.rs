@@ -17,7 +17,6 @@
 /// for the 4-byte session hash lookup, enabling wire-speed routing decisions.
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::KeyInit;
@@ -429,8 +428,6 @@ pub struct DopplerShiftSimulator {
     pub carrier_freq_hz: f64,
     /// Speed of light (m/s).
     c: f64,
-    /// Timestamp of last update.
-    last_update: Instant,
 }
 
 impl Default for DopplerShiftSimulator {
@@ -439,7 +436,6 @@ impl Default for DopplerShiftSimulator {
             relative_velocity_ms: 0.0,
             carrier_freq_hz: 193.0e12, // 1550 nm optical carrier
             c: 299_792_458.0,
-            last_update: Instant::now(),
         }
     }
 }
@@ -452,7 +448,6 @@ impl DopplerShiftSimulator {
             relative_velocity_ms: 7500.0,
             carrier_freq_hz: 193.0e12,
             c: 299_792_458.0,
-            last_update: Instant::now(),
         }
     }
 

@@ -673,8 +673,6 @@ const MIN_TRANSIT_BURST: u64 = 1500;
 pub struct FlowController {
     /// Transit tokens (for routing other people's traffic).
     transit_bucket: AtomicU64,
-    /// Local tokens (for the user's own traffic — effectively unlimited).
-    local_bucket: AtomicU64,
     /// Max transit bytes per second. Atomic so the rate can be retuned — and so
     /// [`Self::replenish`] sees the *new* rate rather than the constructor's.
     transit_rate: AtomicU64,
@@ -693,7 +691,6 @@ impl FlowController {
         let bytes_per_sec = transit_rate_mbps * 125_000; // Mbps → bytes/sec
         Self {
             transit_bucket: AtomicU64::new(bytes_per_sec), // start full
-            local_bucket: AtomicU64::new(u64::MAX),
             transit_rate: AtomicU64::new(bytes_per_sec),
             // Start with a full 100 ms burst of credit.
             transit_burst: AtomicU64::new((bytes_per_sec / 10).max(MIN_TRANSIT_BURST)),

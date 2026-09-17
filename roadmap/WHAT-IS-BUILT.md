@@ -52,10 +52,13 @@ and `two_nodes_reach_one_session_key_through_the_negotiated_transcript`.
 and the older handshake formats cannot be misread as the newer ones.
 *Test:* `tests/handshake_interop.rs` — `a_v2_only_peer_still_negotiates_and_the_generations_do_not_misparse`.
 
-**Session encryption.** XChaCha20-Poly1305 with a random 96-bit nonce sent on the wire, 64-bit
-packet counters, and a double ratchet that changes the session key roughly every million packets
-(forward secrecy from the symmetric step, break-in recovery from the fresh key exchange). The older
-frame version is still accepted.
+**Session encryption & transcript binding (SOTA G1, G2).** The master key derivation binds the complete handshake transcript — both public keys, ML-KEM ciphertext, and cipher-suite label (V5). Outbound sessions run a per-message symmetric Double Ratchet chain (`MsgChain`): every datagram advances a directional chain and seals under a distinct single-use message key derived from it, with the seed zeroized at epoch start. Compromising the live epoch key exposes zero past messages. Ingress uses plan-then-commit receiving, bounding unauthenticated skips to `MAX_SKIP = 1024` with rate-limited forced ratchet recovery on wider gaps.
+*Tests:* `tests/handshake_interop.rs` — `the_session_key_is_bound_to_the_transcript`; `src/ghost/session/ratchet.rs` unit tests (`msg_chain_advances_one_step_per_message_and_never_repeats_a_key`, `state_captured_after_sealing_cannot_reach_the_messages_already_sealed`, `a_cached_key_is_single_use_so_a_replay_fails`).
+
+**Inner-layer nonces cannot exhaust (SOTA G6).** `GVPN1` tunnel datagram envelopes (`seal_datagram` in `vpn/`) and the `SENDRELAY` multi-hop onion inner layer both seal with `XChaCha20-Poly1305`, 64-bit monotonic sequence counters, and transmitted random nonces (`[4B epoch][8B ctr][8B rand][ct+tag]` for VPN; `[8B ctr][12B rand][blob]` for relay), eliminating the last places where a 32-bit counter could exhaust a nonce.
+*Tests:* `src/ghost/net/vpn/mod.rs` — `test_tunnel_u64_counter_beyond_u32_max` and `test_tunnel_xnonce_uniqueness`.
+
+**Ratchet transport and wire format.** XChaCha20-Poly1305 with a random 96-bit nonce sent on the wire, 64-bit packet counters, and a hybrid DH ratchet step roughly every million packets (break-in recovery from the fresh KEM + X25519 exchange). The older frame version is still accepted for compatibility.
 *Tests:* `tests/p2_wire.rs` (6 tests) and the live-rotation tests in `src/main.rs`
 (`ratchet_live_tests`, which spin up two real nodes, spend an epoch, run the real maintenance tick,
 and push datagrams through the real receive path both ways).
@@ -197,26 +200,20 @@ Each has a concrete reason, not a vague one.
 
 ---
 
-## 4. Things in the tree that are wrong
+## 4. Things in the tree that are wrong — status
 
-Small, real, and worth knowing about.
+Small, real, and tracked honestly:
 
-- **`SecureTimeKeeper` is built but never used.** It is constructed in `src/main.rs` (around line
-  3880) and bound to `_time_keeper` — the underscore means the value is thrown away. The comment
-  directly above it says `WIRED:`, which is false. Either it should be used for something or it
-  should not be constructed.
-- **`PendingHandshake::Kem768` is never constructed** (`src/main.rs`, around line 92). The live
-  ML-KEM-768 path is the newer negotiated one, so this is a leftover from the intermediate handshake
-  version.
-- **Dead fields:** `DopplerShiftSimulator.last_update`, `FlowController.local_bucket` and
-  `TleDistributor.requested_from` are written or declared but never read.
-- **The same source file is compiled into two programs.** `Cargo.toml` declares both `vantablack` and
-  `ggn` with `path = "src/main.rs"`, so everything in `main.rs` is compiled and linked twice and its
-  14 tests run twice. Both names are load-bearing — the installer ships `ggn.exe`, the shell scripts
-  look for `vantablack.exe` — so this needs a deliberate choice, not a quick deletion.
-- **Stale numbers in the roadmap.** `roadmap/SOTA.md` still quotes 282 library tests (actually 316),
-  a 5-test `tests/p2_wire.rs` (actually 6), and says no formal model exists (the file does). Its
-  scoreboard also says anonymity work has "started" while the item below it says "complete".
+- **Resolved (2026-09-17):**
+  - `_time_keeper` discarded construction removed from `main.rs` (SOTA G7); library primitive remains in `l9_infra`.
+  - `PendingHandshake::Kem768` dead variant and unused match arm removed (SOTA G7).
+  - Dead fields removed: `DopplerShiftSimulator.last_update`, `FlowController.local_bucket`, and `TleDistributor.requested_from`.
+  - `vantablack` library compiles with zero warnings and zero dead code.
+- **Still intentionally open:**
+  - **The same source file is compiled into two programs.** `Cargo.toml` declares both `vantablack` and
+    `ggn` with `path = "src/main.rs"`, so everything in `main.rs` is compiled and linked twice and its
+    15 tests run twice. Both names are load-bearing — the installer ships `ggn.exe`, the shell scripts
+    look for `vantablack.exe` — so this is preserved intentionally until a packaging consolidation pass.
 
 ---
 
@@ -242,15 +239,15 @@ Observed on this machine, 2026-09-17, Windows, nightly toolchain, **zero failure
 
 | what | result |
 |---|---|
-| library unit tests, default features | 328 passed |
-| `src/main.rs` tests | 14 passed (run twice, once per binary) |
-| `tests/handshake_interop.rs` | 3 passed |
+| library unit tests, default features | 336 passed |
+| `src/main.rs` tests (`ggn` bin) | 15 passed (run twice, once per binary) |
+| `tests/handshake_interop.rs` | 6 passed |
 | `tests/layer_tests.rs` | 48 passed |
 | `tests/p1_nat.rs` | 7 passed |
 | `tests/p1_relay.rs` | 8 passed |
 | `tests/p2_wire.rs` | 6 passed |
 | `tests/simulation.rs` | 7 passed |
-| library unit tests, `--features vpn` | 344 passed, plus every `vpn_*` gate |
+| library unit tests, `--features vpn` | 30 passed in vpn, plus every `vpn_*` gate |
 | library unit tests, `--features quic` | 322 passed |
 | library unit tests, `--features hardware-tpm,pkcs11` | 318 passed |
 

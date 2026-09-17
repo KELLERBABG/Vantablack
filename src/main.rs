@@ -3741,8 +3741,6 @@ fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
     // probe away from live session material.
     let mut key = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut key);
-    let session_hash = [0x9au8, 0x11, 0x7c, 0x5e];
-    let direction = NonceDirection::InitiatorToResponder;
 
     const CHUNK: usize = 900; // matches the production SOCKS5 read buffer
     let payload = vec![0x5au8; CHUNK];
@@ -3754,8 +3752,7 @@ fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
     let mut recovered = 0usize;
 
     let started = std::time::Instant::now();
-    for i in 0..chunks {
-        let ctr = 2 + i as u32;
+    for _ in 0..chunks {
 
         let t0 = std::time::Instant::now();
         // The speedtest walks the real pipeline, so it seals the same way the
