@@ -65,8 +65,10 @@ debug = false       # No debug info
 
 # A transport benchmark must not run under the profile above: it optimizes for the
 # size of the shipped installer, which is both slow to build and a poor measure of
-# how fast a carrier moves bytes. `scripts/bench_transport.sh` uses this profile
-# (and keeps unwinding, because the bench is a test).
+# how fast a carrier moves bytes. Build the bench with this profile instead (it
+# keeps unwinding, because the bench is a test):
+#
+#   cargo test --profile bench-transport --features quic --test bench_transport -- --ignored
 [profile.bench-transport]
 inherits = "release"
 opt-level = 3

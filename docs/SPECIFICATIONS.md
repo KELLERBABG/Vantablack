@@ -602,7 +602,7 @@ QUIC port at all.
 | Bulk frame | 1472 B fixed | QUIC **stream** | A 1472-byte frame does not fit a QUIC datagram (path-MTU bounded, ≈1200 in practice). Streams have no such limit and give the bulk path the reliable, in-order delivery it wants. |
 
 The split is `QuicLink::send_frame`'s decision, reported back as `CarrierPath::Datagram | Stream`
-so a caller — and `scripts/bench_transport.sh` — can see which route a frame took instead of
+so a caller — and the transport bench — can see which route a frame took instead of
 guessing. `send_frame_as` forces a framing when a caller has an opinion.
 
 A datagram that finds no room waits up to **50 ms** (`DATAGRAM_ROOM_TIMEOUT`) for space and is
@@ -721,7 +721,7 @@ Links are established in both directions:
 
 `tests/p1_quic.rs` (loopback, no privileges): a frame crosses intact and the identity is proven;
 a wrong fingerprint is refused; an unknown identity cannot open a session; and the registry sends
-only for peers it holds a link to, evicting a closed one. `scripts/bench_transport.sh` runs
+only for peers it holds a link to, evicting a closed one. The transport bench runs
 `tests/bench_transport.rs`, which carries the same GTF frames over UDP and over QUIC with the
 framing held fixed and prints payload/wire MiB and MiB/s per row. The bench runs over loopback —
 the one path where UDP is at its best and where loss recovery cannot show up — so it measures what

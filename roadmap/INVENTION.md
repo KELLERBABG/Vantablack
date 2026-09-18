@@ -98,7 +98,7 @@ If an idea doesn't need one of those, it probably belongs in another product.
 
 **Why novel:** Noise/WireGuard still have handshake fingerprints. A fully random PQ handshake over UDP is still open research.
 
-**First experiment (4d):** Build `uniform_handshake` behind `GHOST_HANDSHAKE_UNIFORM=1`, run `scripts/pentest_ggn.sh` chi-square — uniform vs current p-value should flip to `>0.1`.
+**First experiment (4d):** Build `uniform_handshake` behind `GHOST_HANDSHAKE_UNIFORM=1`, then run a chi-square over captured handshakes — uniform vs current p-value should flip to `>0.1`.
 
 **Kill if:** Kyber `ct` uniformity broken by compression or X25519 Elligator costs >2ms.
 

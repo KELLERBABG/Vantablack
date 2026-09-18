@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Vantablack
-Comment=Post-quantum mesh network control center
-Exec=ggn
-Terminal=false
-Categories=Network;Security;
-StartupNotify=true

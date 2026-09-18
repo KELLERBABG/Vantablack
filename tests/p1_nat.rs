@@ -14,8 +14,9 @@
 //! `punch_hole` returned `true` in the second case, so every topology here
 //! "passed" it.
 //!
-//! `scripts/mesh_smoke_test.sh` covers the same ground against real `iptables`
-//! NATs on a Linux host with root; this covers the logic on every platform.
+//! The gate runs anywhere: no root, no real `iptables`, no physical hardware. The
+//! NAT above is the RFC 4787 model, so what is proven is the NAT/ICE logic rather
+//! than any one vendor's NAT implementation.
 
 mod common;
 

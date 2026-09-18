@@ -22,8 +22,9 @@
 //! Every frame is built by the real `net::build_gtf_frame` and recovered by the
 //! real `net::unframe`, so what is measured is GTF framing, not a stand-in.
 //!
-//! Run it with `scripts/bench_transport.sh`; it is `#[ignore]`d so an ordinary
-//! test run stays fast and quiet.
+//! Run it with `cargo test --profile bench-transport --features quic --test
+//! bench_transport -- --ignored`; it is `#[ignore]`d so an ordinary test run
+//! stays fast and quiet.
 #![cfg(feature = "quic")]
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -142,7 +143,7 @@ fn print_table(rows: &[Row]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "benchmark: run scripts/bench_transport.sh"]
+#[ignore = "benchmark: cargo test --profile bench-transport --features quic --test bench_transport -- --ignored"]
 async fn gtf_bulk_versus_quic() {
     let mut rows = Vec::new();
 

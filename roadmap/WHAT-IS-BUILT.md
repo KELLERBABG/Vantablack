@@ -255,12 +255,13 @@ These work in the tests and have never met the real world. The gap is proof, not
 - **The mobile handover.** The Android reconnect code is written; the actual "walk out of Wi-Fi range
   mid-connection" test needs a physical device.
 - **The Linux-only shell scripts.** `nat_gate_iptables.sh`, `mesh_smoke_test.sh`,
-  `vpn_loopback_test.sh` and `pentest_ggn.sh` are bash and need Linux (some need root, one needs
-  Docker). None of them can run on this Windows machine, so none of their results are claimed here.
-- **The traffic-analysis gate.** `scripts/pentest_ggn.sh` tests handshake floods, spool floods,
-  forged beacons and replays. It has **no shape or timing test** — nothing that asks "can a
+  `vpn_loopback_test.sh` and `pentest_ggn.sh` were bash and needed Linux (some needed root, one
+  needed Docker). None of them could run on this Windows machine, so none of their results were
+  ever claimed here. They were removed on 2026-09-18 and remain recoverable from git history.
+- **The traffic-analysis gate.** Nothing here has a shape or timing test — nothing that asks "can a
   classifier tell these three kinds of traffic apart" — so the anonymity claim in the roadmap has
-  never actually been put to a classifier.
+  never actually been put to a classifier. The removed `pentest_ggn.sh` did the handshake-flood,
+  spool-flood, forged-beacon and replay work, and no more than that.
 
 ---
 
