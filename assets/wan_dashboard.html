@@ -201,7 +201,7 @@
     .tab-viewport {
       flex: 1;
       overflow-y: auto;
-      padding: 24px 32px 32px;
+      padding: 20px 28px 28px;
     }
 
     .tab-pane {
@@ -226,13 +226,13 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 24px 0 32px;
+      padding: 16px 0 24px;
       text-align: center;
     }
 
     .shield-btn {
-      width: 140px;
-      height: 140px;
+      width: 125px;
+      height: 125px;
       border-radius: 50%;
       background: var(--surface);
       border: 2px solid var(--border);
@@ -259,8 +259,8 @@
     }
 
     .shield-icon {
-      width: 48px;
-      height: 48px;
+      width: 44px;
+      height: 44px;
       fill: var(--text-dim);
       transition: all 0.3s ease;
     }
@@ -271,40 +271,40 @@
     }
 
     .hero-title {
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 700;
       letter-spacing: -0.3px;
-      margin-top: 18px;
+      margin-top: 14px;
       color: var(--text);
     }
 
     .hero-subtitle {
-      font-size: 13px;
+      font-size: 12.5px;
       color: var(--text-muted);
       margin-top: 4px;
     }
 
-    /* ——— 4-Card Status Grid ——— */
+    /* ——— 4-Card Live Stats Grid ——— */
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      gap: 14px;
-      margin-top: 12px;
+      gap: 12px;
+      margin-top: 10px;
     }
 
     .stat-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 16px;
+      padding: 14px 16px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 5px;
       transition: border-color 0.2s ease;
     }
 
     .stat-card:hover {
-      border-color: var(--border-hover, #243248);
+      border-color: var(--border-glow);
     }
 
     .stat-label {
@@ -316,7 +316,7 @@
     }
 
     .stat-val {
-      font-size: 16px;
+      font-size: 17px;
       font-weight: 700;
       color: var(--text);
       font-family: var(--font-mono);
@@ -328,57 +328,94 @@
     .stat-sub {
       font-size: 11px;
       color: var(--text-dim);
+      font-family: var(--font-mono);
     }
 
-    /* ——— Node Identity Strip ——— */
-    .identity-bar {
-      margin-top: 18px;
+    /* ——— Mobile Pairing Box ——— */
+    .pair-card {
+      margin-top: 16px;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 14px 18px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-    }
-
-    .id-left {
+      padding: 16px 20px;
       display: flex;
       flex-direction: column;
-      min-width: 0;
+      gap: 12px;
     }
 
-    .id-label {
-      font-size: 10px;
+    .pair-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .pair-title {
+      font-size: 13.5px;
       font-weight: 700;
-      letter-spacing: 1px;
-      color: var(--text-dim);
+      color: var(--text);
+      display: block;
+    }
+
+    .pair-subtitle {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      display: block;
+      margin-top: 2px;
+    }
+
+    .pair-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .pair-field {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .pair-label {
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
       text-transform: uppercase;
     }
 
-    .id-value {
+    .pair-input-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 7px 10px 7px 12px;
+      min-width: 0;
+    }
+
+    .pair-val {
       font-family: var(--font-mono);
       font-size: 12.5px;
       color: var(--accent);
-      margin-top: 3px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
     .copy-btn {
-      background: var(--surface-raised);
+      background: var(--surface);
       border: 1px solid var(--border);
       color: var(--text-muted);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
-      padding: 6px 14px;
-      border-radius: var(--radius-sm);
+      padding: 4px 10px;
+      border-radius: 4px;
       cursor: pointer;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       transition: all 0.15s ease;
       flex-shrink: 0;
     }
@@ -479,13 +516,14 @@
     }
 
     .empty-state {
-      padding: 48px 24px;
+      padding: 42px 24px;
       text-align: center;
       color: var(--text-muted);
-      font-size: 13.5px;
+      font-size: 13px;
       background: var(--surface);
       border: 1px dashed var(--border);
       border-radius: var(--radius);
+      line-height: 1.6;
     }
 
     /* ——— Form Inputs ——— */
@@ -527,6 +565,41 @@
     .action-btn:hover {
       opacity: 0.9;
       box-shadow: var(--accent-glow);
+    }
+
+    /* ——— Live Diagnostics Cards (Tab 3) ——— */
+    .diag-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 10px;
+    }
+
+    .diag-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .diag-sub {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .diag-val {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--accent);
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      border-radius: 5px;
     }
 
     /* ——— Settings Toggles (Tab 4) ——— */
@@ -617,16 +690,6 @@
       font-size: 11px;
       color: var(--text-dim);
     }
-
-    .footer-link {
-      color: var(--text-muted);
-      text-decoration: none;
-      transition: color 0.15s ease;
-    }
-
-    .footer-link:hover {
-      color: var(--accent);
-    }
   </style>
 </head>
 <body>
@@ -663,11 +726,11 @@
     <div class="nav-bar">
       <button class="nav-tab active" onclick="switchTab('tab-shield')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3z"/></svg>
-        Shield
+        Status
       </button>
       <button class="nav-tab" onclick="switchTab('tab-peers')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 3s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-        Mesh Peers (<span id="nav-peer-count">0</span>)
+        Peers (<span id="nav-peer-count">0</span>)
       </button>
       <button class="nav-tab" onclick="switchTab('tab-metrics')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
@@ -691,117 +754,146 @@
             </svg>
           </button>
           <div class="hero-title" id="hero-title">MESH STANDBY</div>
-          <div class="hero-subtitle" id="hero-subtitle">Click the shield to connect to your private post-quantum mesh</div>
+          <div class="hero-subtitle" id="hero-subtitle">Click the shield to activate your post-quantum mesh tunnel</div>
         </div>
 
+        <!-- 4 Dynamic Live Stats Cards -->
         <div class="stats-grid">
           <div class="stat-card">
-            <span class="stat-label">Security</span>
-            <span class="stat-val" style="color: var(--accent);">ML-KEM-768</span>
-            <span class="stat-sub">Hybrid X25519 (FIPS 203)</span>
+            <span class="stat-label">Download Rate</span>
+            <span class="stat-val" style="color: var(--accent);" id="stat-speed-down">↓ 0 B/s</span>
+            <span class="stat-sub" id="stat-total-down">0.0 MB total</span>
           </div>
           <div class="stat-card">
-            <span class="stat-label">Resilience</span>
-            <span class="stat-val" style="color: var(--emerald);">RS(2,1)</span>
-            <span class="stat-sub">0ms Erasure Sharding</span>
+            <span class="stat-label">Upload Rate</span>
+            <span class="stat-val" style="color: var(--emerald);" id="stat-speed-up">↑ 0 B/s</span>
+            <span class="stat-sub" id="stat-total-up">0.0 MB total</span>
           </div>
           <div class="stat-card">
-            <span class="stat-label">Peers</span>
+            <span class="stat-label">Mesh Peers</span>
             <span class="stat-val" id="stat-peer-count">0</span>
             <span class="stat-sub" id="stat-session-count">0 Active Sessions</span>
           </div>
           <div class="stat-card">
-            <span class="stat-label">Throughput</span>
-            <span class="stat-val" id="stat-traffic-speed">0 B/s</span>
-            <span class="stat-sub" id="stat-traffic-total">0 MB transferred</span>
+            <span class="stat-label">Tunnel Uptime</span>
+            <span class="stat-val" id="stat-uptime">00:00:00</span>
+            <span class="stat-sub" id="stat-packet-drop">0 drops • 0 retrans</span>
           </div>
         </div>
 
-        <div class="identity-bar">
-          <div class="id-left">
-            <span class="id-label">Node Fingerprint</span>
-            <span class="id-value" id="node-fingerprint">Detecting...</span>
+        <!-- Mobile Pairing & Connection Info -->
+        <div class="pair-card">
+          <div class="pair-header">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--accent)"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
+            <div>
+              <span class="pair-title">Verbindung mit Android-App</span>
+              <span class="pair-subtitle">Im selben WLAN diese Werte auf deinem Smartphone eintragen:</span>
+            </div>
           </div>
-          <button class="copy-btn" id="copy-btn" onclick="copyFingerprint()">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-            <span id="copy-text">Copy Key</span>
-          </button>
+          <div class="pair-grid">
+            <div class="pair-field">
+              <span class="pair-label">HUB ENDPOINT (IP:PORT)</span>
+              <div class="pair-input-box">
+                <span class="pair-val" id="hub-endpoint">Detecting...</span>
+                <button class="copy-btn" id="copy-endpoint-btn" onclick="copyHubEndpoint()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                  <span id="copy-endpoint-text">Copy</span>
+                </button>
+              </div>
+            </div>
+            <div class="pair-field">
+              <span class="pair-label">HUB FINGERPRINT (HEX)</span>
+              <div class="pair-input-box">
+                <span class="pair-val" id="hub-fingerprint">Detecting...</span>
+                <button class="copy-btn" id="copy-fp-btn" onclick="copyFingerprint()">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                  <span id="copy-fp-text">Copy</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- TAB 2: PEERS -->
       <div class="tab-pane" id="tab-peers">
         <div class="section-header">
-          <span class="section-title">Connected Mesh Nodes</span>
+          <span class="section-title">Connected Mesh Devices</span>
           <button class="action-btn" style="padding: 6px 14px; font-size: 12px;" onclick="refreshStatus()">Refresh</button>
         </div>
 
         <div class="input-row">
-          <input type="text" id="add-peer-input" class="text-input" placeholder="Enter peer address (e.g. 198.51.100.25:2270) or Node Key">
+          <input type="text" id="add-peer-input" class="text-input" placeholder="Peer IP:Port (z. B. 192.168.178.50:2270)">
           <button class="action-btn" onclick="addPeer()">Connect Peer</button>
         </div>
 
         <div id="peer-list-container">
           <div class="empty-state">
-            No external mesh peers detected yet.<br>
-            Nodes on your local network will automatically appear via LAN multicast, or you can add remote nodes above.
+            No external mesh peers connected yet.<br>
+            Smartphones and computers in your local Wi-Fi will appear here automatically when they connect.
           </div>
         </div>
       </div>
 
-      <!-- TAB 3: DIAGNOSTICS -->
+      <!-- TAB 3: DIAGNOSTICS (Real Live Network Info) -->
       <div class="tab-pane" id="tab-metrics">
         <div class="section-header">
-          <span class="section-title">Cryptographic & Wire Diagnostics</span>
+          <span class="section-title">Live Network & Socket Status</span>
         </div>
 
-        <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 14px;">
-          <div class="stat-card">
-            <span class="stat-label">Packets Sent</span>
-            <span class="stat-val" id="diag-pkts-sent">0</span>
-            <span class="stat-sub">Uniform 576B Frames</span>
+        <div class="diag-item">
+          <div>
+            <div class="diag-label">Mesh UDP Interface</div>
+            <div class="diag-sub">Primary transport socket for encrypted wire datagrams</div>
           </div>
-          <div class="stat-card">
-            <span class="stat-label">Packets Received</span>
-            <span class="stat-val" id="diag-pkts-recv">0</span>
-            <span class="stat-sub">Verified Poly1305 MAC</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">Packet Retransmits</span>
-            <span class="stat-val" style="color: var(--emerald);" id="diag-retrans">0</span>
-            <span class="stat-sub">0ms Gap Recovery</span>
-          </div>
+          <span class="diag-val" id="diag-mesh-socket">0.0.0.0:2270 (UDP)</span>
         </div>
 
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-title">AES-256-XTS In-Memory Hardening</span>
-            <span class="setting-desc">In-flight frame buffers are encrypted in volatile RAM to resist DMA memory forensics.</span>
+        <div class="diag-item">
+          <div>
+            <div class="diag-label">Local SOCKS5 Ingress</div>
+            <div class="diag-sub">Local application routing endpoint for browsers and apps</div>
           </div>
-          <span class="peer-badge" style="color: var(--emerald);">ACTIVE</span>
+          <span class="diag-val">127.0.0.1:1080 (TCP)</span>
         </div>
 
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-title">ProVerif 2.05 Formally Verified Model</span>
-            <span class="setting-desc">Mathematical proof of session secrecy: <code>RESULT not attacker(secret) is true</code>.</span>
+        <div class="diag-item">
+          <div>
+            <div class="diag-label">LAN Multicast Beacon</div>
+            <div class="diag-sub">Automatic zero-config peer discovery in local Wi-Fi</div>
           </div>
-          <span class="peer-badge" style="color: var(--accent);">VERIFIED</span>
+          <span class="diag-val">239.255.67.89:2270</span>
         </div>
 
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-title">Zero-RST Silent Re-Anchor</span>
-            <span class="setting-desc">Seamless physical network migration (Wi-Fi ➔ 5G) without resetting active TCP sessions.</span>
+        <div class="diag-item">
+          <div>
+            <div class="diag-label">Packets Transmitted</div>
+            <div class="diag-sub">Encrypted frames successfully dispatched across paths</div>
           </div>
-          <span class="peer-badge" style="color: var(--emerald);">READY</span>
+          <span class="diag-val" id="diag-pkts-sent">0 pkts</span>
+        </div>
+
+        <div class="diag-item">
+          <div>
+            <div class="diag-label">Packets Received</div>
+            <div class="diag-sub">Authenticated incoming datagrams unsealed & demuxed</div>
+          </div>
+          <span class="diag-val" id="diag-pkts-recv">0 pkts</span>
+        </div>
+
+        <div class="diag-item">
+          <div>
+            <div class="diag-label">Replay / Drop Defense</div>
+            <div class="diag-sub">Packets dropped due to anti-replay sliding window or corrupt MAC</div>
+          </div>
+          <span class="diag-val" style="color: var(--emerald);" id="diag-drops-val">0 drops</span>
         </div>
       </div>
 
       <!-- TAB 4: SETTINGS -->
       <div class="tab-pane" id="tab-settings">
         <div class="section-header">
-          <span class="section-title">Mesh & Privacy Configuration</span>
+          <span class="section-title">Mesh Configuration</span>
         </div>
 
         <div class="setting-item">
@@ -851,14 +943,15 @@
     <!-- App Footer -->
     <div class="app-footer">
       <span>Vantablack • Autonomous Post-Quantum WAN Mesh</span>
-      <span>Uptime: <span id="footer-uptime">0m</span></span>
+      <span>Uptime: <span id="footer-uptime">00:00:00</span></span>
     </div>
   </div>
 
   <script>
     let isConnected = false;
     let nodeState = {};
-    let prevBytes = 0;
+    let prevBytesSent = 0;
+    let prevBytesRecv = 0;
     let prevTimestamp = Date.now();
 
     // Native IPC Bridge
@@ -894,7 +987,6 @@
       if (tabId === 'tab-settings') tabs[3]?.classList.add('active');
     }
 
-    // Format Bytes
     function formatBytes(bytes) {
       if (!bytes || bytes === 0) return '0 B';
       const k = 1024;
@@ -903,28 +995,36 @@
       return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
     }
 
-    // Format Uptime
-    function formatUptime(secs) {
-      if (!secs) return '0m';
+    function formatDuration(secs) {
+      if (!secs) return '00:00:00';
       const h = Math.floor(secs / 3600);
       const m = Math.floor((secs % 3600) / 60);
-      if (h > 0) return `${h}h ${m}m`;
-      return `${m}m`;
+      const s = Math.floor(secs % 60);
+      return [h, m, s].map(v => String(v).padStart(2, '0')).join(':');
     }
 
-    // Copy Fingerprint
-    function copyFingerprint() {
-      const fp = document.getElementById('node-fingerprint').innerText;
-      if (fp && fp !== 'Detecting...') {
-        navigator.clipboard.writeText(fp).then(() => {
-          const btn = document.getElementById('copy-text');
+    function copyHubEndpoint() {
+      const ep = document.getElementById('hub-endpoint').innerText;
+      if (ep && ep !== 'Detecting...') {
+        navigator.clipboard.writeText(ep).then(() => {
+          const btn = document.getElementById('copy-endpoint-text');
           btn.innerText = 'Copied!';
-          setTimeout(() => btn.innerText = 'Copy Key', 2000);
+          setTimeout(() => btn.innerText = 'Copy', 2000);
         });
       }
     }
 
-    // Toggle Connection
+    function copyFingerprint() {
+      const fp = document.getElementById('hub-fingerprint').innerText;
+      if (fp && fp !== 'Detecting...') {
+        navigator.clipboard.writeText(fp).then(() => {
+          const btn = document.getElementById('copy-fp-text');
+          btn.innerText = 'Copied!';
+          setTimeout(() => btn.innerText = 'Copy', 2000);
+        });
+      }
+    }
+
     async function toggleConnect() {
       const targetState = !isConnected;
       updateUIState(targetState);
@@ -935,12 +1035,11 @@
           body: JSON.stringify({ connected: targetState })
         });
       } catch (e) {
-        console.warn('Connect API request failed', e);
+        console.warn('Connect API failed', e);
       }
       refreshStatus();
     }
 
-    // Update UI Visual State
     function updateUIState(connected) {
       isConnected = connected;
       const shield = document.getElementById('hero-shield-btn');
@@ -951,9 +1050,9 @@
 
       if (connected) {
         shield.classList.add('active');
-        title.innerText = 'MESH PROTECTED';
+        title.innerText = 'MESH ONLINE';
         title.style.color = 'var(--emerald)';
-        subtitle.innerText = 'Zero-trust post-quantum lattice mesh active • Hybrid ML-KEM-768';
+        subtitle.innerText = 'Post-quantum encrypted mesh tunnel is active';
         dot.classList.add('active');
         statusText.innerText = 'ONLINE';
         statusText.style.color = 'var(--emerald)';
@@ -961,14 +1060,13 @@
         shield.classList.remove('active');
         title.innerText = 'MESH STANDBY';
         title.style.color = 'var(--text)';
-        subtitle.innerText = 'Click the shield to connect to your private post-quantum mesh';
+        subtitle.innerText = 'Click the shield to activate your post-quantum mesh tunnel';
         dot.classList.remove('active');
         statusText.innerText = 'DISCONNECTED';
         statusText.style.color = 'var(--text-muted)';
       }
     }
 
-    // Poll /api/status
     async function refreshStatus() {
       try {
         const res = await fetch('/api/status');
@@ -976,50 +1074,58 @@
         const data = await res.json();
         nodeState = data;
 
-        // Connection
         updateUIState(Boolean(data.connected));
 
-        // Node ID
+        // Pairing values
+        if (data.host) {
+          document.getElementById('hub-endpoint').innerText = data.host;
+          document.getElementById('diag-mesh-socket').innerText = data.host + ' (UDP)';
+        }
         if (data.network_id) {
-          document.getElementById('node-fingerprint').innerText = data.network_id;
+          document.getElementById('hub-fingerprint').innerText = data.network_id;
         }
 
         // Peers
         const count = data.peers_count || 0;
         const sessions = data.active_sessions || 0;
-        document.getElementById('stat-peer-count').innerText = count;
+        document.getElementById('stat-peer-count').innerText = count + ' Online';
         document.getElementById('nav-peer-count').innerText = count;
         document.getElementById('stat-session-count').innerText = `${sessions} Active Sessions`;
 
         // Throughput & Speed
         if (data.throughput) {
-          const totalBytes = (data.throughput.bytes_sent || 0) + (data.throughput.bytes_recv || 0);
-          document.getElementById('stat-traffic-total').innerText = `${formatBytes(totalBytes)} transferred`;
+          const sent = data.throughput.bytes_sent || 0;
+          const recv = data.throughput.bytes_recv || 0;
+          document.getElementById('stat-total-down').innerText = `${formatBytes(recv)} total`;
+          document.getElementById('stat-total-up').innerText = `${formatBytes(sent)} total`;
 
           const now = Date.now();
-          const timeDiff = (now - prevTimestamp) / 1000;
-          if (timeDiff > 0 && prevBytes > 0) {
-            const speed = Math.max(0, (totalBytes - prevBytes) / timeDiff);
-            document.getElementById('stat-traffic-speed').innerText = `${formatBytes(speed)}/s`;
+          const dt = (now - prevTimestamp) / 1000;
+          if (dt > 0 && prevBytesSent > 0) {
+            const upSpeed = Math.max(0, (sent - prevBytesSent) / dt);
+            const downSpeed = Math.max(0, (recv - prevBytesRecv) / dt);
+            document.getElementById('stat-speed-up').innerText = `↑ ${formatBytes(upSpeed)}/s`;
+            document.getElementById('stat-speed-down').innerText = `↓ ${formatBytes(downSpeed)}/s`;
           }
-          prevBytes = totalBytes;
+          prevBytesSent = sent;
+          prevBytesRecv = recv;
           prevTimestamp = now;
 
-          // Diagnostics
-          document.getElementById('diag-pkts-sent').innerText = (data.throughput.packets_sent || 0).toLocaleString();
-          document.getElementById('diag-pkts-recv').innerText = (data.throughput.packets_recv || 0).toLocaleString();
+          document.getElementById('diag-pkts-sent').innerText = (data.throughput.packets_sent || 0).toLocaleString() + ' pkts';
+          document.getElementById('diag-pkts-recv').innerText = (data.throughput.packets_recv || 0).toLocaleString() + ' pkts';
         }
 
         // Uptime
         if (data.uptime_seconds !== undefined) {
-          document.getElementById('footer-uptime').innerText = formatUptime(data.uptime_seconds);
+          const formatted = formatDuration(data.uptime_seconds);
+          document.getElementById('stat-uptime').innerText = formatted;
+          document.getElementById('footer-uptime').innerText = formatted;
         }
 
-        // Render Peers List
         renderPeers(data.peers || []);
 
       } catch (e) {
-        // Background node might be starting up
+        // Node starting up
       }
     }
 
@@ -1029,7 +1135,7 @@
         container.innerHTML = `
           <div class="empty-state">
             No external mesh peers connected yet.<br>
-            Nodes on your local network will automatically appear via LAN multicast, or you can add remote nodes above.
+            Smartphones and computers in your local Wi-Fi will appear here automatically when they connect.
           </div>`;
         return;
       }
@@ -1065,7 +1171,7 @@
         input.value = '';
         setTimeout(refreshStatus, 400);
       } catch (e) {
-        alert('Could not add peer: ' + e.message);
+        alert('Could not connect peer: ' + e.message);
       }
     }
 
@@ -1074,7 +1180,7 @@
     }
 
     function saveSetting(key, value) {
-      console.log('Saved setting:', key, value);
+      console.log('Setting:', key, value);
     }
 
     // Polling loop
