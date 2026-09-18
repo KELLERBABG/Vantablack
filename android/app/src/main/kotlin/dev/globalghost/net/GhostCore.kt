@@ -1,7 +1,7 @@
 package dev.globalghost.net
 
 /**
- * JNI binding to the Global Ghost Net Rust core (libvantablack.so, built with
+ * JNI binding to the Vantablack Rust core (libvantablack.so, built with
  * cargo-ndk --features vpn). One instance per VPN session; the ptr returned by
  * init() must be passed to every other call and released with destroy().
  *

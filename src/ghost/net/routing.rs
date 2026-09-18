@@ -1,6 +1,6 @@
 /// Contact Graph Routing (CGR) & Time-Variable Graph (TVG)
 ///
-/// Implements the routing abstractions described in the Global Ghost Net architecture:
+/// Implements the routing abstractions described in the Vantablack architecture:
 ///
 /// ## Poisson-Distributed Error Rate Checking
 /// The reputation matrix now uses a Poisson-distributed error model to distinguish

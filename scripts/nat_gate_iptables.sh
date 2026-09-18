@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Global Ghost Net — kernel-level NAT gate (SOTA P1-1)
+# Vantablack — kernel-level NAT gate (SOTA P1-1)
 #
 # `tests/p1_nat.rs` and `tests/p1_relay.rs` model an RFC 4787 NAT in Rust and run
 # everywhere. This script checks the *model itself* against the real kernel: it

@@ -201,7 +201,7 @@ fp=ab12…  ip=10.66.0.10  endpoint=203.0.113.9:51000  epoch=7  last_seen=2s  fl
 | D5 | `README.md` still claims exit nodes "Rotate egress IPs" and NAT traversal is "Bypassed" via STUN hole-punching — neither is implemented | `README.md:57`, `README.md:115` | Delete the two claims; VPN now supersedes the NAT story anyway. |
 | D6 | `scripts/mesh_smoke_test.sh` and `scripts/pentest_ggn.sh` probe `C:/Users/Public/ggn-target/debug`, a path `.cargo/config.toml` documents as removed | `scripts/*.sh:19,23` | Drop the second candidate dir. |
 | D7 | `net/security/hsm.rs` gates code on `hardware-tpm` / `pkcs11`, but neither feature is declared in `Cargo.toml` → that code can never compile, and `--features hardware-tpm` is an "unknown feature" error | `Cargo.toml` features list vs `hsm.rs:142,157,190,240,256,276` | Declare both (as no-op stubs) **or** delete the gated blocks. Either is better than a claim that cannot be built. |
-| D8 | `main.rs` hard-codes the version string `"Global Ghost Net v0.4.0 starting"` while the VPN work is well past v0.4.0 | `main.rs` startup log | Read `env!("CARGO_PKG_VERSION")`, and bump the package version. |
+| D8 | `main.rs` hard-codes the version string `"Vantablack v0.4.0 starting"` while the VPN work is well past v0.4.0 | `main.rs` startup log | Read `env!("CARGO_PKG_VERSION")`, and bump the package version. |
 | D9 | The whole `vpn` subsystem (~3.8 kLOC) is **never built in CI** | `.github/workflows/release.yml` runs `cargo test --locked` / `cargo build --release --locked` with no `--features vpn` | Add `cargo test --features vpn` and `cargo check --features vpn` to the `test` job. |
 | D10 | `UdpFlowTable::flow_for_local_port` is a linear scan over all flows, called per inbound LAN datagram | `net/vpn/mod.rs` | Keep a secondary `HashMap<u16, FlowKey>` keyed by local port. |
 | D11 | `UdpFlowTable::get_or_create` re-inserts a *refreshed* `Arc<UdpFlow>` but returns the **old** one, so the caller's `last_seen` is stale | `net/vpn/mod.rs` `get_or_create` | Return the refreshed Arc, or refresh in place. Harmless today; a trap if anything ever reads `last_seen` off the returned handle. |
@@ -408,7 +408,7 @@ headroom, watchdog state.
 
 ## 9. Architectural Roadmap: Path to Undisputed State-of-the-Art (Open-Source Launch)
 
-To transition Global Ghost Net from an advanced cryptographic research prototype into the most capable, verifiable, and secure private networking system in the world, the following architectural upgrades and wirings must be prioritized before public release:
+To transition Vantablack from an advanced cryptographic research prototype into the most capable, verifiable, and secure private networking system in the world, the following architectural upgrades and wirings must be prioritized before public release:
 
 ### 9.1 NAT Traversal & Zero-Configuration Invariance (Universal Reachability)
 * **The Problem:** The current WAN tunnel requires manual router port-forwarding (UDP 2271) or public IP exposure. This creates friction for non-technical users and fails behind CGNAT, cellular carrier NATs, and strict enterprise symmetric firewalls.

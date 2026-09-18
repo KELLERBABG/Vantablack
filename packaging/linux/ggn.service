@@ -1,5 +1,5 @@
 [Unit]
-Description=Global Ghost Net mesh node
+Description=Vantablack mesh node
 Documentation=https://github.com/KELLERBABG/Global-Ghost-Net
 Wants=network-online.target
 After=network-online.target

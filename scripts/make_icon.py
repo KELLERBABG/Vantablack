@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the Global Ghost Net application icons.
+"""Generate the Vantablack application icons.
 
 Renders the same mark as `assets/icon.svg` — a dark rounded tile with a cyan
 ring (the network node) — as signed-distance-field rasterizations. One SDF

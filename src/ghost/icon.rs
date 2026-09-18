@@ -275,7 +275,7 @@ mod tests {
         // The strings the installer and the shell show for the product.
         assert_eq!(
             rc_value(APP_RC, "ProductName").as_deref(),
-            Some("Global Ghost Net")
+            Some("Vantablack")
         );
         assert_eq!(
             rc_value(APP_RC, "CompanyName").as_deref(),

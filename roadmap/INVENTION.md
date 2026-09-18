@@ -1,4 +1,4 @@
-# Global Ghost Net — Invention Track (Beyond SOTA)
+# Vantablack — Invention Track (Beyond SOTA)
 
 > **Companion to `roadmap/SOTA.md`.** SOTA gets you to `v1.0` — best mesh done right by copying standards correctly (ICE, ML-DSA, BBR, Sphinx). *This* file is how you define the *next* SOTA — 20 systems-level inventions nobody else can ship because nobody else has your stack (any-2-of-3 RS sharding + hybrid PQ + epoch ladder + tit-for-tat + GTF).
 

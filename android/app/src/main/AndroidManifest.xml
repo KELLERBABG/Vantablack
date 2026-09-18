@@ -9,7 +9,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="Global Ghost Net"
+        android:label="Vantablack"
         android:supportsRtl="true">
 
         <activity

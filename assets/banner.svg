@@ -39,7 +39,7 @@
   </g>
 
   <!-- Title & Subtitle Typography -->
-  <text x="300" y="195" font-family="'Space Grotesk', -apple-system, sans-serif" font-size="56" font-weight="700" fill="#f8fafc" letter-spacing="-1">Global Ghost Net</text>
+  <text x="300" y="195" font-family="'Space Grotesk', -apple-system, sans-serif" font-size="56" font-weight="700" fill="#f8fafc" letter-spacing="-1">Vantablack</text>
   <text x="300" y="245" font-family="'JetBrains Mono', monospace" font-size="20" font-weight="500" fill="#38bdf8" letter-spacing="2">POST-QUANTUM WAN &bull; KELLER SYSTEMS</text>
 
   <!-- Outer Frame -->

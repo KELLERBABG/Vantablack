@@ -1,4 +1,4 @@
-# Global Ghost Net — cargo configuration
+# Vantablack — cargo configuration
 #
 # This repo must build out-of-the-box on any machine. The previous
 # `target-dir` override ("C:/Users/Public/ggn-target") was a machine-specific

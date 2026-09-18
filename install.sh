@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Global Ghost Net — automated node installer (POSIX sh).
+# Vantablack — automated node installer (POSIX sh).
 #
 # Served at the site root as advertised by the landing page:
 #   curl -sSf https://ggn.kellersystems.dev/install.sh | sh
@@ -11,7 +11,7 @@
 set -e
 
 printf '\033[1;36m=================================================\033[0m\n'
-printf '\033[1;37m   GLOBAL GHOST NET // Automated Node Installer   \033[0m\n'
+printf '\033[1;37m   VANTABLACK // Automated Node Installer   \033[0m\n'
 printf '\033[1;36m=================================================\033[0m\n'
 
 DEST_DIR="$HOME/.ggn"
@@ -33,7 +33,7 @@ if [ -d "$REPO_DIR" ]; then
     printf '\033[1;33m[*] Updating existing repository...\033[0m\n'
     git -C "$REPO_DIR" pull --ff-only origin main
 else
-    printf '\033[1;33m[*] Cloning Global Ghost Net...\033[0m\n'
+    printf '\033[1;33m[*] Cloning Vantablack...\033[0m\n'
     git clone https://github.com/KELLERBABG/Global-Ghost-Net.git "$REPO_DIR"
 fi
 

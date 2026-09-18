@@ -1,4 +1,4 @@
-//! Where Global Ghost Net keeps its files.
+//! Where Vantablack keeps its files.
 //!
 //! Older builds wrote `identity.key`, `peers.cache`, `ghost-consumer.json`,
 //! `ghost.log` and `ghost-topology.json` into the *current working directory*.

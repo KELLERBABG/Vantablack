@@ -1,6 +1,6 @@
 # Deep Dive: Clean-Room Onion Routing Architecture
 
-This document details the multi-hop onion routing mechanism implemented in Global Ghost Net, explaining how it achieves decentralized, anonymous message forwarding without relying on, borrowing from, or reusing any legacy Tor or onion routing codebases.
+This document details the multi-hop onion routing mechanism implemented in Vantablack, explaining how it achieves decentralized, anonymous message forwarding without relying on, borrowing from, or reusing any legacy Tor or onion routing codebases.
 
 ---
 
@@ -8,7 +8,7 @@ This document details the multi-hop onion routing mechanism implemented in Globa
 
 Traditional onion networks (such as Tor) were designed around TCP circuits, centralized directory authorities, and pre-quantum cryptography (RSA, Curve25519).
 
-Global Ghost Net implements onion routing **from first principles** in pure Rust:
+Vantablack implements onion routing **from first principles** in pure Rust:
 1. **Zero Legacy Dependencies:** No C/C++ libraries, no OpenSSL, no legacy circuit protocols.
 2. **Datagram-Native (UDP):** Operates on Ghost Transport Frames (GTF) over UDP, eliminating TCP circuit stalls, head-of-line blocking, and TCP fingerprinting.
 3. **Post-Quantum Layering:** Key encapsulation at each layer uses hybrid **ML-KEM-512 (Kyber)** and **X25519**, defending transit payloads against future quantum decryption.
@@ -19,7 +19,7 @@ Global Ghost Net implements onion routing **from first principles** in pure Rust
 
 ## 2. Multi-Hop Onion Peeling Mechanics
 
-In Global Ghost Net, multi-hop routing operates through two synergistic mechanisms:
+In Vantablack, multi-hop routing operates through two synergistic mechanisms:
 1. **End-to-End Cryptographic Peeling (`RLY!`):** Implemented in `src/ghost/net/relay.rs`.
 2. **Level 2 Multi-Hop Wire Forwarding:** Implemented in `src/bin/wan_mesh.rs`.
 
@@ -100,7 +100,7 @@ When routing through anonymous overlay relays (`SENDRELAY <dest_fp> <relay_fp> <
 
 ## 3. Synergy with Reed-Solomon Sharding & Byzantine Defense
 
-Unlike traditional single-path circuits where a single malicious relay can intercept or drop entire streams, Global Ghost Net integrates **Reed-Solomon RS(2,1) Multi-Path Erasure Sharding**:
+Unlike traditional single-path circuits where a single malicious relay can intercept or drop entire streams, Vantablack integrates **Reed-Solomon RS(2,1) Multi-Path Erasure Sharding**:
 
 ```
                   +--> [Carrier 1 -> Carrier 4] --> Shard 0 (2 hops) --+

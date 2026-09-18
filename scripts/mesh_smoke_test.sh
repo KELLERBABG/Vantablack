@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Global Ghost Net — live 2-node mesh smoke test
+# Vantablack — live 2-node mesh smoke test
 #
 # REAL everything: real UDP sockets, real X25519+ML-KEM-512 hybrid handshake,
 # real ChaCha20-Poly1305 + Reed-Solomon sharding, real TCP through the mesh.
@@ -55,7 +55,7 @@ cargo build >/dev/null 2>&1 || { bad "cargo build"; exit 1; }
 [ -f "$BIN" ] || { bad "binary missing: $BIN"; exit 1; }
 
 rm -rf "$TMP"; mkdir -p "$TMP/http" "$TMP/nodeA" "$TMP/nodeB"
-printf 'Global Ghost Net mesh smoke test — %s\n0123456789\n' "$(date)" > "$TMP/http/mesh_test.txt"
+printf 'Vantablack mesh smoke test — %s\n0123456789\n' "$(date)" > "$TMP/http/mesh_test.txt"
 
 say "starting HTTP server on 127.0.0.1:$HTTP_PORT"
 ( cd "$TMP/http" && py -m http.server "$HTTP_PORT" --bind 127.0.0.1 >/dev/null 2>&1 ) &

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Global Ghost Net — VPN loopback self-test (zero elevation)
+# Vantablack — VPN loopback self-test (zero elevation)
 #
 # The gate PROTOTYPE.md calls "nothing is wire-proven yet", made runnable
 # without hardware: two REAL processes (hub + client) over REAL UDP sockets,

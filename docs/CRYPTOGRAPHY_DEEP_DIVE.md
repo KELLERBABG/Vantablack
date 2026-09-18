@@ -1,6 +1,6 @@
 # Cryptographic Deep Dive: Post-Quantum Hybrid Defense
 
-This document details the mathematical and algorithmic foundations of the cryptographic suite powering Global Ghost Net, including hybrid key exchange, authenticated data transport, combinatorial Byzantine tamper resistance, and anti-replay session mechanics.
+This document details the mathematical and algorithmic foundations of the cryptographic suite powering Vantablack, including hybrid key exchange, authenticated data transport, combinatorial Byzantine tamper resistance, and anti-replay session mechanics.
 
 ---
 
@@ -10,7 +10,7 @@ Classical public-key cryptography (RSA, ECDH, Diffie-Hellman) relies on mathemat
 
 Mass-surveillance adversaries frequently engage in **"Store Now, Decrypt Later"** attacks: capturing and archiving encrypted network traffic today with the objective of decrypting it once quantum computing hardware matures.
 
-To neutralize this threat, Global Ghost Net employs a **hybrid post-quantum cryptographic architecture**:
+To neutralize this threat, Vantablack employs a **hybrid post-quantum cryptographic architecture**:
 1. **Classical Hard Problem:** Elliptic curve discrete logarithm over Curve25519 (128-bit classical security).
 2. **Post-Quantum Hard Problem:** Module Learning with Errors (MLWE) over polynomial rings via ML-KEM-512 (Kyber-512 / FIPS 203).
 

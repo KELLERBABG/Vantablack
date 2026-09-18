@@ -1,14 +1,14 @@
-﻿# State of the Art (SOTA) Architectural Benchmark
+# State of the Art (SOTA) Architectural Benchmark
 
-> **Global Ghost Net** was engineered from first principles in pure Rust to establish an undisputed State of the Art (SOTA) across post-quantum cryptography, transport resilience, zero-trust decentralization, and privacy routing.
+> **Vantablack** was engineered from first principles in pure Rust to establish an undisputed State of the Art (SOTA) across post-quantum cryptography, transport resilience, zero-trust decentralization, and privacy routing.
 
 ---
 
 ## 1. Executive SOTA Comparison Matrix
 
-The table below benchmarks Global Ghost Net against existing modern networking and privacy standards: **WireGuard**, **Tailscale**, the **Tor Network**, and **Commercial VPNs** (e.g., Mullvad, IVPN, NordVPN).
+The table below benchmarks Vantablack against existing modern networking and privacy standards: **WireGuard**, **Tailscale**, the **Tor Network**, and **Commercial VPNs** (e.g., Mullvad, IVPN, NordVPN).
 
-| Capability & Plain English Purpose | Global Ghost Net | WireGuard | Tailscale | Tor Network | Commercial VPN |
+| Capability & Plain English Purpose | Vantablack | WireGuard | Tailscale | Tor Network | Commercial VPN |
 |---|---|---|---|---|---|
 | **Post-Quantum Cryptography**<br>_Protection against future quantum supercomputers decrypting intercepted/archived traffic._ | **Hybrid ML-KEM-768 + ML-DSA-65 + X25519 (FIPS 203 / 204)** | Classical Only (Curve25519) | Classical Only (Curve25519) | Classical Only (Curve25519 / RSA) | Classical Only (RSA / ECDH) |
 | **Network Architecture**<br>_Can the network be shut down, seized, or banned by attacking a central company or server?_ | **100% Serverless Autonomous Mesh (No coordinator, zero accounts, no login)** | Point-to-Point (Manual config required) | Centralized (Requires Tailscale / Google / Microsoft login) | Semi-Centralized (Relies on 9 Directory Authorities) | Centralized (Provider servers & billing accounts) |
@@ -25,11 +25,11 @@ The table below benchmarks Global Ghost Net against existing modern networking a
 
 ### 2.1 Post-Quantum Hybrid Defense (FIPS 203 / 204)
 - **The Problem:** Hostile nation-states and mass-surveillance agencies currently record encrypted Internet traffic under "Store Now, Decrypt Later" (SNDL) initiatives. When large-scale quantum computers arrive, all standard VPNs (WireGuard, OpenVPN, IPsec) using classical elliptic curves (Curve25519) or RSA will have their master keys retroactively broken via Shor's algorithm.
-- **The GGN Solution:** Global Ghost Net executes a dual-layer hybrid key exchange combining **X25519** and **ML-KEM-768** (formerly Kyber, FIPS 203). Even if quantum machines break elliptic curve cryptography entirely, the lattice-based Module-LWE encryption ensures archived network data remains mathematically unbreakable. Identity beacons and session proofs are authenticated with hybrid **Ed25519 + ML-DSA-65** signatures (FIPS 204).
+- **The GGN Solution:** Vantablack executes a dual-layer hybrid key exchange combining **X25519** and **ML-KEM-768** (formerly Kyber, FIPS 203). Even if quantum machines break elliptic curve cryptography entirely, the lattice-based Module-LWE encryption ensures archived network data remains mathematically unbreakable. Identity beacons and session proofs are authenticated with hybrid **Ed25519 + ML-DSA-65** signatures (FIPS 204).
 
 ### 2.2 100% Serverless Autonomous Mesh
 - **The Problem:** Modern "mesh" overlays such as Tailscale or ZeroTier require proprietary coordination servers and accounts (Google, Microsoft, GitHub). If the coordination server experiences an outage, is blocked by an ISP, or complies with a court order, the entire overlay network collapses.
-- **The GGN Solution:** Global Ghost Net operates with zero coordinators, zero user accounts, and zero billing servers. Discovery occurs through decentralized Cloudflare DNS seed round-robins, local LAN multicast announcements, and cached direct peer states. Every node is a peer, a relay, and an autonomous routing engine.
+- **The GGN Solution:** Vantablack operates with zero coordinators, zero user accounts, and zero billing servers. Discovery occurs through decentralized Cloudflare DNS seed round-robins, local LAN multicast announcements, and cached direct peer states. Every node is a peer, a relay, and an autonomous routing engine.
 
 ### 2.3 Reed-Solomon RS(2,1) Erasure Sharding
 - **The Problem:** Traditional tunnels send all packets down a single wire sequentially. If 15% of packets are dropped due to a congested Wi-Fi network or cellular tower, the operating system pauses the stream and requests retransmissions, introducing latency spikes and video/audio stutter.
@@ -45,7 +45,7 @@ The table below benchmarks Global Ghost Net against existing modern networking a
 
 ### 2.6 Formally Verified Machine Proofs (ProVerif 2.05)
 - **The Problem:** Most VPN protocols rely on manual informal code reviews, leaving subtle session hijacking, key misbinding, or downgrade vulnerabilities undetected.
-- **The GGN Solution:** Global Ghost Net's session negotiation and hybrid key encapsulation protocols are modeled in formal applied pi-calculus and mathematically proven using **ProVerif 2.05** (ormal/ghost_session.pv). The automated prover exhaustively confirms secrecy:
+- **The GGN Solution:** Vantablack's session negotiation and hybrid key encapsulation protocols are modeled in formal applied pi-calculus and mathematically proven using **ProVerif 2.05** (ormal/ghost_session.pv). The automated prover exhaustively confirms secrecy:
   RESULT not attacker(secret[]) is true
   proving that no active Dolev-Yao adversary can compromise session keys or inject forged control messages.
 
@@ -55,4 +55,4 @@ The table below benchmarks Global Ghost Net against existing modern networking a
 
 ### 2.8 Clean-Room 3-Hop Onion Forwarding
 - **The Problem:** In conventional VPNs, the VPN provider knows both your real IP address and every destination website you visit.
-- **The GGN Solution:** Global Ghost Net implements a clean-room, datagram-native 3-hop onion routing protocol (RLY!) built entirely from scratch in pure Rust without Tor legacy dependencies. Packets are encapsulated in successive layers of encryption across guard, middle, and exit nodes, authenticated with ephemeral single-use vouchers (EXITAUTH). No single node in the circuit knows both the origin IP and the final destination.
+- **The GGN Solution:** Vantablack implements a clean-room, datagram-native 3-hop onion routing protocol (RLY!) built entirely from scratch in pure Rust without Tor legacy dependencies. Packets are encapsulated in successive layers of encryption across guard, middle, and exit nodes, authenticated with ephemeral single-use vouchers (EXITAUTH). No single node in the circuit knows both the origin IP and the final destination.

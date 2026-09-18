@@ -1,4 +1,4 @@
-# Global Ghost Net — automated node installer (Windows PowerShell).
+# Vantablack — automated node installer (Windows PowerShell).
 #
 # Served at the site root as advertised by the landing page:
 #   irm https://ggn.kellersystems.dev/install.ps1 | iex
@@ -7,7 +7,7 @@
 # environment variables (see config.env.example).
 
 Write-Host "=================================================" -ForegroundColor Cyan
-Write-Host "   GLOBAL GHOST NET // Automated Node Installer   " -ForegroundColor White
+Write-Host "   VANTABLACK // Automated Node Installer   " -ForegroundColor White
 Write-Host "=================================================" -ForegroundColor Cyan
 
 $destDir = "$HOME\.ggn"
@@ -25,7 +25,7 @@ if (!(Get-Command git -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-Write-Host "[*] Cloning Global Ghost Net repository..." -ForegroundColor Yellow
+Write-Host "[*] Cloning Vantablack repository..." -ForegroundColor Yellow
 $repoDir = "$destDir\Global-Ghost-Net"
 if (Test-Path $repoDir) {
     git -C $repoDir pull --ff-only origin main

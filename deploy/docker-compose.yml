@@ -1,4 +1,4 @@
-# Global Ghost Net — Reference Deployment Testbed (Invention §48: Deploy-Not-Design)
+# Vantablack — Reference Deployment Testbed (Invention §48: Deploy-Not-Design)
 #
 # Spin up a containerized 3-node reference mesh:
 #   1. Hub (Exit & Dead-Drop Vault)

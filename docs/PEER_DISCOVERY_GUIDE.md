@@ -6,7 +6,7 @@ This guide provides step-by-step instructions for establishing a decentralized p
 
 ## 1. Cloudflare DNS Seed Configuration
 
-Global Ghost Net uses standard DNS `A` and `AAAA` record resolution to discover active peer IP addresses. Cloudflare provides fast, free, worldwide anycast DNS that serves as an ideal bootstrap mechanism.
+Vantablack uses standard DNS `A` and `AAAA` record resolution to discover active peer IP addresses. Cloudflare provides fast, free, worldwide anycast DNS that serves as an ideal bootstrap mechanism.
 
 ### Step 1: Add DNS Record in Cloudflare
 1. Log in to the [Cloudflare Dashboard](https://dash.cloudflare.com).
@@ -44,5 +44,5 @@ When you start a node (the `.bat` launchers were removed in 19b1ef1 - run the bi
 
 Once a node successfully connects to peers:
 - Active peer addresses are automatically written to `peers.cache` on the local file system.
-- If your computer reboots or is temporarily without DNS access, Global Ghost Net loads `peers.cache` first, attempting immediate direct peer reconnects before polling DNS seeds.
+- If your computer reboots or is temporarily without DNS access, Vantablack loads `peers.cache` first, attempting immediate direct peer reconnects before polling DNS seeds.
 - This creates an offline-first, resilient network that survives DNS outages and ISP-level DNS tampering.

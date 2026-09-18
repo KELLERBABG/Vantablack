@@ -1,5 +1,5 @@
 //! The native desktop application — the default build, and the primary way
-//! people are meant to use Global Ghost Net.
+//! people are meant to use Vantablack.
 //!
 //! It hosts the control center in a frameless tao window with a system-tray
 //! icon, so no browser tab is involved. The page talks back over wry's IPC
@@ -78,7 +78,7 @@ fn build_tray(
         return None;
     };
 
-    let open_item = MenuItem::new("Show Global Ghost Net", true, None);
+    let open_item = MenuItem::new("Show Vantablack", true, None);
     let beacon_item = nc.as_ref().map(|node| {
         CheckMenuItem::new(
             "Beacon discovery",
@@ -87,7 +87,7 @@ fn build_tray(
             None,
         )
     });
-    let quit_item = MenuItem::new("Quit Global Ghost Net", true, None);
+    let quit_item = MenuItem::new("Quit Vantablack", true, None);
     let menu = Menu::new();
     let _ = menu.append(&open_item);
     if let Some(item) = &beacon_item {
@@ -97,7 +97,7 @@ fn build_tray(
     if TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(icon)
-        .with_tooltip("Global Ghost Net")
+        .with_tooltip("Vantablack")
         .build()
         .is_err()
     {
@@ -135,7 +135,7 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
     // Visible from the start: this is the application, not a tray-only helper.
     // Closing it later hides it back to the tray.
     let window = match WindowBuilder::new()
-        .with_title("Global Ghost Net")
+        .with_title("Vantablack")
         .with_window_icon(window_icon)
         .with_decorations(false)
         .with_inner_size(LogicalSize::new(1180.0, 820.0))

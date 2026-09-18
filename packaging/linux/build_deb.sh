@@ -20,8 +20,8 @@ Section: net
 Priority: optional
 Architecture: $ARCH
 Maintainer: Keller Systems
-Description: Global Ghost Net post-quantum mesh node
- A headless Global Ghost Net daemon with SOCKS5 and optional VPN support.
+Description: Vantablack post-quantum mesh node
+ A headless Vantablack daemon with SOCKS5 and optional VPN support.
 EOF
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh

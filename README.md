@@ -1,6 +1,6 @@
 <div align="center">
 
-# &#128420; Global Ghost Net
+# &#128420; Vantablack
 
 **Autonomous Post-Quantum WAN Mesh Routing & Serverless Traffic Sharding**
 
@@ -19,11 +19,11 @@
 
 ---
 
-## What is Global Ghost Net?
+## What is Vantablack?
 
-**Global Ghost Net** is an autonomous peer-to-peer mesh routing daemon written in pure Rust. It enables personal computers, servers, and edge devices to communicate securely across the public internet without central servers, commercial VPN providers, or trusted Certificate Authorities.
+**Vantablack** is an autonomous peer-to-peer mesh routing daemon written in pure Rust. It enables personal computers, servers, and edge devices to communicate securely across the public internet without central servers, commercial VPN providers, or trusted Certificate Authorities.
 
-Instead of funneling traffic through a central VPN provider where it can be monitored, logged, or intercepted, Global Ghost Net encrypts traffic with **post-quantum cryptography**, breaks it into **Reed-Solomon mathematical shards**, and routes them across multiple independent intermediary carrier nodes simultaneously over divergent WAN paths.
+Instead of funneling traffic through a central VPN provider where it can be monitored, logged, or intercepted, Vantablack encrypts traffic with **post-quantum cryptography**, breaks it into **Reed-Solomon mathematical shards**, and routes them across multiple independent intermediary carrier nodes simultaneously over divergent WAN paths.
 
 ---
 
@@ -41,7 +41,7 @@ Instead of funneling traffic through a central VPN provider where it can be moni
 
 ## Level 2 Multi-Hop Mesh WAN Architecture
 
-Global Ghost Net includes a complete **Level 2 Multi-Hop WAN Mesh Simulation Environment** built on Docker Compose, replicating realistic transcontinental carrier links using Linux `tc netem` (traffic control network emulator).
+Vantablack includes a complete **Level 2 Multi-Hop WAN Mesh Simulation Environment** built on Docker Compose, replicating realistic transcontinental carrier links using Linux `tc netem` (traffic control network emulator).
 
 ```
                       +-------------------+
@@ -180,7 +180,7 @@ rights:
 | What | Where |
 |---|---|
 | Program | `%LOCALAPPDATA%\Programs\GlobalGhostNet` |
-| Start Menu | `Global Ghost Net` |
+| Start Menu | `Vantablack` |
 | Uninstall | *Settings → Apps → Installed apps* (or *Programs and Features*) |
 | Your data | `%APPDATA%\GlobalGhostNet` — untouched by upgrades and uninstalls |
 
@@ -214,7 +214,7 @@ release instead — it needs no installer.
 
 ### Option 1: Running the Desktop App
 
-Global Ghost Net is a desktop application. A plain `cargo build --release` produces it:
+Vantablack is a desktop application. A plain `cargo build --release` produces it:
 
 1. **Launch the app:**
    ```bash
@@ -331,7 +331,7 @@ Connecting nodes automatically query this record, establish the post-quantum mes
 
 ### Option 3: Terminal & Interactive Console
 
-When running in a terminal, Global Ghost Net provides an interactive command console for live mesh management:
+When running in a terminal, Vantablack provides an interactive command console for live mesh management:
 
 ```bash
 # Connect to a remote peer directly
@@ -369,7 +369,7 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 
 ## Technical Architecture (L0-L9)
 
-Global Ghost Net implements the 10-layer GHOST protocol stack:
+Vantablack implements the 10-layer GHOST protocol stack:
 
 ```
 +-------------------------------------------------------------+
@@ -410,7 +410,7 @@ For engineers, cryptographers, and contributors wishing to inspect the mathemati
 
 ## Building from Source
 
-Global Ghost Net is written in pure Rust. `cargo build --release` produces the desktop
+Vantablack is written in pure Rust. `cargo build --release` produces the desktop
 application (native window + tray); the headless server build needs no C toolchain,
 no GTK/WebKit and no display:
 
@@ -433,4 +433,4 @@ cargo run --bin wan_mesh --no-default-features
 
 ## License
 
-Global Ghost Net is open-source software distributed under the [MIT License](LICENSE).
+Vantablack is open-source software distributed under the [MIT License](LICENSE).

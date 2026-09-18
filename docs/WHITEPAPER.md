@@ -1,4 +1,4 @@
-# Global Ghost Net (Vantablack)
+# Vantablack (Vantablack)
 ## Post-Quantum WAN Mesh Routing Architecture
 **Technical Specification — Version 0.4.0**
 
@@ -6,7 +6,7 @@
 
 ### Abstract
 
-Global Ghost Net is an autonomous, post-quantum WAN mesh routing daemon. Operating entirely peer-to-peer over UDP, nodes establish zero-trust, forward-secret tunnels that protect traffic against both mass surveillance and cryptographically relevant quantum computers. The architecture eliminates centralized coordinators, certificate authorities, and single points of infrastructure failure by combining hybrid post-quantum key exchange (X25519 + ML-KEM-512), Reed-Solomon asymmetric shard routing, anti-traffic-analysis jitter padding, 64-bit sliding window replay protection, and decentralized DNS seed discovery.
+Vantablack is an autonomous, post-quantum WAN mesh routing daemon. Operating entirely peer-to-peer over UDP, nodes establish zero-trust, forward-secret tunnels that protect traffic against both mass surveillance and cryptographically relevant quantum computers. The architecture eliminates centralized coordinators, certificate authorities, and single points of infrastructure failure by combining hybrid post-quantum key exchange (X25519 + ML-KEM-512), Reed-Solomon asymmetric shard routing, anti-traffic-analysis jitter padding, 64-bit sliding window replay protection, and decentralized DNS seed discovery.
 
 ---
 

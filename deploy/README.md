@@ -1,4 +1,4 @@
-# Global Ghost Net — Deploy-Not-Design Reference Testbed (§48)
+# Vantablack — Deploy-Not-Design Reference Testbed (§48)
 
 This directory provides the containerized reference mesh specified in **Invention §48 (Deploy-Not-Design)** from `roadmap/INVENTION.md`.
 

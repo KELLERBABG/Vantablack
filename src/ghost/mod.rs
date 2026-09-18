@@ -1,7 +1,7 @@
-/// GhostNet: The Global Ghost Net protocol core.
+/// GhostNet: The Vantablack protocol core.
 ///
 /// This module implements the full GHOST protocol stack as described
-/// in the Global Ghost Net architecture:
+/// in the Vantablack architecture:
 ///
 /// L0  - Ed25519 Identity / Signing
 /// L1  - X25519 + Kyber-512 Hybrid KEM

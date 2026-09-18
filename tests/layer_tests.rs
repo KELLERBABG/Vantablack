@@ -1,5 +1,5 @@
 use ml_kem::kem::KeyExport;
-/// Layer-by-Layer Cryptographic Unit Tests for Global Ghost Net
+/// Layer-by-Layer Cryptographic Unit Tests for Vantablack
 ///
 /// Tests each protocol layer independently, verifying:
 /// - L0: Identity generation, signing, verification
@@ -280,7 +280,7 @@ fn test_l1_parse_handshake_pdu_invalid() {
 #[test]
 fn test_l2_encrypt_decrypt_roundtrip() {
     let key = [0xABu8; 32];
-    let plaintext = b"Hello, Ghost Net! This is a secret message.";
+    let plaintext = b"Hello, Vantablack! This is a secret message.";
     let mut data = plaintext.to_vec();
 
     // Encrypt (appends 16-byte auth tag)
@@ -448,7 +448,7 @@ fn test_l3_shamir_single_share_insufficient() {
 
 #[test]
 fn test_l4_encode_and_reconstruct_all_shards() {
-    let original = b"Hello Ghost Net! This is a test of Reed-Solomon erasure coding.";
+    let original = b"Hello Vantablack! This is a test of Reed-Solomon erasure coding.";
     let mut data = original.to_vec();
 
     let shards = l4_rs::encode(&mut data);

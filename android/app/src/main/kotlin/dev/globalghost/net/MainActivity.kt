@@ -32,7 +32,7 @@ class MainActivity : Activity() {
         }
 
         val title = TextView(this).apply {
-            text = "GLOBAL GHOST NET"
+            text = "VANTABLACK"
             textSize = 24f
             setTypeface(Typeface.DEFAULT_BOLD)
             setTextColor(Color.parseColor("#ffffff"))

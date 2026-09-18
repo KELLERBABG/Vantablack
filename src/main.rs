@@ -4094,7 +4094,7 @@ fn handle_cli_args() -> Option<anyhow::Result<()>> {
             Some(Ok(()))
         }
         "--help" | "-h" | "help" => {
-            println!("Global Ghost Net (GGN) — Post-Quantum WAN Mesh Daemon");
+            println!("Vantablack (GGN) — Post-Quantum WAN Mesh Daemon");
             println!("Usage:");
             println!("  ggn                             Run node daemon");
             println!("  ggn split-key [32B_HEX_KEY]     Split secret into 3 Shamir shares (2-of-3 threshold)");
@@ -4383,7 +4383,7 @@ async fn run_node(
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        "Global Ghost Net v{} starting — L0-L9 stack fully wired",
+        "Vantablack v{} starting — L0-L9 stack fully wired",
         env!("CARGO_PKG_VERSION")
     );
     if socks {

@@ -1,4 +1,4 @@
-# Global Ghost Net — SOTA Roadmap (v0.4.1 → v1.0)
+# Vantablack — SOTA Roadmap (v0.4.1 → v1.0)
 
 > Opinionated, prioritized plan to make every plane **undisputed state-of-the-art** at open-source launch. Each plane is scored brutally honestly; each phase has a gate that must be green before the next starts. Owners are roles, not people — assign names at kickoff. Effort = calendar time for a focused 2–3 person cell on that plane (not total project).
 

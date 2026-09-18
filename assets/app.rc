@@ -1,4 +1,4 @@
-// Windows resources for the Global Ghost Net application binaries.
+// Windows resources for the Vantablack application binaries.
 //
 // Two things live here that a user only sees through the shell, never at
 // runtime:
@@ -39,12 +39,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "Keller Systems"
-            VALUE "FileDescription", "Global Ghost Net Desktop Client"
+            VALUE "FileDescription", "Vantablack Desktop Client"
             VALUE "FileVersion", "0.5.0"
             VALUE "InternalName", "ggn"
             VALUE "LegalCopyright", "Copyright (c) 2026 Keller Systems"
             VALUE "OriginalFilename", "ggn.exe"
-            VALUE "ProductName", "Global Ghost Net"
+            VALUE "ProductName", "Vantablack"
             VALUE "ProductVersion", "0.5.0"
         END
     END

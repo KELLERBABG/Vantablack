@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 /// Embedded default configuration baked into the binary at compile time.
 /// Replace this with env!("CONFIG") or include_str!("defaults.toml") for a real build.
 pub const EMBEDDED_DEFAULT_CONFIG: &str = r#"
-# Global Ghost Net — Default Node Configuration
+# Vantablack — Default Node Configuration
 # This config is embedded into the binary for zero-config startup.
 
 [network]
@@ -126,7 +126,7 @@ impl BuildInfo {
 
 /// Initialize the node with sensible defaults from the embedded config.
 pub async fn initialize_node() -> anyhow::Result<()> {
-    info!("Global Ghost Net v{} starting", env!("CARGO_PKG_VERSION"));
+    info!("Vantablack v{} starting", env!("CARGO_PKG_VERSION"));
 
     // Parse embedded default config (simplified — in production use toml)
     let _config = EMBEDDED_DEFAULT_CONFIG;

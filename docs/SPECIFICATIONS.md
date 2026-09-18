@@ -1,12 +1,12 @@
-# Global Ghost Net — Technical Specifications
+# Vantablack — Technical Specifications
 
-This document defines the low-level protocols, cryptographic guarantees, frame formats, and multi-hop routing specifications implemented in Global Ghost Net.
+This document defines the low-level protocols, cryptographic guarantees, frame formats, and multi-hop routing specifications implemented in Vantablack.
 
 ---
 
 ## 1. Cryptographic Suite
 
-Global Ghost Net uses a dual classical and post-quantum hybrid cryptographic design:
+Vantablack uses a dual classical and post-quantum hybrid cryptographic design:
 
 - **Identity Layer (L0):** **hybrid** identity — Ed25519 *and* ML-DSA-65 (FIPS 204, security category 3) — generated on first run and stored locally (`identity.key`). Used for authenticating identity beacons, capability vouchers, and peer exchange. The two keys are independent secrets: the ML-DSA seed is drawn from its own entropy, never derived from the Ed25519 seed, because a post-quantum key derived from the classical secret is recovered by whoever breaks the classical secret — precisely the event it exists to survive. The **fingerprint stays the first 8 bytes of the Ed25519 public key**, so every peer table, `GHOST_VPN_CLIENTS` entry and cached pairing survives the upgrade. Where a proof has room, both keys sign (`HybridSignature`, §11.2); where it does not (a beacon datagram), the classical half alone is carried and that is stated rather than implied (see §2.4).
 
@@ -369,7 +369,7 @@ from instead of keeping their first measurement forever.
 
 ## 5. Byzantine Tamper Isolation: Combinatorial RS(2,1) + Poly1305
 
-When an adversarial carrier corrupts in-flight data, standard error-correction decoding fails. Global Ghost Net implements combinatorial pairwise testing:
+When an adversarial carrier corrupts in-flight data, standard error-correction decoding fails. Vantablack implements combinatorial pairwise testing:
 
 ### Combinatorial Evaluation
 For received shards $S = [S_0, S_1, S_2]$:
@@ -396,7 +396,7 @@ For received shards $S = [S_0, S_1, S_2]$:
 
 ## 7. Autonomous SOCKS5 Proxy & Public WAN Egress
 
-Global Ghost Net implements an integrated SOCKS5 proxy engine listening locally on `127.0.0.1:1080`:
+Vantablack implements an integrated SOCKS5 proxy engine listening locally on `127.0.0.1:1080`:
 
 1. **Local Ingress:** Client applications (browsers, CLI utilities, cURL) establish a standard RFC 1928 SOCKS5 handshake over `127.0.0.1:1080` without authentication (`0x00`).
 2. **Mesh Encapsulation:** SOCKS5 CONNECT targets (`host:port` or `ipv4:port`) are framed and dispatched across the multi-hop carrier mesh using ephemeral post-quantum session keys and Reed-Solomon RS(2,1) sharding.
@@ -407,7 +407,7 @@ Global Ghost Net implements an integrated SOCKS5 proxy engine listening locally 
 
 ## 8. Level 2 Multi-Hop Mesh WAN Architecture (7-Node Carrier Simulation)
 
-Global Ghost Net includes a complete, containerized Level 2 multi-hop WAN carrier simulation topology executed under Docker Compose and shaped using Linux `tc netem`.
+Vantablack includes a complete, containerized Level 2 multi-hop WAN carrier simulation topology executed under Docker Compose and shaped using Linux `tc netem`.
 
 ### 8.1 7-Node Carrier Simulation Topology
 
@@ -453,7 +453,7 @@ The carrier simulation runs four continuous autonomous test scenarios verifying 
 
 ### 10.1 Delivery model
 
-Global Ghost Net ships as a **desktop application**. The default cargo feature set is
+Vantablack ships as a **desktop application**. The default cargo feature set is
 `webview`, so `cargo build --release` produces a single executable that:
 
 - opens a **frameless native window** (tao + `wry`, i.e. WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) hosting the control center — no browser tab is involved;

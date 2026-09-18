@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("================================================================================");
     println!(
-        "  GLOBAL GHOST NET - {}-NODE AUTONOMOUS REAL-TIME MESH TOPOLOGY VERIFICATION  ",
+        "  VANTABLACK - {}-NODE AUTONOMOUS REAL-TIME MESH TOPOLOGY VERIFICATION  ",
         total_nodes
     );
     println!("================================================================================");

@@ -22,7 +22,7 @@ pub fn run_tray(nc: Arc<GhostNode>) {
 
         let open_item = MenuItem::new("Open Web Control Center", true, None);
         let beacon_item = CheckMenuItem::new("Beacon discovery", true, true, None);
-        let quit_item = MenuItem::new("Quit Global Ghost Net", true, None);
+        let quit_item = MenuItem::new("Quit Vantablack", true, None);
         let menu = Menu::new();
         let _ = menu.append(&open_item);
         let _ = menu.append(&beacon_item);
@@ -30,7 +30,7 @@ pub fn run_tray(nc: Arc<GhostNode>) {
         if TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_icon(icon)
-            .with_tooltip("Global Ghost Net")
+            .with_tooltip("Vantablack")
             .build()
             .is_err()
         {

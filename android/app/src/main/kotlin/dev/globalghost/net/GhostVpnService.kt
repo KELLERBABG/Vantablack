@@ -181,11 +181,11 @@ class GhostVpnService : VpnService() {
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
-                NotificationChannel(channelId, "Global Ghost Net VPN", NotificationManager.IMPORTANCE_LOW)
+                NotificationChannel(channelId, "Vantablack VPN", NotificationManager.IMPORTANCE_LOW)
             )
         }
         val notification = Notification.Builder(this, channelId)
-            .setContentTitle("Global Ghost Net")
+            .setContentTitle("Vantablack")
             .setContentText("Secure mesh tunnel active")
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setOngoing(true)

@@ -1,4 +1,4 @@
-# Global Ghost Net — LAN over WAN (VPN Layer)
+# Vantablack — LAN over WAN (VPN Layer)
 
 This document defines the **LAN-over-WAN** subsystem: a road-warrior VPN built on top of the GHOST mesh. It gives a mobile device (phone, laptop) a virtual network interface that makes the hub's home LAN (`192.168.1.0/24` by default) routable from anywhere — SMB, SSH, Home Assistant, LAN DNS — as if the device were plugged into the home switch, tunneled through the post-quantum mesh instead of a commercial VPN.
 

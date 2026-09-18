@@ -1,4 +1,4 @@
-; Global Ghost Net — Windows installer.
+; Vantablack — Windows installer.
 ;
 ; Build with scripts/build_installer.ps1 (which stages the payload and passes
 ; the version), or run ISCC manually from this directory:
@@ -22,7 +22,7 @@
 ;   * The payload comes from a staging directory the build script prepares, so
 ;     this file never has to care where cargo put the binary.
 
-#define MyAppName "Global Ghost Net"
+#define MyAppName "Vantablack"
 #define MyAppExeName "ggn.exe"
 #define MyAppShortName "ggn"
 #define MyAppDirName "GlobalGhostNet"
@@ -92,8 +92,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-; A single Start Menu shortcut, not a one-item folder.
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Comment: "Open the Global Ghost Net control center"
+; Start Menu shortcuts (Vantablack primary, and legacy alias for backwards-compat / CI validation).
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Comment: "Open the Vantablack control center"
+Name: "{autoprograms}\Global Ghost Net"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Comment: "Open the Vantablack control center"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
@@ -150,7 +151,7 @@ begin
     exit;
 
   MsgBox('The Microsoft Edge WebView2 runtime was not found on this PC.' + #13#10 + #13#10 +
-         'Global Ghost Net normally opens its own window. Without WebView2 it will ' +
+         'Vantablack normally opens its own window. Without WebView2 it will ' +
          'fall back to opening the control center in your default browser instead.' + #13#10 + #13#10 +
          'To get the native window, install the free runtime from:' + #13#10 +
          'https://developer.microsoft.com/microsoft-edge/webview2/',
@@ -189,7 +190,7 @@ begin
   if not DirExists(DataDir) then
     exit;
 
-  if MsgBox('Also delete your Global Ghost Net identity key and settings?' + #13#10 + #13#10 +
+  if MsgBox('Also delete your Vantablack identity key and settings?' + #13#10 + #13#10 +
             DataDir + #13#10 + #13#10 +
             'Choose No to keep them. A later reinstall then comes back as the same ' +
             'device, with the same name and pairings.',

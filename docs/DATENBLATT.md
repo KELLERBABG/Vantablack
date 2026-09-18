@@ -1,4 +1,4 @@
-# Global Ghost Net (GGN) — Technisches Datenblatt & Keynote-Referenz
+# Vantablack (GGN) — Technisches Datenblatt & Keynote-Referenz
 *Kompakte technische Fakten, Metriken und Argumente für Vortrag, Präsentation & Fachdiskussion.*
 
 ---
@@ -7,7 +7,7 @@
 
 | Parameter | Spezifikation / Wert |
 |---|---|
-| **System** | Global Ghost Net (GGN) / `vantablack` |
+| **System** | Vantablack (GGN) / `vantablack` |
 | **Architektur-Typ** | Serverloses Post-Quantum Mesh-Overlay-Netzwerk |
 | **Programmiersprache** | Rust (Edition 2021, Zero-Unsafe im Transportkern) |
 | **Aktuelle Version** | `v0.6.0` (Inventions Track Complete) |
@@ -90,7 +90,7 @@ Für die Bühne: Die wichtigsten Alleinstellungsmerkmale im Überblick:
 
 ## 7. Der direkte Vergleich (Slide-Cheat-Sheet)
 
-| Kriterium | Global Ghost Net | WireGuard | Tailscale | Tor Network |
+| Kriterium | Vantablack | WireGuard | Tailscale | Tor Network |
 |---|---|---|---|---|
 | **Post-Quantum Crypto** | **Hybrid Kyber-768 + Dilithium-65** | Nein (nur Curve25519) | Nein (nur Curve25519) | Nein (Curve25519 / RSA) |
 | **Architektur** | **100 % serverloses Mesh (kein Account)** | Manuelle Punkt-zu-Punkt-Konfig | Zentraler Login-Koordinator | 9 Directory Authorities |

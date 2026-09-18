@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Builds the Global Ghost Net Windows installer (ggn-<version>-windows-setup.exe).
+    Builds the Vantablack Windows installer (ggn-<version>-windows-setup.exe).
 
 .DESCRIPTION
     Stages the release payload into dist\staging, then compiles installer\ggn.iss

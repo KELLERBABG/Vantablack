@@ -337,7 +337,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("================================================================================");
     println!(
-        "  GLOBAL GHOST NET - LEVEL 2 MULTI-HOP MESH ROUTING NODE [ROLE: {}]",
+        "  VANTABLACK - LEVEL 2 MULTI-HOP MESH ROUTING NODE [ROLE: {}]",
         role.to_uppercase()
     );
     println!("  Listening on: {}", listen_addr);

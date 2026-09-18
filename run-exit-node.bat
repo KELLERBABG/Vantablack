@@ -1,9 +1,9 @@
 @echo off
-title Global Ghost Net - Exit Node
+title Vantablack - Exit Node
 cd /d "%~dp0"
 
 echo ======================================================================
-echo           GLOBAL GHOST NET (VANTABLACK) - EXIT NODE
+echo           VANTABLACK (VANTABLACK) - EXIT NODE
 echo ======================================================================
 echo Starting high-capacity Exit Node with WAN transit routing enabled...
 echo.

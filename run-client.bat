@@ -1,9 +1,9 @@
 @echo off
-title Global Ghost Net - Client Node
+title Vantablack - Client Node
 cd /d "%~dp0"
 
 echo ======================================================================
-echo           GLOBAL GHOST NET (VANTABLACK) - CLIENT NODE
+echo           VANTABLACK (VANTABLACK) - CLIENT NODE
 echo ======================================================================
 echo Starting node with zero-mock peer mesh discovery...
 echo SOCKS5 Proxy will listen on 127.0.0.1:1080
