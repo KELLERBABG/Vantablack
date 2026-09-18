@@ -138,15 +138,14 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
         .with_title("Vantablack")
         .with_window_icon(window_icon)
         .with_decorations(false)
-        .with_inner_size(LogicalSize::new(1180.0, 820.0))
-        .with_min_inner_size(LogicalSize::new(720.0, 520.0))
+        .with_inner_size(LogicalSize::new(1040.0, 720.0))
+        .with_min_inner_size(LogicalSize::new(760.0, 520.0))
         .with_visible(true)
         .build(&event_loop)
     {
         Ok(window) => window,
         Err(e) => {
-            tracing::warn!("Could not create a window ({e}); opening a browser tab instead");
-            open_in_browser(control_port);
+            tracing::error!("Could not create desktop application window ({e})");
             std::process::exit(1);
         }
     };
@@ -208,7 +207,18 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
                                 let _ = win.drag_window();
                             }
                         }
-                        "hide" => {
+                        "minimize" => {
+                            if let Some(win) = slot_clone.borrow().as_ref() {
+                                win.set_minimized(true);
+                            }
+                        }
+                        "maximize" => {
+                            if let Some(win) = slot_clone.borrow().as_ref() {
+                                let is_max = win.is_maximized();
+                                win.set_maximized(!is_max);
+                            }
+                        }
+                        "hide" | "close" => {
                             if let Some(win) = slot_clone.borrow().as_ref() {
                                 win.set_visible(false);
                             }

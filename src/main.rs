@@ -4811,7 +4811,7 @@ async fn run_node(
     ));
     // True when a desktop window is being shown by main(): the browser tab is
     // then suppressed, because it is the secondary way in.
-    let gui_active = suppress_browser;
+    let _gui_active = suppress_browser;
 
     // Pairing target advertised in the QR code: this host's LAN address, the
     // control-center port and the node fingerprint. The fingerprint is stable
@@ -4938,13 +4938,11 @@ async fn run_node(
                         mp,
                         mp
                     );
-                    // Pop the control center open in a browser tab only when no
-                    // native window is coming — that page is the secondary way
-                    // in, not the default experience.
-                    if !gui_active
-                        && std::env::var("GHOST_NO_BROWSER")
-                            .map(|v| v != "1")
-                            .unwrap_or(true)
+                    // Pop the control center open in a browser tab only when explicitly opted in
+                    // via GHOST_OPEN_BROWSER=1. The native desktop app is the primary experience.
+                    if std::env::var("GHOST_OPEN_BROWSER")
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false)
                     {
                         tokio::spawn(async move {
                             tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;

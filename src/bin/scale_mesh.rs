@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("================================================================================");
 
-    let start_time = Instant::now();
+    let _start_time = Instant::now();
     println!(
         "[INIT] Bootstrapping {} distinct autonomous node instances with active UDP sockets...",
         total_nodes
@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let exit_node = &nodes[exit_idx];
 
     let mut cycle: u64 = 0;
-    let mut exit_rotator = ExitIpRotator::new(vec![
+    let exit_rotator = ExitIpRotator::new(vec![
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10)),
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 25)),
         IpAddr::V4(Ipv4Addr::new(198, 51, 100, 77)),
