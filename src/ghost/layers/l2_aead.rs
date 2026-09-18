@@ -471,10 +471,7 @@ mod tests {
         // Same wire nonce, different epoch or direction: different nonce. This is
         // the property that stops a replayed frame from being re-attributed.
         assert_ne!(a, xnonce(&wire, 1, NonceDirection::InitiatorToResponder));
-        assert_ne!(
-            a,
-            xnonce(&wire, 0, NonceDirection::ResponderToInitiator)
-        );
+        assert_ne!(a, xnonce(&wire, 0, NonceDirection::ResponderToInitiator));
         // And it is a pure function of its inputs.
         assert_eq!(a, xnonce(&wire, 0, NonceDirection::InitiatorToResponder));
     }
@@ -521,24 +518,14 @@ mod tests {
 
         // Wrong epoch: same key, different nonce.
         let mut b = ct.clone();
-        assert!(xchacha_open(
-            &key,
-            &wire,
-            4,
-            NonceDirection::InitiatorToResponder,
-            &mut b
-        )
-        .is_err());
+        assert!(
+            xchacha_open(&key, &wire, 4, NonceDirection::InitiatorToResponder, &mut b).is_err()
+        );
         // Wrong direction.
         let mut b = ct.clone();
-        assert!(xchacha_open(
-            &key,
-            &wire,
-            3,
-            NonceDirection::ResponderToInitiator,
-            &mut b
-        )
-        .is_err());
+        assert!(
+            xchacha_open(&key, &wire, 3, NonceDirection::ResponderToInitiator, &mut b).is_err()
+        );
         // Wrong wire nonce.
         let mut b = ct.clone();
         let mut other = wire;
@@ -564,26 +551,16 @@ mod tests {
         // Tampered ciphertext.
         let mut b = ct.clone();
         b[0] ^= 0x80;
-        assert!(xchacha_open(
-            &key,
-            &wire,
-            3,
-            NonceDirection::InitiatorToResponder,
-            &mut b
-        )
-        .is_err());
+        assert!(
+            xchacha_open(&key, &wire, 3, NonceDirection::InitiatorToResponder, &mut b).is_err()
+        );
         // Tampered tag.
         let mut b = ct;
         let last = b.len() - 1;
         b[last] ^= 0x01;
-        assert!(xchacha_open(
-            &key,
-            &wire,
-            3,
-            NonceDirection::InitiatorToResponder,
-            &mut b
-        )
-        .is_err());
+        assert!(
+            xchacha_open(&key, &wire, 3, NonceDirection::InitiatorToResponder, &mut b).is_err()
+        );
     }
 
     #[test]

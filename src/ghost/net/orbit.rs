@@ -1,3 +1,4 @@
+use ml_kem::kem::KeyExport;
 /// Orbital Mechanics & Ephemeris-Driven Predictive Discovery
 ///
 /// Implements the time-variable routing infrastructure for the GhostNet mesh:
@@ -17,7 +18,6 @@
 /// routing algorithm so evasive orbital maneuvers do not inadvertently exhaust
 /// a satellite's finite thruster fuel.
 use std::f64::consts::PI;
-use ml_kem::kem::KeyExport;
 
 pub const MU_EARTH: f64 = 3.986004418e14;
 pub const EARTH_RADIUS: f64 = 6_371_000.0;
@@ -432,9 +432,10 @@ mod tests {
     fn test_predictive_prewarming() {
         let leo = KeplerElements::typical_leo();
         let state = OrbitalState::new(leo, 200.0, 0.0);
-        
+
         // Ground station directly underneath satellite
-        let station_under = GroundPosition::new(state.ground_pos.latitude, state.ground_pos.longitude, 0.0);
+        let station_under =
+            GroundPosition::new(state.ground_pos.latitude, state.ground_pos.longitude, 0.0);
         assert!(state.can_see(&station_under));
         assert!(state.predict_line_of_sight(&station_under, 10.0));
 
@@ -447,7 +448,11 @@ mod tests {
 
         // Station on the opposite side of Earth
         let antipodal_lat = -state.ground_pos.latitude;
-        let antipodal_lon = if state.ground_pos.longitude > 0.0 { state.ground_pos.longitude - 180.0 } else { state.ground_pos.longitude + 180.0 };
+        let antipodal_lon = if state.ground_pos.longitude > 0.0 {
+            state.ground_pos.longitude - 180.0
+        } else {
+            state.ground_pos.longitude + 180.0
+        };
         let station_far = GroundPosition::new(antipodal_lat, antipodal_lon, 0.0);
         assert!(!state.can_see(&station_far));
         // Over a short 5-second window, antipodal station will not be visible -> no pre-warm

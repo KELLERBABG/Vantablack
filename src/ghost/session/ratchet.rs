@@ -144,10 +144,7 @@ impl MsgChain {
     pub fn plan(&self, counter: u64) -> OpenPlan {
         if counter < self.pos {
             return match self.skipped.get(&counter) {
-                Some(key) => OpenPlan::Cached {
-                    counter,
-                    key: *key,
-                },
+                Some(key) => OpenPlan::Cached { counter, key: *key },
                 // Gone: either already consumed or never held. Either way the honest
                 // answer is that the key is not here, rather than a guess.
                 None => OpenPlan::Refused,
@@ -405,7 +402,12 @@ impl SessionRatchet {
     }
 
     /// The AEAD key for a *named* epoch, direction, and counter — what to *open* with.
-    pub fn open_key(&self, epoch: u64, direction: NonceDirection, counter: u64) -> Option<[u8; 32]> {
+    pub fn open_key(
+        &self,
+        epoch: u64,
+        direction: NonceDirection,
+        counter: u64,
+    ) -> Option<[u8; 32]> {
         match self.plan_open(epoch, direction, counter) {
             OpenPlan::Forward { key, .. } => Some(key),
             OpenPlan::Cached { key, .. } => Some(key),
@@ -414,7 +416,12 @@ impl SessionRatchet {
     }
 
     /// Whether an unopenable frame's counter exceeded MAX_SKIP past our chain position.
-    pub fn gap_exceeds_max_skip(&self, epoch: u64, direction: NonceDirection, counter: u64) -> bool {
+    pub fn gap_exceeds_max_skip(
+        &self,
+        epoch: u64,
+        direction: NonceDirection,
+        counter: u64,
+    ) -> bool {
         let pos = if let Some(p) = self.pending.as_ref() {
             if p.epoch == epoch {
                 match direction {
@@ -453,18 +460,14 @@ impl SessionRatchet {
         let to_resp = ChainState::seed(chain_to_resp, epoch);
         let to_init = ChainState::seed(chain_to_init, epoch);
         let key = match peer_direction {
-            NonceDirection::InitiatorToResponder => {
-                match to_resp.msg_chain.plan(0) {
-                    OpenPlan::Forward { key, .. } => key,
-                    _ => unreachable!(),
-                }
-            }
-            NonceDirection::ResponderToInitiator => {
-                match to_init.msg_chain.plan(0) {
-                    OpenPlan::Forward { key, .. } => key,
-                    _ => unreachable!(),
-                }
-            }
+            NonceDirection::InitiatorToResponder => match to_resp.msg_chain.plan(0) {
+                OpenPlan::Forward { key, .. } => key,
+                _ => unreachable!(),
+            },
+            NonceDirection::ResponderToInitiator => match to_init.msg_chain.plan(0) {
+                OpenPlan::Forward { key, .. } => key,
+                _ => unreachable!(),
+            },
         };
         self.pending = Some(PreparedEpoch {
             epoch,
@@ -671,11 +674,7 @@ impl RatchetStep {
 
     /// *Initiator* side of a step: open the responder's ciphertext and produce the
     /// same secrets the responder did.
-    pub fn finish(
-        mut self,
-        peer_x_pub: &[u8; 32],
-        kem_ct: &[u8; 768],
-    ) -> Option<StepSecrets> {
+    pub fn finish(mut self, peer_x_pub: &[u8; 32], kem_ct: &[u8; 768]) -> Option<StepSecrets> {
         let secret = self.x_secret.take()?;
         let dh = secret.diffie_hellman(&X25519PublicKey::from(*peer_x_pub));
         let ct = Ciphertext::<MlKem512>::from(*kem_ct);
@@ -788,7 +787,11 @@ mod tests {
         assert_ne!(k1, k2);
         assert_ne!(k0, k2);
         assert_ne!(k0, master(), "a message key must not be the seed itself");
-        assert_eq!(chain.pos(), 3, "three messages sealed, chain positioned at 3");
+        assert_eq!(
+            chain.pos(),
+            3,
+            "three messages sealed, chain positioned at 3"
+        );
     }
 
     #[test]
@@ -933,7 +936,10 @@ mod tests {
         assert_ne!(r.seal_key(NonceDirection::InitiatorToResponder), before);
         // The retired epoch is still openable, and answers with the *old* key —
         // that is the grace window that keeps in-flight frames readable.
-        assert_eq!(r.open_key(0, NonceDirection::InitiatorToResponder, 0), Some(before));
+        assert_eq!(
+            r.open_key(0, NonceDirection::InitiatorToResponder, 0),
+            Some(before)
+        );
     }
 
     #[test]
@@ -964,8 +970,14 @@ mod tests {
         assert_eq!(r.sealed_epoch(), 1);
         assert_eq!(r.prepared_epoch(), None);
         assert_eq!(r.seal_key(NonceDirection::InitiatorToResponder), peer_key);
-        assert_eq!(r.open_key(0, NonceDirection::InitiatorToResponder, 0), Some(old));
-        assert!(!r.activate(1), "activating twice is refused, not a second step");
+        assert_eq!(
+            r.open_key(0, NonceDirection::InitiatorToResponder, 0),
+            Some(old)
+        );
+        assert!(
+            !r.activate(1),
+            "activating twice is refused, not a second step"
+        );
         assert_eq!(r.steps(), 1);
     }
 
@@ -996,9 +1008,19 @@ mod tests {
             &StepSecrets::new([0x03u8; 32], vec![0x04u8; 32]),
             NonceDirection::InitiatorToResponder,
         );
-        assert_eq!(epoch, 1, "a retry is still one step ahead of the sealed epoch");
-        assert_eq!(r.openable_epochs().len(), 2, "only one prepared epoch is kept");
-        assert_eq!(r.open_key(1, NonceDirection::InitiatorToResponder, 0), Some(key));
+        assert_eq!(
+            epoch, 1,
+            "a retry is still one step ahead of the sealed epoch"
+        );
+        assert_eq!(
+            r.openable_epochs().len(),
+            2,
+            "only one prepared epoch is kept"
+        );
+        assert_eq!(
+            r.open_key(1, NonceDirection::InitiatorToResponder, 0),
+            Some(key)
+        );
     }
 
     #[test]
@@ -1008,8 +1030,12 @@ mod tests {
             r.step(&StepSecrets::new([i; 32], vec![i; 32]));
         }
         assert_eq!(r.epoch(), 8);
-        assert!(r.open_key(0, NonceDirection::InitiatorToResponder, 0).is_none());
-        assert!(r.open_key(99, NonceDirection::InitiatorToResponder, 0).is_none());
+        assert!(r
+            .open_key(0, NonceDirection::InitiatorToResponder, 0)
+            .is_none());
+        assert!(r
+            .open_key(99, NonceDirection::InitiatorToResponder, 0)
+            .is_none());
         // Only the current epoch plus the retained grace window answer.
         assert_eq!(r.openable_epochs().len(), RATCHET_RETAINED_EPOCHS + 1);
     }
@@ -1086,7 +1112,9 @@ mod tests {
         // (1) The current state holds no key that opens a *retired* epoch: the key
         // is erased and the API says so, instead of trial-decrypting until
         // something works.
-        assert!(r.open_key(0, NonceDirection::InitiatorToResponder, 0).is_none());
+        assert!(r
+            .open_key(0, NonceDirection::InitiatorToResponder, 0)
+            .is_none());
         let (_, nonce0, mut oldest_ct) = historical[0].clone();
         let current = r.seal_key(NonceDirection::InitiatorToResponder);
         assert!(
@@ -1134,7 +1162,9 @@ mod tests {
         // The attacker's epoch is the pre-step one, so they cannot even name the
         // epoch the frame came from, let alone hold its key.
         assert_eq!(attacker_epoch, new_epoch - 1);
-        assert!(attacker.open_key(new_epoch, NonceDirection::InitiatorToResponder, 0).is_none());
+        assert!(attacker
+            .open_key(new_epoch, NonceDirection::InitiatorToResponder, 0)
+            .is_none());
         let mut buf = frame.clone();
         let wrong = attacker.seal_key(NonceDirection::InitiatorToResponder);
         assert!(xchacha_open(
@@ -1197,7 +1227,11 @@ mod tests {
         assert_ne!(honest.1, wrong.1);
         assert_ne!(
             honest.1,
-            r.preview_step_key(&StepSecrets::new([0x09u8; 32], vec![0x02u8; 32]), NonceDirection::InitiatorToResponder).1,
+            r.preview_step_key(
+                &StepSecrets::new([0x09u8; 32], vec![0x02u8; 32]),
+                NonceDirection::InitiatorToResponder
+            )
+            .1,
             "a substituted X25519 half must not preview the same key"
         );
     }
@@ -1261,7 +1295,9 @@ mod tests {
         let bob_step = RatchetStep::generate();
         let bob_x_pub = bob_step.x_public_bytes();
 
-        let (bob_secrets, ct) = bob_step.respond(&alice_step.x_public_bytes(), &alice_step.kem_public_bytes()).expect("respond");
+        let (bob_secrets, ct) = bob_step
+            .respond(&alice_step.x_public_bytes(), &alice_step.kem_public_bytes())
+            .expect("respond");
         let alice_secrets = alice_step.finish(&bob_x_pub, &ct).expect("finish");
 
         // Step both sides to Epoch 1
@@ -1272,7 +1308,9 @@ mod tests {
 
         // Verify keys match between Alice and Bob
         let alice_seal_key = alice.seal_key(NonceDirection::InitiatorToResponder);
-        let bob_open_key = bob.open_key(1, NonceDirection::InitiatorToResponder, 0).expect("bob can open");
+        let bob_open_key = bob
+            .open_key(1, NonceDirection::InitiatorToResponder, 0)
+            .expect("bob can open");
         assert_eq!(alice_seal_key, bob_open_key);
 
         // Attacker attempts to forge/derive epoch 1 without knowing the private ephemeral keys:
@@ -1284,7 +1322,10 @@ mod tests {
         attacker_ratchet.step(&fake_secrets);
 
         let attacker_key = attacker_ratchet.seal_key(NonceDirection::InitiatorToResponder);
-        assert_ne!(attacker_key, alice_seal_key, "Attacker cannot derive epoch 1 key without breaking KEM");
+        assert_ne!(
+            attacker_key, alice_seal_key,
+            "Attacker cannot derive epoch 1 key without breaking KEM"
+        );
     }
 
     #[test]
@@ -1303,7 +1344,10 @@ mod tests {
 
         // Replay of message 1 must be rejected regardless of wall clock
         let replay_err = node_b.verify_and_observe(epoch_a, seq1);
-        assert_eq!(replay_err, Err("Causally obsolete sequence: replay detected"));
+        assert_eq!(
+            replay_err,
+            Err("Causally obsolete sequence: replay detected")
+        );
 
         // In-order delivery of message 2 succeeds
         assert!(node_b.verify_and_observe(epoch_a, seq2).is_ok());

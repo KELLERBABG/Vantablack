@@ -692,9 +692,18 @@ mod tests {
     fn test_hardware_rooted_identity_tpm_quote_verification() {
         // Construct baseline PCR measurements (e.g. PCR 0 = UEFI, PCR 2 = Option ROM, PCR 7 = Secure Boot)
         let measurements = vec![
-            TpmPcrMeasurement { pcr_index: 0, digest: [0x11u8; 32] },
-            TpmPcrMeasurement { pcr_index: 2, digest: [0x22u8; 32] },
-            TpmPcrMeasurement { pcr_index: 7, digest: [0x77u8; 32] },
+            TpmPcrMeasurement {
+                pcr_index: 0,
+                digest: [0x11u8; 32],
+            },
+            TpmPcrMeasurement {
+                pcr_index: 2,
+                digest: [0x22u8; 32],
+            },
+            TpmPcrMeasurement {
+                pcr_index: 7,
+                digest: [0x77u8; 32],
+            },
         ];
         let trusted_composite = HardwareRootedIdentity::compute_pcr_composite(&measurements);
 
@@ -712,20 +721,36 @@ mod tests {
 
         // 2. Tampered Boot / Compromised Kernel: PCR digest changes
         let tampered_measurements = vec![
-            TpmPcrMeasurement { pcr_index: 0, digest: [0x11u8; 32] },
-            TpmPcrMeasurement { pcr_index: 2, digest: [0x22u8; 32] },
-            TpmPcrMeasurement { pcr_index: 7, digest: [0x66u8; 32] }, // Secure boot disabled / compromised!
+            TpmPcrMeasurement {
+                pcr_index: 0,
+                digest: [0x11u8; 32],
+            },
+            TpmPcrMeasurement {
+                pcr_index: 2,
+                digest: [0x22u8; 32],
+            },
+            TpmPcrMeasurement {
+                pcr_index: 7,
+                digest: [0x66u8; 32],
+            }, // Secure boot disabled / compromised!
         ];
-        let compromised_digest = HardwareRootedIdentity::compute_pcr_composite(&tampered_measurements);
+        let compromised_digest =
+            HardwareRootedIdentity::compute_pcr_composite(&tampered_measurements);
         let compromised_quote = TpmQuote {
             pcr_digest: compromised_digest,
             nonce: session_epoch_nonce,
             signature: [0x99u8; 64],
         };
-        assert!(!hw_identity.attest_quote(&compromised_quote, &session_epoch_nonce), "Tampered PCR must fail hardware attestation");
+        assert!(
+            !hw_identity.attest_quote(&compromised_quote, &session_epoch_nonce),
+            "Tampered PCR must fail hardware attestation"
+        );
 
         // 3. Replay Attack: Old quote with stale nonce
         let stale_nonce = [0x01u8; 32];
-        assert!(!hw_identity.attest_quote(&valid_quote, &stale_nonce), "Stale quote nonce must be rejected");
+        assert!(
+            !hw_identity.attest_quote(&valid_quote, &stale_nonce),
+            "Stale quote nonce must be rejected"
+        );
     }
 }

@@ -649,14 +649,9 @@ pub fn seal_datagram(key: &[u8; 32], epoch: u32, ctr: u64, ip_packet: &[u8]) -> 
     let mut body = ip_packet.to_vec();
     let rand_seg = tunnel_rand_seg();
     let nonce = tunnel_xnonce(epoch, ctr, &rand_seg);
-    let cipher =
-        chacha20poly1305::XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
+    let cipher = chacha20poly1305::XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(key));
     let tag = cipher
-        .encrypt_in_place_detached(
-            chacha20poly1305::XNonce::from_slice(&nonce),
-            &[],
-            &mut body,
-        )
+        .encrypt_in_place_detached(chacha20poly1305::XNonce::from_slice(&nonce), &[], &mut body)
         .expect("AEAD seal cannot fail for valid key");
     let mut out = Vec::with_capacity(TUNNEL_HDR_LEN + body.len() + 16);
     out.extend_from_slice(&epoch.to_be_bytes());
@@ -723,12 +718,10 @@ impl VpnIngress {
         }
         let epoch = u32::from_be_bytes([wire[0], wire[1], wire[2], wire[3]]);
         let ctr = u64::from_be_bytes([
-            wire[4], wire[5], wire[6], wire[7],
-            wire[8], wire[9], wire[10], wire[11],
+            wire[4], wire[5], wire[6], wire[7], wire[8], wire[9], wire[10], wire[11],
         ]);
         let rand_seg: [u8; 8] = [
-            wire[12], wire[13], wire[14], wire[15],
-            wire[16], wire[17], wire[18], wire[19],
+            wire[12], wire[13], wire[14], wire[15], wire[16], wire[17], wire[18], wire[19],
         ];
         if epoch != expected_epoch {
             return OpenOutcome::AuthFail; // dead era
@@ -971,11 +964,14 @@ mod tests {
             OpenOutcome::Accepted { ip_packet, .. } => {
                 assert_eq!(ip_packet, packet);
             }
-            other => panic!("expected Accepted, got {:?}", match other {
-                OpenOutcome::Replay => "Replay",
-                OpenOutcome::AuthFail => "AuthFail",
-                _ => "unknown",
-            }),
+            other => panic!(
+                "expected Accepted, got {:?}",
+                match other {
+                    OpenOutcome::Replay => "Replay",
+                    OpenOutcome::AuthFail => "AuthFail",
+                    _ => "unknown",
+                }
+            ),
         }
     }
 
@@ -989,17 +985,24 @@ mod tests {
         let w2 = seal_datagram(&key, 2, 99, &packet);
         // The random segments (bytes 12..20) must differ with overwhelming probability
         assert_ne!(
-            &w1[12..20], &w2[12..20],
+            &w1[12..20],
+            &w2[12..20],
             "two seals must use different random nonce segments"
         );
         // And therefore the ciphertexts differ
         assert_ne!(w1, w2);
         // But both must open correctly
         let ing = VpnIngress::new();
-        assert!(matches!(ing.open(&key, "uniq", 2, &w1), OpenOutcome::Accepted { .. }));
+        assert!(matches!(
+            ing.open(&key, "uniq", 2, &w1),
+            OpenOutcome::Accepted { .. }
+        ));
         // Second one has same counter — replay, which is expected since the
         // replay window only tracks the counter, not the random segment.
-        assert!(matches!(ing.open(&key, "uniq", 2, &w2), OpenOutcome::Replay));
+        assert!(matches!(
+            ing.open(&key, "uniq", 2, &w2),
+            OpenOutcome::Replay
+        ));
     }
 
     #[test]
@@ -1027,7 +1030,10 @@ mod tests {
 
         // 3. Replay of old counter or new counter from decayed epoch fails
         let (ok_replay, ev_replay) = t.observe_tunnel_packet(&f, 1, 10, ep);
-        assert!(!ok_replay, "Replayed packet from decayed epoch must be rejected");
+        assert!(
+            !ok_replay,
+            "Replayed packet from decayed epoch must be rejected"
+        );
         assert_eq!(ev_replay, AnchorEvent::NoChange);
 
         let (ok_new, _) = t.observe_tunnel_packet(&f, 1, 11, ep);

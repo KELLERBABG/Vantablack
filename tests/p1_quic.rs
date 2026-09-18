@@ -16,9 +16,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::mpsc;
 use vantablack::ghost::layers::l0_identity::GhostIdentity;
 use vantablack::ghost::net::carrier::Carrier;
-use tokio::sync::mpsc;
 use vantablack::ghost::net::quic::{FramePath, QuicError, QuicLink, QuicTransport};
 
 fn identities() -> (Arc<GhostIdentity>, Arc<GhostIdentity>) {
@@ -245,13 +245,9 @@ async fn a_peer_that_changes_its_post_quantum_key_is_refused() {
     });
 
     let client = Arc::new(QuicTransport::client(Arc::clone(&client_id)).expect("client"));
-    let link_a = within(
-        10,
-        client.connect(addr_a, &expected),
-        "the first handshake",
-    )
-    .await
-    .expect("link a");
+    let link_a = within(10, client.connect(addr_a, &expected), "the first handshake")
+        .await
+        .expect("link a");
     let _peer_a = within(10, accept_a, "the first accept")
         .await
         .expect("accept task");
@@ -278,10 +274,11 @@ async fn a_peer_that_changes_its_post_quantum_key_is_refused() {
 
     let registry = Carrier::new(Arc::clone(&client));
     // First sight pins the post-quantum key.
-    assert!(registry.register(expected.clone(), Arc::clone(&link_a)).is_ok());
-    let pinned = vantablack::ghost::layers::l0_identity::pq_commitment(
-        &server_a_id.pq_public_key_bytes(),
-    );
+    assert!(registry
+        .register(expected.clone(), Arc::clone(&link_a))
+        .is_ok());
+    let pinned =
+        vantablack::ghost::layers::l0_identity::pq_commitment(&server_a_id.pq_public_key_bytes());
     assert_eq!(registry.pinned_commitment(&expected), Some(pinned));
     assert_eq!(registry.peer_count(), 1);
 
@@ -293,8 +290,15 @@ async fn a_peer_that_changes_its_post_quantum_key_is_refused() {
     assert_eq!(err.pinned, pinned);
     assert_eq!(err.presented, link_b.peer_pq_commitment());
     assert_eq!(registry.pinned_commitment(&expected), Some(pinned));
-    assert_eq!(registry.link_count(), 1, "the refused link was not registered");
-    assert!(link_b.is_closed(), "the refused link is closed, not left open");
+    assert_eq!(
+        registry.link_count(),
+        1,
+        "the refused link was not registered"
+    );
+    assert!(
+        link_b.is_closed(),
+        "the refused link is closed, not left open"
+    );
 
     // A *beacon* naming a different commitment does not move the pin either.
     registry.pin_commitment(&expected, [0xAB; 32]);
@@ -378,7 +382,10 @@ async fn two_local_paths_to_one_peer_carry_a_shard_each() {
     // Both links must name the local address they send from, or the registry has
     // nothing to key the second path on.
     assert_eq!(link_wifi.local_addr(), IpAddr::V4(Ipv4Addr::LOCALHOST));
-    assert_eq!(link_lte.local_addr(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
+    assert_eq!(
+        link_lte.local_addr(),
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))
+    );
 
     let registry = Carrier::new(Arc::clone(&wifi));
     registry
@@ -390,7 +397,10 @@ async fn two_local_paths_to_one_peer_carry_a_shard_each() {
     assert_eq!(registry.link_count(), 2, "two paths, two links");
     assert_eq!(registry.peer_count(), 1, "but still one peer");
     assert_eq!(registry.links(&server_fp).len(), 2);
-    assert!(registry.link(&server_fp).is_some(), "the single-path answer");
+    assert!(
+        registry.link(&server_fp).is_some(),
+        "the single-path answer"
+    );
 
     // Three shards, each carrying its index in byte 8 so the receiving session can
     // say which path it travelled. Spread as evenly as two paths allow: 0 and 2 on
@@ -406,8 +416,15 @@ async fn two_local_paths_to_one_peer_carry_a_shard_each() {
 
     // Which accepted session is which, by the address the peer connected from.
     let from_wifi = peer_a.remote_address().ip() == IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let (over_wifi, over_lte) = if from_wifi { (&peer_a, &peer_b) } else { (&peer_b, &peer_a) };
-    assert_eq!(over_lte.remote_address().ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
+    let (over_wifi, over_lte) = if from_wifi {
+        (&peer_a, &peer_b)
+    } else {
+        (&peer_b, &peer_a)
+    };
+    assert_eq!(
+        over_lte.remote_address().ip(),
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))
+    );
 
     let mut saw_wifi = Vec::new();
     for _ in 0..2 {
@@ -421,13 +438,21 @@ async fn two_local_paths_to_one_peer_carry_a_shard_each() {
         .await
         .expect("the third shard within the timeout")
         .expect("the link is open");
-    assert_eq!(saw_wifi, vec![0, 2], "the lowest path carried shards 0 and 2");
+    assert_eq!(
+        saw_wifi,
+        vec![0, 2],
+        "the lowest path carried shards 0 and 2"
+    );
     assert_eq!(got[8], 1, "the other path carried shard 1, not a copy of 0");
 
     // A closed path is evicted on its own, and the peer keeps the other one: two
     // links to one peer must not share a fate.
     link_lte.close();
-    assert_eq!(registry.links(&server_fp).len(), 1, "the dead path is evicted");
+    assert_eq!(
+        registry.links(&server_fp).len(),
+        1,
+        "the dead path is evicted"
+    );
     assert_eq!(registry.link_count(), 1);
     assert_eq!(registry.peer_count(), 1, "the peer keeps its live path");
     assert!(
@@ -444,9 +469,13 @@ async fn two_local_paths_to_one_peer_carry_a_shard_each() {
         QuicTransport::client_bound("127.0.0.1:0".parse().unwrap(), Arc::clone(&client_id))
             .expect("endpoint"),
     );
-    let duplicate = within(10, wifi_again.connect(addr, &server_fp), "the duplicate handshake")
-        .await
-        .expect("connect");
+    let duplicate = within(
+        10,
+        wifi_again.connect(addr, &server_fp),
+        "the duplicate handshake",
+    )
+    .await
+    .expect("connect");
     let _peer_c = within(10, rx.recv(), "the duplicate session being accepted")
         .await
         .expect("an accepted session");

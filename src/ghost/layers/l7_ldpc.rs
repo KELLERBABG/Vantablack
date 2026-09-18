@@ -390,7 +390,7 @@ impl SelfTuningConcatenatedCode {
     pub fn new() -> Self {
         Self {
             codec: LdpcCodec::new(),
-            high_ber_threshold: 0.01, // 1% BER triggers LDPC concatenation
+            high_ber_threshold: 0.01,  // 1% BER triggers LDPC concatenation
             low_ber_threshold: 0.0001, // 0.01% BER allows direct bulk
         }
     }
@@ -410,9 +410,7 @@ impl SelfTuningConcatenatedCode {
     pub fn encode_adaptive(&self, data: &[u8], estimated_ber: f64) -> (CodingScheme, Vec<Vec<u8>>) {
         let scheme = self.select_strategy(estimated_ber);
         match scheme {
-            CodingScheme::DirectBulk => {
-                (scheme, vec![data.to_vec()])
-            }
+            CodingScheme::DirectBulk => (scheme, vec![data.to_vec()]),
             CodingScheme::ReedSolomonOnly => {
                 let mut d = data.to_vec();
                 let shards = crate::ghost::layers::l4_rs::encode(&mut d);
@@ -422,10 +420,8 @@ impl SelfTuningConcatenatedCode {
                 let mut d = data.to_vec();
                 let shards = crate::ghost::layers::l4_rs::encode(&mut d);
                 // Inner LDPC encode each RS shard
-                let ldpc_shards: Vec<Vec<u8>> = shards
-                    .iter()
-                    .map(|s| self.codec.encode_packet(s))
-                    .collect();
+                let ldpc_shards: Vec<Vec<u8>> =
+                    shards.iter().map(|s| self.codec.encode_packet(s)).collect();
                 (scheme, ldpc_shards)
             }
         }
@@ -439,9 +435,7 @@ impl SelfTuningConcatenatedCode {
         original_len: usize,
     ) -> Option<Vec<u8>> {
         match scheme {
-            CodingScheme::DirectBulk => {
-                received_shards.first()?.clone()
-            }
+            CodingScheme::DirectBulk => received_shards.first()?.clone(),
             CodingScheme::ReedSolomonOnly => {
                 let mut shards = received_shards.to_vec();
                 crate::ghost::layers::l4_rs::reconstruct(&mut shards).ok()?;
@@ -574,7 +568,10 @@ mod tests {
         assert_eq!(tuner.select_strategy(0.005), CodingScheme::ReedSolomonOnly);
 
         // 3. High-loss noisy link (BER = 0.05) -> ConcatenatedLdpcRs
-        assert_eq!(tuner.select_strategy(0.05), CodingScheme::ConcatenatedLdpcRs);
+        assert_eq!(
+            tuner.select_strategy(0.05),
+            CodingScheme::ConcatenatedLdpcRs
+        );
 
         // Roundtrip verification under high-loss link with bit flips and packet loss
         let payload = b"critical_telemetry_message_under_heavy_interference";
@@ -596,7 +593,12 @@ mod tests {
         let received = vec![Some(corrupted_shard0), lost_shard1, Some(intact_shard2)];
 
         // Decode: LDPC fixes the bit-flip in Shard 0; RS reconstructs the erased Shard 1!
-        let recovered = tuner.decode_adaptive(scheme, &received, payload.len()).expect("Decode succeeds");
-        assert_eq!(&recovered, payload, "Concatenated LDPC+RS recovers payload despite bit errors + packet erasure");
+        let recovered = tuner
+            .decode_adaptive(scheme, &received, payload.len())
+            .expect("Decode succeeds");
+        assert_eq!(
+            &recovered, payload,
+            "Concatenated LDPC+RS recovers payload despite bit errors + packet erasure"
+        );
     }
 }

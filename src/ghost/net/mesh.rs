@@ -779,12 +779,8 @@ impl AdaptiveShardRouter {
             .iter()
             .filter(|(fp, _)| fp != me)
             .filter_map(|(fp, addr)| {
-                let journey = plan.find_earliest_arrival_with(
-                    me,
-                    fp,
-                    now,
-                    &RouteOptions::default(),
-                )?;
+                let journey =
+                    plan.find_earliest_arrival_with(me, fp, now, &RouteOptions::default())?;
                 Some((
                     fp.clone(),
                     *addr,
@@ -798,10 +794,7 @@ impl AdaptiveShardRouter {
         // deterministic candidate order. This matters when two destinations
         // share the same measured relay path; the first advertised route gets
         // the uncontested slot and the other is deferred below.
-        candidates.sort_by(|a, b| {
-            a.3.partial_cmp(&b.3)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        candidates.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
         // Greedily accept the earliest route whose transit nodes do not overlap
         // an already selected route.  This is the mesh-level disjointness gate:
@@ -811,10 +804,7 @@ impl AdaptiveShardRouter {
         let mut routed = Vec::new();
         let mut deferred = Vec::new();
         for candidate in candidates {
-            let overlaps = candidate
-                .4
-                .iter()
-                .any(|node| used_transit.contains(node));
+            let overlaps = candidate.4.iter().any(|node| used_transit.contains(node));
             if overlaps {
                 deferred.push(candidate);
             } else {
@@ -825,10 +815,7 @@ impl AdaptiveShardRouter {
 
         // An overlapping route is still better than silently losing a shard.
         // Keep it as a last-resort candidate, after all genuinely disjoint paths.
-        deferred.sort_by(|a, b| {
-            a.3.partial_cmp(&b.3)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        deferred.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
         routed.extend(deferred);
 
         let mut out: Vec<(String, SocketAddr, f64)> = routed

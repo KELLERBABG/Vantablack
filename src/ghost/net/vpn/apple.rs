@@ -26,7 +26,11 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 pub unsafe fn start(user_data: *mut c_void) -> Result<(), i32> {
     let status = ggn_vpn_apple_start(user_data);
-    if status == 0 { Ok(()) } else { Err(status) }
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(status)
+    }
 }
 
 #[cfg(target_os = "macos")]

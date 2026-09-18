@@ -15,8 +15,8 @@ use std::net::SocketAddr;
 use vantablack::ghost::layers::l2_aead::NonceDirection;
 use vantablack::ghost::net::vpn::client::resilience::build_keepalive;
 use vantablack::ghost::net::vpn::client::{open_to_tun, seal_from_tun, ClientState};
-use vantablack::ghost::net::vpn::seal_datagram;
 use vantablack::ghost::net::vpn::hub::VpnHub;
+use vantablack::ghost::net::vpn::seal_datagram;
 use vantablack::ghost::net::vpn::tun::{FakeTun, TunDevice};
 
 mod common;

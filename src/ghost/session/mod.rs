@@ -26,8 +26,8 @@ use dashmap::DashMap;
 use ml_kem::kem::{KeyExport, TryKeyInit};
 use ml_kem::EncapsulationKey512;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
-use std::time::Duration;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::Instant;
 
 /// Maximum number of concurrent streams per session.
@@ -303,10 +303,7 @@ impl Session {
 
     /// Pin the verified ML-DSA-65 public key once proof is authenticated.
     pub fn set_peer_pq_pk(&self, pk: Vec<u8>) {
-        *self
-            .peer_pq_pk
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(pk);
+        *self.peer_pq_pk.lock().unwrap_or_else(|e| e.into_inner()) = Some(pk);
     }
 
     /// The peer's verified ML-DSA-65 public key.
@@ -425,7 +422,12 @@ impl Session {
     }
 
     /// The AEAD key for a *named* epoch and counter, if it is still openable.
-    pub fn open_key(&self, epoch: u64, direction: NonceDirection, counter: u64) -> Option<[u8; 32]> {
+    pub fn open_key(
+        &self,
+        epoch: u64,
+        direction: NonceDirection,
+        counter: u64,
+    ) -> Option<[u8; 32]> {
         self.ratchet
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -433,7 +435,12 @@ impl Session {
     }
 
     /// Whether an unopenable frame's counter exceeded MAX_SKIP past our chain position.
-    pub fn gap_exceeds_max_skip(&self, epoch: u64, direction: NonceDirection, counter: u64) -> bool {
+    pub fn gap_exceeds_max_skip(
+        &self,
+        epoch: u64,
+        direction: NonceDirection,
+        counter: u64,
+    ) -> bool {
         self.ratchet
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -446,7 +453,10 @@ impl Session {
             return false;
         }
         let now = Instant::now();
-        let mut last = self.ratchet_step_at.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = self
+            .ratchet_step_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(prev) = *last {
             if now.duration_since(prev) < Duration::from_secs(15) {
                 return false;
@@ -518,7 +528,12 @@ impl Session {
 
     /// Seal material for a *named* epoch, used to answer a step on the epoch the
     /// peer still holds.
-    pub fn seal_material_at(&self, epoch: u64, direction: NonceDirection, counter: u64) -> Option<SealMaterial> {
+    pub fn seal_material_at(
+        &self,
+        epoch: u64,
+        direction: NonceDirection,
+        counter: u64,
+    ) -> Option<SealMaterial> {
         let key = self.open_key(epoch, direction, counter)?;
         Some(SealMaterial {
             key,
@@ -1020,9 +1035,7 @@ mod tests {
         // The property v1 could not offer: values that were sentinel-colliding
         // reserved territory in v1 are ordinary counters in v2.
         let session = Session::new([0x42u8; 32], "test_fp".to_string());
-        session
-            .tx_counter
-            .store(0xFFFF_FFFC, Ordering::Relaxed); // v1's last usable counter
+        session.tx_counter.store(0xFFFF_FFFC, Ordering::Relaxed); // v1's last usable counter
         assert_eq!(session.try_next_tx_counter(), Some(0xFFFF_FFFD));
         assert_eq!(session.try_next_tx_counter(), Some(0xFFFF_FFFE));
         assert_eq!(session.try_next_tx_counter(), Some(0xFFFF_FFFF));
@@ -1044,7 +1057,10 @@ mod tests {
         assert_eq!(session.apply_ratchet_step(&secrets), 1);
         assert_eq!(session.epoch(), 1);
         assert_eq!(session.ratchet_steps.load(Ordering::Relaxed), 1);
-        assert_ne!(session.seal_key(NonceDirection::InitiatorToResponder), epoch0);
+        assert_ne!(
+            session.seal_key(NonceDirection::InitiatorToResponder),
+            epoch0
+        );
         // The retired epoch still opens, which is the grace window that keeps
         // frames in flight across the step readable.
         assert_eq!(
@@ -1052,7 +1068,9 @@ mod tests {
             Some(epoch0)
         );
         // And an epoch the ratchet never had is refused rather than guessed at.
-        assert!(session.open_key(4242, NonceDirection::InitiatorToResponder, 0).is_none());
+        assert!(session
+            .open_key(4242, NonceDirection::InitiatorToResponder, 0)
+            .is_none());
     }
 
     #[test]
@@ -1074,7 +1092,11 @@ mod tests {
         // must be able to open the new epoch but must keep sealing on the old one
         // until a frame actually authenticates under the new key, or a step whose
         // answer was lost would leave it an epoch ahead of a peer that never moved.
-        assert_eq!(b.epoch(), 0, "the responder seals on the old epoch until it commits");
+        assert_eq!(
+            b.epoch(),
+            0,
+            "the responder seals on the old epoch until it commits"
+        );
         assert_eq!(b.prepared_epoch(), Some(1));
         let old_seal = b.seal_key(NonceDirection::ResponderToInitiator);
 
@@ -1085,12 +1107,14 @@ mod tests {
         // new epoch as prepared, so the keys already agree while he has not moved.
         assert_eq!(
             a.seal_key(NonceDirection::InitiatorToResponder),
-            b.open_key(1, NonceDirection::InitiatorToResponder, 0).unwrap()
+            b.open_key(1, NonceDirection::InitiatorToResponder, 0)
+                .unwrap()
         );
         assert_eq!(
             b.open_key(1, NonceDirection::ResponderToInitiator, 0)
                 .expect("b holds the new epoch as prepared"),
-            a.open_key(1, NonceDirection::ResponderToInitiator, 0).unwrap()
+            a.open_key(1, NonceDirection::ResponderToInitiator, 0)
+                .unwrap()
         );
         assert_eq!(
             b.seal_key(NonceDirection::ResponderToInitiator),
@@ -1104,7 +1128,8 @@ mod tests {
         assert_eq!(b.prepared_epoch(), None);
         assert_eq!(
             b.seal_key(NonceDirection::ResponderToInitiator),
-            a.open_key(1, NonceDirection::ResponderToInitiator, 0).unwrap()
+            a.open_key(1, NonceDirection::ResponderToInitiator, 0)
+                .unwrap()
         );
     }
 
@@ -1157,7 +1182,8 @@ mod tests {
         assert_eq!(a.epoch(), b.epoch(), "both call themselves epoch 1");
         assert_ne!(
             a.seal_key(NonceDirection::InitiatorToResponder),
-            b.open_key(1, NonceDirection::InitiatorToResponder, 0).unwrap(),
+            b.open_key(1, NonceDirection::InitiatorToResponder, 0)
+                .unwrap(),
             "...over different keys: this is the split the tie-break prevents"
         );
     }
@@ -1173,8 +1199,14 @@ mod tests {
 
         // "alice" < "bob", and each side compares its own fingerprint against the
         // peer's — so alice keeps her step and bob yields to hers.
-        assert!(!a.admit_peer_step("alice"), "the lower fingerprint keeps its step");
-        assert!(b.admit_peer_step("bob"), "the higher fingerprint answers instead");
+        assert!(
+            !a.admit_peer_step("alice"),
+            "the lower fingerprint keeps its step"
+        );
+        assert!(
+            b.admit_peer_step("bob"),
+            "the higher fingerprint answers instead"
+        );
         assert!(
             !b.ratchet_in_progress.load(Ordering::Relaxed),
             "yielding must clear the step, not leave it wedging the session"
@@ -1183,17 +1215,22 @@ mod tests {
         let answer = b.answer_ratchet_step(&a_x, &a_kem).unwrap();
         assert_eq!(a.finish_ratchet_step(&answer), Some(1));
         assert_eq!(a.epoch(), 1);
-        assert!(b.activate_epoch(1), "the frame that opens under epoch 1 installs it");
+        assert!(
+            b.activate_epoch(1),
+            "the frame that opens under epoch 1 installs it"
+        );
         assert_eq!(b.epoch(), 1);
         // One exchange, one epoch, one key per direction — the property the cross
         // would have broken.
         assert_eq!(
             a.seal_key(NonceDirection::InitiatorToResponder),
-            b.open_key(1, NonceDirection::InitiatorToResponder, 0).unwrap()
+            b.open_key(1, NonceDirection::InitiatorToResponder, 0)
+                .unwrap()
         );
         assert_eq!(
             b.seal_key(NonceDirection::ResponderToInitiator),
-            a.open_key(1, NonceDirection::ResponderToInitiator, 0).unwrap()
+            a.open_key(1, NonceDirection::ResponderToInitiator, 0)
+                .unwrap()
         );
     }
 

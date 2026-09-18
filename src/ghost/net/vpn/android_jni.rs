@@ -119,7 +119,7 @@ fn tunnel_frame(
     payload.extend_from_slice(wire);
     let mut framed = (payload.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(&payload);
-    if !framed.len().is_multiple_of(2) {
+    if framed.len() % 2 != 0 {
         framed.push(0);
     }
     encrypt_in_place_with_context(key, ctr, &sh, dir, &mut framed);

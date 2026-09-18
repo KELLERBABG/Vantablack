@@ -25,7 +25,8 @@ use vantablack::ghost::{
     net::{
         build_gtf_frame, extract_payload, frame_shard,
         mesh::{AdaptiveShardRouter, ExitIpRotator},
-        unframe, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX, GTF_BASE_SIZE,
+        unframe, BEACON_INTERVAL_SECS, BEACON_MULTICAST_ADDR, BEACON_PORT, BEACON_PREFIX,
+        GTF_BASE_SIZE,
     },
 };
 

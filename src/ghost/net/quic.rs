@@ -56,7 +56,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::ghost::layers::l0_identity::{
-    pq_commitment, verify_pq_signature, verify_peer_signature, GhostIdentity, ED25519_SIG_LEN,
+    pq_commitment, verify_peer_signature, verify_pq_signature, GhostIdentity, ED25519_SIG_LEN,
     ML_DSA_65_PK_LEN, ML_DSA_65_SIG_LEN,
 };
 
@@ -77,8 +77,7 @@ pub const BINDING_VERSION_HYBRID: u8 = 2;
 pub const BINDING_LEN_V1: usize = 96;
 /// Version 2 length: version(1) + Ed25519 pk(32) + ML-DSA-65 pk(1952) +
 /// Ed25519 sig(64) + ML-DSA-65 sig(3309).
-pub const BINDING_LEN_V2: usize =
-    1 + 32 + ML_DSA_65_PK_LEN + ED25519_SIG_LEN + ML_DSA_65_SIG_LEN;
+pub const BINDING_LEN_V2: usize = 1 + 32 + ML_DSA_65_PK_LEN + ED25519_SIG_LEN + ML_DSA_65_SIG_LEN;
 /// Largest frame accepted on a stream. Bounded so a hostile peer cannot make us
 /// allocate without limit before any decryption has happened.
 pub const MAX_STREAM_FRAME: usize = 64 * 1024;

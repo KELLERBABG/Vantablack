@@ -20,10 +20,10 @@ pub mod fallback;
 pub mod ice;
 pub mod mesh;
 pub mod orbit;
+pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod relay;
-pub mod pow;
 pub mod shardsec;
 
 /// Which framing an optional transport used for a frame (SOTA P1-2).
@@ -269,8 +269,12 @@ impl Default for NetworkCensus {
 impl NetworkCensus {
     /// Probe the local environment or construct from observed network restrictions.
     pub fn probe() -> Self {
-        let raw_blocked = std::env::var("GHOST_CENSUS_BLOCK_UDP").map(|v| v == "1").unwrap_or(false);
-        let quic_blocked = std::env::var("GHOST_CENSUS_BLOCK_QUIC").map(|v| v == "1").unwrap_or(false);
+        let raw_blocked = std::env::var("GHOST_CENSUS_BLOCK_UDP")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let quic_blocked = std::env::var("GHOST_CENSUS_BLOCK_QUIC")
+            .map(|v| v == "1")
+            .unwrap_or(false);
         Self {
             raw_udp_permitted: !raw_blocked,
             quic_udp443_permitted: !quic_blocked && !raw_blocked,
@@ -310,17 +314,29 @@ pub struct DialectSession {
 }
 
 impl DialectSession {
-    pub fn new(initial_dialect: CamouflageMode, supported_dialects: Vec<CamouflageMode>, rotation_interval: u64) -> Self {
+    pub fn new(
+        initial_dialect: CamouflageMode,
+        supported_dialects: Vec<CamouflageMode>,
+        rotation_interval: u64,
+    ) -> Self {
         Self {
             active_dialect: initial_dialect,
-            supported_dialects: if supported_dialects.is_empty() { vec![initial_dialect] } else { supported_dialects },
+            supported_dialects: if supported_dialects.is_empty() {
+                vec![initial_dialect]
+            } else {
+                supported_dialects
+            },
             messages_sent: 0,
             rotation_interval: rotation_interval.max(1),
         }
     }
 
     /// Negotiate a dialect between local environment census and peer advertised dialects.
-    pub fn negotiate(census: &NetworkCensus, peer_dialects: &[CamouflageMode], rotation_interval: u64) -> Self {
+    pub fn negotiate(
+        census: &NetworkCensus,
+        peer_dialects: &[CamouflageMode],
+        rotation_interval: u64,
+    ) -> Self {
         let local_ranked = census.ranked_dialects();
         // Pick the highest ranked local dialect that peer also supports
         let selected = local_ranked
@@ -384,7 +400,9 @@ pub struct HeterogeneousPhyRouter {
 
 impl HeterogeneousPhyRouter {
     pub fn new() -> Self {
-        Self { bindings: Vec::new() }
+        Self {
+            bindings: Vec::new(),
+        }
     }
 
     /// Register a physical network interface for a given shard index
@@ -611,8 +629,8 @@ pub fn tail_for(
     };
     let mut out = [0u8; JITTER_MAX];
     for (block, chunk) in out.chunks_mut(32).enumerate() {
-        let mut mac = Hmac::<Sha256>::new_from_slice(key)
-            .expect("HMAC-SHA256 accepts a key of any length");
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 accepts a key of any length");
         mac.update(b"GTF_P3_1_JITTER_TAIL");
         mac.update(nonce);
         mac.update(&epoch.to_be_bytes());
@@ -688,7 +706,11 @@ pub fn frame_wire_version(buf: &[u8]) -> u8 {
 /// so the note about v1's payload capacity applies unchanged.
 pub fn build_gtf_v2_frame(h: &GtfV2Header, payload: &[u8], auth_tag: &[u8; 16]) -> Vec<u8> {
     let (total, tag_start, cap) = if h.bulk {
-        (GTF_BULK_SIZE, V2_BULK_OFFSET_AUTH_TAG_START, V2_MAX_BULK_PAYLOAD_LEN)
+        (
+            GTF_BULK_SIZE,
+            V2_BULK_OFFSET_AUTH_TAG_START,
+            V2_MAX_BULK_PAYLOAD_LEN,
+        )
     } else {
         (GTF_BASE_SIZE, V2_OFFSET_AUTH_TAG_START, V2_MAX_PAYLOAD_LEN)
     };
@@ -707,8 +729,9 @@ pub fn build_gtf_v2_frame(h: &GtfV2Header, payload: &[u8], auth_tag: &[u8; 16]) 
     // P3-1 — cover traffic (0x04). The mask has to admit all three or the dummy
     // bit is silently dropped on the way out, which would make the flag look
     // supported while never reaching the wire.
-    packet[V2_OFFSET_FLAGS] =
-        FLAG_V2 | (h.flags & (FLAG_BULK | FLAG_TUNNEL | FLAG_DUMMY | FLAG_SHARDSEC)) | if h.bulk { FLAG_BULK } else { 0 };
+    packet[V2_OFFSET_FLAGS] = FLAG_V2
+        | (h.flags & (FLAG_BULK | FLAG_TUNNEL | FLAG_DUMMY | FLAG_SHARDSEC))
+        | if h.bulk { FLAG_BULK } else { 0 };
     packet[V2_OFFSET_PACKET_COUNTER..V2_OFFSET_PACKET_COUNTER + 8]
         .copy_from_slice(&h.counter.to_be_bytes());
     packet[V2_OFFSET_RATCHET_EPOCH..V2_OFFSET_RATCHET_EPOCH + 8]
@@ -959,8 +982,7 @@ pub fn frame_shard_authenticated(
     f.extend_from_slice(d);
 
     // Compute 16-byte length authentication tag
-    let mut mac = Hmac::<Sha256>::new_from_slice(key)
-        .expect("HMAC accepts 32-byte key");
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts 32-byte key");
     mac.update(b"GGN_HEADER_CHAFF_V1");
     mac.update(&epoch.to_be_bytes());
     mac.update(nonce);
@@ -992,8 +1014,7 @@ pub fn unframe_authenticated(
     let tag_offset = 2 + l;
     let provided_tag = &b[tag_offset..tag_offset + 16];
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(key)
-        .expect("HMAC accepts 32-byte key");
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts 32-byte key");
     mac.update(b"GGN_HEADER_CHAFF_V1");
     mac.update(&epoch.to_be_bytes());
     mac.update(nonce);
@@ -1386,7 +1407,11 @@ mod wire_v2_tests {
         let dir = crate::ghost::layers::l2_aead::NonceDirection::InitiatorToResponder;
         let t1 = tail_for(&key, &nonce, 0, dir);
         assert_ne!(t1, [0u8; JITTER_MAX], "not a strippable run of zeros");
-        assert_eq!(t1, tail_for(&key, &nonce, 0, dir), "deterministic per message");
+        assert_eq!(
+            t1,
+            tail_for(&key, &nonce, 0, dir),
+            "deterministic per message"
+        );
         assert_ne!(t1, tail_for(&key, &[0x12u8; 12], 0, dir), "different nonce");
         assert_ne!(t1, tail_for(&key, &nonce, 1, dir), "different epoch");
         assert_ne!(
@@ -1422,7 +1447,10 @@ mod wire_v2_tests {
         // in the flags byte and never bit 7.
         for (counter, bulk) in [(0u32, false), (2, false), (3, true), (u32::MAX, true)] {
             let frame = build_gtf_frame([7, 7, 7, 7], counter, 1, b"shard", &tag(), bulk);
-            assert!(!is_v2_frame(&frame), "v1 frame misread as v2 (counter {counter})");
+            assert!(
+                !is_v2_frame(&frame),
+                "v1 frame misread as v2 (counter {counter})"
+            );
             assert_eq!(frame_wire_version(&frame), 1);
             assert_eq!(parse_packet_counter(&frame), counter);
             assert_eq!(parse_packet_counter_u64(&frame), counter as u64);
@@ -1496,7 +1524,7 @@ mod wire_v2_tests {
 
         // Frame with authenticated length
         let mut framed = frame_shard_authenticated(shard_data, &key, epoch, &nonce);
-        
+
         // Unframe with correct key, epoch, nonce -> Success
         let recovered = unframe_authenticated(&framed, &key, epoch, &nonce).unwrap();
         assert_eq!(&recovered, shard_data);
@@ -1504,19 +1532,31 @@ mod wire_v2_tests {
         // Tampering with the length bytes -> auth_fail
         let mut tampered_len = framed.clone();
         tampered_len[1] ^= 0x01;
-        assert_eq!(unframe_authenticated(&tampered_len, &key, epoch, &nonce), Err("auth_fail"));
+        assert_eq!(
+            unframe_authenticated(&tampered_len, &key, epoch, &nonce),
+            Err("auth_fail")
+        );
 
         // Tampering with the epoch -> auth_fail
-        assert_eq!(unframe_authenticated(&framed, &key, epoch + 1, &nonce), Err("auth_fail"));
+        assert_eq!(
+            unframe_authenticated(&framed, &key, epoch + 1, &nonce),
+            Err("auth_fail")
+        );
 
         // Tampering with the key -> auth_fail
         let wrong_key = [0x5bu8; 32];
-        assert_eq!(unframe_authenticated(&framed, &wrong_key, epoch, &nonce), Err("auth_fail"));
+        assert_eq!(
+            unframe_authenticated(&framed, &wrong_key, epoch, &nonce),
+            Err("auth_fail")
+        );
 
         // Tampering with the authentication tag -> auth_fail
         let last = framed.len() - 1;
         framed[last] ^= 0xff;
-        assert_eq!(unframe_authenticated(&framed, &key, epoch, &nonce), Err("auth_fail"));
+        assert_eq!(
+            unframe_authenticated(&framed, &key, epoch, &nonce),
+            Err("auth_fail")
+        );
     }
 
     #[test]
@@ -1544,8 +1584,14 @@ mod wire_v2_tests {
 
         let empirical_mean = total_secs / (samples as f64);
         // Exponential distribution mean should be close to 30s (within 10%)
-        assert!((empirical_mean - mean).abs() < 3.0, "empirical mean {empirical_mean} should be close to {mean}");
-        assert!(saw_shorter_than_mean && saw_longer_than_mean, "must exhibit exponential dispersion");
+        assert!(
+            (empirical_mean - mean).abs() < 3.0,
+            "empirical mean {empirical_mean} should be close to {mean}"
+        );
+        assert!(
+            saw_shorter_than_mean && saw_longer_than_mean,
+            "must exhibit exponential dispersion"
+        );
     }
 
     #[test]
@@ -1554,23 +1600,29 @@ mod wire_v2_tests {
 
         // 1. None
         assert_eq!(CamouflageWrapper::wrap(frame, CamouflageMode::None), frame);
-        assert_eq!(CamouflageWrapper::unwrap(frame, CamouflageMode::None).unwrap(), frame);
+        assert_eq!(
+            CamouflageWrapper::unwrap(frame, CamouflageMode::None).unwrap(),
+            frame
+        );
 
         // 2. QUIC Datagram
         let quic_camo = CamouflageWrapper::wrap(frame, CamouflageMode::QuicDatagram);
         assert_eq!(quic_camo[0], CamouflageWrapper::H3_DATAGRAM_FRAME_TYPE);
-        let unwrapped_quic = CamouflageWrapper::unwrap(&quic_camo, CamouflageMode::QuicDatagram).unwrap();
+        let unwrapped_quic =
+            CamouflageWrapper::unwrap(&quic_camo, CamouflageMode::QuicDatagram).unwrap();
         assert_eq!(&unwrapped_quic, frame);
 
         // 3. DNS-over-HTTPS (DoH)
         let doh_camo = CamouflageWrapper::wrap(frame, CamouflageMode::DnsOverHttps);
         assert!(doh_camo.starts_with(CamouflageWrapper::DOH_PREFIX));
-        let unwrapped_doh = CamouflageWrapper::unwrap(&doh_camo, CamouflageMode::DnsOverHttps).unwrap();
+        let unwrapped_doh =
+            CamouflageWrapper::unwrap(&doh_camo, CamouflageMode::DnsOverHttps).unwrap();
         assert_eq!(&unwrapped_doh, frame);
 
         // 4. HTTPS binary chunk
         let https_camo = CamouflageWrapper::wrap(frame, CamouflageMode::HttpsChunk);
-        let unwrapped_https = CamouflageWrapper::unwrap(&https_camo, CamouflageMode::HttpsChunk).unwrap();
+        let unwrapped_https =
+            CamouflageWrapper::unwrap(&https_camo, CamouflageMode::HttpsChunk).unwrap();
         assert_eq!(&unwrapped_https, frame);
     }
 
@@ -1585,14 +1637,20 @@ mod wire_v2_tests {
         // Bind Shard 2 -> eth0 (Ethernet)
         router.bind_shard_interface(2, "eth0", 102);
 
-        assert!(router.is_phy_diverse(), "3 distinct physical interfaces must satisfy diversity");
+        assert!(
+            router.is_phy_diverse(),
+            "3 distinct physical interfaces must satisfy diversity"
+        );
         assert_eq!(router.get_binding(0).unwrap().interface_name, "wlan0");
         assert_eq!(router.get_binding(1).unwrap().interface_name, "rmnet0");
         assert_eq!(router.get_binding(2).unwrap().interface_name, "eth0");
 
         // Binding two shards to the same interface violates PHY diversity
         router.bind_shard_interface(2, "wlan0", 100);
-        assert!(!router.is_phy_diverse(), "Duplicate interface must violate PHY diversity");
+        assert!(
+            !router.is_phy_diverse(),
+            "Duplicate interface must violate PHY diversity"
+        );
     }
 
     #[test]

@@ -452,15 +452,15 @@ pub fn create_hsm_backend() -> Box<dyn HsmBackend> {
         if module.is_empty() || pin.is_empty() {
             warn!("HSM: PKCS#11 skipped — GHOST_PKCS11_MODULE and GHOST_PKCS11_PIN are required");
         } else {
-        match Pkcs11Backend::open(&module, slot, &pin) {
-            Ok(hsm) => {
-                info!("HSM: using PKCS#11 hardware backend");
-                return Box::new(hsm);
+            match Pkcs11Backend::open(&module, slot, &pin) {
+                Ok(hsm) => {
+                    info!("HSM: using PKCS#11 hardware backend");
+                    return Box::new(hsm);
+                }
+                Err(e) => {
+                    warn!("HSM: PKCS#11 not available: {}", e);
+                }
             }
-            Err(e) => {
-                warn!("HSM: PKCS#11 not available: {}", e);
-            }
-        }
         }
     }
 
@@ -498,15 +498,15 @@ pub fn create_hsm_backend_from_key(keypair: ed25519_dalek::SigningKey) -> Box<dy
         if module.is_empty() || pin.is_empty() {
             warn!("HSM: PKCS#11 skipped — GHOST_PKCS11_MODULE and GHOST_PKCS11_PIN are required");
         } else {
-        match Pkcs11Backend::open(&module, slot, &pin) {
-            Ok(hsm) => {
-                info!("HSM: using PKCS#11 hardware backend (key imported)");
-                return Box::new(hsm);
+            match Pkcs11Backend::open(&module, slot, &pin) {
+                Ok(hsm) => {
+                    info!("HSM: using PKCS#11 hardware backend (key imported)");
+                    return Box::new(hsm);
+                }
+                Err(e) => {
+                    warn!("HSM: PKCS#11 not available: {}", e);
+                }
             }
-            Err(e) => {
-                warn!("HSM: PKCS#11 not available: {}", e);
-            }
-        }
         }
     }
 

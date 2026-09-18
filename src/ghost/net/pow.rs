@@ -172,7 +172,9 @@ impl DynamicPowGovernor {
         let excess = current_pending - load_threshold;
         // Each step above threshold adds 1 bit of difficulty (doubling required work)
         let added_bits = (excess as u32).ilog2() as u8 + 1;
-        self.base_difficulty.saturating_add(added_bits).min(self.max_difficulty)
+        self.base_difficulty
+            .saturating_add(added_bits)
+            .min(self.max_difficulty)
     }
 }
 

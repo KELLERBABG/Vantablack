@@ -45,7 +45,11 @@ fn wire_ids(suites: &[HybridCipherSuite]) -> Vec<u8> {
 fn offer(
     id: &GhostIdentity,
     suites: &[HybridCipherSuite],
-) -> (Vec<u8>, x25519_dalek::EphemeralSecret, ml_kem::DecapsulationKey768) {
+) -> (
+    Vec<u8>,
+    x25519_dalek::EphemeralSecret,
+    ml_kem::DecapsulationKey768,
+) {
     let (x_secret, x_pub) = generate_x25519_keypair();
     let (k768_pk, k768_sk) = generate_kyber768_keypair();
     let (k512_pk, _k512_sk) = generate_kyber_keypair();
@@ -78,7 +82,11 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
     assert_eq!(parsed.supported, vec![SUITE_768, SUITE_512]);
     assert_eq!(parsed.identity_pk, alice.public_key_bytes());
     assert_eq!(parsed.pq_commitment, alice.pq_commitment());
-    assert_eq!(parsed.kyber_keys.len(), 2, "one KEM public key per advertised suite");
+    assert_eq!(
+        parsed.kyber_keys.len(),
+        2,
+        "one KEM public key per advertised suite"
+    );
 
     let chosen = negotiate_cipher_suite(&[SUITE_768, SUITE_512], &wire_ids(&parsed.supported))
         .expect("a common suite exists");
@@ -117,8 +125,7 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
         "an answer must name the strongest suite the initiator offered"
     );
 
-    let alice_kyber =
-        kyber768_decapsulate(&alice_k768_sk, &answer.kyber_ct).expect("decapsulate");
+    let alice_kyber = kyber768_decapsulate(&alice_k768_sk, &answer.kyber_ct).expect("decapsulate");
     let alice_x_shared = alice_x.diffie_hellman(&XPublicKey::from(answer.x25519_pub));
     let bob_x_shared = bob_x_secret.diffie_hellman(&XPublicKey::from(parsed.x25519_pub));
 
@@ -165,7 +172,10 @@ fn a_response_cannot_force_a_weaker_suite_than_was_mutually_available() {
     assert_eq!(strongest, SUITE_768);
 
     let downgraded = SUITE_512;
-    assert_ne!(downgraded, strongest, "512 is weaker than what was available");
+    assert_ne!(
+        downgraded, strongest,
+        "512 is weaker than what was available"
+    );
 
     // And a downgrade cannot even accidentally land on the right key: the suite is
     // part of HKDF domain separation, so the two derivations are unrelated.
@@ -188,7 +198,10 @@ fn a_v2_only_peer_still_negotiates_and_the_generations_do_not_misparse() {
     // original construction advertises one suite and is still served.
     let chosen = negotiate_cipher_suite(&[SUITE_768, SUITE_512], &wire_ids(&[SUITE_512]))
         .expect("a v4 node serves a v2-only peer");
-    assert_eq!(chosen, SUITE_512, "the fallback is to the peer's only suite");
+    assert_eq!(
+        chosen, SUITE_512,
+        "the fallback is to the peer's only suite"
+    );
 
     // And from the wire side: a v4 offer must not be readable as a v3 or legacy
     // offer. The magics differ, and a parser that guessed would take a 1800-byte
@@ -205,8 +218,12 @@ fn a_v2_only_peer_still_negotiates_and_the_generations_do_not_misparse() {
     );
     // The legacy parsers still answer correctly for their own generation's length,
     // which is what makes the fallback above reachable rather than advertised.
-    assert!(parse_handshake_pdu(&[0u8; 4]).is_none(), "short input is not an offer");
-    let suite_offer = parse_negotiated_handshake_pdu(&offer_pdu).expect("the v5 offer itself parses");
+    assert!(
+        parse_handshake_pdu(&[0u8; 4]).is_none(),
+        "short input is not an offer"
+    );
+    let suite_offer =
+        parse_negotiated_handshake_pdu(&offer_pdu).expect("the v5 offer itself parses");
     assert_eq!(
         suite_offer.supported.len(),
         2,
@@ -430,7 +447,10 @@ fn forged_classical_signature_with_mismatched_pq_key_is_rejected() {
         channel_binding,
         &tampered,
     );
-    assert!(res_tampered.is_err(), "forged/tampered ML-DSA-65 signature must fail verification");
+    assert!(
+        res_tampered.is_err(),
+        "forged/tampered ML-DSA-65 signature must fail verification"
+    );
 }
 
 /// SOTA G3: Sessions gate application traffic until post-quantum identity verification passes.

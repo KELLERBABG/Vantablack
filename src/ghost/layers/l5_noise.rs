@@ -190,7 +190,10 @@ mod tests {
         }
 
         // Calculate JS distance between sample output and target profile
-        let js_dist = GhostMimicEngine::jensen_shannon_divergence(&observed_dist, &chrome_profile.size_weights);
+        let js_dist = GhostMimicEngine::jensen_shannon_divergence(
+            &observed_dist,
+            &chrome_profile.size_weights,
+        );
         assert!(
             js_dist < 0.05,
             "Sampled distribution must closely mimic target ASN profile (JS < 0.05, got {})",
@@ -199,7 +202,10 @@ mod tests {
 
         // Uniform baseline should diverge significantly (JS > 0.15)
         let uniform_profile = MimicProfile::uniform(target_asn);
-        let js_uniform = GhostMimicEngine::jensen_shannon_divergence(&uniform_profile.size_weights, &chrome_profile.size_weights);
+        let js_uniform = GhostMimicEngine::jensen_shannon_divergence(
+            &uniform_profile.size_weights,
+            &chrome_profile.size_weights,
+        );
         assert!(
             js_uniform > 0.15,
             "Uniform distribution must show clear divergence from web profile (got {})",

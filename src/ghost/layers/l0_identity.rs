@@ -297,7 +297,11 @@ impl GhostIdentity {
 
     /// The post-quantum public key, encoded (1952 bytes for ML-DSA-65).
     pub fn pq_public_key_bytes(&self) -> Vec<u8> {
-        self.pq_signing.verifying_key().to_bytes().as_slice().to_vec()
+        self.pq_signing
+            .verifying_key()
+            .to_bytes()
+            .as_slice()
+            .to_vec()
     }
 
     /// Compute the human-readable fingerprint (first 8 bytes hex).
@@ -392,7 +396,6 @@ impl GhostIdentity {
             signature,
         )
     }
-
 }
 
 /// SHA-256 commitment to an encoded ML-DSA-65 public key.
@@ -523,11 +526,8 @@ mod tests {
     use super::*;
 
     fn tmp_path(name: &str) -> String {
-        let dir = std::env::temp_dir().join(format!(
-            "ggn-identity-{}-{}",
-            std::process::id(),
-            name
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("ggn-identity-{}-{}", std::process::id(), name));
         std::fs::create_dir_all(&dir).expect("temp dir");
         dir.join("identity.key").to_string_lossy().into_owned()
     }
@@ -634,7 +634,11 @@ mod tests {
         // Right signature, wrong key.
         let other = GhostIdentity::generate_fresh();
         let sig = id.sign_hybrid(msg);
-        assert!(!verify_pq_signature(&other.pq_public_key_bytes(), msg, &sig.pq));
+        assert!(!verify_pq_signature(
+            &other.pq_public_key_bytes(),
+            msg,
+            &sig.pq
+        ));
     }
 
     /// The PQ key must not be derived from the classical secret: if it were, the
@@ -814,26 +818,33 @@ mod tests {
         // 3. Signature verification with burnable identity
         let message = b"hello from burnable ghost identity";
         let signature = k1.sign(message);
-        assert!(k1.verifying_key().verify_strict(message, &signature).is_ok());
+        assert!(k1
+            .verifying_key()
+            .verify_strict(message, &signature)
+            .is_ok());
     }
 
     #[test]
     fn test_amnesia_mode_zero_disk_state() {
-        let temp_dir = std::env::temp_dir().join(format!("ggn_amnesia_test_{}", rand::random::<u64>()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("ggn_amnesia_test_{}", rand::random::<u64>()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let key_path = temp_dir.join("ephemeral_identity.key");
         let key_path_str = key_path.to_str().unwrap();
 
         // 1. Enable amnesia mode explicitly via options
         let id = GhostIdentity::load_or_generate_opts(key_path_str, true);
-        
+
         // Key file must NOT exist on disk
-        assert!(!key_path.exists(), "Amnesia mode must never write identity.key to disk");
+        assert!(
+            !key_path.exists(),
+            "Amnesia mode must never write identity.key to disk"
+        );
         assert_eq!(id.fingerprint().len(), 16);
 
         // 2. Normal mode
         let normal_id = GhostIdentity::load_or_generate_opts(key_path_str, false);
-        
+
         // In normal mode, key file is written
         assert!(key_path.exists(), "Normal mode writes identity.key to disk");
         assert_eq!(normal_id.fingerprint().len(), 16);

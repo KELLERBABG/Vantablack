@@ -116,9 +116,7 @@ impl ExitCapability {
     }
 
     pub fn verify(&self, now: u64, expected_subject: &str, required_scope: &str) -> bool {
-        if now > self.expires_at
-            || self.subject != expected_subject
-            || self.scope != required_scope
+        if now > self.expires_at || self.subject != expected_subject || self.scope != required_scope
         {
             return false;
         }
@@ -174,7 +172,13 @@ impl ExitCapability {
         if at + 64 != raw.len() {
             return None;
         }
-        Some(Self { issuer_pk, subject, scope, expires_at, signature })
+        Some(Self {
+            issuer_pk,
+            subject,
+            scope,
+            expires_at,
+            signature,
+        })
     }
 }
 
@@ -219,7 +223,10 @@ impl SphinxShardOnion {
         shard_idx: u8,
         shard_data: &[u8],
     ) -> Vec<u8> {
-        use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
 
         // Layer 3 (Exit): payload + shard index
         let mut exit_plaintext = Vec::with_capacity(2 + shard_data.len());
@@ -229,7 +236,9 @@ impl SphinxShardOnion {
 
         let exit_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
         let exit_nonce = Nonce::from_slice(&[0x33u8; 12]);
-        let exit_sealed = exit_cipher.encrypt(exit_nonce, exit_plaintext.as_ref()).expect("seal exit");
+        let exit_sealed = exit_cipher
+            .encrypt(exit_nonce, exit_plaintext.as_ref())
+            .expect("seal exit");
 
         // Layer 2 (Middle): routing instruction to exit + exit ciphertext
         let mut middle_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + exit_sealed.len());
@@ -241,19 +250,24 @@ impl SphinxShardOnion {
 
         let middle_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(middle_key));
         let middle_nonce = Nonce::from_slice(&[0x22u8; 12]);
-        let middle_sealed = middle_cipher.encrypt(middle_nonce, middle_plaintext.as_ref()).expect("seal middle");
+        let middle_sealed = middle_cipher
+            .encrypt(middle_nonce, middle_plaintext.as_ref())
+            .expect("seal middle");
 
         // Layer 1 (Guard): routing instruction to middle + middle ciphertext
         let mut guard_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + middle_sealed.len());
         let mut middle_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
         let bytes_to_copy_m = middle_hop.as_bytes().len().min(SPHINX_MAX_HOP_NAME);
-        middle_hop_bytes[..bytes_to_copy_m].copy_from_slice(&middle_hop.as_bytes()[..bytes_to_copy_m]);
+        middle_hop_bytes[..bytes_to_copy_m]
+            .copy_from_slice(&middle_hop.as_bytes()[..bytes_to_copy_m]);
         guard_plaintext.extend_from_slice(&middle_hop_bytes);
         guard_plaintext.extend_from_slice(&middle_sealed);
 
         let guard_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(guard_key));
         let guard_nonce = Nonce::from_slice(&[0x11u8; 12]);
-        let guard_sealed = guard_cipher.encrypt(guard_nonce, guard_plaintext.as_ref()).expect("seal guard");
+        let guard_sealed = guard_cipher
+            .encrypt(guard_nonce, guard_plaintext.as_ref())
+            .expect("seal guard");
 
         // Fixed-size 576-byte frame: 2-byte inner length prefix + ciphertext + uniform random padding
         let mut out = vec![0u8; SPHINX_SHARD_LEN];
@@ -270,7 +284,10 @@ impl SphinxShardOnion {
 
     /// Peel one hop layer as an intermediate relay (guard or middle).
     pub fn peel_hop(hop_key: &[u8; 32], ciphertext: &[u8]) -> Option<PeeledSphinxHop> {
-        use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
 
         let payload_to_decrypt = if ciphertext.len() == SPHINX_SHARD_LEN {
             let actual_len = u16::from_be_bytes([ciphertext[0], ciphertext[1]]) as usize;
@@ -297,15 +314,24 @@ impl SphinxShardOnion {
             return None;
         }
         let next_hop_bytes = &pt[..SPHINX_MAX_HOP_NAME];
-        let end = next_hop_bytes.iter().position(|&b| b == 0).unwrap_or(SPHINX_MAX_HOP_NAME);
+        let end = next_hop_bytes
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(SPHINX_MAX_HOP_NAME);
         let next_hop = String::from_utf8(next_hop_bytes[..end].to_vec()).ok()?;
         let inner_payload = pt[SPHINX_MAX_HOP_NAME..].to_vec();
-        Some(PeeledSphinxHop { next_hop, inner_payload })
+        Some(PeeledSphinxHop {
+            next_hop,
+            inner_payload,
+        })
     }
 
     /// Exit node opens the terminal layer to extract shard index and payload.
     pub fn exit_open(exit_key: &[u8; 32], ciphertext: &[u8]) -> Option<(u8, Vec<u8>)> {
-        use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
 
         let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
         let nonce = Nonce::from_slice(&[0x33u8; 12]);
@@ -367,7 +393,12 @@ impl ProofOfTransit {
     }
 
     /// Client verifies that the relay indeed forwarded the expected payload to `next_hop`.
-    pub fn verify(&self, expected_payload: &[u8], expected_next_hop: &str, max_age_secs: u64) -> bool {
+    pub fn verify(
+        &self,
+        expected_payload: &[u8],
+        expected_next_hop: &str,
+        max_age_secs: u64,
+    ) -> bool {
         use sha2::{Digest, Sha256};
         let expected_hash: [u8; 32] = Sha256::digest(expected_payload).into();
         if self.payload_hash != expected_hash || self.next_hop != expected_next_hop {
@@ -465,7 +496,12 @@ impl BlindCapabilityToken {
     }
 
     /// Compute authorization tag over capability parameters using flow auth key.
-    pub fn compute_auth_tag(auth_key: &[u8; 32], token_id: &[u8; 32], max_bytes: u64, expires_at: u64) -> [u8; 32] {
+    pub fn compute_auth_tag(
+        auth_key: &[u8; 32],
+        token_id: &[u8; 32],
+        max_bytes: u64,
+        expires_at: u64,
+    ) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(b"GGN_BLIND_CAP_AUTH_V1");
@@ -477,7 +513,13 @@ impl BlindCapabilityToken {
     }
 
     /// Mint a new blind capability token containing zero client public key or identity.
-    pub fn mint(auth_key: &[u8; 32], seed: &[u8], flow_salt: &[u8; 32], max_bytes: u64, expires_at: u64) -> Self {
+    pub fn mint(
+        auth_key: &[u8; 32],
+        seed: &[u8],
+        flow_salt: &[u8; 32],
+        max_bytes: u64,
+        expires_at: u64,
+    ) -> Self {
         let token_id = Self::compute_token_id(seed, flow_salt);
         let auth_tag = Self::compute_auth_tag(auth_key, &token_id, max_bytes, expires_at);
         Self {
@@ -493,7 +535,8 @@ impl BlindCapabilityToken {
         if now > self.expires_at || requested_bytes > self.max_bytes {
             return false;
         }
-        let expected = Self::compute_auth_tag(auth_key, &self.token_id, self.max_bytes, self.expires_at);
+        let expected =
+            Self::compute_auth_tag(auth_key, &self.token_id, self.max_bytes, self.expires_at);
         subtle::ConstantTimeEq::ct_eq(&self.auth_tag[..], &expected[..]).into()
     }
 }
@@ -1196,8 +1239,8 @@ mod tests {
         let issuer = GhostIdentity::generate_fresh();
         let subject = "peer-123";
         let scope = "example.test";
-        let capability = ExitCapability::issue(&issuer, subject, scope, 200)
-            .expect("valid capability");
+        let capability =
+            ExitCapability::issue(&issuer, subject, scope, 200).expect("valid capability");
         let encoded = capability.encode().expect("encodable capability");
         let decoded = ExitCapability::decode(&encoded).expect("decodable capability");
         assert!(decoded.verify(199, subject, scope));
@@ -1669,10 +1712,10 @@ mod derp_tests {
     #[test]
     fn test_asn_diversity_constraint() {
         let mut constraint = AsnDiversityConstraint::new(1); // Strict multi-ASN
-        
+
         // Shard 0 over ASN 13335 (Cloudflare) -> Accepted
         assert!(constraint.assign_shard_asn(0, 13335));
-        
+
         // Shard 1 over ASN 13335 (Cloudflare again) -> Rejected by diversity constraint
         assert!(!constraint.is_asn_permitted(1, 13335));
         assert!(!constraint.assign_shard_asn(1, 13335));
@@ -1695,7 +1738,7 @@ mod derp_tests {
 
         // Relay mints blind proof of transit
         let proof = ProofOfTransit::mint(&relay_identity, payload, next_hop);
-        
+
         // Client verifies proof against expected payload and destination
         assert!(proof.verify(payload, next_hop, 60));
 
@@ -1715,7 +1758,8 @@ mod derp_tests {
         let expires_at = 2000u64;
         let voucher_id = 42u64;
 
-        let voucher = ForwardingCapabilityVoucher::mint(&client_identity, max_bytes, expires_at, voucher_id);
+        let voucher =
+            ForwardingCapabilityVoucher::mint(&client_identity, max_bytes, expires_at, voucher_id);
 
         // Valid voucher redemption within limits
         assert!(voucher.verify(now, 500_000));
@@ -1728,7 +1772,8 @@ mod derp_tests {
 
         // Forged signature from another key fails
         let imposter = GhostIdentity::generate_fresh();
-        let forged_msg = ForwardingCapabilityVoucher::signing_bytes(max_bytes, expires_at, voucher_id);
+        let forged_msg =
+            ForwardingCapabilityVoucher::signing_bytes(max_bytes, expires_at, voucher_id);
         let mut forged_voucher = voucher.clone();
         forged_voucher.signature = imposter.sign(&forged_msg).to_bytes();
         assert!(!forged_voucher.verify(now, 500_000));
@@ -1779,11 +1824,15 @@ mod derp_tests {
             assert_eq!(guard_peeled.next_hop, "node_middle");
 
             // Middle peels layer
-            let middle_peeled = SphinxShardOnion::peel_hop(&middle_key, &guard_peeled.inner_payload).expect("middle peel");
+            let middle_peeled =
+                SphinxShardOnion::peel_hop(&middle_key, &guard_peeled.inner_payload)
+                    .expect("middle peel");
             assert_eq!(middle_peeled.next_hop, "node_exit");
 
             // Exit verifies authenticity and reconstructs shard
-            let (shard_idx, shard_data) = SphinxShardOnion::exit_open(&exit_key, &middle_peeled.inner_payload).expect("exit open");
+            let (shard_idx, shard_data) =
+                SphinxShardOnion::exit_open(&exit_key, &middle_peeled.inner_payload)
+                    .expect("exit open");
             assert_eq!(shard_idx, i as u8);
             exit_received_shards[shard_idx as usize] = Some(shard_data);
         }
@@ -1802,7 +1851,10 @@ mod derp_tests {
         reconstructed.extend_from_slice(shard1);
         reconstructed.truncate(payload.len());
 
-        assert_eq!(&reconstructed, payload, "Sphinx shards survive 1 dropped middle node");
+        assert_eq!(
+            &reconstructed, payload,
+            "Sphinx shards survive 1 dropped middle node"
+        );
     }
 
     #[test]
@@ -1820,10 +1872,14 @@ mod derp_tests {
 
         let mut table = IdentityAgnosticRelayTable::new();
         let egress: SocketAddr = "192.168.1.100:8443".parse().unwrap();
-        table.register_channel(&token, &auth_key, egress, now).expect("register valid token");
+        table
+            .register_channel(&token, &auth_key, egress, now)
+            .expect("register valid token");
 
         // Forward a packet
-        let target = table.forward(&token.token_id, 500, now + 10).expect("forward ok");
+        let target = table
+            .forward(&token.token_id, 500, now + 10)
+            .expect("forward ok");
         assert_eq!(target, egress);
 
         // Exceed quota

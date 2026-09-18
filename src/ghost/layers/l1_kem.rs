@@ -5,8 +5,8 @@ use ml_kem::{
     DecapsulationKey512, DecapsulationKey768, EncapsulationKey, EncapsulationKey512,
     EncapsulationKey768, MlKem512, MlKem768,
 };
-use sha2::Sha256;
 use rand::RngCore;
+use sha2::Sha256;
 /// L1 — Hybrid Key Encapsulation Mechanism (KEM) Layer
 ///
 /// Implements the hybrid classical + post-quantum key exchange:
@@ -83,9 +83,7 @@ pub fn negotiate_cipher_suite(
         HybridCipherSuite::X25519MlKem512V2,
     ]
     .into_iter()
-    .find(|suite| {
-        local.contains(suite) && remote_wire_ids.contains(&suite.wire_id())
-    })
+    .find(|suite| local.contains(suite) && remote_wire_ids.contains(&suite.wire_id()))
 }
 
 /// Derive the hybrid master key from both shared secrets via HKDF-SHA256.
@@ -139,8 +137,7 @@ pub fn derive_hybrid_master_key_with_suite(
 
     let hk = Hkdf::<Sha256>::new(Some(&salt[..]), &ikm);
     let mut master_key = [0u8; 32];
-    hk.expand(suite.hkdf_label(), &mut master_key)
-        .unwrap();
+    hk.expand(suite.hkdf_label(), &mut master_key).unwrap();
     master_key
 }
 
@@ -180,14 +177,7 @@ pub fn derive_hybrid_master_key_with_transcript(
     responder_pq_commitment: &[u8; 32],
 ) -> [u8; 32] {
     let mut ikm = Vec::with_capacity(
-        HYBRID_BIND_LABEL.len()
-            + 32
-            + kyber_shared.len()
-            + 32
-            + 32
-            + kyber_ct.len()
-            + 32
-            + 32,
+        HYBRID_BIND_LABEL.len() + 32 + kyber_shared.len() + 32 + 32 + kyber_ct.len() + 32 + 32,
     );
     ikm.extend_from_slice(HYBRID_BIND_LABEL);
     ikm.extend_from_slice(x25519_shared);
@@ -419,7 +409,12 @@ pub fn parse_uniform_handshake_pdu(data: &[u8]) -> Option<HandshakeBlob> {
     identity_pk.copy_from_slice(&data[848..880]);
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&data[880..944]);
-    Some(HandshakeBlob { x25519_pub, kyber_pub, identity_pk, signature })
+    Some(HandshakeBlob {
+        x25519_pub,
+        kyber_pub,
+        identity_pk,
+        signature,
+    })
 }
 
 /// The signed transcript for a uniform-mode handshake includes its random
@@ -442,7 +437,9 @@ fn normal_ccdf(z: f64) -> f64 {
     let x = z / std::f64::consts::SQRT_2;
     let abs_x = x.abs();
     let t = 1.0 / (1.0 + 0.3275911 * abs_x);
-    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let poly = t
+        * (0.254829592
+            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
     let erfc = poly * (-abs_x * abs_x).exp();
     if x >= 0.0 {
         0.5 * erfc
@@ -664,7 +661,12 @@ pub fn parse_uniform_response_pdu(data: &[u8]) -> Option<ResponseBlob> {
     identity_pk.copy_from_slice(&data[816..848]);
     let mut signature = [0u8; 64];
     signature.copy_from_slice(&data[848..912]);
-    Some(ResponseBlob { x25519_pub, kyber_ct, identity_pk, signature })
+    Some(ResponseBlob {
+        x25519_pub,
+        kyber_ct,
+        identity_pk,
+        signature,
+    })
 }
 
 pub fn uniform_response_signed_material(data: &[u8]) -> Option<Vec<u8>> {
@@ -781,8 +783,13 @@ pub fn build_negotiated_handshake_pdu(
     x_pub: &XPublicKey,
     kyber_keys: &[(HybridCipherSuite, Vec<u8>)],
 ) -> Option<Vec<u8>> {
-    let material =
-        negotiation_material(supported, x_pub.as_bytes(), kyber_keys, identity_pk, pq_commitment)?;
+    let material = negotiation_material(
+        supported,
+        x_pub.as_bytes(),
+        kyber_keys,
+        identity_pk,
+        pq_commitment,
+    )?;
     let sig = identity_sign(&material);
     let mut out = material;
     out.extend_from_slice(&sig);
@@ -829,8 +836,10 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
     let pq_commitment: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
     at += 32;
     let signature: [u8; 64] = data.get(at..at + 64)?.try_into().ok()?;
-    if at + 64 != data.len() || kyber_keys.iter().map(|(s, _)| s).collect::<Vec<_>>()
-        != supported.iter().collect::<Vec<_>>() {
+    if at + 64 != data.len()
+        || kyber_keys.iter().map(|(s, _)| s).collect::<Vec<_>>()
+            != supported.iter().collect::<Vec<_>>()
+    {
         return None;
     }
     Some(NegotiatedHandshakeBlob {
@@ -1013,8 +1022,7 @@ pub fn ratchet_confirm(epoch_key: &[u8; 32]) -> [u8; 32] {
 
 /// HMAC-SHA256 with `key` — the primitive both chain steps are built from.
 fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
-    let mut mac =
-        HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a key of any length");
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a key of any length");
     mac.update(data);
     let out = mac.finalize().into_bytes();
     let mut key = [0u8; 32];
@@ -1171,8 +1179,14 @@ mod tests {
             HybridCipherSuite::X25519MlKem512V2,
             HybridCipherSuite::X25519MlKem768V3,
         ];
-        assert_eq!(HybridCipherSuite::from_wire_id(1), Some(HybridCipherSuite::X25519MlKem512V2));
-        assert_eq!(HybridCipherSuite::from_wire_id(2), Some(HybridCipherSuite::X25519MlKem768V3));
+        assert_eq!(
+            HybridCipherSuite::from_wire_id(1),
+            Some(HybridCipherSuite::X25519MlKem512V2)
+        );
+        assert_eq!(
+            HybridCipherSuite::from_wire_id(2),
+            Some(HybridCipherSuite::X25519MlKem768V3)
+        );
         assert_eq!(HybridCipherSuite::from_wire_id(0), None);
         assert_eq!(
             negotiate_cipher_suite(&local, &[1, 2]),
@@ -1250,18 +1264,10 @@ mod tests {
         let identity = [0xA5u8; 32];
         let (_, x_public) = generate_x25519_keypair();
         let (kem_public, _) = generate_kyber_keypair();
-        let handshake = build_uniform_handshake_pdu(
-            &identity,
-            |_| [0x5Au8; 64],
-            &x_public,
-            &kem_public,
-        );
-        let handshake2 = build_uniform_handshake_pdu(
-            &identity,
-            |_| [0x5Au8; 64],
-            &x_public,
-            &kem_public,
-        );
+        let handshake =
+            build_uniform_handshake_pdu(&identity, |_| [0x5Au8; 64], &x_public, &kem_public);
+        let handshake2 =
+            build_uniform_handshake_pdu(&identity, |_| [0x5Au8; 64], &x_public, &kem_public);
         assert_eq!(handshake.len(), UNIFORM_HANDSHAKE_BLOB_LEN);
         assert_ne!(&handshake[..16], &handshake2[..16]);
         let parsed = parse_uniform_handshake_pdu(&handshake).expect("uniform handshake parses");
@@ -1270,14 +1276,11 @@ mod tests {
         assert_eq!(parsed.identity_pk, identity);
 
         let ct = [0x3Cu8; 768];
-        let response = build_uniform_response_pdu(
-            &identity,
-            |_| [0x6Bu8; 64],
-            x_public.as_bytes(),
-            &ct,
-        );
+        let response =
+            build_uniform_response_pdu(&identity, |_| [0x6Bu8; 64], x_public.as_bytes(), &ct);
         assert_eq!(response.len(), UNIFORM_RESPONSE_BLOB_LEN);
-        let response_parsed = parse_uniform_response_pdu(&response).expect("uniform response parses");
+        let response_parsed =
+            parse_uniform_response_pdu(&response).expect("uniform response parses");
         assert_eq!(response_parsed.kyber_ct, ct);
         assert_eq!(
             uniform_response_signed_material(&response).unwrap()[..16],
@@ -1312,8 +1315,14 @@ mod tests {
             HybridCipherSuite::X25519MlKem512V2,
         ];
         let keys = vec![
-            (HybridCipherSuite::X25519MlKem768V3, pk768.to_bytes().to_vec()),
-            (HybridCipherSuite::X25519MlKem512V2, pk512.to_bytes().to_vec()),
+            (
+                HybridCipherSuite::X25519MlKem768V3,
+                pk768.to_bytes().to_vec(),
+            ),
+            (
+                HybridCipherSuite::X25519MlKem512V2,
+                pk512.to_bytes().to_vec(),
+            ),
         ];
         let wire = build_negotiated_handshake_pdu(
             &supported,
@@ -1353,7 +1362,10 @@ mod tests {
             &pq_comm,
             |_| [0x44; 64],
             &x_public,
-            &[(HybridCipherSuite::X25519MlKem512V2, pk512.to_bytes().to_vec())],
+            &[(
+                HybridCipherSuite::X25519MlKem512V2,
+                pk512.to_bytes().to_vec(),
+            )],
         )
         .expect("suite list builds");
         let mut malformed = wire.clone();
@@ -1387,31 +1399,20 @@ mod tests {
             rng.fill_bytes(&mut mock_sig);
 
             // 1. Uniform Handshake PDU
-            let u_hs = build_uniform_handshake_pdu(
-                &identity,
-                |_| mock_sig,
-                &x_public,
-                &kem_public,
-            );
+            let u_hs = build_uniform_handshake_pdu(&identity, |_| mock_sig, &x_public, &kem_public);
             uniform_hs_stream.extend_from_slice(&u_hs);
 
             // 2. Uniform Response PDU (carries compressed power-of-two ML-KEM ciphertext)
-            let ct_fixed: &[u8; 768] = ct.as_slice().try_into().expect("ML-KEM-512 ct is 768 bytes");
-            let u_resp = build_uniform_response_pdu(
-                &identity,
-                |_| mock_sig,
-                x_public.as_bytes(),
-                ct_fixed,
-            );
+            let ct_fixed: &[u8; 768] = ct
+                .as_slice()
+                .try_into()
+                .expect("ML-KEM-512 ct is 768 bytes");
+            let u_resp =
+                build_uniform_response_pdu(&identity, |_| mock_sig, x_public.as_bytes(), ct_fixed);
             uniform_resp_stream.extend_from_slice(&u_resp);
 
             // 3. Legacy Handshake PDU with ASCII magic header
-            let leg_pdu = build_handshake_pdu(
-                &identity,
-                |_| mock_sig,
-                &x_public,
-                &kem_public,
-            );
+            let leg_pdu = build_handshake_pdu(&identity, |_| mock_sig, &x_public, &kem_public);
             legacy_stream.extend_from_slice(&leg_pdu);
         }
 

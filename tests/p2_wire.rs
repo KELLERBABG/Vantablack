@@ -26,7 +26,13 @@ const SESSION: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
 /// handed to the framing layer the way the node does it — `frame_shard` puts a
 /// length prefix in front of the ciphertext, and the 16-byte tag travels with the
 /// ciphertext as well as in the frame's tag region.
-fn sealed_carrier(key: &[u8; 32], epoch: u64, shard: u8, counter: u64, body: &[u8]) -> (Vec<u8>, [u8; 16]) {
+fn sealed_carrier(
+    key: &[u8; 32],
+    epoch: u64,
+    shard: u8,
+    counter: u64,
+    body: &[u8],
+) -> (Vec<u8>, [u8; 16]) {
     let nonce = random_xnonce();
     let mut framed = (body.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(body);
@@ -56,7 +62,10 @@ fn sealed_carrier(key: &[u8; 32], epoch: u64, shard: u8, counter: u64, body: &[u
         // by `p3_1_a_rewritten_jitter_tail_fails_the_tag` below.
         tail: [0u8; JITTER_MAX],
     };
-    (build_gtf_v2_frame(&header, &frame_shard(&framed), &tag), tag)
+    (
+        build_gtf_v2_frame(&header, &frame_shard(&framed), &tag),
+        tag,
+    )
 }
 
 /// The ciphertext a receiver recovers from a frame: the framed shard's contents,
@@ -129,7 +138,8 @@ fn two_sessions_reach_one_key_through_the_ratchet_step() {
     // Epoch 0 keys already agree, because both derive them from one handshake key.
     assert_eq!(
         alice.seal_key(NonceDirection::InitiatorToResponder),
-        bob.open_key(0, NonceDirection::InitiatorToResponder, 0).unwrap()
+        bob.open_key(0, NonceDirection::InitiatorToResponder, 0)
+            .unwrap()
     );
 
     let (a_x, a_kem) = alice.begin_ratchet_step().expect("alice starts a step");
@@ -203,12 +213,17 @@ fn two_sessions_reach_one_key_through_the_ratchet_step() {
 
     // The frame that authenticated under epoch 1 is what installs it — the same
     // `activate_epoch` the receive path calls when a v2 frame names a newer epoch.
-    assert!(bob.activate_epoch(1), "the authenticated frame installs the epoch");
+    assert!(
+        bob.activate_epoch(1),
+        "the authenticated frame installs the epoch"
+    );
     assert_eq!(bob.epoch(), 1);
     assert_eq!(bob.prepared_epoch(), None);
     assert_eq!(
         bob.seal_key(NonceDirection::ResponderToInitiator),
-        alice.open_key(1, NonceDirection::ResponderToInitiator, 0).unwrap(),
+        alice
+            .open_key(1, NonceDirection::ResponderToInitiator, 0)
+            .unwrap(),
         "both sides now seal the new epoch in their own direction"
     );
 }
@@ -242,7 +257,10 @@ fn a_ratchet_step_replaces_the_epoch_key() {
     let epoch1 = ratchet.seal_key(NonceDirection::InitiatorToResponder);
     assert_ne!(epoch0, epoch1);
     // One chain step is what separates them, and it only goes forward.
-    assert_eq!(ratchet.open_key(0, NonceDirection::InitiatorToResponder, 0), Some(epoch0));
+    assert_eq!(
+        ratchet.open_key(0, NonceDirection::InitiatorToResponder, 0),
+        Some(epoch0)
+    );
 }
 
 /// SOTA P3-1: the jitter tail is authenticated.

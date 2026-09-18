@@ -56,7 +56,12 @@ pub fn seal_shard(
         .expect("owned shard seal");
     let tag = shard[shard.len() - 16..].try_into().expect("AEAD tag");
     shard.truncate(shard.len() - 16);
-    SealedShard { index, ciphertext: shard, tag, is_honey: false }
+    SealedShard {
+        index,
+        ciphertext: shard,
+        tag,
+        is_honey: false,
+    }
 }
 
 /// Invention §15: Honey-Shards — Adversarial Tamper Traps.
@@ -82,7 +87,12 @@ pub fn seal_honey_shard(
         .expect("owned shard seal");
     let tag = shard[shard.len() - 16..].try_into().expect("AEAD tag");
     shard.truncate(shard.len() - 16);
-    SealedShard { index, ciphertext: shard, tag, is_honey: true }
+    SealedShard {
+        index,
+        ciphertext: shard,
+        tag,
+        is_honey: true,
+    }
 }
 
 /// Verifies whether a honey shard arrived intact with its expected trap tag.
@@ -138,7 +148,7 @@ pub fn seal_message(
 ) -> Vec<SealedShard> {
     let mut framed = (plaintext.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(plaintext);
-    if !framed.len().is_multiple_of(2) {
+    if framed.len() % 2 != 0 {
         framed.push(0);
     }
     let shards = l4_rs::encode(&mut framed);
@@ -198,18 +208,54 @@ mod tests {
     fn two_authenticated_shards_reconstruct() {
         let key = [0x42; 32];
         let nonce = random_xnonce();
-        let sealed = seal_message(&key, 3, &nonce, NonceDirection::InitiatorToResponder, b"secret");
+        let sealed = seal_message(
+            &key,
+            3,
+            &nonce,
+            NonceDirection::InitiatorToResponder,
+            b"secret",
+        );
         let mut available = vec![Some(sealed[0].clone()), None, Some(sealed[2].clone())];
-        assert_eq!(open_message(&key, 3, &nonce, NonceDirection::InitiatorToResponder, &available).unwrap(), b"secret");
+        assert_eq!(
+            open_message(
+                &key,
+                3,
+                &nonce,
+                NonceDirection::InitiatorToResponder,
+                &available
+            )
+            .unwrap(),
+            b"secret"
+        );
         available[0].as_mut().unwrap().ciphertext[0] ^= 1;
-        assert!(open_message(&key, 3, &nonce, NonceDirection::InitiatorToResponder, &available).is_err());
+        assert!(open_message(
+            &key,
+            3,
+            &nonce,
+            NonceDirection::InitiatorToResponder,
+            &available
+        )
+        .is_err());
     }
 
     #[test]
     fn one_captured_shard_never_opens() {
-        let sealed = seal_message(&[7; 32], 1, &[9; 12], NonceDirection::ResponderToInitiator, b"plaintext");
+        let sealed = seal_message(
+            &[7; 32],
+            1,
+            &[9; 12],
+            NonceDirection::ResponderToInitiator,
+            b"plaintext",
+        );
         let available = vec![Some(sealed[1].clone()), None, None];
-        assert!(open_message(&[7; 32], 1, &[9; 12], NonceDirection::ResponderToInitiator, &available).is_err());
+        assert!(open_message(
+            &[7; 32],
+            1,
+            &[9; 12],
+            NonceDirection::ResponderToInitiator,
+            &available
+        )
+        .is_err());
     }
 
     #[test]

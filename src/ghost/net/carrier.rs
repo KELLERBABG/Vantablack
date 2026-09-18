@@ -223,7 +223,10 @@ impl Carrier {
     /// The listener stays where it is — one port accepts on every interface — so
     /// this is a dialling path only. `Ok(Some(old))` means an endpoint for that
     /// address already existed and was replaced.
-    pub fn add_local_path(&self, ip: IpAddr) -> Result<Option<Arc<QuicTransport>>, super::quic::QuicError> {
+    pub fn add_local_path(
+        &self,
+        ip: IpAddr,
+    ) -> Result<Option<Arc<QuicTransport>>, super::quic::QuicError> {
         let Some(primary) = self.transport.clone() else {
             return Ok(None);
         };
@@ -397,9 +400,7 @@ impl Carrier {
             return false;
         }
         let used: HashSet<IpAddr> = live.iter().map(|l| local_of(l)).collect();
-        self.paths
-            .iter()
-            .all(|path| used.contains(path.key()))
+        self.paths.iter().all(|path| used.contains(path.key()))
     }
 
     pub fn forget(&self, fp: &str) {
@@ -664,8 +665,15 @@ mod tests {
         assert!(!c.covered("peer"));
         assert!(c.link("peer").is_none());
         assert!(c.send_frame("peer", b"frame").await.is_none());
-        assert_eq!(c.send_shards("peer", &[b"one".to_vec(), b"two".to_vec()]).await, 0);
-        assert_eq!(c.dial_paths("peer", "127.0.0.1:1".parse().unwrap()).await, 0);
+        assert_eq!(
+            c.send_shards("peer", &[b"one".to_vec(), b"two".to_vec()])
+                .await,
+            0
+        );
+        assert_eq!(
+            c.dial_paths("peer", "127.0.0.1:1".parse().unwrap()).await,
+            0
+        );
         // With no endpoint there is no identity to bind a path with; the answer is
         // "nothing added", not an error.
         assert!(c

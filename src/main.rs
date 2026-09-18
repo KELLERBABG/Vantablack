@@ -37,27 +37,22 @@ use vantablack::ghost::{
     layers::{
         l0_identity,
         l1_kem::{
-            build_handshake_pdu, build_negotiated_handshake_pdu,
-            build_negotiated_response_pdu, build_response_pdu, build_response_pdu_suite,
-            build_uniform_handshake_pdu, build_uniform_response_pdu,
-            derive_hybrid_master_key_with_psk, derive_hybrid_master_key_with_suite,
-            derive_hybrid_master_key_with_transcript,
-            generate_kyber768_keypair, generate_kyber_keypair, negotiate_cipher_suite,
-            generate_x25519_keypair, kyber768_decapsulate, kyber768_encapsulate,
-            kyber_encapsulate,            parse_handshake_pdu, parse_negotiated_handshake_pdu,
-            parse_negotiated_response_pdu, parse_uniform_handshake_pdu,
-            parse_uniform_response_pdu, uniform_handshake_signed_material,
-            uniform_response_signed_material,
-
-            parse_handshake_pdu_suite, parse_response_pdu, parse_response_pdu_suite,
-            HybridCipherSuite, HANDSHAKE_NEGOTIATION_MAGIC, HANDSHAKE_V3_MAGIC,
-            RESPONSE_NEGOTIATION_MAGIC, RESPONSE_V3_MAGIC, HANDSHAKE_BLOB_LEN,
-            RESPONSE_BLOB_LEN,
+            build_handshake_pdu, build_negotiated_handshake_pdu, build_negotiated_response_pdu,
+            build_response_pdu, build_response_pdu_suite, build_uniform_handshake_pdu,
+            build_uniform_response_pdu, derive_hybrid_master_key_with_psk,
+            derive_hybrid_master_key_with_suite, derive_hybrid_master_key_with_transcript,
+            generate_kyber768_keypair, generate_kyber_keypair, generate_x25519_keypair,
+            kyber768_decapsulate, kyber768_encapsulate, kyber_encapsulate, negotiate_cipher_suite,
+            parse_handshake_pdu, parse_handshake_pdu_suite, parse_negotiated_handshake_pdu,
+            parse_negotiated_response_pdu, parse_response_pdu, parse_response_pdu_suite,
+            parse_uniform_handshake_pdu, parse_uniform_response_pdu,
+            uniform_handshake_signed_material, uniform_response_signed_material, HybridCipherSuite,
+            HANDSHAKE_BLOB_LEN, HANDSHAKE_NEGOTIATION_MAGIC, HANDSHAKE_V3_MAGIC, RESPONSE_BLOB_LEN,
+            RESPONSE_NEGOTIATION_MAGIC, RESPONSE_V3_MAGIC,
         },
         l2_aead::{
-            decrypt_in_place_with_context, random_xnonce, xchacha_open,
-            xchacha_open_with_aad, xchacha_seal_in_place,
-            xchacha_seal_in_place_with_aad, NonceDirection,
+            decrypt_in_place_with_context, random_xnonce, xchacha_open, xchacha_open_with_aad,
+            xchacha_seal_in_place, xchacha_seal_in_place_with_aad, NonceDirection,
         },
         l4_rs,
         l7_ldpc::LdpcCodec,
@@ -71,8 +66,7 @@ use vantablack::ghost::{
         mesh::{ExitIpRotator, TitForTatEnforcer},
         relay::{
             self, build_onion_route, build_relay_packet, parse_relay_header,
-            spawn_store_forward_task, BundleBuffer, MixBatch,
-            DerpRelay,
+            spawn_store_forward_task, BundleBuffer, DerpRelay, MixBatch,
         },
         routing::{ContactPlan, PoissonReputationMatrix},
         security::{
@@ -84,9 +78,8 @@ use vantablack::ghost::{
     },
     session::{
         build_ratchet_step_pdu, build_rekey_response_pdu, parse_rekey_pdu,
-        parse_rekey_response_pdu,
-        rekey_answer_signed_material, rekey_init_signed_material, RatchetAnswer, Session,
-        SessionRole, REKEY_MAGIC, REKEY_RESPONSE_MAGIC,
+        parse_rekey_response_pdu, rekey_answer_signed_material, rekey_init_signed_material,
+        RatchetAnswer, Session, SessionRole, REKEY_MAGIC, REKEY_RESPONSE_MAGIC,
     },
     GhostNode,
 };
@@ -317,7 +310,8 @@ fn open_received_frame(
                 };
                 let mut buf = data.to_vec();
                 let aad: &[u8] = if meta.bulk { &[] } else { &meta.tail };
-                if xchacha_open_with_aad(&key, &meta.nonce, meta.epoch, dir, &mut buf, aad).is_ok() {
+                if xchacha_open_with_aad(&key, &meta.nonce, meta.epoch, dir, &mut buf, aad).is_ok()
+                {
                     sess.commit_open(meta.epoch, dir, plan);
                     return Some(buf);
                 }
@@ -358,7 +352,7 @@ fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
         let pay_len = pay.len() as u16;
         let mut framed = pay_len.to_be_bytes().to_vec();
         framed.extend_from_slice(pay);
-        if !framed.len().is_multiple_of(2) {
+        if framed.len() % 2 != 0 {
             framed.push(0);
         }
         let plaintext_shards = l4_rs::encode(&mut framed);
@@ -386,7 +380,7 @@ fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
     let pay_len = pay.len() as u16;
     let mut framed = pay_len.to_be_bytes().to_vec();
     framed.extend_from_slice(pay);
-    if !framed.len().is_multiple_of(2) {
+    if framed.len() % 2 != 0 {
         framed.push(0);
     }
     // SOTA P3-1: the privacy frame's jitter tail is authenticated as AEAD
@@ -696,7 +690,7 @@ enum Routed {
 fn seal_single(ctx: &SealCtx, payload: &[u8]) -> Vec<u8> {
     let mut framed = (payload.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(payload);
-    if !framed.len().is_multiple_of(2) {
+    if framed.len() % 2 != 0 {
         framed.push(0);
     }
     xchacha_seal_in_place(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction, &mut framed)
@@ -969,22 +963,20 @@ fn build_carrier(nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(vantablack::ghost::net::quic::QUIC_DEFAULT_PORT);
     let bind: SocketAddr = format!("0.0.0.0:{port}").parse().expect("valid bind");
-    let carrier = match vantablack::ghost::net::quic::QuicTransport::listen(
-        bind,
-        Arc::clone(&nc.identity),
-    ) {
-        Ok(t) => net::carrier::Carrier::new(Arc::new(t)),
-        Err(e) => {
-            // A transport that cannot bind is not a reason to refuse to run: the
-            // tunnel has a working UDP path either way, and saying so is the
-            // difference between a degraded node and a dead one.
-            tracing::error!(
-                port,
-                "QUIC: cannot bind, continuing without the transport: {e}"
-            );
-            return Arc::new(net::carrier::Carrier::disabled());
-        }
-    };
+    let carrier =
+        match vantablack::ghost::net::quic::QuicTransport::listen(bind, Arc::clone(&nc.identity)) {
+            Ok(t) => net::carrier::Carrier::new(Arc::new(t)),
+            Err(e) => {
+                // A transport that cannot bind is not a reason to refuse to run: the
+                // tunnel has a working UDP path either way, and saying so is the
+                // difference between a degraded node and a dead one.
+                tracing::error!(
+                    port,
+                    "QUIC: cannot bind, continuing without the transport: {e}"
+                );
+                return Arc::new(net::carrier::Carrier::disabled());
+            }
+        };
 
     let multipath = std::env::var("GHOST_QUIC_MULTIPATH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -1022,7 +1014,10 @@ fn build_carrier(nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
              address — running on one path. Inbound multipath from peers is unaffected."
         );
     } else {
-        tracing::info!(paths = added, "QUIC: multipath enabled; shards spread across local paths");
+        tracing::info!(
+            paths = added,
+            "QUIC: multipath enabled; shards spread across local paths"
+        );
     }
     carrier
 }
@@ -1320,7 +1315,7 @@ async fn send_tunnel_frame(
     payload.extend_from_slice(tunnel_wire);
     let mut framed = (payload.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(&payload);
-    if !framed.len().is_multiple_of(2) {
+    if framed.len() % 2 != 0 {
         framed.push(0);
     }
     xchacha_seal_in_place(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction, &mut framed)
@@ -1465,6 +1460,7 @@ impl RxContext {
                     index,
                     ciphertext: sd[..sd.len() - 16].to_vec(),
                     tag: sd[sd.len() - 16..].try_into().unwrap_or([0u8; 16]),
+                    is_honey: false,
                 }
             };
             let mut opened = None;
@@ -1489,7 +1485,11 @@ impl RxContext {
                         }
                     };
                     if let Ok(plain) = vantablack::ghost::net::shardsec::open_shard(
-                        &key, meta.epoch, &meta.nonce, direction, &sealed,
+                        &key,
+                        meta.epoch,
+                        &meta.nonce,
+                        direction,
+                        &sealed,
                     ) {
                         sess.commit_open(meta.epoch, direction, plan);
                         opened = Some(plain);
@@ -1526,13 +1526,7 @@ impl RxContext {
     /// Spawned rather than awaited: `handle_pkt` can block on session locks and
     /// tunnel writes, and the receive loop must stay able to read the socket while
     /// that happens.
-    async fn deliver(
-        &self,
-        ctr: u64,
-        v2: Option<V2FrameMeta>,
-        payload: Vec<u8>,
-        src: SocketAddr,
-    ) {
+    async fn deliver(&self, ctr: u64, v2: Option<V2FrameMeta>, payload: Vec<u8>, src: SocketAddr) {
         let node = Arc::clone(&self.node);
         let peers = Arc::clone(&self.peers);
         let pending_hs = Arc::clone(&self.pending_hs);
@@ -1820,14 +1814,18 @@ async fn send_pq_auth_proof(
     peer_fp: &str,
 ) {
     let binding = {
-        let Some(sess) = nc.sessions.get(peer_fp) else { return; };
+        let Some(sess) = nc.sessions.get(peer_fp) else {
+            return;
+        };
         l0_identity::create_identity_binding(&nc.identity, &sess.master_key)
     };
     let chunks: Vec<&[u8]> = binding.chunks(PQ_AUTH_CHUNK_PAYLOAD_SIZE).collect();
     let total_chunks = chunks.len() as u8;
 
     for (idx, chunk) in chunks.iter().enumerate() {
-        let Some(sess) = nc.sessions.get(peer_fp) else { return; };
+        let Some(sess) = nc.sessions.get(peer_fp) else {
+            return;
+        };
         let ctx = SealCtx::from_session(&sess);
         drop(sess);
 
@@ -1868,8 +1866,7 @@ async fn handle_pq_auth_pdu(
         }
         let chunk_idx = payload[hlen];
         let total_chunks = payload[hlen + 1];
-        let chunk_len =
-            u16::from_be_bytes([payload[hlen + 2], payload[hlen + 3]]) as usize;
+        let chunk_len = u16::from_be_bytes([payload[hlen + 2], payload[hlen + 3]]) as usize;
         let data_start = hlen + 4;
         if payload.len() < data_start + chunk_len {
             tracing::warn!(peer = %peer_fp, "truncated PQ auth chunk data");
@@ -1964,7 +1961,17 @@ async fn initiate_handshake(
         let raw = l4_rs::encode(&mut c);
         let tag = [0u8; 16];
         for i in 0..3 {
-            let _ = send_gtf(sock, &t, [0, 0, 0, 0], 0, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+            let _ = send_gtf(
+                sock,
+                &t,
+                [0, 0, 0, 0],
+                0,
+                i as u8,
+                &frame_shard(&raw[i]),
+                &tag,
+                false,
+            )
+            .await;
         }
         if pending_hs.len() >= MAX_PENDING_HANDSHAKES {
             tracing::warn!("Pending-handshake table full — uniform handshake skipped");
@@ -1984,8 +1991,14 @@ async fn initiate_handshake(
         HybridCipherSuite::X25519MlKem512V2,
     ];
     let keys = vec![
-        (HybridCipherSuite::X25519MlKem768V3, kp768.to_bytes().to_vec()),
-        (HybridCipherSuite::X25519MlKem512V2, kp512.to_bytes().to_vec()),
+        (
+            HybridCipherSuite::X25519MlKem768V3,
+            kp768.to_bytes().to_vec(),
+        ),
+        (
+            HybridCipherSuite::X25519MlKem512V2,
+            kp512.to_bytes().to_vec(),
+        ),
     ];
     let pdu = build_negotiated_handshake_pdu(
         &supported,
@@ -2261,7 +2274,9 @@ async fn handle_pkt(
             tracing::warn!(peer = %src, "Invalid suite-list handshake");
             return;
         };
-        let Some(material) = data.get(..data.len() - 64) else { return; };
+        let Some(material) = data.get(..data.len() - 64) else {
+            return;
+        };
         if !l0_identity::verify_peer_signature(&hs.identity_pk, material, &hs.signature) {
             tracing::warn!(peer = %src, "Suite-list handshake signature invalid");
             return;
@@ -2270,14 +2285,20 @@ async fn handle_pkt(
             HybridCipherSuite::X25519MlKem768V3,
             HybridCipherSuite::X25519MlKem512V2,
         ];
-        let Some(selected) = negotiate_cipher_suite(&local, &hs.supported.iter().map(|s| s.wire_id()).collect::<Vec<_>>()) else {
+        let Some(selected) = negotiate_cipher_suite(
+            &local,
+            &hs.supported.iter().map(|s| s.wire_id()).collect::<Vec<_>>(),
+        ) else {
             tracing::warn!(peer = %src, "No mutually supported cipher suite");
             return;
         };
-        let Some((_, peer_key)) = hs.kyber_keys.iter().find(|(suite, _)| *suite == selected) else { return; };
+        let Some((_, peer_key)) = hs.kyber_keys.iter().find(|(suite, _)| *suite == selected) else {
+            return;
+        };
         let kem = match selected {
-            HybridCipherSuite::X25519MlKem512V2 => kyber_encapsulate(peer_key)
-                .map(|(ct, ss)| (ct.to_vec(), ss)),
+            HybridCipherSuite::X25519MlKem512V2 => {
+                kyber_encapsulate(peer_key).map(|(ct, ss)| (ct.to_vec(), ss))
+            }
             HybridCipherSuite::X25519MlKem768V3 => kyber768_encapsulate(peer_key),
         };
         let Ok((ct, kem_ss)) = kem else {
@@ -2286,7 +2307,8 @@ async fn handle_pkt(
         };
         let responder_secret = x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
         let responder_public = x25519_dalek::PublicKey::from(&responder_secret);
-        let x_shared = responder_secret.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
+        let x_shared =
+            responder_secret.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
         // SOTA G2/G3: bind the transcript into the KDF. The initiator's public key comes
         // from the offer, ours is the ephemeral just generated, and the ciphertext is
         // the one about to be sent back — both peers hash identical bytes and both PQ commitments.
@@ -2306,14 +2328,28 @@ async fn handle_pkt(
             &node.identity.public_key_bytes(),
             &node.identity.pq_commitment(),
             |m| node.identity.sign(m).to_bytes(),
-            responder_public.as_bytes().try_into().expect("x25519 key length"),
+            responder_public
+                .as_bytes()
+                .try_into()
+                .expect("x25519 key length"),
             &ct,
-        ).expect("valid suite-list response");
+        )
+        .expect("valid suite-list response");
         let mut encoded = response;
         let raw = l4_rs::encode(&mut encoded);
         let tag = [0u8; 16];
         for i in 0..3 {
-            let _ = send_gtf(sock, src, [0, 0, 0, 0], 1, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+            let _ = send_gtf(
+                sock,
+                src,
+                [0, 0, 0, 0],
+                1,
+                i as u8,
+                &frame_shard(&raw[i]),
+                &tag,
+                false,
+            )
+            .await;
         }
         let fp = hex::encode(&hs.identity_pk[..8]);
         peers.insert(fp.clone(), *src);
@@ -2347,8 +2383,9 @@ async fn handle_pkt(
             return;
         }
         let kem_result = match hs.suite {
-            HybridCipherSuite::X25519MlKem512V2 => kyber_encapsulate(&hs.kyber_pub)
-                .map(|(ct, ss)| (ct.to_vec(), ss)),
+            HybridCipherSuite::X25519MlKem512V2 => {
+                kyber_encapsulate(&hs.kyber_pub).map(|(ct, ss)| (ct.to_vec(), ss))
+            }
             HybridCipherSuite::X25519MlKem768V3 => kyber768_encapsulate(&hs.kyber_pub),
         };
         let (ct, ks) = match kem_result {
@@ -2376,7 +2413,17 @@ async fn handle_pkt(
         let raw = l4_rs::encode(&mut rc);
         let tag = [0u8; 16];
         for i in 0..3 {
-            let _ = send_gtf(sock, src, [0, 0, 0, 0], 1, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+            let _ = send_gtf(
+                sock,
+                src,
+                [0, 0, 0, 0],
+                1,
+                i as u8,
+                &frame_shard(&raw[i]),
+                &tag,
+                false,
+            )
+            .await;
         }
         peers.insert(hex::encode(&hs.identity_pk[..8]), *src);
         let fp = hex::encode(&hs.identity_pk[..8]);
@@ -2396,8 +2443,12 @@ async fn handle_pkt(
         && data.len() >= vantablack::ghost::layers::l1_kem::UNIFORM_HANDSHAKE_BLOB_LEN
     {
         let wire = &data[..vantablack::ghost::layers::l1_kem::UNIFORM_HANDSHAKE_BLOB_LEN];
-        let Some(hs) = parse_uniform_handshake_pdu(wire) else { return; };
-        let Some(signed_material) = uniform_handshake_signed_material(wire) else { return; };
+        let Some(hs) = parse_uniform_handshake_pdu(wire) else {
+            return;
+        };
+        let Some(signed_material) = uniform_handshake_signed_material(wire) else {
+            return;
+        };
         if !l0_identity::verify_peer_signature(&hs.identity_pk, &signed_material, &hs.signature) {
             tracing::warn!(peer = %src, "Uniform handshake signature invalid");
             return;
@@ -2427,7 +2478,17 @@ async fn handle_pkt(
         let raw = l4_rs::encode(&mut encoded);
         let tag = [0u8; 16];
         for i in 0..3 {
-            let _ = send_gtf(sock, src, [0, 0, 0, 0], 1, i as u8, &frame_shard(&raw[i]), &tag, false).await;
+            let _ = send_gtf(
+                sock,
+                src,
+                [0, 0, 0, 0],
+                1,
+                i as u8,
+                &frame_shard(&raw[i]),
+                &tag,
+                false,
+            )
+            .await;
         }
         peers.insert(fp.clone(), *src);
         let session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
@@ -2596,7 +2657,9 @@ async fn handle_pkt(
             tracing::warn!(peer = %src, "Invalid suite-list response");
             return;
         };
-        let Some(material) = data.get(..data.len() - 64) else { return; };
+        let Some(material) = data.get(..data.len() - 64) else {
+            return;
+        };
         if !l0_identity::verify_peer_signature(&resp.identity_pk, material, &resp.signature) {
             tracing::warn!(peer = %src, "Suite-list response signature invalid");
             return;
@@ -2605,7 +2668,13 @@ async fn handle_pkt(
             tracing::warn!(peer = %src, "Suite-list response has no pending handshake");
             return;
         };
-        let PendingHandshake::Negotiated { x_secret, kem512, kem768, offered } = pending else {
+        let PendingHandshake::Negotiated {
+            x_secret,
+            kem512,
+            kem768,
+            offered,
+        } = pending
+        else {
             tracing::warn!(peer = %src, "Suite-list response matched a legacy pending handshake");
             return;
         };
@@ -2615,7 +2684,10 @@ async fn handle_pkt(
         ];
         let expected = negotiate_cipher_suite(
             &local,
-            &offered.iter().map(|suite| suite.wire_id()).collect::<Vec<_>>(),
+            &offered
+                .iter()
+                .map(|suite| suite.wire_id())
+                .collect::<Vec<_>>(),
         );
         if expected != Some(resp.suite) {
             tracing::warn!(
@@ -2628,11 +2700,15 @@ async fn handle_pkt(
         }
         let kem_ss = match resp.suite {
             HybridCipherSuite::X25519MlKem512V2 => {
-                let Ok(ct) = Ciphertext::<MlKem512>::try_from(resp.kyber_ct.as_slice()) else { return; };
+                let Ok(ct) = Ciphertext::<MlKem512>::try_from(resp.kyber_ct.as_slice()) else {
+                    return;
+                };
                 kem512.decapsulate(&ct).as_slice().to_vec()
             }
             HybridCipherSuite::X25519MlKem768V3 => {
-                let Ok(ss) = kyber768_decapsulate(&kem768, &resp.kyber_ct) else { return; };
+                let Ok(ss) = kyber768_decapsulate(&kem768, &resp.kyber_ct) else {
+                    return;
+                };
                 ss
             }
         };
@@ -2695,7 +2771,8 @@ async fn handle_pkt(
             return;
         };
         let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
-        let d = derive_hybrid_master_key_with_suite(resp.suite, xs.as_bytes(), &ky_ss, psk.as_ref());
+        let d =
+            derive_hybrid_master_key_with_suite(resp.suite, xs.as_bytes(), &ky_ss, psk.as_ref());
         peers.insert(fp.clone(), *src);
         let mut session = Session::new(d, fp.clone());
         session.set_cipher_suite(resp.suite);
@@ -2712,13 +2789,19 @@ async fn handle_pkt(
         && data.len() >= vantablack::ghost::layers::l1_kem::UNIFORM_RESPONSE_BLOB_LEN
     {
         let wire = &data[..vantablack::ghost::layers::l1_kem::UNIFORM_RESPONSE_BLOB_LEN];
-        let Some(resp) = parse_uniform_response_pdu(wire) else { return; };
-        let Some(signed_material) = uniform_response_signed_material(wire) else { return; };
-        if !l0_identity::verify_peer_signature(&resp.identity_pk, &signed_material, &resp.signature) {
+        let Some(resp) = parse_uniform_response_pdu(wire) else {
+            return;
+        };
+        let Some(signed_material) = uniform_response_signed_material(wire) else {
+            return;
+        };
+        if !l0_identity::verify_peer_signature(&resp.identity_pk, &signed_material, &resp.signature)
+        {
             tracing::warn!(peer = %src, "Uniform response signature invalid");
             return;
         }
-        let Some((_, PendingHandshake::Kem512(ax, dk))) = pending_hs.remove(&src.to_string()) else {
+        let Some((_, PendingHandshake::Kem512(ax, dk))) = pending_hs.remove(&src.to_string())
+        else {
             tracing::warn!(peer = %src, "Uniform response has no pending handshake");
             return;
         };
@@ -2781,7 +2864,12 @@ async fn handle_pkt(
             let ks = dk.decapsulate(&ct);
             let ky_ss: Vec<u8> = ks.as_slice().to_vec();
             let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
-            let d = derive_hybrid_master_key_with_suite(HybridCipherSuite::X25519MlKem512V2, xs.as_bytes(), &ky_ss, psk.as_ref());
+            let d = derive_hybrid_master_key_with_suite(
+                HybridCipherSuite::X25519MlKem512V2,
+                xs.as_bytes(),
+                &ky_ss,
+                psk.as_ref(),
+            );
 
             // WIRED: Pin key to physical RAM via LockedMemory (mlock / VirtualLock)
             if let Some(mut locked) = LockedMemory::allocate(32) {
@@ -2881,7 +2969,9 @@ async fn handle_pkt(
         // single-use keys cryptographically in MsgChain and must not disturb the
         // current epoch's replay window.
         let is_retired = v2.is_some_and(|meta| {
-            node.sessions.get(&peer_fp).is_some_and(|s| meta.epoch < s.epoch())
+            node.sessions
+                .get(&peer_fp)
+                .is_some_and(|s| meta.epoch < s.epoch())
         });
         if !is_retired {
             let accepted = node
@@ -3115,8 +3205,8 @@ async fn handle_pkt(
                     }
 
                     let ic = u64::from_be_bytes([
-                        inner[0], inner[1], inner[2], inner[3],
-                        inner[4], inner[5], inner[6], inner[7],
+                        inner[0], inner[1], inner[2], inner[3], inner[4], inner[5], inner[6],
+                        inner[7],
                     ]);
                     let mut wire_nonce = [0u8; 12];
                     wire_nonce.copy_from_slice(&inner[8..20]);
@@ -3330,7 +3420,8 @@ async fn handle_exit_connect(
             tracing::warn!(peer = %peer_fp, host = %host, "Exit: capability voucher required");
             return;
         };
-        let Some(capability) = vantablack::ghost::net::relay::ExitCapability::decode(&raw_voucher) else {
+        let Some(capability) = vantablack::ghost::net::relay::ExitCapability::decode(&raw_voucher)
+        else {
             tracing::warn!(peer = %peer_fp, host = %host, "Exit: malformed capability voucher");
             return;
         };
@@ -3753,7 +3844,6 @@ fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
 
     let started = std::time::Instant::now();
     for _ in 0..chunks {
-
         let t0 = std::time::Instant::now();
         // The speedtest walks the real pipeline, so it seals the same way the
         // data path does: v2, ratchet key, transmitted nonce, 64-bit counter.
@@ -4008,7 +4098,9 @@ fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!("Usage:");
             println!("  ggn                             Run node daemon");
             println!("  ggn split-key [32B_HEX_KEY]     Split secret into 3 Shamir shares (2-of-3 threshold)");
-            println!("  ggn join-key <SHARE1> <SHARE2>  Reconstruct secret from any 2 Shamir shares");
+            println!(
+                "  ggn join-key <SHARE1> <SHARE2>  Reconstruct secret from any 2 Shamir shares"
+            );
             println!("  ggn --help                      Show this help");
             Some(Ok(()))
         }
@@ -5576,7 +5668,10 @@ async fn run_node(
                                 )
                                 .await;
                             }
-                            None => send3_mixed(Arc::clone(&nn.socket), &tgt, &connect_ctx, &f, &tag).await,
+                            None => {
+                                send3_mixed(Arc::clone(&nn.socket), &tgt, &connect_ctx, &f, &tag)
+                                    .await
+                            }
                         }
                         // Wait for the exit's framed "OK" (delivered via handle_pkt).
                         let mut connected = false;
@@ -6449,11 +6544,7 @@ async fn run_node(
     // Spawned unconditionally and never gated on idleness, so the frame rate is the
     // same whether the node is in use or not. See `spawn_cover_task` for why gating
     // it on idleness would defeat the purpose, and what it costs.
-    let _cover = spawn_cover_task(
-        Arc::clone(&nc),
-        Arc::clone(&addrs),
-        relay_role.clone(),
-    );
+    let _cover = spawn_cover_task(Arc::clone(&nc), Arc::clone(&addrs), relay_role.clone());
 
     // ── KEEPALIVE TASK ──
     {
@@ -6788,20 +6879,15 @@ async fn run_node(
                 // End-to-end blob: [len u16][payload][pad][tag]
                 let mut blob = (payload.len() as u16).to_be_bytes().to_vec();
                 blob.extend_from_slice(payload.as_bytes());
-                if !blob.len().is_multiple_of(2) {
+                if blob.len() % 2 != 0 {
                     blob.push(0);
                 }
                 // G6: The onion's inner layer now seals with XChaCha20-Poly1305 and a
                 // 64-bit counter plus transmitted 96-bit random nonce, eliminating
                 // 32-bit counter exhaustion.
                 let wire_nonce = random_xnonce();
-                if xchacha_seal_in_place(
-                    &dkey,
-                    &wire_nonce,
-                    0,
-                    dir_for(drole),
-                    &mut blob,
-                ).is_err() {
+                if xchacha_seal_in_place(&dkey, &wire_nonce, 0, dir_for(drole), &mut blob).is_err()
+                {
                     println!("SENDRELAY: AEAD encryption failed");
                     continue;
                 }
@@ -7137,7 +7223,9 @@ async fn run_node(
             }
             "SHAMIR" => {
                 if p.len() < 2 {
-                    println!("Usage: SHAMIR SPLIT [hex_secret] | SHAMIR JOIN <share1_hex> <share2_hex>");
+                    println!(
+                        "Usage: SHAMIR SPLIT [hex_secret] | SHAMIR JOIN <share1_hex> <share2_hex>"
+                    );
                 } else {
                     match p[1].to_uppercase().as_str() {
                         "SPLIT" => {
@@ -7210,9 +7298,7 @@ async fn run_node(
                 println!(
                     "  SHAMIR SPLIT [hex]  - Split a 32-byte secret into 3 Shamir shares (2-of-3)"
                 );
-                println!(
-                    "  SHAMIR JOIN <s1> <s2> - Reconstruct a secret from any 2 Shamir shares"
-                );
+                println!("  SHAMIR JOIN <s1> <s2> - Reconstruct a secret from any 2 Shamir shares");
                 println!("  LEASES               - VPN hub: client leases (raw)");
                 println!("  VPNSTATS             - VPN in/out/flow totals");
                 println!("  VPN STATUS           - VPN per-lease detail (hub) / client state");
@@ -7424,7 +7510,10 @@ mod beacon_section_tests {
         assert_eq!(sections.pq_commitment, Some(&commitment));
         // And it is the commitment to *this* identity's key, so a verifier that
         // remembers it can check the key the peer later proves on the carrier.
-        assert_eq!(commitment, l0_identity::pq_commitment(&identity.pq_public_key_bytes()));
+        assert_eq!(
+            commitment,
+            l0_identity::pq_commitment(&identity.pq_public_key_bytes())
+        );
         // A section with no commitment anywhere is not invented.
         let plain = build_beacon_packet(&pk, stub_signer, None, None, false, None);
         assert_eq!(plain.len(), BEACON_LEGACY_LEN);
@@ -7648,7 +7737,9 @@ mod ratchet_live_tests {
             "and a self-contained one: the ingress must not spool it"
         );
         assert_eq!(
-            net::parse_gtf_v2_header(&step_frame).expect("v2 header").epoch,
+            net::parse_gtf_v2_header(&step_frame)
+                .expect("v2 header")
+                .epoch,
             0,
             "the step travels on the epoch that is still live"
         );
@@ -7656,15 +7747,16 @@ mod ratchet_live_tests {
         // ── Into bob's ingress, the way the socket loop feeds it ────────────────
         bob_rx.ingest(&step_frame, alice_addr).await; // src = alice, as recv_from reports
         wait_for("bob to prepare epoch 1", || {
-            bob.sessions
-                .get(&alice_fp)
-                .map(|s| s.prepared_epoch())
-                == Some(Some(1))
+            bob.sessions.get(&alice_fp).map(|s| s.prepared_epoch()) == Some(Some(1))
         })
         .await;
         {
             let s = bob.sessions.get(&alice_fp).expect("bob's session");
-            assert_eq!(s.epoch(), 0, "answering prepares the epoch, it does not install it");
+            assert_eq!(
+                s.epoch(),
+                0,
+                "answering prepares the epoch, it does not install it"
+            );
             assert_eq!(s.ratchet_steps.load(Ordering::Relaxed), 0);
         }
 
@@ -7757,7 +7849,11 @@ mod ratchet_live_tests {
         alice_addrs.insert(bob_fp.clone(), bob_addr);
         let alice_fb = Arc::new(Fallback::new(None));
         let alice_rx = rx_for(&alice, Arc::clone(&alice_addrs), Arc::clone(&alice_fb));
-        let bob_rx = rx_for(&bob, Arc::new(DashMap::new()), Arc::new(Fallback::new(None)));
+        let bob_rx = rx_for(
+            &bob,
+            Arc::new(DashMap::new()),
+            Arc::new(Fallback::new(None)),
+        );
         let _ = &alice_rx;
 
         {
@@ -7845,9 +7941,7 @@ mod ratchet_transport_tests {
         let opened = xchacha_open(&key, &h.nonce, h.epoch, direction, &mut carried)
             .expect("the epoch key opens it");
         opener.commit_open(h.epoch, direction, plan);
-        frame_payload(opened)
-            .expect("a framed payload")
-            .to_vec()
+        frame_payload(opened).expect("a framed payload").to_vec()
     }
 
     #[test]
@@ -7871,13 +7965,17 @@ mod ratchet_transport_tests {
             "a step PDU exceeds a privacy payload, so it needs a bulk frame"
         );
         let ctx = SealCtx::from_session(&alice);
-        assert_eq!(ctx.epoch, 0, "the step itself still travels on the live epoch");
+        assert_eq!(
+            ctx.epoch, 0,
+            "the step itself still travels on the live epoch"
+        );
         let frame = seal_single(&ctx, &pdu);
         assert!(is_v2_frame(&frame));
         assert_eq!(frame.len(), GTF_BULK_SIZE);
 
         // ── The receive path's body ────────────────────────────────────────────
-        let payload = open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
+        let payload =
+            open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
         let blob = parse_rekey_pdu(&payload).expect("a step PDU");
         assert!(
             l0_identity::verify_peer_signature(
@@ -7895,7 +7993,11 @@ mod ratchet_transport_tests {
         let answer = bob
             .answer_ratchet_step(&blob.x25519_pub, &blob.kyber_pub)
             .expect("the peer answers");
-        assert_eq!(bob.epoch(), 0, "answering prepares the epoch, it does not install it");
+        assert_eq!(
+            bob.epoch(),
+            0,
+            "answering prepares the epoch, it does not install it"
+        );
         assert_eq!(bob.prepared_epoch(), Some(1));
         let reply = build_rekey_response_pdu(
             |d| bob_id.sign(d).to_bytes(),
@@ -7924,11 +8026,8 @@ mod ratchet_transport_tests {
         let reply_frame = seal_single(&reply_ctx, &reply);
 
         // ── Back on the initiating side ────────────────────────────────────────
-        let reply_payload = open_like_the_receive_path(
-            &alice,
-            &reply_frame,
-            NonceDirection::ResponderToInitiator,
-        );
+        let reply_payload =
+            open_like_the_receive_path(&alice, &reply_frame, NonceDirection::ResponderToInitiator);
         let rblob = parse_rekey_response_pdu(&reply_payload).expect("a step answer");
         assert_eq!(
             alice.finish_ratchet_step(&RatchetAnswer {
@@ -7969,7 +8068,8 @@ mod ratchet_transport_tests {
         let pdu = build_ratchet_step_pdu(|d| impostor.sign(d).to_bytes(), &x_pub, &kem_pub)
             .expect("a well-formed PDU from the wrong signer");
         let frame = seal_single(&SealCtx::from_session(&alice), &pdu);
-        let payload = open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
+        let payload =
+            open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
         let blob = parse_rekey_pdu(&payload).expect("well-formed on the wire");
 
         // What `handle_ratchet_pdu` checks before answering.
@@ -7983,7 +8083,11 @@ mod ratchet_transport_tests {
             "the impostor's signature must not verify against the pinned key"
         );
         assert_eq!(bob.epoch(), 0);
-        assert_eq!(bob.prepared_epoch(), None, "nothing was prepared for an unauthenticated step");
+        assert_eq!(
+            bob.prepared_epoch(),
+            None,
+            "nothing was prepared for an unauthenticated step"
+        );
     }
 }
 
@@ -8005,18 +8109,29 @@ mod p3_1_cover_tests {
 
         let ctx = ctx(0x5A);
         let (shards, tag) = enc_split(&ctx, net::DUMMY_MAGIC);
-        assert_eq!(shards.len(), 3, "cover is an ordinary RS(2,1) group, like data");
+        assert_eq!(
+            shards.len(),
+            3,
+            "cover is an ordinary RS(2,1) group, like data"
+        );
 
         for i in 0..3 {
-            let frame =
-                net::build_gtf_v2_frame(&ctx.header(i as u8, false, net::FLAG_DUMMY), &shards[i], &tag);
+            let frame = net::build_gtf_v2_frame(
+                &ctx.header(i as u8, false, net::FLAG_DUMMY),
+                &shards[i],
+                &tag,
+            );
             let h = parse_gtf_v2_header(&frame).expect("a v2 header");
             assert_ne!(
                 h.flags & net::FLAG_DUMMY,
                 0,
                 "the caller bit must survive the builder's mask — before P3-1 it was masked off"
             );
-            assert_eq!(h.flags & net::FLAG_V2, 0, "the v2 marker is not a caller bit");
+            assert_eq!(
+                h.flags & net::FLAG_V2,
+                0,
+                "the v2 marker is not a caller bit"
+            );
             assert_eq!(
                 frame.len(),
                 GTF_BASE_SIZE + JITTER_MAX,
@@ -8066,7 +8181,10 @@ mod p3_1_cover_tests {
         real.extend_from_slice(b"data");
         assert!(!frame_payload(&real).is_some_and(is_dummy_payload));
         assert!(!is_dummy_payload(b"DUMMY"), "a prefix is not the marker");
-        assert!(!is_dummy_payload(b"DUMMY?"), "one byte off is not the marker");
+        assert!(
+            !is_dummy_payload(b"DUMMY?"),
+            "one byte off is not the marker"
+        );
         assert!(!is_dummy_payload(b""));
 
         // The decision takes only the payload, so a header bit can neither suppress

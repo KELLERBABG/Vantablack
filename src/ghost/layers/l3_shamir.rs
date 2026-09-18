@@ -56,19 +56,35 @@ mod tests {
         // Any 2-of-3 must reconstruct the secret:
         // Combination (0, 1)
         let rec01 = join_shares(&shares[0], &shares[1]);
-        assert_eq!(rec01, secret.to_vec(), "Shares (0,1) must reconstruct secret");
+        assert_eq!(
+            rec01,
+            secret.to_vec(),
+            "Shares (0,1) must reconstruct secret"
+        );
 
         // Combination (0, 2)
         let rec02 = join_shares(&shares[0], &shares[2]);
-        assert_eq!(rec02, secret.to_vec(), "Shares (0,2) must reconstruct secret");
+        assert_eq!(
+            rec02,
+            secret.to_vec(),
+            "Shares (0,2) must reconstruct secret"
+        );
 
         // Combination (1, 2)
         let rec12 = join_shares(&shares[1], &shares[2]);
-        assert_eq!(rec12, secret.to_vec(), "Shares (1,2) must reconstruct secret");
+        assert_eq!(
+            rec12,
+            secret.to_vec(),
+            "Shares (1,2) must reconstruct secret"
+        );
 
         // All 3 shares together must also reconstruct secret
         let rec_all = join_share_slice(&[&shares[0], &shares[1], &shares[2]]);
-        assert_eq!(rec_all, secret.to_vec(), "All 3 shares must reconstruct secret");
+        assert_eq!(
+            rec_all,
+            secret.to_vec(),
+            "All 3 shares must reconstruct secret"
+        );
     }
 
     #[test]
@@ -98,6 +114,10 @@ mod tests {
             *b ^= 0xFF;
         }
         let rec = join_shares(&shares[0], &corrupted_share1);
-        assert_ne!(rec, secret.to_vec(), "Corrupted share must not reconstruct secret");
+        assert_ne!(
+            rec,
+            secret.to_vec(),
+            "Corrupted share must not reconstruct secret"
+        );
     }
 }
