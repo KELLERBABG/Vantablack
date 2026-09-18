@@ -735,6 +735,17 @@
             <div class="feature-detail">Zero telemetry &bull; No analytics &bull; Self-organizing mesh operation</div>
           </div>
         </div>
+
+        <div class="feature-row">
+          <div class="feature-meta">
+            <span class="feature-tag">Storage &amp; DTN</span>
+            <h3>Autonomous dead-drop vaults</h3>
+          </div>
+          <div class="feature-body">
+            <p>Store and exchange encrypted data asynchronously without central servers or rendezvous points. Destinations are addressed by cryptographic hash commitments; hosts store blind ciphertext with zero knowledge of content or recipients, while adaptive Poisson decay and Merkle anti-entropy reconcile partitions automatically.</p>
+            <div class="feature-detail">Serverless blind storage &bull; Merkle blackout reconciliation &bull; Zero metadata at rest</div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -846,6 +857,28 @@
               <td>None (Exit node sees Tailscale identity)</td>
               <td>3-Hop TCP Circuits (Slow, circuit stalls)</td>
               <td>None (VPN company sees real IP &amp; billing identity)</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Autonomous Dead-Drop Storage</div>
+                <div class="feature-desc">Serverless Tahoe-style ciphertext storage slots with zero host metadata exposure.</div>
+              </td>
+              <td class="col-ggn-val"><strong>Cryptographic Commitments + Adaptive Poisson Decay (§22, §33)</strong></td>
+              <td>None</td>
+              <td>Centralized Coordination State</td>
+              <td>Single-hop Tor Onion Mailboxes</td>
+              <td>Centralized Provider Storage</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Partition &amp; Blackout Recovery</div>
+                <div class="feature-desc">Reconnecting after prolonged network blackouts, airplane mode, or censorship cuts.</div>
+              </td>
+              <td class="col-ggn-val"><strong>Merkle Anti-Entropy Reconciliation (O(log N) branch sync, §29)</strong></td>
+              <td>Manual Re-handshake</td>
+              <td>Session Re-negotiation</td>
+              <td>Circuit Rebuild</td>
+              <td>Tunnel Reconnect Delay</td>
             </tr>
           </tbody>
         </table>
