@@ -345,7 +345,7 @@ fn m2_end_to_end_phone_to_hub_and_back() {
     let phone_ing = VpnIngress::new();
     let mut tun2 = FakeTun::new();
     let mut replies = 0usize;
-    for ctr in 1..=hub_saw as u32 {
+    for ctr in 1..=hub_saw as u64 {
         let wire = vantablack::ghost::net::vpn::seal_datagram(&key, 1, ctr, &[0x45u8; 100]);
         if let OpenOutcome::Accepted {
             ip_packet,

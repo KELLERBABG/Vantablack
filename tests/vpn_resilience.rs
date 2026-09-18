@@ -89,7 +89,7 @@ fn keepalive_roundtrip_then_rekey_reanchors_fresh_epoch() {
     let u2 = (0..500)
         .find_map(|_| hub.poll_egress())
         .expect("second reply");
-    let pre_ctr = u32::from_be_bytes([u2.wire[4], u2.wire[5], u2.wire[6], u2.wire[7]]);
+    let pre_ctr = u64::from_be_bytes(u2.wire[4..12].try_into().unwrap());
     assert!(pre_ctr > 1, "hub counter advanced before re-handshake");
 
     // ── 2. Reconnect: fresh handshake → client rotates, hub re-anchors. ──
@@ -106,7 +106,7 @@ fn keepalive_roundtrip_then_rekey_reanchors_fresh_epoch() {
         .expect("reply after re-key");
     assert_eq!(u3.endpoint, ep2, "lease re-anchored to the new endpoint");
     // Hub restarted its counter space for this client: next seal is ctr 1.
-    let post_ctr = u32::from_be_bytes([u3.wire[4], u3.wire[5], u3.wire[6], u3.wire[7]]);
+    let post_ctr = u64::from_be_bytes(u3.wire[4..12].try_into().unwrap());
     assert_eq!(post_ctr, 1, "hub tx counters reset on fresh handshake");
     // The reply was sealed under the client's NEW epoch (hub mirror adopted).
     let hdr_epoch = u32::from_be_bytes([u3.wire[0], u3.wire[1], u3.wire[2], u3.wire[3]]);
