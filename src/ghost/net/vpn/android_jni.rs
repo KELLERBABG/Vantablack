@@ -220,7 +220,7 @@ fn perform_handshake(
         for i in 0..3 {
             let framed = frame_shard(&raw[i]);
             let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, false);
-            let _ = sock.send_to(&gtf, hub_addr);
+            let _ = sock.send_to(&gtf, hub_addr).or_else(|_| sock.send(&gtf));
         }
 
         let mut shards: Vec<Option<Vec<u8>>> = vec![None; 3];
@@ -228,7 +228,7 @@ fn perform_handshake(
         let start = std::time::Instant::now();
 
         while start.elapsed() < Duration::from_millis(1000) {
-            if let Ok((amt, _src)) = sock.recv_from(&mut buf) {
+            if let Ok((amt, _src)) = sock.recv_from(&mut buf).or_else(|_| sock.recv(&mut buf).map(|n| (n, hub_addr))) {
                 if amt >= MIN_FRAME_SIZE {
                     let ctr = parse_packet_counter(&buf[..amt]);
                     if ctr == 1 {
@@ -312,7 +312,7 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
                     &wire,
                 );
                 core.tx_ctr.fetch_add(1, Ordering::Relaxed);
-                let _ = sock.send_to(&frame, hub);
+                let _ = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame));
             }
         }
         _ => {}
@@ -331,7 +331,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     };
     let session_hash = *core.session_hash.lock();
 
-    match sock.recv_from(buf) {
+    match sock.recv_from(buf).or_else(|_| sock.recv(buf).map(|n| (n, hub))) {
         Ok((n, src)) => {
             if Some(src) != core.hub_addr {
                 return false;

@@ -60,14 +60,14 @@ class MainActivity : Activity() {
 
         val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
         val initialAddr = intent?.getStringExtra(GhostVpnService.EXTRA_HUB_ADDR)
-            ?: prefs.getString("hub_addr", "192.168.178.36:55225")
-            ?: "192.168.178.36:55225"
+            ?: prefs.getString("hub_addr", "192.168.178.39:55225")
+            ?: "192.168.178.39:55225"
         val initialFp = intent?.getStringExtra(GhostVpnService.EXTRA_HUB_FP)
             ?: prefs.getString("hub_fp", "5fa96851e39ae44b")
             ?: "5fa96851e39ae44b"
 
         editHubAddr = EditText(this).apply {
-            hint = "192.168.178.36:55225"
+            hint = "192.168.178.39:55225"
             setText(initialAddr)
             setTextColor(Color.parseColor("#ffffff"))
             setHintTextColor(Color.parseColor("#484f58"))

@@ -121,8 +121,9 @@ class GhostVpnService : VpnService() {
         network?.let {
             try { it.bindSocket(ch.socket()) } catch (_: Throwable) { /* best effort on older OEMs */ }
         }
-        protect(ch.socket()) // protect BEFORE connect: no packet may ever leave unprotected
-        ch.connect(hubAddr)
+        protect(ch.socket()) // protect BEFORE send: no packet may ever leave unprotected
+        // Do not call ch.connect(hubAddr) here so the underlying socket remains a standard
+        // UDP socket capable of both sendto() and send() without EISCONN restrictions.
         val sockFd = ParcelFileDescriptor.fromDatagramSocket(ch.socket()).detachFd()
         channel = ch
 
@@ -195,6 +196,7 @@ class GhostVpnService : VpnService() {
 
     private fun shutdown() {
         stopPumps()
+        running = false
         isRunning = false
         activeNetwork = null
         try { channel?.close() } catch (_: Throwable) {}

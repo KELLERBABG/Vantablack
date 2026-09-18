@@ -4214,7 +4214,7 @@ async fn run_node(
     // rather than wired: the library primitives remain available in l9_infra
     // for future use when a real consumer exists.
 
-    let ba = std::env::var("GHOST_BIND").unwrap_or_else(|_| "0.0.0.0:0".to_string());
+    let ba = std::env::var("GHOST_BIND").unwrap_or_else(|_| "0.0.0.0:55225".to_string());
     let socks = std::env::var("GHOST_SOCKS5").is_ok();
     let socks_port: u16 = std::env::var("GHOST_SOCKS5_PORT")
         .ok()
@@ -4391,7 +4391,13 @@ async fn run_node(
         tracing::info!("Revocation list initialized");
     }
 
-    let node = GhostNode::new(&ba).await?;
+    let node = match GhostNode::new(&ba).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("Failed to bind {ba} ({e}), falling back to ephemeral port 0.0.0.0:0");
+            GhostNode::new("0.0.0.0:0").await?
+        }
+    };
     node.flow_controller.set_transit_rate_mbps(tm);
     // The rate above is the operator's *policy* ceiling. The governor is the
     // control half: it measures what the paths actually carry and lowers the
@@ -4816,7 +4822,8 @@ async fn run_node(
     // Pairing target advertised in the QR code: this host's LAN address, the
     // control-center port and the node fingerprint. The fingerprint is stable
     // across runs because the Ed25519 identity is persisted in identity.key.
-    let lan_host = format!("{}:{}", detect_lan_ip(), metrics_port);
+    let mesh_port = nc.socket.local_addr().map(|a| a.port()).unwrap_or(metrics_port);
+    let lan_host = format!("{}:{}", detect_lan_ip(), mesh_port);
     let pair_uri = format!(
         "ggn://pair?nid={fp}&fp={fp}&host={host}",
         fp = nc.fingerprint(),
