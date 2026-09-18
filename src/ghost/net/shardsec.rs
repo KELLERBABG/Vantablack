@@ -64,7 +64,7 @@ pub fn seal_shard(
     }
 }
 
-/// Invention §15: Honey-Shards — Adversarial Tamper Traps.
+/// Honey-Shards — Adversarial Tamper Traps.
 ///
 /// Seals a shard with a deliberately poisoned trap tag derived from [`HONEY_TRAP_LABEL`].
 /// A Byzantine on-path relay that alters bytes will produce an authentication
@@ -200,7 +200,7 @@ pub fn open_message(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Invention §30: Time-as-the-4th-Shard (Scheduled Shard Dispatch)
+// Time-as-the-4th-Shard (Scheduled Shard Dispatch)
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// A shard scheduled for temporal egress.
@@ -276,7 +276,7 @@ impl TemporalShardScheduler {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §27: Spatio-Temporal Erosion Codes (Deliberate Data Fading)
+// Spatio-Temporal Erosion Codes (Deliberate Data Fading)
 // ══════════════════════════════════════════════════════════════════
 
 /// A shard bound to a specific space-time coordinate (shard_index, epoch_slot).

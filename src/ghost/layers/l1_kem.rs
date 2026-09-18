@@ -142,7 +142,7 @@ pub fn derive_hybrid_master_key_with_suite(
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §28: Present-Tense Mesh — Cryptographic Presence Claim
+// Present-Tense Mesh — Cryptographic Presence Claim
 // ══════════════════════════════════════════════════════════════════
 
 /// Cryptographic presence claim proving physical presence in the live beacon epoch.
@@ -228,10 +228,10 @@ pub fn derive_hybrid_master_key_with_presence(
     master_key
 }
 
-/// Domain-separation label for the transcript-bound hybrid KDF (SOTA G2/G3).
+/// Domain-separation label for the transcript-bound hybrid KDF.
 pub const HYBRID_BIND_LABEL: &[u8] = b"GHOST_NET_HYBRID_BIND_v2";
 
-/// Hybrid KDF **with transcript binding** (SOTA G2/G3).
+/// Hybrid KDF **with transcript binding**.
 ///
 /// The unbound form above ties the session key to two shared secrets and to nothing
 /// else — not to the public keys that produced them, not to the ciphertext, not to
@@ -1025,7 +1025,7 @@ pub const CHAIN_STEP_KEY: u8 = 0x02;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// DH-ratchet step (SOTA P2-2): mix a fresh hybrid shared secret into the root key
+/// DH-ratchet step: mix a fresh hybrid shared secret into the root key
 /// and reseed **both directional chain keys**.
 ///
 /// Returns `(next_root_key, chain_initiator_to_responder, chain_responder_to_initiator)`.

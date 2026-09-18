@@ -1,4 +1,4 @@
-/// L5 — Noise Injection / Jitter Padding & GhostMimic Layer (Invention §6)
+/// L5 — Noise Injection / Jitter Padding & GhostMimic Layer
 ///
 /// Adds random-length padding (0–64 bytes) to each packet beyond the
 /// base GTF size. This frustrates traffic analysis attacks that rely
@@ -30,7 +30,7 @@ pub fn payload_capacity(base_size: usize) -> usize {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §6: GhostMimic — Learned Per-ASN Cover Traffic
+// GhostMimic — Learned Per-ASN Cover Traffic
 //
 // Traditional privacy networks rely on constant-rate or uniform dummy padding,
 // which is itself a distinctive, easily-fingerprinted statistical anomaly for

@@ -329,7 +329,7 @@ impl OrbitalState {
         self.ground_pos.distance_to(ground) / C
     }
 
-    /// Invention §12: Predictive Pre-Warming — Keys Before Line-of-Sight.
+    /// Predictive Pre-Warming — Keys Before Line-of-Sight.
     ///
     /// Predicts if a target peer (e.g. satellite or terrestrial ground node) will become
     /// visible within `lookahead_secs`. If visibility is imminent, pre-computes an

@@ -501,7 +501,7 @@ impl DopplerShiftSimulator {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §19: Hardware-Bound Ghost — TPM 2.0 PCR Quote & SecureMemGuard
+// Hardware-Bound Ghost — TPM 2.0 PCR Quote & SecureMemGuard
 //
 // Traditional mesh node keys are vulnerable to cold-boot extraction, physical host
 // seizure, and OS tampering.

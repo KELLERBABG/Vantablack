@@ -1,4 +1,4 @@
-//! Invention §32: Diffusion Routing (Opt-in Emergency Mode)
+//! Diffusion Routing (Opt-in Emergency Mode)
 //!
 //! Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1` for disaster recovery,
 //! hostile link-pruning events, or severe network partitions where global routing tables

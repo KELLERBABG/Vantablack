@@ -1,4 +1,4 @@
-//! Invention §37: Universal Shard-Tunnel (Generic Port Forwarder)
+//! Universal Shard-Tunnel (Generic Port Forwarder)
 //!
 //! Carries arbitrary legacy protocols (RDP, RTSP, gRPC, SMTP, SOCKS5, HTTP) blind
 //! over the Post-Quantum Reed-Solomon GTF mesh.

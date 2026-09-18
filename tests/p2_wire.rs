@@ -263,7 +263,7 @@ fn a_ratchet_step_replaces_the_epoch_key() {
     );
 }
 
-/// SOTA P3-1: the jitter tail is authenticated.
+/// The jitter tail is authenticated.
 ///
 /// Three claims, because the tail's job changed from "a variable amount of noise"
 /// to "a constant amount of *authenticated* noise":

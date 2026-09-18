@@ -297,7 +297,7 @@ impl RevocationList {
 // discarded value, and — since nothing tied the block to the beacon, to the
 // identity or to any moment in time — a proof that could be lifted out of one
 // beacon and replayed in another. It proved key possession, redundantly with the
-// beacon's own signature, and it was not zero-knowledge (SOTA §6 G5).
+// beacon's own signature, and it was not zero-knowledge.
 //
 // What replaces it is a Schnorr proof of knowledge over Ristretto255 with
 // Fiat–Shamir, on the statement that the sender knows the mesh *membership*
@@ -741,7 +741,7 @@ impl<const N: usize> Drop for SecureMemGuard<N> {
 
 // ── 5bis. HSM / TPM Backend Abstraction ──────────────────────────────
 
-// Single source of truth: the `hsm` submodule (SOTA P0-1 dedup). The trait
+// Single source of truth: the `hsm` submodule. The trait
 // and every backend implementation live in `security/hsm.rs`; this module only
 // re-exports them, so `security::{HsmBackend, SoftwareTpm, create_hsm_backend}`
 // and `security::hsm::*` both resolve. `hardware-tpm` / `pkcs11` are real
@@ -756,7 +756,7 @@ pub use hsm::Tpm2Backend;
 #[cfg(feature = "pkcs11")]
 pub use hsm::Pkcs11Backend;
 
-// DPE/TPM-shaped attestation envelope (SOTA P2-3). This is the *format and its
+// DPE/TPM-shaped attestation envelope. This is the *format and its
 // verification*, deliberately hardware-free — no device is touched, and the
 // module says so in its own doc. `hsm.rs` is where a real `tss-esapi`/`cryptoki`
 // backend will eventually produce a quote to place inside it.
@@ -771,7 +771,7 @@ pub struct TemporalIsolator;
 impl TemporalIsolator {
     /// Decapsulate an ML-KEM-512 ciphertext.
     ///
-    /// ## Why there is no longer a "timing padding" loop here (SOTA P2-3)
+    /// ## Why there is no longer a "timing padding" loop here
     ///
     /// This used to run the real decapsulation and then do 10 *dummy* ones
     /// (`DUMMY_ITERATIONS`) on a zero key/ciphertext, on the theory that more
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_zk_proof_is_not_the_old_signature_over_a_discarded_nonce() {
-        // G5: the block that shipped before this was
+        // The block that shipped before this was
         // `(sign(SHA256(nonce)), SHA256(nonce))` with the nonce thrown away — a
         // possession proof over a value nobody could open, and one that any
         // holder of it could present again. It must no longer verify; that
@@ -1084,7 +1084,7 @@ mod tests {
         assert_eq!(retrieved.unwrap().name, "TestSat");
     }
 
-    // ── SOTA P2-3: constant-time ML-KEM decapsulation ──────────────────
+    // ── Constant-time ML-KEM decapsulation ──────────────────
     //
     // These pin the property the removed dummy loop was *assuming*: that
     // decapsulation is already constant-time and total, so one call is both

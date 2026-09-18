@@ -33,7 +33,7 @@ pub trait MeshReceiver: Send {
 pub struct ClientState {
     pub fingerprint: String,
     pub epoch: AtomicU32,
-    /// G6: widened from AtomicU32 to eliminate 32-bit counter exhaustion.
+    /// Widened from AtomicU32 to eliminate 32-bit counter exhaustion.
     tx_counter: AtomicU64,
     key: Mutex<[u8; 32]>,
     ingress: VpnIngress,

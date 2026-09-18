@@ -183,7 +183,7 @@ impl ExitCapability {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §8: Sphinx-Shard Onion — 3 Hops, Constant 576B, Shard-Aware
+// Sphinx-Shard Onion — 3 Hops, Constant 576B, Shard-Aware
 //
 // Tor onion routing relies on a single serial circuit path where middle nodes
 // can correlate flow volume and timing across hops. Nym Sphinx is per-packet
@@ -349,7 +349,7 @@ impl SphinxShardOnion {
     }
 }
 
-/// Invention §16: ZK Proof-of-Transit — Blind Forwarding Verification.
+/// ZK Proof-of-Transit — Blind Forwarding Verification.
 ///
 /// Allows an intermediate relay that forwards an opaque encrypted frame or shard
 /// to mint a cryptographic proof of transit: `Ed25519(sign(SHA256(payload) || next_hop_fp || timestamp))`.
@@ -416,7 +416,7 @@ impl ProofOfTransit {
     }
 }
 
-/// Invention §17: Trustless Relay Marketplace — Capability Vouchers for Priority Forwarding.
+/// Trustless Relay Marketplace — Capability Vouchers for Priority Forwarding.
 ///
 /// Clients mint verifiable capability vouchers (`Ed25519(sign(client_pk || max_bytes || expires_at))`)
 /// that intermediate relays redeem for priority bandwidth without a blockchain or payment processor.
@@ -463,7 +463,7 @@ impl ForwardingCapabilityVoucher {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §40: Identity-Agnostic Channels — Blind Flow Forwarding
+// Identity-Agnostic Channels — Blind Flow Forwarding
 //
 // Separates *identity* from *forwarding state*: routes and flows are
 // identified strictly by blind capability tokens. Intermediate relays
@@ -669,7 +669,7 @@ impl ExitPolicy {
     }
 }
 
-/// Invention §18: Attested Exit Diversity — Multi-ASN Shatter Constraint.
+/// Attested Exit Diversity — Multi-ASN Shatter Constraint.
 ///
 /// Cryptographically enforces that a 3-shard Reed-Solomon group is never routed
 /// through exit nodes or relays that share an Autonomous System Number (ASN).
@@ -1022,7 +1022,7 @@ pub async fn try_forward_relay(
         }
     };
 
-    // SOTA P2-2: seal with the ratchet's current epoch key and a fresh 96-bit
+    // Seal with the ratchet's current epoch key and a fresh 96-bit
     // nonce. The nonce is drawn once per *message*, so the three shards below all
     // share it — they are pieces of one AEAD ciphertext, not three messages.
     let material = session_entry.seal_material();
@@ -1054,7 +1054,7 @@ pub async fn try_forward_relay(
     if needs_padding > 0 {
         framed.push(0);
     }
-    // SOTA P3-1: the jitter tail is authenticated as AEAD associated data, so it
+    // The jitter tail is authenticated as AEAD associated data, so it
     // has to exist *before* the seal and then travel in the frame. A bulk frame
     // carries no tail, and therefore no associated data either.
     let tail = if use_bulk {
@@ -1526,7 +1526,7 @@ impl DerpRelay {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §36: Shards over Tor — Multi-Circuit Egress
+// Shards over Tor — Multi-Circuit Egress
 // ══════════════════════════════════════════════════════════════════
 
 /// Multi-circuit Tor SOCKS5 dispatcher for Reed-Solomon shards.
@@ -1612,7 +1612,7 @@ impl TorMultiCircuitDispatcher {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §45: Anonymous Capability Economy (Threshold Credentials)
+// Anonymous Capability Economy (Threshold Credentials)
 // ══════════════════════════════════════════════════════════════════
 
 /// Anonymous Capability Voucher authorized by a threshold group (§41).

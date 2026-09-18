@@ -198,7 +198,7 @@ impl std::fmt::Display for EnclaveError {
 ///
 /// This implements the handle-based [`KeyEnclave`] surface. It is deliberately
 /// **not** the same type as `ghost::net::security::SoftwareKeyEnclave`, which implements
-/// the `HsmBackend` surface (SOTA P0-1 removed that name collision).
+/// the `HsmBackend` surface (an earlier change removed that name collision).
 pub struct SoftwareKeyEnclave {
     /// Key store: handle → key bytes.
     keys: std::sync::Mutex<std::collections::HashMap<u64, Vec<u8>>>,

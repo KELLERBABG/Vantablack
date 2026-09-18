@@ -610,7 +610,7 @@ impl UdpFlowTable {
 /// Wire layout of a VPN tunnel datagram (before mesh framing):
 /// `[4B epoch][8B ctr][8B rand][XChaCha20-Poly1305(payload + tag)]`
 ///
-/// G6: widened from `[4B epoch][4B ctr][ChaCha20-Poly1305(…)]` (HDR=8) to
+/// Widened from `[4B epoch][4B ctr][ChaCha20-Poly1305(…)]` (HDR=8) to
 /// eliminate 32-bit counter exhaustion. The random segment makes the 24-byte
 /// XChaCha nonce unique even if (epoch, ctr) repeats across sessions, and the
 /// u64 counter space is effectively inexhaustible.
@@ -642,7 +642,7 @@ fn tunnel_rand_seg() -> [u8; 8] {
 
 /// Seal a raw IP packet into a tunnel datagram. Pure function.
 ///
-/// G6: uses XChaCha20-Poly1305 with a u64 counter and an 8-byte random
+/// Uses XChaCha20-Poly1305 with a u64 counter and an 8-byte random
 /// nonce segment transmitted on the wire, so the nonce space cannot exhaust.
 pub fn seal_datagram(key: &[u8; 32], epoch: u32, ctr: u64, ip_packet: &[u8]) -> Vec<u8> {
     use chacha20poly1305::aead::AeadInPlace;
@@ -703,7 +703,7 @@ impl VpnIngress {
     /// Open a tunnel datagram. `expected_epoch` comes from the LeaseTable
     /// (set by rotate_epoch). Returns the outcome; never blocks.
     ///
-    /// G6: reads the widened `[4B epoch][8B ctr][8B rand][ct+tag]` format
+    /// Reads the widened `[4B epoch][8B ctr][8B rand][ct+tag]` format
     /// and uses XChaCha20-Poly1305 to open.
     pub fn open(
         &self,
@@ -952,7 +952,7 @@ mod tests {
         );
     }
 
-    /// G6 regression: a counter beyond u32::MAX roundtrips correctly.
+    /// Regression: a counter beyond u32::MAX roundtrips correctly.
     #[test]
     fn test_tunnel_u64_counter_beyond_u32_max() {
         let key = [0xABu8; 32];
@@ -975,7 +975,7 @@ mod tests {
         }
     }
 
-    /// G6 regression: same (epoch, ctr) with different random segments produces
+    /// Regression: same (epoch, ctr) with different random segments produces
     /// different ciphertexts — the random nonce segment provides uniqueness.
     #[test]
     fn test_tunnel_xnonce_uniqueness() {

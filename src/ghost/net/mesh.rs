@@ -1388,7 +1388,7 @@ pub async fn forward_to_exit_tunnel(
         }
     };
 
-    // SOTA P2-2: the ratchet's epoch key and a fresh 96-bit nonce, drawn once for
+    // The ratchet's epoch key and a fresh 96-bit nonce, drawn once for
     // this message so all three shards share it (they are pieces of one AEAD
     // ciphertext, and spending a nonce per shard would encrypt the same plaintext
     // three times under the same key).
@@ -1405,7 +1405,7 @@ pub async fn forward_to_exit_tunnel(
         framed.push(0);
     }
 
-    // SOTA P3-1: the jitter tail is authenticated as AEAD associated data, so it
+    // The jitter tail is authenticated as AEAD associated data, so it
     // has to exist *before* the seal and then travel in the frame. A bulk frame
     // carries no tail, and therefore no associated data either.
     let tail = if use_bulk {

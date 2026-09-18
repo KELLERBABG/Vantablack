@@ -44,7 +44,7 @@ pub fn join_share_slice(shares: &[&[u8]]) -> Vec<u8> {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Invention §41: Group-as-Shards (Threshold Governance)
+// Group-as-Shards (Threshold Governance)
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// Threshold group key and authority management.

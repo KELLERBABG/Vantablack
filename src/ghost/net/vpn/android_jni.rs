@@ -105,7 +105,7 @@ impl TunDevice for AndroidTun {
 
 const MAGIC: &[u8; 5] = crate::ghost::net::vpn::hub::VPN_PAYLOAD_MAGIC;
 
-// `frame_shard` / `unframe` come from `ghost::net` (canonical, SOTA P0-1);
+// `frame_shard` / `unframe` come from `ghost::net` (canonical);
 // this module used to carry its own byte-identical copies.
 
 fn tunnel_frame(

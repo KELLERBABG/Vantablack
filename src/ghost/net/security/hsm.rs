@@ -13,7 +13,7 @@
 /// - `pkcs11`: Enables `Pkcs11Backend` (requires `cryptoki`)
 /// - No features = only `SoftwareTpm` (safe fallback)
 ///
-/// ## Status (SOTA P2-3)
+/// ## Status
 /// The hardware backends are **not wired**: `open()` always reports
 /// [`HsmError::HardwareAbsent`], so `create_hsm_backend` always resolves to
 /// `SoftwareTpm`. What P2-3 landed here is the *seam*: a typed [`HsmError`]
@@ -202,7 +202,7 @@ impl HsmBackend for SoftwareTpm {
 ///
 /// Requires Cargo feature: `hardware-tpm`
 #[cfg(feature = "hardware-tpm")]
-#[allow(dead_code)] // Stub: `open()` reports `HsmError::HardwareAbsent` until real tss-esapi wiring (SOTA P2-3).
+#[allow(dead_code)] // Stub: `open` reports `HsmError::HardwareAbsent` until real tss-esapi wiring.
 pub struct Tpm2Backend {
     /// TPM device this backend was opened against.
     ///
@@ -226,7 +226,7 @@ pub struct Tpm2Backend {
 impl Tpm2Backend {
     /// Open a connection to the system TPM 2.0 device.
     ///
-    /// **Drop-in point for real hardware (SOTA P2-3, still open).** This body is
+    /// **Drop-in point for real hardware (still open).** This body is
     /// the single place `tss-esapi` slots in: `tss_esapi::Context::new()` plus a
     /// `create_primary`/`load` to obtain the Ed25519 `key_handle`, held behind a
     /// lock because a live TPM context is `!Send + !Sync` while [`HsmBackend`]
@@ -328,7 +328,7 @@ impl HsmBackend for Tpm2Backend {
 ///
 /// Requires Cargo feature: `pkcs11`
 #[cfg(feature = "pkcs11")]
-#[allow(dead_code)] // Stub: `open()` reports `HsmError::HardwareAbsent` until real cryptoki wiring (SOTA P2-3).
+#[allow(dead_code)] // Stub: `open` reports `HsmError::HardwareAbsent` until real cryptoki wiring.
 pub struct Pkcs11Backend {
     /// Session handle to the PKCS#11 token.
     session_handle: u64,
@@ -348,7 +348,7 @@ pub struct Pkcs11Backend {
 impl Pkcs11Backend {
     /// Open a PKCS#11 session to the given module path.
     ///
-    /// **Drop-in point for real hardware (SOTA P2-3, still open).** This body is
+    /// **Drop-in point for real hardware (still open).** This body is
     /// where `cryptoki` slots in: `Pkcs11::new(lib_path)` → `C_Initialize` →
     /// `open_rw_session(slot_id)` → `login(UserType::User, Some(pin))`, then
     /// locate/generate the Ed25519 key object. A module that *is* present but

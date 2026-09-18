@@ -1,4 +1,4 @@
-//! QUIC as an optional transport under GTF (SOTA P1-2).
+//! QUIC as an optional transport under GTF.
 //!
 //! GTF stays exactly what it is on this path: the frames are the same sealed
 //! privacy/bulk frames the UDP path carries, and the session layer's

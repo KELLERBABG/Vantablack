@@ -351,7 +351,7 @@ fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §14: Self-Tuning Concatenated Code (RS + LDPC that learns)
+// Self-Tuning Concatenated Code (RS + LDPC that learns)
 //
 // Statically choosing between Reed-Solomon (L4, packet erasures) and
 // LDPC (L7, physical bit-flip errors) is suboptimal across diverse WAN links.

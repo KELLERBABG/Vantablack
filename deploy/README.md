@@ -1,6 +1,6 @@
 # Vantablack — Deploy-Not-Design Reference Testbed (§48)
 
-This directory provides the containerized reference mesh specified in **Invention §48 (Deploy-Not-Design)** from `roadmap/INVENTION.md`.
+This directory provides a reproducible 3-node in-container reference mesh for validating the daemon under realistic carrier conditions.
 
 ## Overview
 

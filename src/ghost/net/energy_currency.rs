@@ -1,4 +1,4 @@
-//! Invention §31: Energy-Voucher Currency (Proof-of-Erasure-Repair)
+//! Energy-Voucher Currency (Proof-of-Erasure-Repair)
 //!
 //! A decentralized credit ledger pricing forwarding priority strictly based on
 //! verified erasure-repair work rather than wasteful proof-of-burn computation.

@@ -1,4 +1,4 @@
-//! The optional-transport registry, and multipath (SOTA P1-2 / B23).
+//! The optional-transport registry, and multipath (B23).
 //!
 //! The tunnel asks one question before every send — *is there a better carrier
 //! than UDP to this peer right now?* — and this is where the answer lives. It is

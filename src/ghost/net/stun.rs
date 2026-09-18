@@ -21,7 +21,7 @@
 //! Deliberately *not* here: authentication (long-term credentials / `REALM` /
 //! `NONCE`) and TURN allocation. The `Method` constants for TURN exist so a TURN
 //! client can reuse this codec, but the allocation state machine is separate
-//! work (SOTA P1-1, TURN half).
+//! work (TURN half).
 //!
 //! ## Wire layout
 //!

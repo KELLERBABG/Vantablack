@@ -1,4 +1,4 @@
-//! DPE/TPM-shaped attestation envelope (SOTA P2-3).
+//! DPE/TPM-shaped attestation envelope.
 //!
 //! ## What this is — and what it is not
 //!

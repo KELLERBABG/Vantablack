@@ -1,4 +1,4 @@
-//! Invention §52: Mesh-as-Archive
+//! Mesh-as-Archive
 //!
 //! Permanent, unlinkable public archival mirroring for open standards and public canons.
 //!

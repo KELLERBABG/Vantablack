@@ -58,7 +58,7 @@ pub struct VpnHub {
     ingress: VpnIngress,
     /// Inner-epoch per fingerprint (mirror of the lease epoch for fast checks).
     ingress_epochs: Mutex<HashMap<String, u32>>,
-    /// Hub→client tunnel counters (per fingerprint). G6: widened to u64.
+    /// Hub→client tunnel counters (per fingerprint), widened to u64.
     tx_counters: Mutex<HashMap<String, u64>>,
     /// Egress queue: (fingerprint, bare tunnel wire). Bounded (rule 3).
     egress: Mutex<std::sync::mpsc::Receiver<(String, Vec<u8>)>>,
@@ -376,7 +376,7 @@ impl VpnHub {
         } else {
             *slot = next;
         }
-        // G6: u64 counter space is effectively inexhaustible (~585 years at
+        // U64 counter space is effectively inexhaustible (~585 years at
         // 1 Gpps), so this alarm exists only as a defensive sanity check.
         const CTR_REKEY_AT: u64 = u64::MAX - 10_000_000;
         if *slot >= CTR_REKEY_AT {

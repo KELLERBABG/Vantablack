@@ -55,7 +55,7 @@ impl ComputeShardOutput {
 pub struct ShardedComputeEngine;
 
 impl ShardedComputeEngine {
-    /// Invention §24: Verify that a proposed set of 3 compute workers satisfies
+    /// Verify that a proposed set of 3 compute workers satisfies
     /// the non-overlapping ASN constraint (strict geographic/topological isolation).
     pub fn verify_asn_diversity(worker_asns: &[u32; 3]) -> bool {
         worker_asns[0] != worker_asns[1]
@@ -63,7 +63,7 @@ impl ShardedComputeEngine {
             && worker_asns[0] != worker_asns[2]
     }
 
-    /// Invention §21: Shard an inference activation/weight block into 3 Reed-Solomon shards.
+    /// Shard an inference activation/weight block into 3 Reed-Solomon shards.
     pub fn shard_compute_input(
         job_id: u64,
         input: &[u8],
@@ -88,7 +88,7 @@ impl ShardedComputeEngine {
             .collect()
     }
 
-    /// Invention §21: Reconstruct the combined inference result from any 2 of 3 worker outputs.
+    /// Reconstruct the combined inference result from any 2 of 3 worker outputs.
     pub fn reconstruct_compute_output(
         outputs: &[ComputeShardOutput],
     ) -> Result<Vec<u8>, &'static str> {
@@ -122,7 +122,7 @@ impl ShardedComputeEngine {
         Ok(combined[2..2 + original_len].to_vec())
     }
 
-    /// Invention §25: Verifiable Compute via Redundancy.
+    /// Verifiable Compute via Redundancy.
     /// Compares commitments across two redundant workers executing the same shard task.
     /// Returns Ok(()) if commitments match, or Err with the suspected worker if Byzantine divergence occurs.
     pub fn verify_redundant_outputs(

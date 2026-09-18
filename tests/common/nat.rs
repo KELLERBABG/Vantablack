@@ -1,6 +1,6 @@
 //! A software NAT for the Phase 1 gate.
 //!
-//! The Phase 1 gate in `roadmap/SOTA.md` is a *network topology* claim: "two real
+//! The Phase 1 gate is a *network topology* claim: "two real
 //! machines behind residential NAT44/CGNAT + a phone on LTE establish a tunnel
 //! without port forwarding". That is impossible to assert on a developer machine
 //! — and impossible to assert in CI — with `iptables` alone, so the behaviour is

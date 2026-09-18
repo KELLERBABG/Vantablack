@@ -1,4 +1,4 @@
-//! Protocol Semantic Fuzzer (Invention §49)
+//! Protocol Semantic Fuzzer
 //!
 //! Property-based semantic sequence fuzzer verifying multi-step invariants
 //! across randomized permutations of:

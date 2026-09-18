@@ -1,4 +1,4 @@
-//! Phase 1 gate: QUIC as an optional transport (SOTA P1-2).
+//! Phase 1 gate: QUIC as an optional transport.
 //!
 //! The claim under test is not "QUIC works" — that is quinn's claim. It is that
 //! *this* transport carries GTF frames unchanged, picks the right framing by

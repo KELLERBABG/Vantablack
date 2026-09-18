@@ -1,5 +1,5 @@
 //! Runtime interoperability + mixed-version migration gate for the negotiated
-//! handshake (SOTA §"Current code-side delta").
+//! handshake.
 //!
 //! The delta claims three things that no unit test can hold on its own, because
 //! each is a statement about *two* implementations meeting:
@@ -231,7 +231,7 @@ fn a_v2_only_peer_still_negotiates_and_the_generations_do_not_misparse() {
     );
 }
 
-/// SOTA G2: the session key depends on the transcript, not only on the secrets.
+/// The session key depends on the transcript, not only on the secrets.
 ///
 /// Before this, the KDF was `HKDF(psk, x25519_ss ‖ kyber_ss, suite)`: two peers who
 /// arrived at the same pair of shared secrets got the same session key regardless of
@@ -315,7 +315,7 @@ fn the_session_key_is_bound_to_the_transcript() {
         "the ciphertext must be bound"
     );
 
-    // Flipped initiator PQ commitment must differ (SOTA G3).
+    // Flipped initiator PQ commitment must differ.
     let mut init_pq_flipped = initiator_pq;
     init_pq_flipped[0] ^= 0x01;
     assert_ne!(
@@ -331,10 +331,10 @@ fn the_session_key_is_bound_to_the_transcript() {
             &init_pq_flipped,
             &responder_pq,
         ),
-        "the initiator PQ commitment must be bound (SOTA G3)"
+        "the initiator PQ commitment must be bound"
     );
 
-    // Flipped responder PQ commitment must differ (SOTA G3).
+    // Flipped responder PQ commitment must differ.
     let mut resp_pq_flipped = responder_pq;
     resp_pq_flipped[0] ^= 0x01;
     assert_ne!(
@@ -350,7 +350,7 @@ fn the_session_key_is_bound_to_the_transcript() {
             &initiator_pq,
             &resp_pq_flipped,
         ),
-        "the responder PQ commitment must be bound (SOTA G3)"
+        "the responder PQ commitment must be bound"
     );
 
     // And a changed public key, or a changed suite, or a changed secret.
@@ -413,7 +413,7 @@ fn the_session_key_is_bound_to_the_transcript() {
     );
 }
 
-/// SOTA G3: A quantum attacker who has computed Alice's Ed25519 private key cannot
+/// A quantum attacker who has computed Alice's Ed25519 private key cannot
 /// authenticate without possessing her ML-DSA-65 private key or substituting their own.
 #[test]
 fn forged_classical_signature_with_mismatched_pq_key_is_rejected() {
@@ -453,7 +453,7 @@ fn forged_classical_signature_with_mismatched_pq_key_is_rejected() {
     );
 }
 
-/// SOTA G3: Sessions gate application traffic until post-quantum identity verification passes.
+/// Sessions gate application traffic until post-quantum identity verification passes.
 #[test]
 fn session_gates_application_traffic_until_pq_auth_verifies() {
     let bob = GhostIdentity::generate_fresh();

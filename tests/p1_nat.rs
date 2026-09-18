@@ -1,6 +1,6 @@
-//! Phase 1 gate: NAT traversal (SOTA P1-1).
+//! Phase 1 gate: NAT traversal.
 //!
-//! `roadmap/SOTA.md` defines the Phase 1 gate as *"two real machines behind
+//! The Phase 1 gate is *"two real machines behind
 //! residential NAT44/CGNAT + a phone on LTE establish a tunnel with
 //! `GHOST_VPN=hub/client` without port forwarding and sustain ping/curl/iperf
 //! through a symmetric-NAT handover"*. This is that gate in a form that runs

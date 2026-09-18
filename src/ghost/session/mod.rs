@@ -83,7 +83,7 @@ pub struct Session {
     /// KEM suite authenticated by the handshake transcript.
     pub cipher_suite: HybridCipherSuite,
 
-    // ── Ratchet State (SOTA P2-2) ────────────────────────────────────
+    // ── Ratchet State ────────────────────────────────────
     /// The hybrid DH ratchet. It owns every AEAD key this session uses: the
     /// master key above is the *seed*, and the epoch ring inside the ratchet is
     /// what actually seals and opens frames.
@@ -109,7 +109,7 @@ pub struct Session {
     /// authentication ran at handshake time, so this is where the proof is kept.
     /// `None` means the step is **refused**, never accepted on trust.
     peer_identity_pk: Mutex<Option<[u8; 32]>>,
-    // ── Post-Quantum Hybrid Identity Authentication (SOTA G3) ────────
+    // ── Post-Quantum Hybrid Identity Authentication ────────
     /// 0 = Pending, 1 = Authenticated, 2 = Failed
     pub pq_auth_state: AtomicU8,
     /// The peer's pinned 32-byte SHA-256 PQ commitment from the handshake negotiation.
@@ -135,7 +135,7 @@ pub struct RatchetAnswer {
     pub epoch: u64,
 }
 
-/// The material one v2 message is sealed with (SOTA P2-2).
+/// The material one v2 message is sealed with.
 #[derive(Clone)]
 pub struct SealMaterial {
     /// Epoch key for our sending direction.
@@ -267,7 +267,7 @@ impl Session {
             .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Check whether this session has completed post-quantum hybrid identity verification (SOTA G3).
+    /// Check whether this session has completed post-quantum hybrid identity verification.
     /// If no PQ commitment was negotiated (e.g. legacy compatibility or uncommitted unit tests),
     /// this returns true. If a PQ commitment was negotiated, the session is gated until verified.
     pub fn is_pq_authenticated(&self) -> bool {
@@ -387,7 +387,7 @@ impl Session {
         self.try_next_tx_counter().unwrap_or(u64::MAX)
     }
 
-    // ── Ratchet (SOTA P2-2) ─────────────────────────────────────────
+    // ── Ratchet ─────────────────────────────────────────
 
     /// Take the next message key for sealing and advance the chain. Returns `(counter, key)`.
     pub fn advance_seal(&self, direction: NonceDirection) -> (u64, [u8; 32]) {

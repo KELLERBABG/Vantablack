@@ -1,5 +1,5 @@
 (*
-    Invention §47: Formal Core Invariant Model (ProVerif Specification)
+    Formal Core Invariant Model (ProVerif Specification)
     
     Verifies that the 3-shard × 3-epoch Spatio-Temporal ladder guarantees
     mathematical zero information leakage:

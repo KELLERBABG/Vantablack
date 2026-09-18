@@ -1,4 +1,4 @@
-//! Invention §51: Stego-in-Physics (Physical Covert Shard Carriage)
+//! Stego-in-Physics (Physical Covert Shard Carriage)
 //!
 //! Encodes a single Reed-Solomon shard over a covert physical side-channel
 //! (acoustic FSK tone modulation, thermal fan/load modulation, or optical LED blink)

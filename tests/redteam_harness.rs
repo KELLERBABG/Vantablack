@@ -1,4 +1,4 @@
-//! Invention §46: Mesh Red-Team Harness (100-Node Adversarial Simulator)
+//! Mesh Red-Team Harness (100-Node Adversarial Simulator)
 //!
 //! Deterministic, in-process adversary harness simulating 100 virtual nodes under
 //! synthetic packet loss, CGNAT, Sybil attacks, and Byzantine collusion.

@@ -1,4 +1,4 @@
-//! Invention §43: Sharded Model Gossip
+//! Sharded Model Gossip
 //!
 //! Decentralized behavioral model learning over mesh metadata without a central coordinator.
 //!

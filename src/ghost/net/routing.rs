@@ -54,7 +54,7 @@ impl LinkMedium {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Invention §35: Thermal-Mesh (Energy-Heterogeneous Routing)
+// Thermal-Mesh (Energy-Heterogeneous Routing)
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// Physical energy class of a node or link.
@@ -394,7 +394,7 @@ impl ContactPlan {
         self.contacts.is_empty()
     }
 
-    /// Invention §35: Selects a triple of candidate journeys for 3 RS shards,
+    /// Selects a triple of candidate journeys for 3 RS shards,
     /// searching and picking candidate paths that maximize physical energy heterogeneity
     /// (preferring Mains + Battery + Harvested/Solar over uniform clusters).
     pub fn select_thermal_heterogeneous_triple(

@@ -161,10 +161,10 @@ async fn assemble(
     None
 }
 
-// `frame_shard` / `unframe` live in `ghost::net` (canonical, SOTA P0-1) and are
+// `frame_shard` / `unframe` live in `ghost::net` (canonical) and are
 // imported below.
 
-/// Everything one outgoing v2 message is sealed with (SOTA P2-2).
+/// Everything one outgoing v2 message is sealed with.
 ///
 /// Taken as one snapshot from the session so the epoch key and the epoch number
 /// cannot straddle a ratchet step: sealing under one epoch's key with another
@@ -198,7 +198,7 @@ impl SealCtx {
     /// The v2 header for one shard of this message. All shards of a message share
     /// counter, epoch and nonce — they are pieces of one AEAD ciphertext.
     ///
-    /// SOTA P3-1: this is also the single place the jitter tail is attached. It is
+    /// This is also the single place the jitter tail is attached. It is
     /// derived here rather than passed in, so every privacy frame gets the same
     /// tail the sealer authenticated as associated data, and no call site had to
     /// learn a new argument.
@@ -233,7 +233,7 @@ struct V2FrameMeta {
     nonce: [u8; 12],
     /// Whether this is an MTU-sized bulk frame, which carries no tail at all.
     bulk: bool,
-    /// The jitter tail **exactly as it arrived on the wire** (SOTA P3-1).
+    /// The jitter tail **exactly as it arrived on the wire**.
     tail: [u8; net::JITTER_MAX],
     /// ShardSec frames authenticate each RS shard independently and are opened
     /// before reconstruction; they do not use the legacy message-level AEAD.
@@ -383,7 +383,7 @@ fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
     if framed.len() % 2 != 0 {
         framed.push(0);
     }
-    // SOTA P3-1: the privacy frame's jitter tail is authenticated as AEAD
+    // The privacy frame's jitter tail is authenticated as AEAD
     // associated data, so the sealer covers the exact bytes the frame will carry.
     // `tail_for` is a keyed PRF of the seal metadata, which is why the frame
     // builder can recompute the same value instead of it being threaded through
@@ -513,14 +513,14 @@ async fn send3_mixed(
     }
 }
 
-// ── Cover traffic (SOTA P3-1) ────────────────────────────────────────────────
+// ── Cover traffic ────────────────────────────────────────────────
 //
 // The other half of P3-1: constant-size frames removed the *length* channel, and
 // this removes the *silence*. Both are needed — a link whose frames are all the
 // same size but which only transmits when a user types is still trivially
 // classifiable, and that is what a DPI+timer pair is looking for.
 
-/// Target cover-traffic rate, in **frames** per second per session (SOTA P3-1).
+/// Target cover-traffic rate, in **frames** per second per session.
 ///
 /// The plan names "2 pkt/s". A cover *message* is a three-frame Reed-Solomon group,
 /// because that is what a data message is, so 2 frames/s is two-thirds of a message
@@ -531,7 +531,7 @@ const COVER_FRAMES_PER_SEC: f64 = 2.0;
 /// Frames per cover message: an RS(2,1) group, the same as any data message.
 const COVER_FRAMES_PER_MESSAGE: f64 = 3.0;
 
-/// How long until the next cover message (SOTA P3-1).
+/// How long until the next cover message.
 ///
 /// **Exponential, not fixed.** A fixed interval is a metronome and would be among
 /// the easiest things on the wire to classify; a constant *mean* rate with
@@ -554,7 +554,7 @@ fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
     Duration::from_secs_f64(secs.clamp(0.005, 30.0))
 }
 
-/// Send one cover message to `dst` (SOTA P3-1).
+/// Send one cover message to `dst`.
 ///
 /// It rides the **real** data path — [`enc_split`], then three privacy frames — with
 /// a [`net::DUMMY_MAGIC`] payload, so on the wire it is an ordinary RS(2,1) group of
@@ -583,7 +583,7 @@ async fn send_cover(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx) {
     }
 }
 
-/// Spawn the cover-traffic emitter (SOTA P3-1).
+/// Spawn the cover-traffic emitter.
 ///
 /// One drawn gap per message, for every session the node holds. Deliberately **not**
 /// gated on idleness: cover that appears only when the link is quiet would make the
@@ -658,11 +658,11 @@ fn spawn_cover_task(
     })
 }
 
-/// How a message actually left this node (SOTA P1-1).
+/// How a message actually left this node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Routed {
     Direct,
-    /// The optional transport carried it (SOTA P1-2).
+    /// The optional transport carried it.
     ///
     /// Distinct from `Direct` because it is a different carrier over the same
     /// measured path: QUIC's own loss recovery and congestion control carry the
@@ -704,7 +704,7 @@ fn seal_single(ctx: &SealCtx, payload: &[u8]) -> Vec<u8> {
 }
 
 /// Hand one already-built GTF datagram to a relay peer, wrapped in a blind
-/// envelope addressed to `target_fp` (SOTA P1-1 / B22).
+/// envelope addressed to `target_fp` (B22).
 ///
 /// The datagram travels inside the envelope **verbatim**, so the target parses
 /// exactly what a direct send would have delivered, and the relay holds no key
@@ -728,7 +728,7 @@ async fn send_datagram_via_relay(
         tracing::warn!(relay = %relay_fp, "fallback: no session with the relay — cannot forward");
         return false;
     };
-    // SOTA P2-2: one seal snapshot per forward, shared by whichever framing the
+    // One seal snapshot per forward, shared by whichever framing the
     // envelope needs — a single bulk frame or three bulk shards of one ciphertext.
     let ctx = SealCtx::from_session(&sess);
     drop(sess);
@@ -758,7 +758,7 @@ async fn send_datagram_via_relay(
 
 /// Send 3 RS shards using adaptive multi-path routing when alternative peer routes exist.
 ///
-/// `route` is the peer's fallback when it has no direct path (SOTA P1-1). When it
+/// `route` is the peer's fallback when it has no direct path. When it
 /// is set, multi-path selection is skipped — deliberately. The carriers must all
 /// travel the one route the relay carries, and spreading them across *other*
 /// peers would send them to machines that hold no session with the target.
@@ -782,11 +782,11 @@ async fn send3_adaptive(
     // The peer's fallback path, when its direct checks have failed.
     route: Option<&FallbackPath>,
     turn: Option<&Arc<TurnPath>>,
-    // The optional transport, when this build and this run have one (SOTA P1-2).
+    // The optional transport, when this build and this run have one.
     carrier: Option<&Arc<net::carrier::Carrier>>,
 ) -> Routed {
     if ctx.ratchet_due {
-        // Due, not broken (SOTA P2-2): the epoch is full and the *next* step is
+        // Due, not broken: the epoch is full and the *next* step is
         // owed, but traffic keeps flowing on the current key until the step
         // completes — a rotation that stalled the data path would be an outage.
         // Starting the step is the caller's job; this is where the debt is
@@ -887,7 +887,7 @@ async fn send3_adaptive(
 }
 
 /// Ship the three RS carriers over the optional transport, spread across every
-/// live local path (SOTA P1-2 / B23).
+/// live local path (B23).
 ///
 /// The bytes are built exactly as `send_gtf` builds them, so the peer parses
 /// what a UDP send would have delivered: the transport is a *carrier*, not a
@@ -932,7 +932,7 @@ async fn send3_via_carrier(
     carried >= 2
 }
 
-/// Build the optional-transport registry (SOTA P1-2).
+/// Build the optional-transport registry.
 ///
 /// Off unless `GHOST_QUIC=1`: a second transport is a second port and a second
 /// parse surface, so an operator opts in. `GHOST_QUIC_PORT` overrides the bind.
@@ -1028,8 +1028,7 @@ fn build_carrier(_nc: &Arc<GhostNode>) -> Arc<net::carrier::Carrier> {
     Arc::new(net::carrier::Carrier::disabled())
 }
 
-/// The QUIC ingress + dial tasks, spawned where the receive pipeline lives
-/// (SOTA P1-2).
+/// The QUIC ingress + dial tasks, spawned where the receive pipeline lives.
 ///
 /// The admission rule is the session table or the beacon-verified address
 /// table — the same rule the relay uses — so a stranger cannot open a carrier
@@ -1297,7 +1296,7 @@ async fn send_tunnel_frame(
         tracing::debug!(peer = %peer_fp, "VPN egress: no session yet — dropped");
         return;
     };
-    // SOTA P2-2: the epoch key and a fresh 96-bit nonce replace the counter-derived
+    // The epoch key and a fresh 96-bit nonce replace the counter-derived
     // nonce, so the counter is now a pure sequence number and there is no u32 wall
     // to warn about — the exhaustion watchdog this function used to carry existed
     // only because a wrapped counter would have collided with the nonce space.
@@ -1422,7 +1421,7 @@ impl RxContext {
             .fetch_add(amt as u64, Ordering::Relaxed);
         // Dispatch through lockless multi-worker session hash queue
         let _ = self.dispatcher.dispatch(datagram, src);
-        // SOTA P2-2: the frame is decoded through the *version-aware* extractors.
+        // The frame is decoded through the *version-aware* extractors.
         // The old code picked offsets by guessing bulk mode from the datagram's
         // length; the v2 marker in the flags byte says so outright, and both
         // versions keep the flags byte at offset 9.
@@ -1583,7 +1582,7 @@ const RATCHET_TICK: Duration = Duration::from_secs(5);
 /// session at the current epoch forever, which is why the bound exists at all.
 const RATCHET_STEP_STALL: Duration = Duration::from_secs(30);
 
-/// One pass of the ratchet maintenance tick (SOTA P2-2).
+/// One pass of the ratchet maintenance tick.
 ///
 /// This is what makes the ratchet real rather than dormant: an epoch holds at most
 /// `RATCHET_INTERVAL` datagrams, and when one is spent the session pays for a fresh
@@ -1799,7 +1798,7 @@ async fn send_frame_to_peer(
     }
 }
 
-// ── Post-Quantum In-Band Authentication (SOTA G3) ───────────────────
+// ── Post-Quantum In-Band Authentication ───────────────────
 
 pub const PQ_AUTH_CHUNK_MAGIC: &[u8; 14] = b"PQ_AUTH_CHUNK:";
 pub const PQ_AUTH_ACK_MAGIC: &[u8; 14] = b"PQ_AUTH_ACK__:";
@@ -2113,14 +2112,14 @@ fn unix_now_secs() -> f64 {
 
 /// The legacy fixed beacon layout, still accepted from older peers. The 208-byte
 /// variant that carried a ZK block at fixed offsets is gone with the hard switch
-/// (SOTA §6 G5): a datagram that long is now read as a bare, identity-only
+/// A datagram that long is now read as a bare, identity-only
 /// beacon, never as a peer that proved membership.
 const BEACON_LEGACY_LEN: usize = 112;
 
 /// Optional sections carried by an extended beacon.
 struct BeaconSections<'a> {
     /// `(context, proof)` when a ZK membership proof is present. The context is
-    /// the timestamp the proof is bound to; the proof is `R ‖ z` (SOTA §6 G5).
+    /// the timestamp the proof is bound to; the proof is `R ‖ z`.
     zk: Option<(&'a [u8; 32], &'a [u8])>,
     /// The sender's ICE offer, as produced by `ice::IceOffer::encode`.
     ice_offer: Option<&'a str>,
@@ -2201,7 +2200,6 @@ fn push_beacon_section(buf: &mut Vec<u8>, magic: &[u8; 4], payload: &[u8]) {
 /// builder never sees the PSK, so it cannot be asked for a proof it has no secret
 /// to make. The boolean this replaced could not tell "no proof wanted" from "no
 /// secret to prove with", and emitted a signature-shaped block for neither
-/// (SOTA §6 G5).
 fn build_beacon_packet(
     pk: &[u8; 32],
     signer: impl Fn(&[u8]) -> [u8; 64],
@@ -2222,7 +2220,7 @@ fn build_beacon_packet(
         // never sees the PSK, so it cannot be asked for a proof it has no secret
         // to make — the old boolean could not tell "no proof wanted" from "no
         // secret to prove with" and would emit a signature-shaped block for
-        // neither (SOTA §6 G5).
+        // neither.
         let mut section = Vec::with_capacity(ZK_CONTEXT_LEN + ZK_PROOF_LEN);
         section.extend_from_slice(&context);
         section.extend_from_slice(&proof);
@@ -2247,7 +2245,7 @@ async fn handle_pkt(
     sock: &UdpSocket,
     ctr: u64,
     data: &[u8],
-    // The v2 header's seal metadata, when the frame has one (SOTA P2-2).
+    // The v2 header's seal metadata, when the frame has one.
     // `None` means a v1 frame: counter-derived nonce, seed key.
     v2: Option<V2FrameMeta>,
     src: &SocketAddr,
@@ -2309,7 +2307,7 @@ async fn handle_pkt(
         let responder_public = x25519_dalek::PublicKey::from(&responder_secret);
         let x_shared =
             responder_secret.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
-        // SOTA G2/G3: bind the transcript into the KDF. The initiator's public key comes
+        // Bind the transcript into the KDF. The initiator's public key comes
         // from the offer, ours is the ephemeral just generated, and the ciphertext is
         // the one about to be sent back — both peers hash identical bytes and both PQ commitments.
         let master = derive_hybrid_master_key_with_transcript(
@@ -2359,7 +2357,7 @@ async fn handle_pkt(
         session.pin_peer_pq_commitment(hs.pq_commitment);
         node.sessions.insert(fp.clone(), session);
         tracing::info!(peer = %src, suite = selected.wire_id(), "Explicit suite-negotiated session established");
-        // SOTA G3: Immediately transmit local post-quantum authentication chunks
+        // Immediately transmit local post-quantum authentication chunks
         send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
         return;
     }
@@ -2713,7 +2711,7 @@ async fn handle_pkt(
             }
         };
         // Our own public key has to be captured *before* `diffie_hellman` consumes the
-        // secret, and it is part of the transcript (SOTA G2/G3).
+        // secret, and it is part of the transcript.
         let initiator_public = x25519_dalek::PublicKey::from(&x_secret);
         let x_shared = x_secret.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
         let master = derive_hybrid_master_key_with_transcript(
@@ -2735,7 +2733,7 @@ async fn handle_pkt(
         session.pin_peer_pq_commitment(resp.pq_commitment);
         node.sessions.insert(fp.clone(), session);
         tracing::info!(peer = %src, suite = resp.suite.wire_id(), "Explicit suite-negotiated session established (initiator)");
-        // SOTA G3: Immediately transmit local post-quantum authentication chunks
+        // Immediately transmit local post-quantum authentication chunks
         send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
         return;
     }
@@ -2931,7 +2929,7 @@ async fn handle_pkt(
         };
         let pt: &[u8] = &plain;
 
-        // ── Cover traffic (SOTA P3-1) ──
+        // ── Cover traffic ──
         //
         // A placeholder frame exists only to keep the *rate* constant, so it must
         // have no effect at all: no dispatch, no ratchet bookkeeping, and not even
@@ -2985,7 +2983,7 @@ async fn handle_pkt(
             }
         }
 
-        // ── Ratchet step (SOTA P2-2) ──
+        // ── Ratchet step ──
         //
         // Before any data handling, and before the tunnel check: these two magics
         // are control PDUs for the ratchet, they are distinct from every other
@@ -2996,14 +2994,14 @@ async fn handle_pkt(
             }
         }
 
-        // ── Post-Quantum Identity Authentication (SOTA G3) ──
+        // ── Post-Quantum Identity Authentication ──
         if let Some(payload) = frame_payload(pt) {
             if handle_pq_auth_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
                 return;
             }
         }
 
-        // Gate all application traffic on post-quantum identity verification (SOTA G3).
+        // Gate all application traffic on post-quantum identity verification.
         let is_pq_auth = node
             .sessions
             .get(&peer_fp)
@@ -3059,7 +3057,7 @@ async fn handle_pkt(
             }
         }
 
-        // Blind relay (SOTA P1-1 / B22): a decrypted payload may carry a
+        // Blind relay (B22): a decrypted payload may carry a
         // single-hop envelope addressed to another peer. We hold no key for the
         // region it carries and must not touch it — the forward is byte-for-byte
         // by construction, which is the whole security property of the relay.
@@ -3196,7 +3194,7 @@ async fn handle_pkt(
                     return;
                 }
                 // Final hop: the inner payload is [counter u64 BE (8B)][wire_nonce (12B)][initiator→us
-                // encrypted blob + tag]. Try each of our sessions to unwrap it using XChaCha20-Poly1305 (G6).
+                // encrypted blob + tag]. Try each of our sessions to unwrap it using XChaCha20-Poly1305.
                 let inner = &relay.inner_payload;
                 if inner.len() >= 20 + 16 {
                     // WIRED: Record bytes forwarded by relay peer for us
@@ -3224,7 +3222,7 @@ async fn handle_pkt(
                         })
                         .collect();
                     for (fp2, key, sh, role) in candidates {
-                        // G6: The onion's inner layer now uses XChaCha20-Poly1305 with a
+                        // The onion's inner layer now uses XChaCha20-Poly1305 with a
                         // 64-bit counter and transmitted 12-byte random nonce.
                         // Each direction gets a fresh ciphertext copy: an AEAD
                         // attempt may mutate its buffer before returning an error.
@@ -4211,7 +4209,7 @@ async fn run_node(
     // WIRED: Category B - Verified SPSC Ring Buffer for packet staging
     let verified_ring = Arc::new(VerifiedRingBuffer::<Vec<u8>>::new(1024));
 
-    // G7: SecureTimeKeeper and BuildInfo were constructed here and immediately
+    // SecureTimeKeeper and BuildInfo were constructed here and immediately
     // discarded (_time_keeper, _build_info — neither was ever read). Removed
     // rather than wired: the library primitives remain available in l9_infra
     // for future use when a real consumer exists.
@@ -4509,7 +4507,7 @@ async fn run_node(
         }
     }
 
-    // Opportunistic: ask the local gateway to open the port for us (SOTA P1-1).
+    // Opportunistic: ask the local gateway to open the port for us.
     // A granted mapping makes us reachable without either side punching anything,
     // so the address becomes an ordinary candidate — it *is* our public address,
     // however it was learned. Failure is the common case (UPnP disabled, CGNAT, an
@@ -4532,7 +4530,7 @@ async fn run_node(
             None => tracing::debug!("UPnP/NAT-PMP: {}", upnp::describe_attempt(None)),
         }
     }
-    // ── TURN allocation (SOTA P1-1) ──
+    // ── TURN allocation ──
     //
     // The last rung of the fallback ladder. Configured, never assumed: without
     // `GHOST_TURN_SERVER` (plus credentials) nothing here runs and the node behaves
@@ -4597,7 +4595,7 @@ async fn run_node(
 
     let nat_puncher = Arc::new(nat_puncher);
 
-    // ── Relay role + fallback routes (SOTA P1-1 / B22) ──
+    // ── Relay role + fallback routes (B22) ──
     //
     // A node relays for others only when asked (`GHOST_RELAY=1`): forwarding
     // someone else's traffic costs transit bandwidth, and that should be a
@@ -4618,7 +4616,7 @@ async fn run_node(
     // and cleared the moment a direct path is measured again.
     let fallback_routes = Arc::new(Fallback::new(turn_path.clone()));
 
-    // ── Optional QUIC transport (SOTA P1-2) ──
+    // ── Optional QUIC transport ──
     //
     // The registry exists in every build so the egress sites can ask one question
     // per frame without a `cfg` of their own; whether it holds a transport is the
@@ -5496,7 +5494,7 @@ async fn run_node(
         // just the control frames.
         let fallback_routes_socks = Arc::clone(&fallback_routes);
         // The tunnel's egress prefers the optional transport where a link exists,
-        // so the proxy holds it too (SOTA P1-2).
+        // so the proxy holds it too.
         let carrier_socks = Arc::clone(&carrier);
         let turn_path_socks = turn_path.clone();
         let sp = socks_port;
@@ -5897,7 +5895,7 @@ async fn run_node(
                     // shares this setting has none to verify with either, so
                     // this is a misconfiguration that stops discovery: it is
                     // reported once instead of being papered over with a block
-                    // that proves nothing (SOTA §6 G5).
+                    // that proves nothing.
                     let zk_proof = if zk_enabled {
                         match psk.as_ref() {
                             Some(psk) => Some(ZkAuthenticator::create_proof(
@@ -5954,7 +5952,7 @@ async fn run_node(
                 .unwrap_or(false);
             // The membership proof is a proof about a shared secret, so without
             // the secret nothing can be verified: this fails closed, and says so
-            // once instead of dropping every beacon in silence (SOTA §6 G5).
+            // once instead of dropping every beacon in silence.
             if zk_required && psk.is_none() {
                 tracing::error!(
                     "GHOST_ZK_DISCOVERY=1 without GHOST_PSK: no beacon can carry a verifiable membership proof, so discovery will accept nothing — set GHOST_PSK or unset GHOST_ZK_DISCOVERY"
@@ -6030,7 +6028,7 @@ async fn run_node(
                                 Some((context, proof)) => {
                                     // A Schnorr proof that the sender knows the
                                     // membership secret for exactly this identity
-                                    // (SOTA §6 G5). It needs the PSK, because the
+                                    // It needs the PSK, because the
                                     // statement is about the PSK: a node without
                                     // one cannot verify and does not pretend to.
                                     if !ZkAuthenticator::verify_proof(
@@ -6076,7 +6074,7 @@ async fn run_node(
                         nat_p.register_peer(&beacon_fp, src, local_sa);
                     }
 
-                    // Relay bookkeeping (SOTA P1-1).
+                    // Relay bookkeeping.
                     //
                     // A peer that advertises relay capability becomes a relay we
                     // may use; its address is the one its beacon arrived from,
@@ -6136,7 +6134,7 @@ async fn run_node(
                                             // trip, so register it as a real
                                             // contact: from here the CGR router
                                             // routes on observations rather than
-                                            // on assumptions (SOTA P1-3).
+                                            // on assumptions.
                                             if let Some(rtt) = np.selected_rtt(&fp) {
                                                 node.contact_plan.write().await.observe_link(
                                                     &me,
@@ -6155,7 +6153,7 @@ async fn run_node(
                                         } else {
                                             // A failed punch is not a silent event, and it
                                             // is not the end of the path either: hand the
-                                            // peer to the fallback ladder (SOTA P1-1 / B22).
+                                            // peer to the fallback ladder (B22).
                                             // The router must still stop treating this path
                                             // as usable — that is a measured loss, and it
                                             // accumulates across beacon intervals until the
@@ -6317,7 +6315,7 @@ async fn run_node(
         });
     }
 
-    // ── OPTIONAL TRANSPORT INGRESS + DIAL (SOTA P1-2) ──
+    // ── OPTIONAL TRANSPORT INGRESS + DIAL ──
     spawn_carrier_tasks!(&carrier, &rx, &nc, &nat_puncher, &addrs);
 
     // ── VPN EGRESS ──
@@ -6515,7 +6513,7 @@ async fn run_node(
         }
     });
 
-    // ── RATCHET MAINTENANCE (SOTA P2-2) ──
+    // ── RATCHET MAINTENANCE ──
     //
     // This is what makes the ratchet real rather than dormant: an epoch holds at
     // most `RATCHET_INTERVAL` datagrams, and when one is spent the session pays for
@@ -6539,7 +6537,7 @@ async fn run_node(
         });
     }
 
-    // ── COVER-TRAFFIC TASK (SOTA P3-1) ──
+    // ── COVER-TRAFFIC TASK ──
     //
     // Spawned unconditionally and never gated on idleness, so the frame rate is the
     // same whether the node is in use or not. See `spawn_cover_task` for why gating
@@ -6882,7 +6880,7 @@ async fn run_node(
                 if blob.len() % 2 != 0 {
                     blob.push(0);
                 }
-                // G6: The onion's inner layer now seals with XChaCha20-Poly1305 and a
+                // The onion's inner layer now seals with XChaCha20-Poly1305 and a
                 // 64-bit counter plus transmitted 96-bit random nonce, eliminating
                 // 32-bit counter exhaustion.
                 let wire_nonce = random_xnonce();
@@ -7324,7 +7322,7 @@ mod beacon_section_tests {
     /// A real identity, because the beacon's prefix signature must verify against
     /// the key it names — a stub signer can never produce one. The membership
     /// proof itself no longer involves the signing key at all: it is a Schnorr
-    /// proof about the PSK and the public key (SOTA §6 G5).
+    /// proof about the PSK and the public key.
     fn real_identity() -> l0_identity::GhostIdentity {
         l0_identity::GhostIdentity::generate_fresh()
     }
@@ -7371,7 +7369,7 @@ mod beacon_section_tests {
 
     #[test]
     fn a_membership_proof_beacon_uses_the_sectioned_layout() {
-        // Hard switch (SOTA §6 G5): the 208-byte layout that carried a
+        // Hard switch: the 208-byte layout that carried a
         // signature-shaped block at fixed offsets is gone, so a node with nothing
         // else to say still says this in a section.
         let identity = real_identity();
@@ -7417,7 +7415,7 @@ mod beacon_section_tests {
         // same mesh — holding the same PSK — cannot lift its own proof into
         // another node's beacon. What ties the pk to the sender is the beacon's
         // prefix signature, and this test asserts the split rather than hiding
-        // it (SOTA §6 G5).
+        // it.
         let mine = real_identity();
         let theirs = real_identity();
         let psk = test_psk();
@@ -8093,7 +8091,7 @@ mod ratchet_transport_tests {
 
 #[cfg(test)]
 mod p3_1_cover_tests {
-    //! Cover traffic (SOTA P3-1): the flag reaches the wire, the shape is the same
+    //! Cover traffic: the flag reaches the wire, the shape is the same
     //! as a data message, the receiver decides on the authenticated marker rather
     //! than the header bit, and the gaps are drawn rather than fixed.
     use super::*;

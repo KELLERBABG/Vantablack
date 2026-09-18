@@ -1,4 +1,4 @@
-//! Congestion control (SOTA Phase 1 P1-2).
+//! Congestion control.
 //!
 //! ## What was missing
 //!

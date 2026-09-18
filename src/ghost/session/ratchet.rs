@@ -1,4 +1,4 @@
-//! Session ratchet (SOTA P2-2) — hybrid DH ratchet with per-epoch AEAD keys.
+//! Session ratchet — hybrid DH ratchet with per-epoch AEAD keys.
 //!
 //! # Why a ratchet at all
 //!
@@ -58,10 +58,10 @@ pub const RATCHET_INTERVAL: u64 = 1_000_000;
 /// retransmission and keeps the window honest when an ACK is lost.
 pub const RATCHET_RETAINED_EPOCHS: usize = 2;
 
-/// The largest forward jump an open will pay for (SOTA G1).
+/// The largest forward jump an open will pay for.
 pub const MAX_SKIP: u64 = 1024;
 
-/// What opening one counter should do, computed **without mutating anything** (SOTA G1).
+/// What opening one counter should do, computed **without mutating anything**.
 ///
 /// The receive path needs "plan, then commit": because the counter is unauthenticated,
 /// the derivation is computed first and applied only once the AEAD has verified the
@@ -83,7 +83,7 @@ pub enum OpenPlan {
     Refused,
 }
 
-/// One direction's **per-message** chain (SOTA G1).
+/// One direction's **per-message** chain.
 ///
 /// An epoch key used to seal every frame of its epoch — up to a million messages under
 /// one key. This advances once per *message* instead: the key a frame is sealed under is
@@ -683,7 +683,7 @@ impl RatchetStep {
     }
 }
 
-/// Invention §39: Replay-Resistant Chronology — Causal Order Monotonicity.
+/// Replay-Resistant Chronology — Causal Order Monotonicity.
 ///
 /// Replaces external wall-clock time with a causal monotonic counter vector for
 /// cross-partition replay rejection and epoch expiry. Even under arbitrary clock skew
@@ -775,7 +775,7 @@ mod tests {
         [0x5Au8; 32]
     }
 
-    // ── SOTA G1: per-message chains ─────────────────────────────────────
+    // ── Per-message chains ─────────────────────────────────────
 
     #[test]
     fn msg_chain_advances_one_step_per_message_and_never_repeats_a_key() {
@@ -796,7 +796,7 @@ mod tests {
 
     #[test]
     fn state_captured_after_sealing_cannot_reach_the_messages_already_sealed() {
-        // This *is* G1. Under the old scheme a snapshot of the epoch key opened every
+        // This *is* per-message chaining. Under the old scheme a snapshot of the epoch key opened every
         // frame of the epoch; here the keys were derived and dropped, and the one-way
         // chain has no route back to them.
         let mut chain = MsgChain::seed(&master());
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[test]
     fn test_double_ratchet_forward_secrecy() {
-        // The gate named by SOTA P2-2.
+        // The gate this test pins.
         //
         // Three things have to hold, and each is checked against real AEAD output
         // rather than against the shape of the code:
@@ -1279,7 +1279,7 @@ mod tests {
 
     #[test]
     fn test_pq_double_ratchet_post_compromise_recovery() {
-        // Invention §5: Post-Compromise Security (PCS) via ephemeral hybrid ratchet exchange.
+        // Post-Compromise Security (PCS) via ephemeral hybrid ratchet exchange.
         // Even if an attacker learns the exact root_key at epoch N, after a fresh
         // ephemeral hybrid exchange (ML-KEM-512 + X25519) between Alice and Bob,
         // the attacker cannot derive the epoch N+1 keys or decrypt traffic.

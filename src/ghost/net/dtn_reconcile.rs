@@ -1,4 +1,4 @@
-//! Invention §29: Windowing the Blackout (DTN State Reconciliation)
+//! Windowing the Blackout (DTN State Reconciliation)
 //!
 //! Merkle-tree anti-entropy synchronization between peers upon reconnecting after
 //! extended network partitions or communications blackouts (airplane mode, satellite gaps,

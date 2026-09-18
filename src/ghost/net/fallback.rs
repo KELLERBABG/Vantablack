@@ -1,5 +1,5 @@
 //! Reachability fallback — what the tunnel does when ICE cannot build a direct
-//! path (SOTA P1-1, bug B22).
+//! path (bug B22).
 //!
 //! Phase 1 shipped two working halves that were never joined: `mesh::NatHolePuncher`
 //! reports honestly when every candidate pair fails, and `relay::DerpRelay` knows

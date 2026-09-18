@@ -1,6 +1,6 @@
 /// Virtual Network Simulation — Multi-Node GhostNet Mesh Tests
 ///
-/// **This harness is pinned to the v1 wire format** (SOTA P2-2 bumped GTF to v2).
+/// **This harness is pinned to the v1 wire format** (GTF v2 is the current format).
 /// It mirrors the v1 protocol from the ghost library exactly — counter-derived
 /// nonces, 32-bit counters, v1 frame offsets — because a node that speaks v2 must
 /// still open the frames v1 peers send, and that acceptance path has no other
@@ -420,7 +420,7 @@ impl SimNode {
     async fn send_msg(&self, hub: &mut VirtualNetHub, peer_fp: &str, msg: &str) {
         if let Some(st) = self.node.sessions.get(peer_fp) {
             let k = st.master_key;
-            // This harness pins the **v1** wire format deliberately (SOTA P2-2):
+            // This harness pins the **v1** wire format deliberately:
             // v1 is the format a v2 node still has to *accept*, and these helpers
             // are the only place that acceptance is exercised end to end. v1
             // counters are 32-bit, so the 64-bit session counter is narrowed here

@@ -1,7 +1,7 @@
-//! `GTF_bulk` vs `QUIC` — the SOTA P1-2 verify step.
+//! `GTF_bulk` vs `QUIC` — the optional-transport verify step.
 //!
-//! `roadmap/SOTA.md` asks for a `GTF_bulk` vs `QUIC` bench. This is it, and it is
-//! a harness rather than a scoreboard: it measures the carriers the tunnel
+//! This is the `GTF_bulk` vs `QUIC` bench, and it is a harness rather than a
+//! scoreboard: it measures the carriers the tunnel
 //! actually has, on the machine it is run on, and prints what it found.
 //!
 //! Two pairs are compared, because the two GTF framings are not interchangeable

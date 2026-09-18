@@ -5,7 +5,7 @@ use ml_dsa::{
     Signature as MlDsaSignature, SigningKey as MlDsaSigningKey, VerifyingKey as MlDsaVerifyingKey,
 };
 use rand::RngCore;
-/// L0 — Hybrid identity: Ed25519 + ML-DSA-65 (SOTA P2-1).
+/// L0 — Hybrid identity: Ed25519 + ML-DSA-65.
 ///
 /// The permanent cryptographic identity of a GhostNet node, and the reason it is
 /// **hybrid** rather than Ed25519-only: every other defence in this stack —
@@ -177,7 +177,7 @@ impl GhostIdentity {
     }
 
     /// Load identity from a file, or generate a fresh ephemeral one without writing to disk
-    /// if `amnesia` is true (Invention §20: Ephemeral Amnesia Mode).
+    /// if `amnesia` is true (Ephemeral Amnesia Mode).
     pub fn load_or_generate_opts(path: &str, amnesia: bool) -> Self {
         if amnesia || Self::is_amnesia_mode() {
             eprintln!("GHOST_AMNESIA active: ephemeral in-memory identity generated; zero persistent disk state.");
@@ -456,7 +456,7 @@ pub fn verify_peer_hybrid(
         && verify_pq_signature(peer_pq_pk_bytes, data, &signature.pq)
 }
 
-/// Version byte for the hybrid identity binding payload (SOTA G3).
+/// Version byte for the hybrid identity binding payload.
 pub const BINDING_VERSION_HYBRID: u8 = 0x02;
 
 /// Length of the full hybrid identity binding wire payload (5,358 bytes).

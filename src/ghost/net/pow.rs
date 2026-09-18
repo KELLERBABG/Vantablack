@@ -183,7 +183,7 @@ impl DynamicPowGovernor {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §50: Anti-Fragile Tarpit — Attacker Compute Penalty
+// Anti-Fragile Tarpit — Attacker Compute Penalty
 // ══════════════════════════════════════════════════════════════════
 
 /// Record tracking violation history and active penalty difficulty.

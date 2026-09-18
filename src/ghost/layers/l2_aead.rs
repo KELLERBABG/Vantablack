@@ -258,7 +258,7 @@ pub fn xchacha_seal_in_place(
     xchacha_seal_in_place_with_aad(key, wire, epoch, direction, data, &[])
 }
 
-/// `xchacha_seal_in_place` with associated data (SOTA P3-1).
+/// `xchacha_seal_in_place` with associated data.
 ///
 /// The GTF privacy frame's 64-byte jitter tail sits *outside* the payload region
 /// and so was outside the tag: an on-path attacker could rewrite it — and, before

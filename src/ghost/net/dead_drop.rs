@@ -102,7 +102,7 @@ impl DeadDropVault {
         self.slots.len()
     }
 
-    /// Invention §33: Keep-proof issued by a client to renew retention on a stored shard.
+    /// Keep-proof issued by a client to renew retention on a stored shard.
     pub fn prove_retention_interest(
         &self,
         commitment: &DropCommitment,
@@ -117,7 +117,7 @@ impl DeadDropVault {
         }
     }
 
-    /// Invention §33: Self-Eating Storage garbage collection loop.
+    /// Self-Eating Storage garbage collection loop.
     ///
     /// Reclaims cold/unrequested shards based on observed network error rate $\lambda_{\text{error}}$:
     /// - Normal conditions ($\lambda_{\text{error}} \approx 0.0$): decay is swift, data minimization active.

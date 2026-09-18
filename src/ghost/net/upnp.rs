@@ -1,4 +1,4 @@
-//! UPnP-IGD and NAT-PMP port mapping (SOTA Phase 1 P1-1).
+//! UPnP-IGD and NAT-PMP port mapping.
 //!
 //! STUN tells us what our NAT *would* map, and ICE then has to punch a hole
 //! through it. Both of those are workarounds for not being allowed to ask. When

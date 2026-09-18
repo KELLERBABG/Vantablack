@@ -18,7 +18,7 @@ pub const MAGIC: &[u8; 5] = vantablack::ghost::net::vpn::hub::VPN_PAYLOAD_MAGIC;
 ///
 /// Deliberately re-derived here rather than imported: the gate tests exist to
 /// catch a change in the canonical framing, which they cannot do if they share
-/// its code (SOTA P0-1 moved the single production copy into `ghost::net`).
+/// its code (the single production copy lives in `ghost::net`).
 pub fn frame_shard(d: &[u8]) -> Vec<u8> {
     let l = (d.len() as u16).to_be_bytes();
     let mut f = Vec::with_capacity(d.len() + 2);

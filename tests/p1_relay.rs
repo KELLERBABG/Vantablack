@@ -1,4 +1,4 @@
-//! Phase 1 gate: the relay fallback (SOTA P1-1, bug B22).
+//! Phase 1 gate: the relay fallback (bug B22).
 //!
 //! `tests/p1_nat.rs` proves ICE either connects or reports honestly. This file
 //! covers what happens *after* it reports honestly: the ladder the tunnel takes,

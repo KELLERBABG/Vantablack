@@ -1,4 +1,4 @@
-//! Invention §44: Sovereign Cloud (Topology-Enforced Jurisdiction Constraints)
+//! Sovereign Cloud (Topology-Enforced Jurisdiction Constraints)
 //!
 //! A mesh-native cloud fabric where user devices form the storage and compute layer
 //! with zero central provider or cloud accounts.

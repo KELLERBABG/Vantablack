@@ -6,7 +6,7 @@ pub mod carrier;
 /// UDP packets — with dual frame modes for maximum throughput:
 ///
 /// - **Normal mode**: a constant 576-byte wire frame — 512 B of authenticated GTF
-///   plus a full-length 64 B jitter tail (SOTA P3-1: the tail used to be
+///   plus a full-length 64 B jitter tail (the tail used to be
 ///   `0..64` bytes, which made the *length* the signal; it is now fixed, so
 ///   privacy frames are one size on every path)
 /// - **Bulk mode**: 1472-byte frames at full Ethernet MTU (maximum throughput)
@@ -38,7 +38,7 @@ pub mod sovereign_cloud;
 pub mod stego_physics;
 pub mod universal_tunnel;
 
-/// Which framing an optional transport used for a frame (SOTA P1-2).
+/// Which framing an optional transport used for a frame.
 ///
 /// Defined here rather than in the transport so that a build *without* the
 /// transport still names the same type: the tunnel asks its carrier registry for
@@ -146,7 +146,7 @@ pub const BEACON_INTERVAL_SECS: u64 = 30;
 /// Beacon payload prefix — "GHOST_BEACON__" padded to 16 bytes.
 pub const BEACON_PREFIX: &[u8; 16] = b"GHOST_BEACON____";
 
-/// Invention §7: Poisson-Cloaked Beacons.
+/// Poisson-Cloaked Beacons.
 ///
 /// Instead of a deterministic, trivially-fingerprintable beacon period (e.g. exactly
 /// every 30s), sample from an exponential distribution `Exp(λ)` with `λ = 1 / mean_interval_secs`.
@@ -166,7 +166,7 @@ pub fn poisson_beacon_gap(uniform_sample: f64, mean_interval_secs: f64) -> Durat
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §34: Beacon Grid — Distributed Clock & Epoch Reference
+// Beacon Grid — Distributed Clock & Epoch Reference
 // ══════════════════════════════════════════════════════════════════
 
 /// Prefix tag for Beacon Grid metadata embedded inside discovery beacons.
@@ -257,7 +257,7 @@ impl BeaconGridEpoch {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §9: Innocent Camouflage — Steg GTF inside QUIC/DoH/HTTPS
+// Innocent Camouflage — Steg GTF inside QUIC/DoH/HTTPS
 //
 // When deep-packet inspection (DPI) or national firewalls filter raw UDP ports
 // (such as blocking 0.0.0.0:2270/UDP), Innocent Camouflage wraps GTF datagrams
@@ -342,7 +342,7 @@ impl CamouflageWrapper {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §38: Shape-Shifting Wire — Negotiated Dynamic Camouflage
+// Shape-Shifting Wire — Negotiated Dynamic Camouflage
 //
 // Replaces static obfuscation with a negotiated, ground-truth-driven
 // dialect: peers probe their local network environment (census), negotiate
@@ -481,7 +481,7 @@ impl DialectSession {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Invention §11: Heterogeneous PHY Shatter Routing — One Message, Three Physics
+// Heterogeneous PHY Shatter Routing — One Message, Three Physics
 //
 // Shatters Reed-Solomon shards across physically distinct network interfaces
 // (e.g. Shard 0 -> Wi-Fi wlan0, Shard 1 -> Cellular rmnet0, Shard 2 -> Ethernet eth0).
@@ -574,7 +574,7 @@ pub const BULK_OFFSET_AUTH_TAG_START: usize = 1456; // 1472 - 16
 pub const MAX_BULK_PAYLOAD_LEN: usize = BULK_OFFSET_AUTH_TAG_START - BULK_OFFSET_PAYLOAD_START; // 1446
 
 // ══════════════════════════════════════════════════════════════════
-// GTF v2 wire format (SOTA P2-2)
+// GTF v2 wire format
 //
 // What changed from v1, and why each change was unavoidable:
 //
@@ -613,7 +613,7 @@ pub const FLAG_V2: u8 = 0x80;
 pub const FLAG_BULK: u8 = 0x01;
 /// Tunnel bit: the payload is one self-contained shard, not a 3-shard RS group.
 pub const FLAG_TUNNEL: u8 = 0x02;
-/// Cover-traffic bit (SOTA P3-1): the payload is a [`DUMMY_MAGIC`] placeholder
+/// Cover-traffic bit: the payload is a [`DUMMY_MAGIC`] placeholder
 /// and carries no application data.
 ///
 /// A v1 sender only ever writes `0x00`..=`0x03` into this byte, so bit 2 is free
@@ -630,7 +630,7 @@ pub const FLAG_DUMMY: u8 = 0x04;
 /// Per-shard authenticated encryption (ShardSec) marker.
 pub const FLAG_SHARDSEC: u8 = 0x08;
 
-/// Payload marker for a cover-traffic frame (SOTA P3-1).
+/// Payload marker for a cover-traffic frame.
 ///
 /// The marker lives **inside** the AEAD plaintext, which is what makes it a fact
 /// a receiver can act on: it is authenticated, so it cannot be forged, and it
@@ -690,8 +690,7 @@ pub struct GtfV2Header {
     /// Caller bits (bulk/tunnel). [`FLAG_V2`] is added by the builder.
     pub flags: u8,
     pub bulk: bool,
-    /// The 64-byte jitter tail to place after the authenticated frame
-    /// (SOTA P3-1).
+    /// The 64-byte jitter tail to place after the authenticated frame.
     ///
     /// It lives on the header rather than as a builder argument so that the
     /// *same bytes* can be handed to the AEAD as associated data and written
@@ -702,7 +701,7 @@ pub struct GtfV2Header {
     pub tail: [u8; JITTER_MAX],
 }
 
-/// The jitter tail for one sealed message (SOTA P3-1).
+/// The jitter tail for one sealed message.
 ///
 /// **Derived, not drawn.** It is a keyed PRF of the session key and the message's
 /// own seal metadata, for two reasons that force each other:
@@ -743,7 +742,7 @@ pub fn tail_for(
     out
 }
 
-/// The jitter tail a received frame carries (SOTA P3-1).
+/// The jitter tail a received frame carries.
 ///
 /// Empty for a bulk frame (it has no tail, which is what keeps it MTU-aligned)
 /// and for anything too short to hold one. The caller feeds this to
@@ -782,7 +781,7 @@ impl GtfV2Header {
     }
 
     /// Attach the jitter tail that will be written after the frame and
-    /// authenticated as associated data (SOTA P3-1).
+    /// authenticated as associated data.
     pub fn with_tail(mut self, tail: [u8; JITTER_MAX]) -> Self {
         self.tail = tail;
         self
@@ -828,8 +827,8 @@ pub fn build_gtf_v2_frame(h: &GtfV2Header, payload: &[u8], auth_tag: &[u8; 16]) 
     packet[V2_OFFSET_SESSION_HASH..V2_OFFSET_SESSION_HASH + 4].copy_from_slice(&h.session_hash);
     packet[V2_OFFSET_RESERVED..V2_OFFSET_RESERVED + 4].copy_from_slice(&[0u8; 4]);
     packet[V2_OFFSET_SHARD_INDEX] = h.shard_index;
-    // Caller bits are the low three: bulk (0x01), tunnel (0x02) and — since SOTA
-    // P3-1 — cover traffic (0x04). The mask has to admit all three or the dummy
+    // Caller bits are the low three: bulk (0x01), tunnel (0x02) and cover
+    // traffic (0x04). The mask has to admit all three or the dummy
     // bit is silently dropped on the way out, which would make the flag look
     // supported while never reaching the wire.
     packet[V2_OFFSET_FLAGS] = FLAG_V2
@@ -844,7 +843,7 @@ pub fn build_gtf_v2_frame(h: &GtfV2Header, payload: &[u8], auth_tag: &[u8; 16]) 
         .copy_from_slice(payload);
     packet[tag_start..total].copy_from_slice(auth_tag);
 
-    // Jitter tail (SOTA P3-1) — privacy frames only, CONSTANT length, and now
+    // Jitter tail — privacy frames only, CONSTANT length, and now
     // authenticated. The bytes come from the header rather than from a fresh
     // draw here, because the caller needed them *before* sealing: they are given
     // to the AEAD as associated data, so the tag covers them and an on-path
@@ -873,7 +872,7 @@ pub fn parse_gtf_v2_header(buf: &[u8]) -> Option<GtfV2Header> {
     let flags = buf[V2_OFFSET_FLAGS];
     let bulk = (flags & FLAG_BULK) != 0;
     // The jitter tail travels back with the header so the receive path can hand
-    // it to the AEAD as associated data without re-deriving offsets (SOTA P3-1).
+    // it to the AEAD as associated data without re-deriving offsets.
     let mut tail = [0u8; JITTER_MAX];
     if !bulk && buf.len() >= GTF_BASE_SIZE + JITTER_MAX {
         tail.copy_from_slice(&buf[GTF_BASE_SIZE..GTF_BASE_SIZE + JITTER_MAX]);
@@ -1066,7 +1065,7 @@ pub fn unframe(b: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Invention §10: Header-Chaff GTF & Authenticated Length Prefix.
+/// Header-Chaff GTF & Authenticated Length Prefix.
 ///
 /// Encodes a shard with an authenticated 2-byte length bound to an authenticated
 /// session epoch and session hash tag. Prevents unauthenticated length truncation
@@ -1462,7 +1461,7 @@ mod wire_v2_tests {
         assert_eq!(
             frame.len(),
             GTF_BASE_SIZE + JITTER_MAX,
-            "SOTA P3-1: a privacy frame is a CONSTANT 576 B — 512 B of authenticated \
+            "a privacy frame is a CONSTANT 576 B — 512 B of authenticated \
              frame plus a full-length jitter tail — so its length carries no signal"
         );
         assert!(is_v2_frame(&frame));
@@ -1498,7 +1497,7 @@ mod wire_v2_tests {
             "every privacy frame must be exactly one length on the wire"
         );
 
-        // The tail is now *derived* rather than drawn (SOTA P3-1), so the old
+        // The tail is now *derived* rather than drawn, so the old
         // "two frames of the same message differ in the tail" assertion no longer
         // describes it — and keeping it would now be wrong, not merely stale:
         // the three shards of one message share a single AEAD tag, so they must
@@ -1835,7 +1834,7 @@ pub struct ThroughputStats {
     pub packets_recv: AtomicU64,
     pub retransmits: AtomicU64,
     pub drops: AtomicU64,
-    /// Cover-traffic frames received and discarded (SOTA P3-1).
+    /// Cover-traffic frames received and discarded.
     ///
     /// Separate from `drops` because it is not a loss: these frames arrived
     /// intact and were dropped *by design*. An operator wants to see cover
