@@ -148,9 +148,14 @@ if ([string]::IsNullOrWhiteSpace($WintunPath)) {
 if (-not (Test-Path -LiteralPath $WintunPath)) {
     $zip = Join-Path $RepoRoot ("dist\wintun-$WintunVersion.zip")
     New-Item -ItemType Directory -Path (Split-Path -Parent $zip) -Force | Out-Null
-    $url = "https://www.wintun.net/downloads/wintun-$WintunVersion.zip"
+    $url = "https://www.wintun.net/builds/wintun-$WintunVersion.zip"
     Write-Step "Downloading official Wintun $WintunVersion"
-    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    } catch {
+        $fallbackUrl = "https://www.wintun.net/downloads/wintun-$WintunVersion.zip"
+        Invoke-WebRequest -Uri $fallbackUrl -OutFile $zip -UseBasicParsing
+    }
     $extract = Join-Path $RepoRoot 'dist\wintun-extract'
     if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
     Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
