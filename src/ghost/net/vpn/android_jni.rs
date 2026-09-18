@@ -322,7 +322,9 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
 /// One mesh→TUN step: recv a GTF datagram from hub, open it, and write the inner
 /// IP packet into the TUN.
 pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
-    let (Some(sock), Some(tun)) = (core.sock.as_ref(), core.tun.as_mut()) else {
+    let (Some(sock), Some(tun), Some(hub)) =
+        (core.sock.as_ref(), core.tun.as_mut(), core.hub_addr)
+    else {
         return false;
     };
     let Some(session_key) = *core.session_key.lock() else {
