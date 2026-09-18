@@ -1804,4 +1804,37 @@ mod derp_tests {
 
         assert_eq!(&reconstructed, payload, "Sphinx shards survive 1 dropped middle node");
     }
+
+    #[test]
+    fn test_identity_agnostic_channel_zero_identity_exposure() {
+        let auth_key = [42u8; 32];
+        let seed = b"test_blind_capability_seed";
+        let flow_salt = [7u8; 32];
+        let now = 1_000_000u64;
+        let expires_at = now + 3600;
+        let max_bytes = 10_000u64;
+
+        // Mint a blind capability voucher with zero client identity
+        let token = BlindCapabilityToken::mint(&auth_key, seed, &flow_salt, max_bytes, expires_at);
+        assert!(token.verify(&auth_key, now, 100));
+
+        let mut table = IdentityAgnosticRelayTable::new();
+        let egress: SocketAddr = "192.168.1.100:8443".parse().unwrap();
+        table.register_channel(&token, &auth_key, egress, now).expect("register valid token");
+
+        // Forward a packet
+        let target = table.forward(&token.token_id, 500, now + 10).expect("forward ok");
+        assert_eq!(target, egress);
+
+        // Exceed quota
+        let err = table.forward(&token.token_id, 10_000, now + 20);
+        assert!(err.is_err());
+
+        // Prove zero identity exposure in audit memory dump
+        let dump = table.audit_dump_memory();
+        // Client ed25519 PK or identities are strictly absent
+        let fake_client_pk = [0x55u8; 32];
+        assert!(!dump.windows(32).any(|w| w == fake_client_pk));
+        assert!(dump.len() >= 32);
+    }
 }

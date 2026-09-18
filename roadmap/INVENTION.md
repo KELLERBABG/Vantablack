@@ -306,17 +306,17 @@ Same format as above: **Idea · Why novel · First experiment · Kill if**. Same
 
 To deliver value with maximum efficiency, Part II spikes are sequenced by implementation complexity — pulling the fastest, high-impact extensions first before tackling heavy subsystems:
 
-| Step | Invention | Subsystem Hook | Implementation Complexity |
-|---|---|---|---|
-| **1** | **§38 Shape-Shifting Wire** (Negotiated Camouflage) | `ghost::net::mod` (`CamouflageWrapper`) | **Low** (Dynamic dialect probing & rotation) |
-| **2** | **§40 Identity-Agnostic Channels** (Blind Forwarding) | `ghost::net::relay` (`ForwardingCapabilityVoucher`) | **Low-Medium** (Capability token verification without peer identity) |
-| **3** | **§39 Replay-Resistant Chronology** (Causal Order) | `ghost::session::ratchet` & `vpn::mod` | **Low-Medium** (DAG monotonicity over wall-clock) |
-| **4** | **§41 Group-as-Shards** (Threshold Governance) | `ghost::layers::l4_rs` & `l3_shamir` | **Medium** (3-of-5 threshold group key reconstruction) |
-| **5** | **§22 Autonomous Dead-Drop Mesh Storage** (Fleet Vault) | `ghost::net::relay` / storage module | **Medium** (Consolidated §22, §23, §26: 576B blind ciphertext blobs) |
-| **6** | **§32 Diffusion Routing** (Opt-in Emergency Mode) | `ghost::net::mesh` / `relay` | **Medium** (Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1`) |
-| **7** | **§35 Thermal-Mesh** (Energy-Heterogeneous Routing) | `ghost::net::carrier` / `mesh` | **Medium** (Energy class path weighting) |
-| **8** | **§50 Anti-Fragile Tarpit** (Attacker Compute Penalty) | `ghost::net::pow` & `l5_noise` | **Medium-High** (Tying honey-shards to PoW compute trap) |
-| **9** | **§46 Mesh Red-Team Harness** (Adversarial Simulation) | `tests/scale_mesh.rs` & `attack_harness` | **High** (Deterministic 100-node in-process adversarial harness) |
+| Step | Invention | Subsystem Hook | Implementation Complexity | Status |
+|---|---|---|---|---|
+| **1** | **§38 Shape-Shifting Wire** (Negotiated Camouflage) | `ghost::net::mod` (`CamouflageWrapper`) | **Low** (Dynamic dialect probing & rotation) | **COMPLETE** |
+| **2** | **§40 Identity-Agnostic Channels** (Blind Forwarding) | `ghost::net::relay` (`ForwardingCapabilityVoucher`) | **Low-Medium** (Capability token verification without peer identity) | **COMPLETE** |
+| **3** | **§39 Replay-Resistant Chronology** (Causal Order) | `ghost::session::ratchet` & `vpn::mod` | **Low-Medium** (DAG monotonicity over wall-clock) | **COMPLETE** |
+| **4** | **§41 Group-as-Shards** (Threshold Governance) | `ghost::layers::l4_rs` & `l3_shamir` | **Medium** (3-of-5 threshold group key reconstruction) | Queued |
+| **5** | **§22 Autonomous Dead-Drop Mesh Storage** (Fleet Vault) | `ghost::net::relay` / storage module | **Medium** (Consolidated §22, §23, §26: 576B blind ciphertext blobs) | Queued |
+| **6** | **§32 Diffusion Routing** (Opt-in Emergency Mode) | `ghost::net::mesh` / `relay` | **Medium** (Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1`) | Queued |
+| **7** | **§35 Thermal-Mesh** (Energy-Heterogeneous Routing) | `ghost::net::carrier` / `mesh` | **Medium** (Energy class path weighting) | Queued |
+| **8** | **§50 Anti-Fragile Tarpit** (Attacker Compute Penalty) | `ghost::net::pow` & `l5_noise` | **Medium-High** (Tying honey-shards to PoW compute trap) | Queued |
+| **9** | **§46 Mesh Red-Team Harness** (Adversarial Simulation) | `tests/scale_mesh.rs` & `attack_harness` | **High** (Deterministic 100-node in-process adversarial harness) | Queued |
 
 *Note: Disadvantageous or theoretically impossible items (§54 Causal Capsule) are cut. Heavy edge-case primitives (§32 Diffusion Routing) are kept as opt-in emergency modes with zero overhead in default operation.*
 

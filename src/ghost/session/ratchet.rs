@@ -684,6 +684,86 @@ impl RatchetStep {
     }
 }
 
+/// Invention §39: Replay-Resistant Chronology — Causal Order Monotonicity.
+///
+/// Replaces external wall-clock time with a causal monotonic counter vector for
+/// cross-partition replay rejection and epoch expiry. Even under arbitrary clock skew
+/// or time-rollback attacks, frames or epoch supersessions that are causally obsolete
+/// are rejected deterministically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CausalMonotonicCounter {
+    /// Local node causal sequence component
+    local_seq: u64,
+    /// Highest observed causal sequence from remote peer
+    observed_remote_seq: u64,
+    /// Causal epoch generation
+    causal_epoch: u64,
+}
+
+impl CausalMonotonicCounter {
+    /// Create a new causal counter at epoch 0
+    pub fn new() -> Self {
+        Self {
+            local_seq: 0,
+            observed_remote_seq: 0,
+            causal_epoch: 0,
+        }
+    }
+
+    /// Monotonically advance local causal sequence for an outbound event/message
+    pub fn advance_local(&mut self) -> (u64, u64, u64) {
+        self.local_seq = self.local_seq.saturating_add(1);
+        (self.causal_epoch, self.local_seq, self.observed_remote_seq)
+    }
+
+    /// Advance the causal epoch (superseding all previous causal epochs)
+    pub fn advance_epoch(&mut self) -> u64 {
+        self.causal_epoch = self.causal_epoch.saturating_add(1);
+        self.local_seq = 0;
+        self.observed_remote_seq = 0;
+        self.causal_epoch
+    }
+
+    /// Verify an inbound message's causal chronology.
+    /// Returns Ok(()) and records observed sequence if causal order is preserved,
+    /// or Err(&'static str) if the event is causally obsolete (replay / stale partition).
+    pub fn verify_and_observe(
+        &mut self,
+        msg_causal_epoch: u64,
+        msg_seq: u64,
+    ) -> Result<(), &'static str> {
+        // 1. Reject if from an older, superseded causal epoch
+        if msg_causal_epoch < self.causal_epoch {
+            return Err("Causally obsolete epoch: rejected");
+        }
+
+        // 2. If same epoch, sequence must strictly advance beyond what was observed
+        if msg_causal_epoch == self.causal_epoch {
+            if msg_seq <= self.observed_remote_seq {
+                return Err("Causally obsolete sequence: replay detected");
+            }
+            self.observed_remote_seq = msg_seq;
+            Ok(())
+        } else {
+            // New epoch observed causally forward
+            self.causal_epoch = msg_causal_epoch;
+            self.observed_remote_seq = msg_seq;
+            Ok(())
+        }
+    }
+
+    /// Get current causal state: (epoch, local_seq, observed_remote_seq)
+    pub fn state(&self) -> (u64, u64, u64) {
+        (self.causal_epoch, self.local_seq, self.observed_remote_seq)
+    }
+}
+
+impl Default for CausalMonotonicCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1205,5 +1285,40 @@ mod tests {
 
         let attacker_key = attacker_ratchet.seal_key(NonceDirection::InitiatorToResponder);
         assert_ne!(attacker_key, alice_seal_key, "Attacker cannot derive epoch 1 key without breaking KEM");
+    }
+
+    #[test]
+    fn test_causal_monotonic_counter_replay_resistance() {
+        let mut node_a = CausalMonotonicCounter::new();
+        let mut node_b = CausalMonotonicCounter::new();
+
+        // Local sequences advance monotonically
+        let (epoch_a, seq1, _) = node_a.advance_local();
+        assert_eq!((epoch_a, seq1), (0, 1));
+        let (_, seq2, _) = node_a.advance_local();
+        assert_eq!(seq2, 2);
+
+        // Remote node observes and verifies message 1
+        assert!(node_b.verify_and_observe(epoch_a, seq1).is_ok());
+
+        // Replay of message 1 must be rejected regardless of wall clock
+        let replay_err = node_b.verify_and_observe(epoch_a, seq1);
+        assert_eq!(replay_err, Err("Causally obsolete sequence: replay detected"));
+
+        // In-order delivery of message 2 succeeds
+        assert!(node_b.verify_and_observe(epoch_a, seq2).is_ok());
+
+        // Epoch advancement supersedes prior epoch messages
+        let new_epoch = node_a.advance_epoch();
+        assert_eq!(new_epoch, 1);
+        let (epoch1, epoch1_seq1, _) = node_a.advance_local();
+        assert_eq!((epoch1, epoch1_seq1), (1, 1));
+
+        // Node B accepts epoch 1 message
+        assert!(node_b.verify_and_observe(epoch1, epoch1_seq1).is_ok());
+
+        // Replayed message from old epoch 0 is rejected causally
+        let stale_epoch_err = node_b.verify_and_observe(0, 9999);
+        assert_eq!(stale_epoch_err, Err("Causally obsolete epoch: rejected"));
     }
 }

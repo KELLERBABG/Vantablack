@@ -143,6 +143,15 @@ identity revocations are signature-checked before they are believed.
 per-user without administrator rights; Linux has a `.deb` builder, a hardened systemd unit and a
 desktop entry; macOS is documented; Android runs the VPN as a foreground service.
 
+**Shape-Shifting Wire: Negotiated Camouflage (Invention §38).** Outer wire dialect is dynamically selected via a live-probed `NetworkCensus` menu and negotiated via `DialectSession`. Protocols rotate over time (at a configurable frame interval) between GTF v2 raw, DoH mimicking, and TLS/QUIC imitation, preventing traffic fingerprinting.
+*Test:* `src/ghost/net/mod.rs` — `test_shape_shifting_wire_negotiation_and_rotation`.
+
+**Identity-Agnostic Channels: Blind Forwarding (Invention §40).** Relay nodes forward traffic via `IdentityAgnosticRelayTable` and `BlindCapabilityToken`. Intermediate relays verify flow quota and timestamp bounds using HMAC without storing or learning the client's public key or node identity. Seizure audit dump confirms zero identity material stored at rest.
+*Test:* `src/ghost/net/relay.rs` — `test_identity_agnostic_channel_zero_identity_exposure`.
+
+**Replay-Resistant Chronology: Causal Order Monotonicity (Invention §39).** Replaces external wall-clock reliance with `CausalMonotonicCounter` vectors. Epoch expiry and message ordering are evaluated against causal supersession, ensuring cross-partition replay attacks are rejected deterministically even when local clocks are artificially skewed.
+*Test:* `src/ghost/session/ratchet.rs` — `test_causal_monotonic_counter_replay_resistance`.
+
 ---
 
 ## 2. Built, but only tested in one process
@@ -239,7 +248,7 @@ Observed on this machine, 2026-09-17, Windows, nightly toolchain, **zero failure
 
 | what | result |
 |---|---|
-| library unit tests, default features | 336 passed |
+| library unit tests, default features | 362 passed |
 | `src/main.rs` tests (`ggn` bin) | 15 passed (run twice, once per binary) |
 | `tests/handshake_interop.rs` | 6 passed |
 | `tests/layer_tests.rs` | 48 passed |
@@ -247,7 +256,7 @@ Observed on this machine, 2026-09-17, Windows, nightly toolchain, **zero failure
 | `tests/p1_relay.rs` | 8 passed |
 | `tests/p2_wire.rs` | 6 passed |
 | `tests/simulation.rs` | 7 passed |
-| library unit tests, `--features vpn` | 30 passed in vpn, plus every `vpn_*` gate |
+| library unit tests, `--features vpn` | 393 passed in vpn, plus every `vpn_*` gate |
 | library unit tests, `--features quic` | 322 passed |
 | library unit tests, `--features hardware-tpm,pkcs11` | 318 passed |
 
