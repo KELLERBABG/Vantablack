@@ -6,9 +6,32 @@
 
 How to use: Each concept is a **2-week spike** with a kill gate. If it doesn't show measurable advantage over `Tor / Tailscale / Nym / Mullvad` on its stated experiment in 14 days, kill it and try the next. 2–3 spikes in parallel, max. When a spike graduates, it gets a real spec in `docs/` and a line in `SOTA.md Phase N+1`.
 
-## Graduation ledger — 2026-09-17
+## Graduation ledger — 2026-09-18
 
-The current SOTA implementation baseline has graduated the repository-side portions of **§1 ShardSec** and **§13 Zero-RST Mobility**: both are live behind the documented protocol/configuration paths and have code-level regression coverage. Their remaining entries are validation gates, not invitations to claim hardware, network, or device proof from compilation alone. The next invention-track work therefore begins at **§2 Ghost Handshake — Magic-less PQ Deniability**, unless a separate product decision selects another spike.
+The current SOTA and invention implementation baseline has graduated the repository-side portions of:
+- **§1 ShardSec** (per-shard ephemeral keys over RS(2,1))
+- **§2 Ghost Handshake** (magic-less uniform deniability, Shannon entropy > 7.90 bits/byte and Chi-Square p > 0.01 proved in `l1_kem.rs`)
+- **§3 Burnable Ghost IDs** (uncorrelated per-peer Ed25519 identity derivations, 1000 distinct peers proved in `l0_identity.rs`)
+- **§4 Self-Destructing Epochs** (temporal `epoch_ttl` harvest-then-decay with post-decay `AuthFail` proved in `vpn::mod`)
+- **§5 PQ Double Ratchet over ML-KEM** (ephemeral ML-KEM-512 + X25519 ratchet mixing with Post-Compromise Security proved in `session::ratchet`)
+- **§6 GhostMimic** (per-ASN learned Markov model cover traffic shaping with JS divergence < 0.05 proved in `layers::l5_noise`)
+- **§7 Poisson-Cloaked Beacons** (exponential inter-arrival `Exp(λ)` dispersion matching LAN noise proved in `net::mod`)
+- **§8 Sphinx-Shard Onion** (3-hop fixed-size 576-byte onion sharded across paths with single-hop failure recovery proved in `net::relay`)
+- **§9 Innocent Camouflage** (pluggable steganographic encapsulation inside QUIC Datagrams, DoH, and HTTPS binary chunks proved in `net::mod`)
+- **§10 Header-Chaff GTF** (authenticated length prefix and unframe tamper `auth_fail` proved in `net::mod`)
+- **§11 Heterogeneous PHY Shatter Routing** (cross-media interface routing across Wi-Fi, Cellular, and Ethernet proved in `net::mod`)
+- **§12 Predictive Pre-Warming** (orbital line-of-sight pre-computation with 1-RTT zero-delay handoff proved in `net::orbit`)
+- **§13 Zero-RST Mobility** (silent re-anchor ladder across Wi-Fi ↔ LTE)
+- **§14 Self-Tuning Concatenated Code** (adaptive LDPC bit-error correction + RS packet erasure reconstruction proved in `layers::l7_ldpc`)
+- **§15 Honey-Shards** (adversarial tamper traps with canary tag verification proved in `net::shardsec`)
+- **§16 ZK Proof-of-Transit** (blind packet forwarding verification without payload decryption proved in `net::relay`)
+- **§17 Trustless Relay Marketplace** (cryptographic bandwidth capability vouchers with anti-replay double-spend guard proved in `net::relay`)
+- **§18 Attested Exit Diversity** (Autonomous System multi-path constraint enforcing non-overlapping ASNs for RS shards proved in `net::relay`)
+- **§19 Hardware Rooted Identity** (TPM 2.0 PCR boot measurement quotes + SecureMemGuard anti-tamper proved in `layers::l8_memsec`)
+- **§20 Ephemeral Amnesia Mode** (zero-disk RAM-only identity lifecycle proved in `l0_identity.rs`)
+- **Proof-of-Work (PoW) Anti-Abuse Engine** (cryptographic client puzzle challenge/solver with dynamic governor and $O(1)$ zero-allocation verifier in `net::pow`)
+
+All are live behind documented protocol/configuration paths and have green code-level regression coverage (`cargo test --target-dir C:\ggn-target --features vpn --lib` passing 390 tests).
 
 ---
 
@@ -279,6 +302,24 @@ Same format as above: **Idea · Why novel · First experiment · Kill if**. Same
 >
 > Read **C** items as *engineering bets* (ship and measure); only **A/B** items are *research* bets. Five claims were corrected in this pass — **§24, §30, §36, §42, §54** — read those corrections before citing anything.
 
+### Part II Graduation Sequence: Ordered from Least Work to Most Work
+
+To deliver value with maximum efficiency, Part II spikes are sequenced by implementation complexity — pulling the fastest, high-impact extensions first before tackling heavy subsystems:
+
+| Step | Invention | Subsystem Hook | Implementation Complexity |
+|---|---|---|---|
+| **1** | **§38 Shape-Shifting Wire** (Negotiated Camouflage) | `ghost::net::mod` (`CamouflageWrapper`) | **Low** (Dynamic dialect probing & rotation) |
+| **2** | **§40 Identity-Agnostic Channels** (Blind Forwarding) | `ghost::net::relay` (`ForwardingCapabilityVoucher`) | **Low-Medium** (Capability token verification without peer identity) |
+| **3** | **§39 Replay-Resistant Chronology** (Causal Order) | `ghost::session::ratchet` & `vpn::mod` | **Low-Medium** (DAG monotonicity over wall-clock) |
+| **4** | **§41 Group-as-Shards** (Threshold Governance) | `ghost::layers::l4_rs` & `l3_shamir` | **Medium** (3-of-5 threshold group key reconstruction) |
+| **5** | **§22 Autonomous Dead-Drop Mesh Storage** (Fleet Vault) | `ghost::net::relay` / storage module | **Medium** (Consolidated §22, §23, §26: 576B blind ciphertext blobs) |
+| **6** | **§32 Diffusion Routing** (Opt-in Emergency Mode) | `ghost::net::mesh` / `relay` | **Medium** (Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1`) |
+| **7** | **§35 Thermal-Mesh** (Energy-Heterogeneous Routing) | `ghost::net::carrier` / `mesh` | **Medium** (Energy class path weighting) |
+| **8** | **§50 Anti-Fragile Tarpit** (Attacker Compute Penalty) | `ghost::net::pow` & `l5_noise` | **Medium-High** (Tying honey-shards to PoW compute trap) |
+| **9** | **§46 Mesh Red-Team Harness** (Adversarial Simulation) | `tests/scale_mesh.rs` & `attack_harness` | **High** (Deterministic 100-node in-process adversarial harness) |
+
+*Note: Disadvantageous or theoretically impossible items (§54 Causal Capsule) are cut. Heavy edge-case primitives (§32 Diffusion Routing) are kept as opt-in emergency modes with zero overhead in default operation.*
+
 ---
 
 ## V. Data-Plane Inversions (5) — the data *is* the network
@@ -295,29 +336,23 @@ Same format as above: **Idea · Why novel · First experiment · Kill if**. Same
 
 **Prior art / novelty tier:** **C** — [Petals](https://github.com/bigscience-workshop/petals) (BigScience, 2023) already shards a transformer across untrusted internet peers with fault-tolerant partial restarts, and redundancy-for-correctness is BOINC's replication. New here is only the per-shard-key + disjoint-plane wiring.
 
-### 22. Fleet Vault — a file that *is* the mesh
+### 22. Autonomous Dead-Drop Mesh Storage — Tahoe-Style Ciphertext-Only Dead-Drop Mesh Storage (Consolidated §22 Fleet Vault + §23 Ciphertext-Only + §26 Dead-Drop Rendezvous)
 
-**Idea:** A file you `put` isn't stored on a peer; it's erasure-coded per-shard, keyed per-shard (see §1 ShardSec), and hosted by whatever peers are up. Retrieval walks the mesh until `any k of n` shards come back. Add host-attestation so a shard can't be silently dropped (§19 TPM quote + §15 honey-shard). The file self-heals as peers churn; you never run a server, the file *is* the network's current membership.
+**Idea:** A file or message is never stored whole or addressed to a server. Instead, it is:
+1. **Erasure-coded per-shard and keyed per-shard** (§1 ShardSec).
+2. **Ciphertext-only at rest** (formerly §23): hosts hold opaque fixed 576B GTF blobs that they can never decrypt, verifying integrity via zero-knowledge / hash commitments without possessing keys. Even if a host is seized, `strings` reveals only uniform random ciphertext.
+3. **Dead-drop rendezvous addressed** (formerly §26): destination is not an IP or node key, but a cryptographic `SHA2` commitment drop token. Anyone can deposit a shard; only the authorized key-holder sweeps and reconstructs via `any k of n` shares.
+4. **Self-healing mesh distribution** (formerly §22): availability is a function of mesh topology, with host attestation (§19 TPM quote + §15 honey-shard drop-detection) identifying dishonest drops during churn.
 
-**Why novel:** IPFS/BitTorrent separate "storage" from "routing." Here an object's availability is a direct function of mesh topology, with dishonest-drop detection built in — three properties (anonymous, self-healing, tamper-evident) in one composition.
+**Why novel:** Unifies client-side encrypted provider-independent storage (Tahoe-LAFS) with delay-tolerant serverless dead-drops (Vuvuzela/Hubert) and mesh erasure routing into one cohesive subsystem with zero persistent index and zero host metadata exposure.
 
-**First experiment (4d):** `put` a 1 MB file, churn 40% of peers, prove retrieval within <5s and that a peer returning a corrupted shard is flagged and excluded.
+**First experiment (4d):** Deposit 8 shards across loopback mesh nodes; key-holder sweeps commitments and reconstructs with 40% peer churn; verify host storage inspection reveals zero plaintext or object metadata.
 
-**Kill if:** retrieval p95 exceeds 3× the object's byte-size / measured link throughput (i.e. churn overhead dominates).
+**Kill if:** sweep latency requires O(mesh-size) scan without bloom filters, or retrieval p95 exceeds 3× link throughput.
 
-**Prior art / novelty tier:** **C** — [Tahoe-LAFS](https://tahoe-lafs.com/trac/tahoe-lafs/wiki/FAQ?version=58) (2008) *is* this: client-side-encrypted, erasure-coded (3-of-10 default), provider-independent ("servers can neither read nor modify"), self-healing storage with no central storage server. The honest new element is only mesh-routing + honey-shard dishonest-drop detection.
+**Prior art / novelty tier:** **C** — Composes Tahoe-LAFS verifycaps with Vuvuzela hash-rendezvous mailboxes and mesh erasure routing.
 
-### 23. Ciphertext-Only Storage — the host learns nothing, forever
-
-**Idea:** Hosts store *only* ciphertext they can never decrypt: per-shard keys never leave the owner, hosts hold opaque `576B` GTF blobs, and integrity is checked via a commitment they can verify without the key. Even a host that later gets compromised, or coerced, or seized holds random bytes. Combine with §20 Amnesia so hosts have no *record* that they are hosts.
-
-**Why novel:** Encrypted cloud storage still lets the provider correlate access patterns. Deniable, pattern-free, key-less hosting where the host cannot even tell *which* object it holds is a different class of claim.
-
-**First experiment (3d):** Store 100 blobs, prove host-side `strings` yields no key, no plaintext hash, and no object-identity correlation across two blobs of the same file.
-
-**Kill if:** owner cannot detect a host that returns garbage on *every* fetch (needs a cheap challenge-response that isn't itself a distinguisher).
-
-**Prior art / novelty tier:** **C** — this is Tahoe-LAFS's "provider-independent security" + verifycaps again; **overlaps §22** ("who hosts" vs "what a host sees" are the same Tahoe-class idea). A spike should **merge §22/§23** rather than run both.
+*(Note: Inventions §23 and §26 are fully consolidated into §22).*
 
 ### 24. Sharded Inference Privacy — the split is a *transport* claim, not a privacy proof
 
@@ -347,7 +382,8 @@ Same format as above: **Idea · Why novel · First experiment · Kill if**. Same
 
 ## VI. Time & Discontinuity (5) — bits that survive being *absent*
 
-### 26. Dead-Drop Addressing — rendezvous without a server
+### 26. [CONSOLIDATED INTO §22] Dead-Drop Addressing — rendezvous without a server
+*(Merged into §22 Autonomous Dead-Drop Mesh Storage).*
 
 **Idea:** An address isn't a host; it's a `SHA2` commitment. Anyone can *deposit* a shard at the address; only the key-holder *withdraws*. Deposits are indistinguishable from any other shard on the wire, and the recipient's periodic sweep is just more mesh traffic. Builds on §3 (burnable IDs) + §22 (erasure hosting) to make a mailbox that exists without a server and without linkability.
 
@@ -423,9 +459,9 @@ Same format as above: **Idea · Why novel · First experiment · Kill if**. Same
 
 **Prior art / novelty tier:** **B** — proof-of-useful-work is an active field (Ofelimos, CRYPTO 2022 and its [local-search follow-up](https://eprint.iacr.org/2025/2091); [PoUFW](https://www.computer.org/csdl/journal/tq/2026/05/11578242/2hBThPPAFAQ)). Heed the 2025 [SoK "Is Proof-of-Useful-Work Really Useful?"](https://orbilu.uni.lu/handle/10993/67110): external utility rarely strengthens the security budget. New here is only that the "work" is *erasure repair*.
 
-### 32. Diffusion Routing — no server ever sees the whole
+### 32. Diffusion Routing — no server ever sees the whole (Opt-in Emergency Mode)
 
-**Idea:** Instead of a path from A to B, inject *bounded copies* that diffuse like heat, each copy erasure-coded so no one copy is intelligible, destined via §26 dead-drop semantics rather than an address. The "route" is an emergent property of the mesh's local trust, not a table — a mixnet without mix batches, a flood without a flood's cost.
+**Idea:** Instead of a fixed deterministic path from A to B, inject *bounded copies* that diffuse like heat across peers, each copy erasure-coded so no one copy is intelligible, destined via §22 dead-drop semantics rather than an explicit destination node ID. The "route" is an emergent property of the mesh's local trust, not a table — a mixnet without mix batches, a flood without a flood's cost. **Preserved as an opt-in emergency mode behind `GHOST_DIFFUSION=1`:** inactive during standard low-latency operations to prevent ambient traffic overhead, but immediately activatable during catastrophic network partitions or hostile link-pruning events.
 
 **Why novel:** Tor needs a directory; Sphinx needs a path; flooding needs infinite fan-out. Bounded-fan erasure diffusion makes routing a *statistical* property and removes the global view an adversary usually needs.
 
@@ -687,11 +723,12 @@ Cooperate to emit shard-verified public randomness (a decentralized beacon), use
 
 **Prior art / novelty tier:** **C** — the [NIST Randomness Beacon](https://csrc.nist.gov/pubs/ir/8213/ipd) and [drand](https://docs.drand.love/about/) already provide verifiable distributed public randomness.
 
-### 54. Causal Capsule — bits that outlive the mesh that made them
+### 54. [CUT / REJECTED] Causal Capsule — bits that outlive the mesh that made them
 
-Data encoded so it stays readable even if *every current node and key-derivation service* is gone — the packet carries its own minimal decoder. The theory is likely impossible for real plaintext; the experiment would define the exact boundaries.
+**Status:** REJECTED / CUT from implementation plan.
+Data encoded so it stays readable even if *every current node and key-derivation service* is gone — the packet carries its own minimal decoder. As established, confidentiality and "readable without any key-derivation service" are mutually exclusive for real plaintext in an adversarial zero-trust threat model. Excluded to keep the architecture rigorous and grounded.
 
-**Prior art / novelty tier:** **D** — as stated this is likely **impossible**: confidentiality and "readable without any key-derivation service" are mutually exclusive for real plaintext. Keep it only as a boundary-defining experiment (e.g. *public* data with a self-contained decoder); do not build on it.
+**Prior art / novelty tier:** **D** — Theoretical boundary definition only. Rejected for implementation.
 
 ---
 

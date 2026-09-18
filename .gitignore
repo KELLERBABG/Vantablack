@@ -26,6 +26,8 @@ __pycache__/
 *.rlib
 .reasonix/
 *reasonix*
+.freebuff/
+*freebuff*
 *.bundle
 PROTOTYPE.md
 config.env

@@ -118,7 +118,11 @@ pub fn start_beacon_announcer(identity: GhostIdentity) {
             loop {
                 let beacon = build_signed_beacon(&identity);
                 let _ = sock.send_to(&beacon, mc_addr).await;
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                let gap = vantablack::ghost::net::poisson_beacon_gap(
+                    rand::random::<f64>(),
+                    BEACON_INTERVAL_SECS as f64,
+                );
+                tokio::time::sleep(gap).await;
             }
         }
     });

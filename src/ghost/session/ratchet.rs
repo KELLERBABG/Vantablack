@@ -1162,4 +1162,48 @@ mod tests {
         r.step(&StepSecrets::new(dh, kem.clone()));
         assert_ne!(r.seal_key(NonceDirection::InitiatorToResponder), handshake);
     }
+
+    #[test]
+    fn test_pq_double_ratchet_post_compromise_recovery() {
+        // Invention §5: Post-Compromise Security (PCS) via ephemeral hybrid ratchet exchange.
+        // Even if an attacker learns the exact root_key at epoch N, after a fresh
+        // ephemeral hybrid exchange (ML-KEM-512 + X25519) between Alice and Bob,
+        // the attacker cannot derive the epoch N+1 keys or decrypt traffic.
+        let mut alice = SessionRatchet::new(master());
+        let mut bob = SessionRatchet::new(master());
+
+        // Epoch 0 compromised: attacker steals root_key
+        let compromised_root_epoch0 = alice.root_key();
+        assert_eq!(compromised_root_epoch0, master());
+
+        // Alice and Bob generate ephemeral ratchet step
+        let alice_step = RatchetStep::generate();
+        let bob_step = RatchetStep::generate();
+        let bob_x_pub = bob_step.x_public_bytes();
+
+        let (bob_secrets, ct) = bob_step.respond(&alice_step.x_public_bytes(), &alice_step.kem_public_bytes()).expect("respond");
+        let alice_secrets = alice_step.finish(&bob_x_pub, &ct).expect("finish");
+
+        // Step both sides to Epoch 1
+        let epoch_alice = alice.step(&alice_secrets);
+        let epoch_bob = bob.step(&bob_secrets);
+        assert_eq!(epoch_alice, 1);
+        assert_eq!(epoch_bob, 1);
+
+        // Verify keys match between Alice and Bob
+        let alice_seal_key = alice.seal_key(NonceDirection::InitiatorToResponder);
+        let bob_open_key = bob.open_key(1, NonceDirection::InitiatorToResponder, 0).expect("bob can open");
+        assert_eq!(alice_seal_key, bob_open_key);
+
+        // Attacker attempts to forge/derive epoch 1 without knowing the private ephemeral keys:
+        // Attacker has compromised root key and observes on-wire public keys & ciphertext:
+        // But attacker cannot decapsulate ML-KEM-512 ct or complete X25519 DH.
+        // If attacker guesses/fabricates secrets:
+        let fake_secrets = StepSecrets::new([0x00u8; 32], vec![0u8; 32]);
+        let mut attacker_ratchet = SessionRatchet::new(compromised_root_epoch0);
+        attacker_ratchet.step(&fake_secrets);
+
+        let attacker_key = attacker_ratchet.seal_key(NonceDirection::InitiatorToResponder);
+        assert_ne!(attacker_key, alice_seal_key, "Attacker cannot derive epoch 1 key without breaking KEM");
+    }
 }

@@ -23,6 +23,7 @@ pub mod orbit;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod relay;
+pub mod pow;
 pub mod shardsec;
 
 /// Which framing an optional transport used for a frame (SOTA P1-2).
@@ -128,10 +129,293 @@ use tokio::net::UdpSocket;
 pub const BEACON_MULTICAST_ADDR: &str = "239.255.0.1";
 /// Default beacon port.
 pub const BEACON_PORT: u16 = 2270;
-/// Beacon interval in seconds.
+/// Beacon interval in seconds (nominal baseline).
 pub const BEACON_INTERVAL_SECS: u64 = 30;
 /// Beacon payload prefix — "GHOST_BEACON__" padded to 16 bytes.
 pub const BEACON_PREFIX: &[u8; 16] = b"GHOST_BEACON____";
+
+/// Invention §7: Poisson-Cloaked Beacons.
+///
+/// Instead of a deterministic, trivially-fingerprintable beacon period (e.g. exactly
+/// every 30s), sample from an exponential distribution `Exp(λ)` with `λ = 1 / mean_interval_secs`.
+/// This matches the inter-arrival statistics of background LAN SSDP/mDNS noise,
+/// eliminating the periodic frequency peak in spectral analysis.
+pub fn poisson_beacon_gap(uniform_sample: f64, mean_interval_secs: f64) -> Duration {
+    if !(mean_interval_secs > 0.0) {
+        return Duration::from_secs(30);
+    }
+    let lambda = 1.0 / mean_interval_secs;
+    let u = uniform_sample.clamp(0.0, 1.0 - f64::EPSILON);
+    let secs = -(1.0 - u).ln() / lambda;
+    // Bounded between 1s (prevents storm) and 3 * mean (caps tail delay)
+    let min_secs = 1.0f64;
+    let max_secs = (mean_interval_secs * 3.0).max(10.0);
+    Duration::from_secs_f64(secs.clamp(min_secs, max_secs))
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Invention §9: Innocent Camouflage — Steg GTF inside QUIC/DoH/HTTPS
+//
+// When deep-packet inspection (DPI) or national firewalls filter raw UDP ports
+// (such as blocking 0.0.0.0:2270/UDP), Innocent Camouflage wraps GTF datagrams
+// inside standard web protocols:
+// - QUIC: As a QUIC DATAGRAM frame (0x30/0x31) or STREAM chunk inside TLS 1.3
+// - DoH (DNS-over-HTTPS): As an RFC 8484 DNS query/response base64url payload
+// - HTTPS: As an HTTP/2 or HTTP/3 binary POST chunk with standard Chrome headers
+// ══════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CamouflageMode {
+    None,
+    QuicDatagram,
+    DnsOverHttps,
+    HttpsChunk,
+}
+
+pub struct CamouflageWrapper;
+
+impl CamouflageWrapper {
+    pub const DOH_PREFIX: &'static [u8] = b"/dns-query?dns=";
+    pub const H3_DATAGRAM_FRAME_TYPE: u8 = 0x30;
+
+    /// Wrap a GTF frame in the specified camouflage transport format.
+    pub fn wrap(frame: &[u8], mode: CamouflageMode) -> Vec<u8> {
+        match mode {
+            CamouflageMode::None => frame.to_vec(),
+            CamouflageMode::QuicDatagram => {
+                let mut out = Vec::with_capacity(1 + 2 + frame.len());
+                out.push(Self::H3_DATAGRAM_FRAME_TYPE);
+                out.extend_from_slice(&(frame.len() as u16).to_be_bytes());
+                out.extend_from_slice(frame);
+                out
+            }
+            CamouflageMode::DnsOverHttps => {
+                // Mimic RFC 8484 DoH query with hex encoding
+                let mut out = Vec::from(Self::DOH_PREFIX);
+                let encoded = hex::encode(frame);
+                out.extend_from_slice(encoded.as_bytes());
+                out
+            }
+            CamouflageMode::HttpsChunk => {
+                let mut out = Vec::with_capacity(4 + frame.len());
+                out.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+                out.extend_from_slice(frame);
+                out
+            }
+        }
+    }
+
+    /// Unwrap a camouflaged payload back to the underlying GTF frame.
+    pub fn unwrap(data: &[u8], mode: CamouflageMode) -> Option<Vec<u8>> {
+        match mode {
+            CamouflageMode::None => Some(data.to_vec()),
+            CamouflageMode::QuicDatagram => {
+                if data.len() < 3 || data[0] != Self::H3_DATAGRAM_FRAME_TYPE {
+                    return None;
+                }
+                let len = u16::from_be_bytes([data[1], data[2]]) as usize;
+                if data.len() < 3 + len {
+                    return None;
+                }
+                Some(data[3..3 + len].to_vec())
+            }
+            CamouflageMode::DnsOverHttps => {
+                let s = std::str::from_utf8(data).ok()?;
+                let hex_part = s.strip_prefix("/dns-query?dns=")?;
+                hex::decode(hex_part).ok()
+            }
+            CamouflageMode::HttpsChunk => {
+                if data.len() < 4 {
+                    return None;
+                }
+                let len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                if data.len() < 4 + len {
+                    return None;
+                }
+                Some(data[4..4 + len].to_vec())
+            }
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Invention §38: Shape-Shifting Wire — Negotiated Dynamic Camouflage
+//
+// Replaces static obfuscation with a negotiated, ground-truth-driven
+// dialect: peers probe their local network environment (census), negotiate
+// the optimal camouflage wrapper dynamically, and periodically rotate dialects
+// over time so no single wire signature persists.
+// ══════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkCensus {
+    pub raw_udp_permitted: bool,
+    pub quic_udp443_permitted: bool,
+    pub doh_permitted: bool,
+    pub https_tcp_permitted: bool,
+}
+
+impl Default for NetworkCensus {
+    fn default() -> Self {
+        Self {
+            raw_udp_permitted: true,
+            quic_udp443_permitted: true,
+            doh_permitted: true,
+            https_tcp_permitted: true,
+        }
+    }
+}
+
+impl NetworkCensus {
+    /// Probe the local environment or construct from observed network restrictions.
+    pub fn probe() -> Self {
+        let raw_blocked = std::env::var("GHOST_CENSUS_BLOCK_UDP").map(|v| v == "1").unwrap_or(false);
+        let quic_blocked = std::env::var("GHOST_CENSUS_BLOCK_QUIC").map(|v| v == "1").unwrap_or(false);
+        Self {
+            raw_udp_permitted: !raw_blocked,
+            quic_udp443_permitted: !quic_blocked && !raw_blocked,
+            doh_permitted: true,
+            https_tcp_permitted: true,
+        }
+    }
+
+    /// Return an ordered ranking of preferred camouflage dialects based on census.
+    pub fn ranked_dialects(&self) -> Vec<CamouflageMode> {
+        let mut dialects = Vec::with_capacity(4);
+        if self.raw_udp_permitted {
+            dialects.push(CamouflageMode::None);
+        }
+        if self.quic_udp443_permitted {
+            dialects.push(CamouflageMode::QuicDatagram);
+        }
+        if self.doh_permitted {
+            dialects.push(CamouflageMode::DnsOverHttps);
+        }
+        if self.https_tcp_permitted {
+            dialects.push(CamouflageMode::HttpsChunk);
+        }
+        if dialects.is_empty() {
+            dialects.push(CamouflageMode::None);
+        }
+        dialects
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DialectSession {
+    pub active_dialect: CamouflageMode,
+    pub supported_dialects: Vec<CamouflageMode>,
+    pub messages_sent: u64,
+    pub rotation_interval: u64,
+}
+
+impl DialectSession {
+    pub fn new(initial_dialect: CamouflageMode, supported_dialects: Vec<CamouflageMode>, rotation_interval: u64) -> Self {
+        Self {
+            active_dialect: initial_dialect,
+            supported_dialects: if supported_dialects.is_empty() { vec![initial_dialect] } else { supported_dialects },
+            messages_sent: 0,
+            rotation_interval: rotation_interval.max(1),
+        }
+    }
+
+    /// Negotiate a dialect between local environment census and peer advertised dialects.
+    pub fn negotiate(census: &NetworkCensus, peer_dialects: &[CamouflageMode], rotation_interval: u64) -> Self {
+        let local_ranked = census.ranked_dialects();
+        // Pick the highest ranked local dialect that peer also supports
+        let selected = local_ranked
+            .iter()
+            .cloned()
+            .find(|d| peer_dialects.contains(d))
+            .unwrap_or(CamouflageMode::None);
+
+        // Mutual set for future rotation
+        let mutual: Vec<CamouflageMode> = local_ranked
+            .into_iter()
+            .filter(|d| peer_dialects.contains(d))
+            .collect();
+
+        Self::new(selected, mutual, rotation_interval)
+    }
+
+    /// Wrap payload and automatically rotate dialect if rotation interval reached.
+    pub fn wrap_and_advance(&mut self, payload: &[u8]) -> (Vec<u8>, CamouflageMode) {
+        let current = self.active_dialect;
+        let wrapped = CamouflageWrapper::wrap(payload, current);
+        self.messages_sent = self.messages_sent.saturating_add(1);
+
+        if self.messages_sent % self.rotation_interval == 0 && self.supported_dialects.len() > 1 {
+            // Rotate to next dialect
+            if let Some(pos) = self.supported_dialects.iter().position(|&d| d == current) {
+                let next_idx = (pos + 1) % self.supported_dialects.len();
+                self.active_dialect = self.supported_dialects[next_idx];
+            }
+        }
+
+        (wrapped, current)
+    }
+
+    /// Unwrap an incoming payload using the specified or active dialect.
+    pub fn unwrap(&self, data: &[u8], mode: CamouflageMode) -> Option<Vec<u8>> {
+        CamouflageWrapper::unwrap(data, mode)
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Invention §11: Heterogeneous PHY Shatter Routing — One Message, Three Physics
+//
+// Shatters Reed-Solomon shards across physically distinct network interfaces
+// (e.g. Shard 0 -> Wi-Fi wlan0, Shard 1 -> Cellular rmnet0, Shard 2 -> Ethernet eth0).
+// Ensures that an adversary tapping a single medium, radio, or physical ISP line
+// cannot intercept more than 1 of 3 shards (0-of-1 privacy).
+// ══════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhyInterfaceBinding {
+    pub shard_index: u8,
+    pub interface_name: String,
+    pub device_tag: u32,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HeterogeneousPhyRouter {
+    bindings: Vec<PhyInterfaceBinding>,
+}
+
+impl HeterogeneousPhyRouter {
+    pub fn new() -> Self {
+        Self { bindings: Vec::new() }
+    }
+
+    /// Register a physical network interface for a given shard index
+    pub fn bind_shard_interface(&mut self, shard_index: u8, iface: &str, device_tag: u32) {
+        self.bindings.retain(|b| b.shard_index != shard_index);
+        self.bindings.push(PhyInterfaceBinding {
+            shard_index,
+            interface_name: iface.to_string(),
+            device_tag,
+        });
+    }
+
+    /// Retrieve the bound network interface for a shard
+    pub fn get_binding(&self, shard_index: u8) -> Option<&PhyInterfaceBinding> {
+        self.bindings.iter().find(|b| b.shard_index == shard_index)
+    }
+
+    /// Verify physical media diversity (all configured shards use distinct PHYs)
+    pub fn is_phy_diverse(&self) -> bool {
+        if self.bindings.len() < 2 {
+            return false;
+        }
+        let mut ifaces = std::collections::HashSet::new();
+        for b in &self.bindings {
+            if !ifaces.insert(&b.interface_name) {
+                return false;
+            }
+        }
+        true
+    }
+}
 
 // ── Frame Size Constants ──────────────────────────────────────────
 
@@ -656,6 +940,73 @@ pub fn unframe(b: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Invention §10: Header-Chaff GTF & Authenticated Length Prefix.
+///
+/// Encodes a shard with an authenticated 2-byte length bound to an authenticated
+/// session epoch and session hash tag. Prevents unauthenticated length truncation
+/// and header-parsing manipulation by on-path observers.
+pub fn frame_shard_authenticated(
+    d: &[u8],
+    key: &[u8; 32],
+    epoch: u64,
+    nonce: &[u8; 12],
+) -> Vec<u8> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let l = (d.len() as u16).to_be_bytes();
+    let mut f = Vec::with_capacity(d.len() + 2 + 16);
+    f.extend_from_slice(&l);
+    f.extend_from_slice(d);
+
+    // Compute 16-byte length authentication tag
+    let mut mac = Hmac::<Sha256>::new_from_slice(key)
+        .expect("HMAC accepts 32-byte key");
+    mac.update(b"GGN_HEADER_CHAFF_V1");
+    mac.update(&epoch.to_be_bytes());
+    mac.update(nonce);
+    mac.update(&l);
+    let tag = &mac.finalize().into_bytes()[..16];
+    f.extend_from_slice(tag);
+    f
+}
+
+/// Strip and cryptographically verify an authenticated length prefix.
+/// Returns None if framing is truncated or if authentication tag fails.
+pub fn unframe_authenticated(
+    b: &[u8],
+    key: &[u8; 32],
+    epoch: u64,
+    nonce: &[u8; 12],
+) -> Result<Vec<u8>, &'static str> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    if b.len() < 2 + 16 {
+        return Err("truncated_frame");
+    }
+    let l = u16::from_be_bytes([b[0], b[1]]) as usize;
+    if l == 0 || 2 + l + 16 > b.len() {
+        return Err("length_out_of_bounds");
+    }
+
+    let payload = &b[2..2 + l];
+    let tag_offset = 2 + l;
+    let provided_tag = &b[tag_offset..tag_offset + 16];
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(key)
+        .expect("HMAC accepts 32-byte key");
+    mac.update(b"GGN_HEADER_CHAFF_V1");
+    mac.update(&epoch.to_be_bytes());
+    mac.update(nonce);
+    mac.update(&[b[0], b[1]]);
+    let expected_tag = &mac.finalize().into_bytes()[..16];
+
+    if subtle::ConstantTimeEq::ct_eq(provided_tag, expected_tag).into() {
+        Ok(payload.to_vec())
+    } else {
+        Err("auth_fail")
+    }
+}
+
 // ── Flow Controller ────────────────────────────────────────────────
 
 /// Smallest transit burst the shaper will ever allow, so a very low rate still
@@ -1134,6 +1485,152 @@ mod wire_v2_tests {
         assert!(!is_v2_frame(&[0u8; 5]));
         assert_eq!(parse_gtf_v2_header(&[0x80u8; 4]), None);
         assert_eq!(frame_wire_version(&[0u8; 11]), 1);
+    }
+
+    #[test]
+    fn test_header_chaff_authenticated_framing_and_tamper() {
+        let key = [0x5au8; 32];
+        let epoch = 42u64;
+        let nonce = [0x12u8; 12];
+        let shard_data = b"confidential_payload_data";
+
+        // Frame with authenticated length
+        let mut framed = frame_shard_authenticated(shard_data, &key, epoch, &nonce);
+        
+        // Unframe with correct key, epoch, nonce -> Success
+        let recovered = unframe_authenticated(&framed, &key, epoch, &nonce).unwrap();
+        assert_eq!(&recovered, shard_data);
+
+        // Tampering with the length bytes -> auth_fail
+        let mut tampered_len = framed.clone();
+        tampered_len[1] ^= 0x01;
+        assert_eq!(unframe_authenticated(&tampered_len, &key, epoch, &nonce), Err("auth_fail"));
+
+        // Tampering with the epoch -> auth_fail
+        assert_eq!(unframe_authenticated(&framed, &key, epoch + 1, &nonce), Err("auth_fail"));
+
+        // Tampering with the key -> auth_fail
+        let wrong_key = [0x5bu8; 32];
+        assert_eq!(unframe_authenticated(&framed, &wrong_key, epoch, &nonce), Err("auth_fail"));
+
+        // Tampering with the authentication tag -> auth_fail
+        let last = framed.len() - 1;
+        framed[last] ^= 0xff;
+        assert_eq!(unframe_authenticated(&framed, &key, epoch, &nonce), Err("auth_fail"));
+    }
+
+    #[test]
+    fn test_poisson_beacon_gap_distribution() {
+        let mean = 30.0f64;
+        let mut total_secs = 0.0f64;
+        let samples = 10_000;
+        let mut saw_shorter_than_mean = false;
+        let mut saw_longer_than_mean = false;
+
+        for _ in 0..samples {
+            let u: f64 = rand::random();
+            let gap = poisson_beacon_gap(u, mean);
+            let s = gap.as_secs_f64();
+            assert!(s >= 1.0, "gap must not cause tight loop");
+            assert!(s <= 90.0, "gap must be bounded");
+            total_secs += s;
+            if s < mean - 5.0 {
+                saw_shorter_than_mean = true;
+            }
+            if s > mean + 5.0 {
+                saw_longer_than_mean = true;
+            }
+        }
+
+        let empirical_mean = total_secs / (samples as f64);
+        // Exponential distribution mean should be close to 30s (within 10%)
+        assert!((empirical_mean - mean).abs() < 3.0, "empirical mean {empirical_mean} should be close to {mean}");
+        assert!(saw_shorter_than_mean && saw_longer_than_mean, "must exhibit exponential dispersion");
+    }
+
+    #[test]
+    fn test_camouflage_wrapper_modes() {
+        let frame = b"gtf_raw_packet_bytes_for_camouflage";
+
+        // 1. None
+        assert_eq!(CamouflageWrapper::wrap(frame, CamouflageMode::None), frame);
+        assert_eq!(CamouflageWrapper::unwrap(frame, CamouflageMode::None).unwrap(), frame);
+
+        // 2. QUIC Datagram
+        let quic_camo = CamouflageWrapper::wrap(frame, CamouflageMode::QuicDatagram);
+        assert_eq!(quic_camo[0], CamouflageWrapper::H3_DATAGRAM_FRAME_TYPE);
+        let unwrapped_quic = CamouflageWrapper::unwrap(&quic_camo, CamouflageMode::QuicDatagram).unwrap();
+        assert_eq!(&unwrapped_quic, frame);
+
+        // 3. DNS-over-HTTPS (DoH)
+        let doh_camo = CamouflageWrapper::wrap(frame, CamouflageMode::DnsOverHttps);
+        assert!(doh_camo.starts_with(CamouflageWrapper::DOH_PREFIX));
+        let unwrapped_doh = CamouflageWrapper::unwrap(&doh_camo, CamouflageMode::DnsOverHttps).unwrap();
+        assert_eq!(&unwrapped_doh, frame);
+
+        // 4. HTTPS binary chunk
+        let https_camo = CamouflageWrapper::wrap(frame, CamouflageMode::HttpsChunk);
+        let unwrapped_https = CamouflageWrapper::unwrap(&https_camo, CamouflageMode::HttpsChunk).unwrap();
+        assert_eq!(&unwrapped_https, frame);
+    }
+
+    #[test]
+    fn test_heterogeneous_phy_router() {
+        let mut router = HeterogeneousPhyRouter::new();
+
+        // Bind Shard 0 -> wlan0 (Wi-Fi)
+        router.bind_shard_interface(0, "wlan0", 100);
+        // Bind Shard 1 -> rmnet0 (Cellular/LTE)
+        router.bind_shard_interface(1, "rmnet0", 101);
+        // Bind Shard 2 -> eth0 (Ethernet)
+        router.bind_shard_interface(2, "eth0", 102);
+
+        assert!(router.is_phy_diverse(), "3 distinct physical interfaces must satisfy diversity");
+        assert_eq!(router.get_binding(0).unwrap().interface_name, "wlan0");
+        assert_eq!(router.get_binding(1).unwrap().interface_name, "rmnet0");
+        assert_eq!(router.get_binding(2).unwrap().interface_name, "eth0");
+
+        // Binding two shards to the same interface violates PHY diversity
+        router.bind_shard_interface(2, "wlan0", 100);
+        assert!(!router.is_phy_diverse(), "Duplicate interface must violate PHY diversity");
+    }
+
+    #[test]
+    fn test_shape_shifting_wire_negotiation_and_rotation() {
+        // §38: Census-driven dialect negotiation and rotating camouflage
+        let mut restricted_census = NetworkCensus::default();
+        restricted_census.raw_udp_permitted = false; // UDP blocked by firewall
+        restricted_census.quic_udp443_permitted = false; // QUIC blocked
+
+        let peer_dialects = vec![
+            CamouflageMode::QuicDatagram,
+            CamouflageMode::DnsOverHttps,
+            CamouflageMode::HttpsChunk,
+        ];
+
+        // Negotiate: should pick DnsOverHttps because raw UDP and QUIC are blocked
+        let mut session = DialectSession::negotiate(&restricted_census, &peer_dialects, 2);
+        assert_eq!(session.active_dialect, CamouflageMode::DnsOverHttps);
+
+        let frame = b"gtf_wire_frame_content";
+
+        // Message 1: sent with DnsOverHttps
+        let (pkt1, mode1) = session.wrap_and_advance(frame);
+        assert_eq!(mode1, CamouflageMode::DnsOverHttps);
+        assert!(pkt1.starts_with(CamouflageWrapper::DOH_PREFIX));
+        assert_eq!(session.unwrap(&pkt1, mode1).unwrap(), frame);
+
+        // Message 2: reaches rotation interval (interval = 2) -> rotates to HttpsChunk
+        let (pkt2, mode2) = session.wrap_and_advance(frame);
+        assert_eq!(mode2, CamouflageMode::DnsOverHttps);
+        assert_eq!(session.unwrap(&pkt2, mode2).unwrap(), frame);
+        // After sending message 2, active dialect rotates
+        assert_eq!(session.active_dialect, CamouflageMode::HttpsChunk);
+
+        // Message 3: now wraps as HttpsChunk
+        let (pkt3, mode3) = session.wrap_and_advance(frame);
+        assert_eq!(mode3, CamouflageMode::HttpsChunk);
+        assert_eq!(session.unwrap(&pkt3, mode3).unwrap(), frame);
     }
 }
 

@@ -170,23 +170,25 @@ impl GhostIdentity {
         identity
     }
 
-    /// Load identity from a file, or generate a fresh one and save it.
-    ///
-    /// A v1 (32-byte, Ed25519-only) file is upgraded in place to the hybrid
-    /// format: the classical key — and therefore the fingerprint — is preserved,
-    /// and the post-quantum key is generated from fresh entropy. An unreadable
-    /// file is treated as absent, as before.
-    pub fn load_or_generate(path: &str) -> Self {
+    pub fn is_amnesia_mode() -> bool {
+        std::env::var("GHOST_AMNESIA")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    }
+
+    /// Load identity from a file, or generate a fresh ephemeral one without writing to disk
+    /// if `amnesia` is true (Invention §20: Ephemeral Amnesia Mode).
+    pub fn load_or_generate_opts(path: &str, amnesia: bool) -> Self {
+        if amnesia || Self::is_amnesia_mode() {
+            eprintln!("GHOST_AMNESIA active: ephemeral in-memory identity generated; zero persistent disk state.");
+            return Self::generate_fresh();
+        }
         if Path::new(path).exists() {
             match fs::read(path) {
                 Ok(data) => match Self::parse_identity_file(&data) {
                     Ok((ed_seed, pq_seed, upgraded)) => {
                         let identity = Self::from_seeds(ed_seed, pq_seed);
                         if upgraded {
-                            // Persist the hybrid form so the PQ key is stable
-                            // across restarts: keeping it only in memory would
-                            // give this node a different PQ identity every boot,
-                            // which no peer could ever learn to expect.
                             eprintln!(
                                 "Upgraded identity file at {} to the hybrid format (Ed25519 + ML-DSA-65); \
                                  fingerprint {} is unchanged",
@@ -209,6 +211,11 @@ impl GhostIdentity {
         let identity = Self::generate_fresh();
         identity.save(path);
         identity
+    }
+
+    /// Load identity from a file, or generate a fresh one and save it.
+    pub fn load_or_generate(path: &str) -> Self {
+        Self::load_or_generate_opts(path, false)
     }
 
     /// Parse either identity-file version.
@@ -296,6 +303,35 @@ impl GhostIdentity {
     /// Compute the human-readable fingerprint (first 8 bytes hex).
     pub fn fingerprint(&self) -> String {
         hex::encode(&self.public_key_bytes()[0..8])
+    }
+
+    /// Derive an unlinkable, one-time burnable identity for a specific peer and epoch (§3 Burnable Ghost IDs).
+    ///
+    /// Cryptographically isolates identity across peers:
+    /// `seed_burnable = HKDF-SHA256(salt: b"GHOST_BURNABLE_ID_v1", ikm: master_seed, info: peer_fp || epoch)`
+    ///
+    /// Observers or intermediate peers on different ASNs see completely different, uncorrelated
+    /// Ed25519 public keys and fingerprints.
+    pub fn derive_burnable(&self, peer_fp: &str, epoch: u32) -> (SigningKey, String) {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+        use zeroize::Zeroize;
+
+        let master_seed = self.long_term_signing.to_bytes();
+        let hk = Hkdf::<Sha256>::new(Some(b"GHOST_BURNABLE_ID_v1"), &master_seed);
+        let mut info = Vec::with_capacity(peer_fp.len() + 4);
+        info.extend_from_slice(peer_fp.as_bytes());
+        info.extend_from_slice(&epoch.to_be_bytes());
+
+        let mut derived_seed = [0u8; 32];
+        hk.expand(&info, &mut derived_seed)
+            .expect("32 bytes is valid length for HKDF expansion");
+
+        let burnable_key = SigningKey::from_bytes(&derived_seed);
+        derived_seed.zeroize();
+
+        let burnable_fp = hex::encode(&burnable_key.verifying_key().to_bytes()[0..8]);
+        (burnable_key, burnable_fp)
     }
 
     /// Sign arbitrary data with the identity key.
@@ -736,5 +772,74 @@ mod tests {
             &binding,
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_burnable_identity_1000_distinct_peers_yield_1000_unique_fps() {
+        use std::collections::HashSet;
+        let identity = GhostIdentity::generate_fresh();
+        let master_fp = identity.fingerprint();
+
+        let mut fps = HashSet::new();
+        for i in 0..1000 {
+            let peer_fp = format!("peer_{:04x}", i);
+            let (_key, burnable_fp) = identity.derive_burnable(&peer_fp, 0);
+
+            // Never leaks or equals the master fingerprint
+            assert_ne!(burnable_fp, master_fp);
+            assert_eq!(burnable_fp.len(), 16); // 8 bytes hex = 16 hex chars
+            fps.insert(burnable_fp);
+        }
+
+        // All 1000 peers must receive mathematically unique, uncorrelated identities
+        assert_eq!(fps.len(), 1000);
+    }
+
+    #[test]
+    fn test_burnable_identity_deterministic_recovery_and_epoch_rotation() {
+        let identity = GhostIdentity::generate_fresh();
+        let peer_fp = "a1b2c3d4e5f60718";
+
+        // 1. Same peer and same epoch reconstructs the exact same key and fingerprint
+        let (k1, fp1) = identity.derive_burnable(peer_fp, 0);
+        let (k2, fp2) = identity.derive_burnable(peer_fp, 0);
+        assert_eq!(fp1, fp2);
+        assert_eq!(k1.to_bytes(), k2.to_bytes());
+
+        // 2. Epoch rotation (epoch 0 -> epoch 1) yields a completely different identity
+        let (k_next, fp_next) = identity.derive_burnable(peer_fp, 1);
+        assert_ne!(fp1, fp_next);
+        assert_ne!(k1.to_bytes(), k_next.to_bytes());
+
+        // 3. Signature verification with burnable identity
+        let message = b"hello from burnable ghost identity";
+        let signature = k1.sign(message);
+        assert!(k1.verifying_key().verify_strict(message, &signature).is_ok());
+    }
+
+    #[test]
+    fn test_amnesia_mode_zero_disk_state() {
+        let temp_dir = std::env::temp_dir().join(format!("ggn_amnesia_test_{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let key_path = temp_dir.join("ephemeral_identity.key");
+        let key_path_str = key_path.to_str().unwrap();
+
+        // 1. Enable amnesia mode explicitly via options
+        let id = GhostIdentity::load_or_generate_opts(key_path_str, true);
+        
+        // Key file must NOT exist on disk
+        assert!(!key_path.exists(), "Amnesia mode must never write identity.key to disk");
+        assert_eq!(id.fingerprint().len(), 16);
+
+        // 2. Normal mode
+        let normal_id = GhostIdentity::load_or_generate_opts(key_path_str, false);
+        
+        // In normal mode, key file is written
+        assert!(key_path.exists(), "Normal mode writes identity.key to disk");
+        assert_eq!(normal_id.fingerprint().len(), 16);
+
+        // Clean up
+        let _ = std::fs::remove_file(&key_path);
+        let _ = std::fs::remove_dir(&temp_dir);
     }
 }

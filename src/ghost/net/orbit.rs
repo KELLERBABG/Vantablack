@@ -17,6 +17,7 @@
 /// routing algorithm so evasive orbital maneuvers do not inadvertently exhaust
 /// a satellite's finite thruster fuel.
 use std::f64::consts::PI;
+use ml_kem::kem::KeyExport;
 
 pub const MU_EARTH: f64 = 3.986004418e14;
 pub const EARTH_RADIUS: f64 = 6_371_000.0;
@@ -327,6 +328,36 @@ impl OrbitalState {
     pub fn signal_delay(&self, ground: &GroundPosition) -> f64 {
         self.ground_pos.distance_to(ground) / C
     }
+
+    /// Invention §12: Predictive Pre-Warming — Keys Before Line-of-Sight.
+    ///
+    /// Predicts if a target peer (e.g. satellite or terrestrial ground node) will become
+    /// visible within `lookahead_secs`. If visibility is imminent, pre-computes an
+    /// ephemeral ML-KEM-512 keypair so the handshake can complete in 1-RTT with zero pre-delay.
+    pub fn predict_line_of_sight(&self, ground: &GroundPosition, lookahead_secs: f64) -> bool {
+        let mut future_state = self.clone();
+        future_state.propagate(self.last_update + lookahead_secs);
+        future_state.can_see(ground)
+    }
+
+    /// Pre-warms an ephemeral hybrid key agreement if line of sight is predicted within `window_secs`.
+    /// Returns Some((x25519_pk, kem_pk_bytes)) when pre-warming is triggered, or None if peer will not be visible.
+    pub fn prewarm_if_imminent(
+        &self,
+        ground: &GroundPosition,
+        window_secs: f64,
+    ) -> Option<([u8; 32], Vec<u8>)> {
+        if self.predict_line_of_sight(ground, window_secs) {
+            // Generate ephemeral X25519
+            let (_x_priv, x_pub) = crate::ghost::layers::l1_kem::generate_x25519_keypair();
+            // Generate ephemeral ML-KEM-512 (returns (EncapsulationKey512, DecapsulationKey512))
+            let (kem_pub, _kem_priv) = crate::ghost::layers::l1_kem::generate_kyber_keypair();
+            let kem_bytes = kem_pub.to_bytes().as_slice().to_vec();
+            Some((x_pub.to_bytes(), kem_bytes))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -395,5 +426,31 @@ mod tests {
         let mut state = OrbitalState::new(leo, 200.0, 0.0);
         state.propagate(3600.0);
         assert_ne!(state.ground_pos.latitude, 0.0);
+    }
+
+    #[test]
+    fn test_predictive_prewarming() {
+        let leo = KeplerElements::typical_leo();
+        let state = OrbitalState::new(leo, 200.0, 0.0);
+        
+        // Ground station directly underneath satellite
+        let station_under = GroundPosition::new(state.ground_pos.latitude, state.ground_pos.longitude, 0.0);
+        assert!(state.can_see(&station_under));
+        assert!(state.predict_line_of_sight(&station_under, 10.0));
+
+        // Pre-warming generates ephemeral keys
+        let prewarmed = state.prewarm_if_imminent(&station_under, 30.0);
+        assert!(prewarmed.is_some());
+        let (x_pk, kem_pk) = prewarmed.unwrap();
+        assert_eq!(x_pk.len(), 32);
+        assert_eq!(kem_pk.len(), 800); // ML-KEM-512 public key is 800 bytes
+
+        // Station on the opposite side of Earth
+        let antipodal_lat = -state.ground_pos.latitude;
+        let antipodal_lon = if state.ground_pos.longitude > 0.0 { state.ground_pos.longitude - 180.0 } else { state.ground_pos.longitude + 180.0 };
+        let station_far = GroundPosition::new(antipodal_lat, antipodal_lon, 0.0);
+        assert!(!state.can_see(&station_far));
+        // Over a short 5-second window, antipodal station will not be visible -> no pre-warm
+        assert!(state.prewarm_if_imminent(&station_far, 5.0).is_none());
     }
 }

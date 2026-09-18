@@ -350,6 +350,137 @@ fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
     bytes
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Invention §14: Self-Tuning Concatenated Code (RS + LDPC that learns)
+//
+// Statically choosing between Reed-Solomon (L4, packet erasures) and
+// LDPC (L7, physical bit-flip errors) is suboptimal across diverse WAN links.
+// High BER links (e.g. atmospheric laser, noisy Wi-Fi/satellite) suffer
+// uncorrectable corrupted frames, while clean fiber links waste 50% throughput.
+//
+// SelfTuningConcatenatedCode dynamically selects the coding strategy based on
+// observed link Bit Error Rate (BER):
+// - High BER (> 1.0%): Full Concatenated Coding (LDPC inner FEC + RS outer erasure).
+//   Corrects scattered bit flips so frames reach the RS decoder intact.
+// - Low BER (<= 1.0%): Lightweight RS-only erasure coding (bypasses LDPC to save 50% CPU/bandwidth).
+// - Clean link (BER ≈ 0): Direct bulk transmission without FEC overhead.
+// ══════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodingScheme {
+    DirectBulk,
+    ReedSolomonOnly,
+    ConcatenatedLdpcRs,
+}
+
+#[derive(Debug, Clone)]
+pub struct SelfTuningConcatenatedCode {
+    codec: LdpcCodec,
+    high_ber_threshold: f64,
+    low_ber_threshold: f64,
+}
+
+impl Default for SelfTuningConcatenatedCode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SelfTuningConcatenatedCode {
+    pub fn new() -> Self {
+        Self {
+            codec: LdpcCodec::new(),
+            high_ber_threshold: 0.01, // 1% BER triggers LDPC concatenation
+            low_ber_threshold: 0.0001, // 0.01% BER allows direct bulk
+        }
+    }
+
+    /// Select optimal coding strategy given estimated bit error rate (BER)
+    pub fn select_strategy(&self, estimated_ber: f64) -> CodingScheme {
+        if estimated_ber >= self.high_ber_threshold {
+            CodingScheme::ConcatenatedLdpcRs
+        } else if estimated_ber >= self.low_ber_threshold {
+            CodingScheme::ReedSolomonOnly
+        } else {
+            CodingScheme::DirectBulk
+        }
+    }
+
+    /// Protect a payload using the self-tuned strategy
+    pub fn encode_adaptive(&self, data: &[u8], estimated_ber: f64) -> (CodingScheme, Vec<Vec<u8>>) {
+        let scheme = self.select_strategy(estimated_ber);
+        match scheme {
+            CodingScheme::DirectBulk => {
+                (scheme, vec![data.to_vec()])
+            }
+            CodingScheme::ReedSolomonOnly => {
+                let mut d = data.to_vec();
+                let shards = crate::ghost::layers::l4_rs::encode(&mut d);
+                (scheme, shards)
+            }
+            CodingScheme::ConcatenatedLdpcRs => {
+                let mut d = data.to_vec();
+                let shards = crate::ghost::layers::l4_rs::encode(&mut d);
+                // Inner LDPC encode each RS shard
+                let ldpc_shards: Vec<Vec<u8>> = shards
+                    .iter()
+                    .map(|s| self.codec.encode_packet(s))
+                    .collect();
+                (scheme, ldpc_shards)
+            }
+        }
+    }
+
+    /// Decode adaptive payload given received shards (some may have bit flips, some may be missing)
+    pub fn decode_adaptive(
+        &self,
+        scheme: CodingScheme,
+        received_shards: &[Option<Vec<u8>>],
+        original_len: usize,
+    ) -> Option<Vec<u8>> {
+        match scheme {
+            CodingScheme::DirectBulk => {
+                received_shards.first()?.clone()
+            }
+            CodingScheme::ReedSolomonOnly => {
+                let mut shards = received_shards.to_vec();
+                crate::ghost::layers::l4_rs::reconstruct(&mut shards).ok()?;
+                let s0 = shards[0].as_ref()?;
+                let s1 = shards[1].as_ref()?;
+                let mut out = Vec::new();
+                out.extend_from_slice(s0);
+                out.extend_from_slice(s1);
+                out.truncate(original_len);
+                Some(out)
+            }
+            CodingScheme::ConcatenatedLdpcRs => {
+                let shard_len = (original_len + 1) / 2;
+                // Step 1: LDPC Inner decode to fix bit errors in each received shard
+                let mut rs_shards: Vec<Option<Vec<u8>>> = Vec::new();
+                for shard_opt in received_shards {
+                    if let Some(s) = shard_opt {
+                        let mut decoded = self.codec.decode_packet(s);
+                        decoded.truncate(shard_len);
+                        rs_shards.push(Some(decoded));
+                    } else {
+                        rs_shards.push(None);
+                    }
+                }
+
+                // Step 2: RS Outer decode to reconstruct any lost/erased shards
+                crate::ghost::layers::l4_rs::reconstruct(&mut rs_shards).ok()?;
+                let s0 = rs_shards[0].as_ref()?;
+                let s1 = rs_shards[1].as_ref()?;
+                let mut out = Vec::new();
+                out.extend_from_slice(s0);
+                out.extend_from_slice(s1);
+                out.truncate(original_len);
+                Some(out)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +561,42 @@ mod tests {
             decoded, original_data,
             "LDPC must correct dispersed bit flips"
         );
+    }
+
+    #[test]
+    fn test_self_tuning_concatenated_code_adaptive_switching() {
+        let tuner = SelfTuningConcatenatedCode::new();
+
+        // 1. Clean link (BER = 0.00001) -> DirectBulk
+        assert_eq!(tuner.select_strategy(0.00001), CodingScheme::DirectBulk);
+
+        // 2. Normal link (BER = 0.005) -> ReedSolomonOnly
+        assert_eq!(tuner.select_strategy(0.005), CodingScheme::ReedSolomonOnly);
+
+        // 3. High-loss noisy link (BER = 0.05) -> ConcatenatedLdpcRs
+        assert_eq!(tuner.select_strategy(0.05), CodingScheme::ConcatenatedLdpcRs);
+
+        // Roundtrip verification under high-loss link with bit flips and packet loss
+        let payload = b"critical_telemetry_message_under_heavy_interference";
+        let (scheme, encoded_shards) = tuner.encode_adaptive(payload, 0.05);
+        assert_eq!(scheme, CodingScheme::ConcatenatedLdpcRs);
+        assert_eq!(encoded_shards.len(), 3);
+
+        // Simulate Channel Corruptions:
+        // Shard 0: Corrupt 1 bit (e.g. atmospheric scatter)
+        let mut corrupted_shard0 = encoded_shards[0].clone();
+        corrupted_shard0[0] ^= 0x02;
+
+        // Shard 1: Completely dropped/lost packet
+        let lost_shard1: Option<Vec<u8>> = None;
+
+        // Shard 2: Intact parity
+        let intact_shard2 = encoded_shards[2].clone();
+
+        let received = vec![Some(corrupted_shard0), lost_shard1, Some(intact_shard2)];
+
+        // Decode: LDPC fixes the bit-flip in Shard 0; RS reconstructs the erased Shard 1!
+        let recovered = tuner.decode_adaptive(scheme, &received, payload.len()).expect("Decode succeeds");
+        assert_eq!(&recovered, payload, "Concatenated LDPC+RS recovers payload despite bit errors + packet erasure");
     }
 }

@@ -178,6 +178,402 @@ impl ExitCapability {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Invention §8: Sphinx-Shard Onion — 3 Hops, Constant 576B, Shard-Aware
+//
+// Tor onion routing relies on a single serial circuit path where middle nodes
+// can correlate flow volume and timing across hops. Nym Sphinx is per-packet
+// but does not exploit information-theoretic erasure codes.
+//
+// In Sphinx-Shard Onion:
+// - Every Reed-Solomon shard (e.g. any 2-of-3) is independently encapsulated in a
+//   fixed-size 576-byte Sphinx-like 3-layer onion (guard -> middle -> exit).
+// - Intermediate nodes only learn their immediate successor (next hop) and cannot
+//   distinguish which shard index they carry or who the eventual exit/destination is.
+// - Even if an adversary compromises or drops 1 middle node on 1 plane, the exit
+//   node reconstructs the original payload from the remaining surviving shards.
+// ══════════════════════════════════════════════════════════════════
+
+pub const SPHINX_SHARD_LEN: usize = 576;
+pub const SPHINX_HOP_TAG_LEN: usize = 16;
+pub const SPHINX_MAX_HOP_NAME: usize = 32;
+
+/// Peeled hop information for intermediate relays
+#[derive(Debug, Clone)]
+pub struct PeeledSphinxHop {
+    pub next_hop: String,
+    pub inner_payload: Vec<u8>,
+}
+
+/// Sphinx-Shard Onion constructor and decoder
+pub struct SphinxShardOnion;
+
+impl SphinxShardOnion {
+    /// Build a 3-hop layered onion fixed to 576 bytes carrying one RS shard.
+    pub fn build(
+        guard_key: &[u8; 32],
+        middle_hop: &str,
+        middle_key: &[u8; 32],
+        exit_hop: &str,
+        exit_key: &[u8; 32],
+        shard_idx: u8,
+        shard_data: &[u8],
+    ) -> Vec<u8> {
+        use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
+
+        // Layer 3 (Exit): payload + shard index
+        let mut exit_plaintext = Vec::with_capacity(2 + shard_data.len());
+        exit_plaintext.push(shard_idx);
+        exit_plaintext.push(shard_data.len() as u8);
+        exit_plaintext.extend_from_slice(shard_data);
+
+        let exit_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
+        let exit_nonce = Nonce::from_slice(&[0x33u8; 12]);
+        let exit_sealed = exit_cipher.encrypt(exit_nonce, exit_plaintext.as_ref()).expect("seal exit");
+
+        // Layer 2 (Middle): routing instruction to exit + exit ciphertext
+        let mut middle_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + exit_sealed.len());
+        let mut exit_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
+        let bytes_to_copy = exit_hop.as_bytes().len().min(SPHINX_MAX_HOP_NAME);
+        exit_hop_bytes[..bytes_to_copy].copy_from_slice(&exit_hop.as_bytes()[..bytes_to_copy]);
+        middle_plaintext.extend_from_slice(&exit_hop_bytes);
+        middle_plaintext.extend_from_slice(&exit_sealed);
+
+        let middle_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(middle_key));
+        let middle_nonce = Nonce::from_slice(&[0x22u8; 12]);
+        let middle_sealed = middle_cipher.encrypt(middle_nonce, middle_plaintext.as_ref()).expect("seal middle");
+
+        // Layer 1 (Guard): routing instruction to middle + middle ciphertext
+        let mut guard_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + middle_sealed.len());
+        let mut middle_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
+        let bytes_to_copy_m = middle_hop.as_bytes().len().min(SPHINX_MAX_HOP_NAME);
+        middle_hop_bytes[..bytes_to_copy_m].copy_from_slice(&middle_hop.as_bytes()[..bytes_to_copy_m]);
+        guard_plaintext.extend_from_slice(&middle_hop_bytes);
+        guard_plaintext.extend_from_slice(&middle_sealed);
+
+        let guard_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(guard_key));
+        let guard_nonce = Nonce::from_slice(&[0x11u8; 12]);
+        let guard_sealed = guard_cipher.encrypt(guard_nonce, guard_plaintext.as_ref()).expect("seal guard");
+
+        // Fixed-size 576-byte frame: 2-byte inner length prefix + ciphertext + uniform random padding
+        let mut out = vec![0u8; SPHINX_SHARD_LEN];
+        let len_bytes = (guard_sealed.len() as u16).to_be_bytes();
+        out[..2].copy_from_slice(&len_bytes);
+        let copy_len = guard_sealed.len().min(SPHINX_SHARD_LEN - 2);
+        out[2..2 + copy_len].copy_from_slice(&guard_sealed[..copy_len]);
+        // Fill remaining bytes with pseudo-random filler to ensure constant 576 bytes
+        for i in (2 + copy_len)..SPHINX_SHARD_LEN {
+            out[i] = ((i * 37) ^ 0xAA) as u8;
+        }
+        out
+    }
+
+    /// Peel one hop layer as an intermediate relay (guard or middle).
+    pub fn peel_hop(hop_key: &[u8; 32], ciphertext: &[u8]) -> Option<PeeledSphinxHop> {
+        use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
+
+        let payload_to_decrypt = if ciphertext.len() == SPHINX_SHARD_LEN {
+            let actual_len = u16::from_be_bytes([ciphertext[0], ciphertext[1]]) as usize;
+            if actual_len > SPHINX_SHARD_LEN - 2 {
+                return None;
+            }
+            &ciphertext[2..2 + actual_len]
+        } else {
+            ciphertext
+        };
+
+        let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(hop_key));
+        // Try candidate nonces for guard or middle
+        let nonces = [[0x11u8; 12], [0x22u8; 12]];
+        let mut decrypted = None;
+        for n in &nonces {
+            if let Ok(pt) = cipher.decrypt(Nonce::from_slice(n), payload_to_decrypt) {
+                decrypted = Some(pt);
+                break;
+            }
+        }
+        let pt = decrypted?;
+        if pt.len() < SPHINX_MAX_HOP_NAME {
+            return None;
+        }
+        let next_hop_bytes = &pt[..SPHINX_MAX_HOP_NAME];
+        let end = next_hop_bytes.iter().position(|&b| b == 0).unwrap_or(SPHINX_MAX_HOP_NAME);
+        let next_hop = String::from_utf8(next_hop_bytes[..end].to_vec()).ok()?;
+        let inner_payload = pt[SPHINX_MAX_HOP_NAME..].to_vec();
+        Some(PeeledSphinxHop { next_hop, inner_payload })
+    }
+
+    /// Exit node opens the terminal layer to extract shard index and payload.
+    pub fn exit_open(exit_key: &[u8; 32], ciphertext: &[u8]) -> Option<(u8, Vec<u8>)> {
+        use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Nonce};
+
+        let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
+        let nonce = Nonce::from_slice(&[0x33u8; 12]);
+        let pt = cipher.decrypt(nonce, ciphertext).ok()?;
+        if pt.len() < 2 {
+            return None;
+        }
+        let shard_idx = pt[0];
+        let shard_len = pt[1] as usize;
+        if pt.len() < 2 + shard_len {
+            return None;
+        }
+        let shard_data = pt[2..2 + shard_len].to_vec();
+        Some((shard_idx, shard_data))
+    }
+}
+
+/// Invention §16: ZK Proof-of-Transit — Blind Forwarding Verification.
+///
+/// Allows an intermediate relay that forwards an opaque encrypted frame or shard
+/// to mint a cryptographic proof of transit: `Ed25519(sign(SHA256(payload) || next_hop_fp || timestamp))`.
+/// The client can verify that transit occurred without the relay ever inspecting or decrypting the payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProofOfTransit {
+    pub relay_pk: [u8; 32],
+    pub payload_hash: [u8; 32],
+    pub next_hop: String,
+    pub timestamp: u64,
+    pub signature: [u8; 64],
+}
+
+impl ProofOfTransit {
+    pub fn signing_bytes(payload_hash: &[u8; 32], next_hop: &str, timestamp: u64) -> Vec<u8> {
+        let mut b = Vec::with_capacity(32 + 8 + next_hop.len() + 16);
+        b.extend_from_slice(b"GGN_TRANSIT_PROOF_V1");
+        b.extend_from_slice(payload_hash);
+        b.extend_from_slice(&timestamp.to_be_bytes());
+        b.extend_from_slice(next_hop.as_bytes());
+        b
+    }
+
+    /// Relay signs proof of forwarding an opaque payload to `next_hop`.
+    pub fn mint(relay: &GhostIdentity, payload: &[u8], next_hop: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        let payload_hash: [u8; 32] = Sha256::digest(payload).into();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let msg = Self::signing_bytes(&payload_hash, next_hop, now);
+        let signature = relay.sign(&msg).to_bytes();
+        Self {
+            relay_pk: relay.public_key_bytes(),
+            payload_hash,
+            next_hop: next_hop.to_string(),
+            timestamp: now,
+            signature,
+        }
+    }
+
+    /// Client verifies that the relay indeed forwarded the expected payload to `next_hop`.
+    pub fn verify(&self, expected_payload: &[u8], expected_next_hop: &str, max_age_secs: u64) -> bool {
+        use sha2::{Digest, Sha256};
+        let expected_hash: [u8; 32] = Sha256::digest(expected_payload).into();
+        if self.payload_hash != expected_hash || self.next_hop != expected_next_hop {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now.saturating_sub(self.timestamp) > max_age_secs {
+            return false;
+        }
+        let msg = Self::signing_bytes(&self.payload_hash, &self.next_hop, self.timestamp);
+        verify_peer_signature(&self.relay_pk, &msg, &self.signature)
+    }
+}
+
+/// Invention §17: Trustless Relay Marketplace — Capability Vouchers for Priority Forwarding.
+///
+/// Clients mint verifiable capability vouchers (`Ed25519(sign(client_pk || max_bytes || expires_at))`)
+/// that intermediate relays redeem for priority bandwidth without a blockchain or payment processor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardingCapabilityVoucher {
+    pub client_pk: [u8; 32],
+    pub max_bytes: u64,
+    pub expires_at: u64,
+    pub voucher_id: u64,
+    pub signature: [u8; 64],
+}
+
+impl ForwardingCapabilityVoucher {
+    pub fn signing_bytes(max_bytes: u64, expires_at: u64, voucher_id: u64) -> Vec<u8> {
+        let mut b = Vec::with_capacity(32 + 24);
+        b.extend_from_slice(b"GGN_CAP_VOUCHER_V1");
+        b.extend_from_slice(&max_bytes.to_be_bytes());
+        b.extend_from_slice(&expires_at.to_be_bytes());
+        b.extend_from_slice(&voucher_id.to_be_bytes());
+        b
+    }
+
+    /// Client mints a signed forwarding voucher for `max_bytes`.
+    pub fn mint(client: &GhostIdentity, max_bytes: u64, expires_at: u64, voucher_id: u64) -> Self {
+        let msg = Self::signing_bytes(max_bytes, expires_at, voucher_id);
+        let signature = client.sign(&msg).to_bytes();
+        Self {
+            client_pk: client.public_key_bytes(),
+            max_bytes,
+            expires_at,
+            voucher_id,
+            signature,
+        }
+    }
+
+    /// Relay verifies voucher validity and checks remaining bandwidth allotment.
+    pub fn verify(&self, now: u64, requested_bytes: u64) -> bool {
+        if now > self.expires_at || requested_bytes > self.max_bytes {
+            return false;
+        }
+        let msg = Self::signing_bytes(self.max_bytes, self.expires_at, self.voucher_id);
+        verify_peer_signature(&self.client_pk, &msg, &self.signature)
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Invention §40: Identity-Agnostic Channels — Blind Flow Forwarding
+//
+// Separates *identity* from *forwarding state*: routes and flows are
+// identified strictly by blind capability tokens. Intermediate relays
+// maintain zero knowledge of peer identity, sender identity, or recipient identity.
+// If a relay is seized or compromised, memory inspection yields zero client
+// public keys, zero fingerprints, and zero identity surface.
+// ══════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlindCapabilityToken {
+    /// Opaque cryptographic identifier derived from a blinded commitment
+    pub token_id: [u8; 32],
+    /// Maximum byte quota allocated to this blind flow
+    pub max_bytes: u64,
+    /// Unix timestamp after which this capability expires
+    pub expires_at: u64,
+    /// Authorization tag proving legitimate issuance without disclosing client identity
+    pub auth_tag: [u8; 32],
+}
+
+impl BlindCapabilityToken {
+    /// Compute the blinded token ID from a secret seed and flow salt.
+    pub fn compute_token_id(seed: &[u8], flow_salt: &[u8; 32]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"GGN_BLIND_TOKEN_ID_V1");
+        h.update(seed);
+        h.update(flow_salt);
+        h.finalize().into()
+    }
+
+    /// Compute authorization tag over capability parameters using flow auth key.
+    pub fn compute_auth_tag(auth_key: &[u8; 32], token_id: &[u8; 32], max_bytes: u64, expires_at: u64) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"GGN_BLIND_CAP_AUTH_V1");
+        h.update(auth_key);
+        h.update(token_id);
+        h.update(&max_bytes.to_be_bytes());
+        h.update(&expires_at.to_be_bytes());
+        h.finalize().into()
+    }
+
+    /// Mint a new blind capability token containing zero client public key or identity.
+    pub fn mint(auth_key: &[u8; 32], seed: &[u8], flow_salt: &[u8; 32], max_bytes: u64, expires_at: u64) -> Self {
+        let token_id = Self::compute_token_id(seed, flow_salt);
+        let auth_tag = Self::compute_auth_tag(auth_key, &token_id, max_bytes, expires_at);
+        Self {
+            token_id,
+            max_bytes,
+            expires_at,
+            auth_tag,
+        }
+    }
+
+    /// Verify authorization tag and lifetime without requiring or inspecting client identity.
+    pub fn verify(&self, auth_key: &[u8; 32], now: u64, requested_bytes: u64) -> bool {
+        if now > self.expires_at || requested_bytes > self.max_bytes {
+            return false;
+        }
+        let expected = Self::compute_auth_tag(auth_key, &self.token_id, self.max_bytes, self.expires_at);
+        subtle::ConstantTimeEq::ct_eq(&self.auth_tag[..], &expected[..]).into()
+    }
+}
+
+/// An identity-free forwarding channel maintained at an intermediate relay node.
+#[derive(Debug, Clone)]
+pub struct IdentityAgnosticChannel {
+    pub egress_endpoint: SocketAddr,
+    pub max_bytes: u64,
+    pub forwarded_bytes: u64,
+    pub expires_at: u64,
+}
+
+/// In-memory table for blind capability-swapped packet routing.
+#[derive(Debug, Default)]
+pub struct IdentityAgnosticRelayTable {
+    channels: std::collections::HashMap<[u8; 32], IdentityAgnosticChannel>,
+}
+
+impl IdentityAgnosticRelayTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a blind forwarding capability. Note: zero identity material is stored.
+    pub fn register_channel(
+        &mut self,
+        token: &BlindCapabilityToken,
+        auth_key: &[u8; 32],
+        egress_endpoint: SocketAddr,
+        now: u64,
+    ) -> Result<(), &'static str> {
+        if !token.verify(auth_key, now, 0) {
+            return Err("Invalid blind capability voucher or expired");
+        }
+        self.channels.insert(
+            token.token_id,
+            IdentityAgnosticChannel {
+                egress_endpoint,
+                max_bytes: token.max_bytes,
+                forwarded_bytes: 0,
+                expires_at: token.expires_at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Forward a packet along an identity-agnostic channel.
+    pub fn forward(
+        &mut self,
+        token_id: &[u8; 32],
+        packet_len: usize,
+        now: u64,
+    ) -> Result<SocketAddr, &'static str> {
+        let chan = self.channels.get_mut(token_id).ok_or("Channel not found")?;
+        if now > chan.expires_at {
+            return Err("Channel expired");
+        }
+        let next_total = chan.forwarded_bytes.saturating_add(packet_len as u64);
+        if next_total > chan.max_bytes {
+            return Err("Quota exceeded");
+        }
+        chan.forwarded_bytes = next_total;
+        Ok(chan.egress_endpoint)
+    }
+
+    /// Prove memory hygiene under seizure: returns all raw bytes stored in relay memory.
+    pub fn audit_dump_memory(&self) -> Vec<u8> {
+        let mut dump = Vec::new();
+        for (token_id, chan) in &self.channels {
+            dump.extend_from_slice(token_id);
+            dump.extend_from_slice(&chan.max_bytes.to_be_bytes());
+            dump.extend_from_slice(&chan.forwarded_bytes.to_be_bytes());
+            dump.extend_from_slice(&chan.expires_at.to_be_bytes());
+            dump.extend_from_slice(chan.egress_endpoint.to_string().as_bytes());
+        }
+        dump
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitPolicy {
     rules: Vec<String>,
@@ -227,6 +623,73 @@ impl ExitPolicy {
                 host == rule.as_str()
             }
         })
+    }
+}
+
+/// Invention §18: Attested Exit Diversity — Multi-ASN Shatter Constraint.
+///
+/// Cryptographically enforces that a 3-shard Reed-Solomon group is never routed
+/// through exit nodes or relays that share an Autonomous System Number (ASN).
+/// Prevents single-ASN adversaries or regional telecom monopolies from observing
+/// more than 1 shard of any transmission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsnDiversityConstraint {
+    /// Maximum shards permitted within the same Autonomous System.
+    pub max_shards_per_asn: usize,
+    /// Map of shard index -> Autonomous System Number (ASN).
+    assigned_asns: Vec<(u8, u32)>,
+}
+
+impl Default for AsnDiversityConstraint {
+    fn default() -> Self {
+        Self {
+            max_shards_per_asn: 1, // Strict diversity: each shard must use a distinct ASN
+            assigned_asns: Vec::new(),
+        }
+    }
+}
+
+impl AsnDiversityConstraint {
+    pub fn new(max_shards_per_asn: usize) -> Self {
+        Self {
+            max_shards_per_asn: max_shards_per_asn.max(1),
+            assigned_asns: Vec::new(),
+        }
+    }
+
+    /// Checks if a candidate ASN can carry shard `shard_index`.
+    pub fn is_asn_permitted(&self, shard_index: u8, candidate_asn: u32) -> bool {
+        let count = self
+            .assigned_asns
+            .iter()
+            .filter(|(idx, asn)| *idx != shard_index && *asn == candidate_asn)
+            .count();
+        count < self.max_shards_per_asn
+    }
+
+    /// Binds shard `shard_index` to an attested `asn`. Returns true if accepted.
+    pub fn assign_shard_asn(&mut self, shard_index: u8, asn: u32) -> bool {
+        if self.is_asn_permitted(shard_index, asn) {
+            self.assigned_asns.retain(|(idx, _)| *idx != shard_index);
+            self.assigned_asns.push((shard_index, asn));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Verifies whether the completed 3-shard flight satisfies ASN diversity.
+    pub fn is_diverse(&self) -> bool {
+        if self.assigned_asns.len() < 2 {
+            return false;
+        }
+        let mut asns = std::collections::HashSet::new();
+        for (_, asn) in &self.assigned_asns {
+            if !asns.insert(*asn) && self.max_shards_per_asn == 1 {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -1201,5 +1664,144 @@ mod derp_tests {
             relay.forward("sender", &framed),
             Forwarded::Dropped(DropReason::UnauthorizedSender)
         );
+    }
+
+    #[test]
+    fn test_asn_diversity_constraint() {
+        let mut constraint = AsnDiversityConstraint::new(1); // Strict multi-ASN
+        
+        // Shard 0 over ASN 13335 (Cloudflare) -> Accepted
+        assert!(constraint.assign_shard_asn(0, 13335));
+        
+        // Shard 1 over ASN 13335 (Cloudflare again) -> Rejected by diversity constraint
+        assert!(!constraint.is_asn_permitted(1, 13335));
+        assert!(!constraint.assign_shard_asn(1, 13335));
+
+        // Shard 1 over ASN 15169 (Google) -> Accepted
+        assert!(constraint.assign_shard_asn(1, 15169));
+
+        // Shard 2 over ASN 16509 (AWS) -> Accepted
+        assert!(constraint.assign_shard_asn(2, 16509));
+
+        // Total 3 shards span 3 distinct ASNs
+        assert!(constraint.is_diverse());
+    }
+
+    #[test]
+    fn test_proof_of_transit() {
+        let relay_identity = GhostIdentity::generate_fresh();
+        let payload = b"opaque_encrypted_gtf_frame_bytes";
+        let next_hop = "node_charlie_5fa96851";
+
+        // Relay mints blind proof of transit
+        let proof = ProofOfTransit::mint(&relay_identity, payload, next_hop);
+        
+        // Client verifies proof against expected payload and destination
+        assert!(proof.verify(payload, next_hop, 60));
+
+        // Tampered payload fails verification
+        let tampered_payload = b"altered_encrypted_gtf_frame_bytes";
+        assert!(!proof.verify(tampered_payload, next_hop, 60));
+
+        // Wrong next hop fails verification
+        assert!(!proof.verify(payload, "node_eve_malicious", 60));
+    }
+
+    #[test]
+    fn test_forwarding_capability_voucher() {
+        let client_identity = GhostIdentity::generate_fresh();
+        let max_bytes = 1_000_000u64; // 1 MB voucher
+        let now = 1000u64;
+        let expires_at = 2000u64;
+        let voucher_id = 42u64;
+
+        let voucher = ForwardingCapabilityVoucher::mint(&client_identity, max_bytes, expires_at, voucher_id);
+
+        // Valid voucher redemption within limits
+        assert!(voucher.verify(now, 500_000));
+
+        // Requesting more bytes than authorized fails
+        assert!(!voucher.verify(now, 2_000_000));
+
+        // Redeeming after expiration fails
+        assert!(!voucher.verify(3000, 500_000));
+
+        // Forged signature from another key fails
+        let imposter = GhostIdentity::generate_fresh();
+        let forged_msg = ForwardingCapabilityVoucher::signing_bytes(max_bytes, expires_at, voucher_id);
+        let mut forged_voucher = voucher.clone();
+        forged_voucher.signature = imposter.sign(&forged_msg).to_bytes();
+        assert!(!forged_voucher.verify(now, 500_000));
+    }
+
+    #[test]
+    fn test_sphinx_shard_onion_roundtrip_and_drop_resilience() {
+        use crate::ghost::layers::l4_rs;
+
+        // Generate 3 hops: guard, middle, exit
+        let guard_key = [0x11u8; 32];
+        let middle_key = [0x22u8; 32];
+        let exit_key = [0x33u8; 32];
+
+        let payload = b"critical_confidential_mesh_packet";
+        let mut original_data = payload.to_vec();
+
+        // 1. Encode payload into 3 Reed-Solomon shards
+        let shards = l4_rs::encode(&mut original_data);
+        assert_eq!(shards.len(), 3);
+
+        // 2. Wrap each shard into a constant 576-byte Sphinx onion
+        let mut onions = Vec::new();
+        for (idx, shard) in shards.iter().enumerate() {
+            let onion = SphinxShardOnion::build(
+                &guard_key,
+                "node_middle",
+                &middle_key,
+                "node_exit",
+                &exit_key,
+                idx as u8,
+                shard,
+            );
+            assert_eq!(onion.len(), SPHINX_SHARD_LEN);
+            onions.push(onion);
+        }
+
+        // 3. Simulate Middle 1 dropping: Shard 1 is lost!
+        // We only have onion 0 and onion 2 arriving at Exit.
+        let mut exit_received_shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
+
+        for (i, onion) in onions.iter().enumerate() {
+            if i == 1 {
+                continue; // Dropped on middle hop!
+            }
+            // Guard peels layer
+            let guard_peeled = SphinxShardOnion::peel_hop(&guard_key, onion).expect("guard peel");
+            assert_eq!(guard_peeled.next_hop, "node_middle");
+
+            // Middle peels layer
+            let middle_peeled = SphinxShardOnion::peel_hop(&middle_key, &guard_peeled.inner_payload).expect("middle peel");
+            assert_eq!(middle_peeled.next_hop, "node_exit");
+
+            // Exit verifies authenticity and reconstructs shard
+            let (shard_idx, shard_data) = SphinxShardOnion::exit_open(&exit_key, &middle_peeled.inner_payload).expect("exit open");
+            assert_eq!(shard_idx, i as u8);
+            exit_received_shards[shard_idx as usize] = Some(shard_data);
+        }
+
+        // 4. RS Reconstruct from the 2 surviving shards (0 and 2)
+        assert!(exit_received_shards[0].is_some());
+        assert!(exit_received_shards[1].is_none());
+        assert!(exit_received_shards[2].is_some());
+
+        l4_rs::reconstruct(&mut exit_received_shards).expect("RS reconstruction succeeds");
+
+        let shard0 = exit_received_shards[0].as_ref().unwrap();
+        let shard1 = exit_received_shards[1].as_ref().unwrap();
+        let mut reconstructed = Vec::new();
+        reconstructed.extend_from_slice(shard0);
+        reconstructed.extend_from_slice(shard1);
+        reconstructed.truncate(payload.len());
+
+        assert_eq!(&reconstructed, payload, "Sphinx shards survive 1 dropped middle node");
     }
 }

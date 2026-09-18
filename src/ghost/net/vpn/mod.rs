@@ -67,6 +67,9 @@ pub const UDP_FLOWS_GLOBAL: usize = 1024;
 /// Silence window for the re-anchor fallback (route flapping).
 pub const SILENCE_REANCHOR: Duration = Duration::from_secs(15);
 
+/// Default TTL before an unrefreshed tunnel epoch self-destructs (§4 Harvest-Then-Decay).
+pub const DEFAULT_EPOCH_TTL: Duration = Duration::from_secs(15 + 60);
+
 /// Which role this node plays in the VPN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VpnRole {
@@ -128,6 +131,8 @@ pub struct Lease {
     /// Highest tunnel counter accepted from this client in this epoch.
     /// Governs the monotonic re-anchor rule.
     pub tunnel_v_max: u32,
+    /// Timestamp when this epoch expires and self-destructs (§4 Harvest-Then-Decay).
+    pub epoch_ttl: Instant,
 }
 
 /// Why a re-anchor (or its refusal) happened — for tests and console output.
@@ -190,6 +195,7 @@ impl LeaseTable {
                         epoch: 0,
                         last_seen: Instant::now(),
                         tunnel_v_max: 0,
+                        epoch_ttl: Instant::now() + DEFAULT_EPOCH_TTL,
                     },
                 );
                 return Some(ip);
@@ -236,6 +242,7 @@ impl LeaseTable {
                             epoch: 0,
                             last_seen: Instant::now(),
                             tunnel_v_max: 0,
+                            epoch_ttl: Instant::now() + DEFAULT_EPOCH_TTL,
                         },
                     );
                     // Advance the allocator past the hinted host so it is
@@ -258,12 +265,23 @@ impl LeaseTable {
     /// tunnel window, re-anchor unconditionally (precedence 1). Never
     /// consults V_MAX. Returns the event for logging/tests.
     pub fn rotate_epoch(&self, fingerprint: &str, endpoint: SocketAddr) -> Option<AnchorEvent> {
+        self.rotate_epoch_with_ttl(fingerprint, endpoint, DEFAULT_EPOCH_TTL)
+    }
+
+    /// Fresh handshake with explicit epoch TTL (§4 Harvest-Then-Decay).
+    pub fn rotate_epoch_with_ttl(
+        &self,
+        fingerprint: &str,
+        endpoint: SocketAddr,
+        ttl: Duration,
+    ) -> Option<AnchorEvent> {
         let mut fps = self.by_fp.lock();
         let l = fps.get_mut(fingerprint)?;
         l.epoch = l.epoch.wrapping_add(1);
         l.tunnel_v_max = 0;
         l.endpoint = endpoint;
         l.last_seen = Instant::now();
+        l.epoch_ttl = Instant::now() + ttl;
         Some(AnchorEvent::HandshakeRotation)
     }
 
@@ -271,6 +289,17 @@ impl LeaseTable {
     /// advance by one. This is used for loss-tolerant mobility where a client
     /// may complete several re-anchors before the hub sees the next packet.
     pub fn adopt_epoch(&self, fingerprint: &str, epoch: u32, endpoint: SocketAddr) -> bool {
+        self.adopt_epoch_with_ttl(fingerprint, epoch, endpoint, DEFAULT_EPOCH_TTL)
+    }
+
+    /// Adopt an authenticated tunnel epoch with explicit TTL (§4 Harvest-Then-Decay).
+    pub fn adopt_epoch_with_ttl(
+        &self,
+        fingerprint: &str,
+        epoch: u32,
+        endpoint: SocketAddr,
+        ttl: Duration,
+    ) -> bool {
         let mut fps = self.by_fp.lock();
         let Some(lease) = fps.get_mut(fingerprint) else {
             return false;
@@ -279,6 +308,26 @@ impl LeaseTable {
         lease.tunnel_v_max = 0;
         lease.endpoint = endpoint;
         lease.last_seen = Instant::now();
+        lease.epoch_ttl = Instant::now() + ttl;
+        true
+    }
+
+    /// Check if the client's current epoch has expired and self-destructed (§4 Harvest-Then-Decay).
+    pub fn is_epoch_expired(&self, fingerprint: &str) -> bool {
+        let fps = self.by_fp.lock();
+        fps.get(fingerprint)
+            .map(|l| Instant::now() >= l.epoch_ttl)
+            .unwrap_or(true)
+    }
+
+    /// Force immediate self-destruction/expiration of an epoch (§4 Harvest-Then-Decay).
+    pub fn expire_epoch_now(&self, fingerprint: &str) -> bool {
+        let mut fps = self.by_fp.lock();
+        let Some(l) = fps.get_mut(fingerprint) else {
+            return false;
+        };
+        l.epoch_ttl = Instant::now() - Duration::from_secs(1);
+        l.tunnel_v_max = u32::MAX;
         true
     }
 
@@ -306,6 +355,12 @@ impl LeaseTable {
         };
         if l.epoch != epoch {
             // stale epoch packet — authenticated but from a dead session era
+            return (false, AnchorEvent::NoChange);
+        }
+        if Instant::now() >= l.epoch_ttl {
+            // §4 Harvest-Then-Decay: epoch self-destructed.
+            // Reset tunnel_v_max to u32::MAX so any historical packet from this epoch is dead.
+            l.tunnel_v_max = u32::MAX;
             return (false, AnchorEvent::NoChange);
         }
         let advanced = ctr > l.tunnel_v_max;
@@ -945,5 +1000,60 @@ mod tests {
         // Second one has same counter — replay, which is expected since the
         // replay window only tracks the counter, not the random segment.
         assert!(matches!(ing.open(&key, "uniq", 2, &w2), OpenOutcome::Replay));
+    }
+
+    #[test]
+    fn test_self_destructing_epoch_decay_and_auth_fail() {
+        // §4 Harvest-Then-Decay Proof:
+        // Intercepted wire datagram accepted at T0 is permanently rejected with AuthFail
+        // after the epoch decays/self-destructs, rather than Replay.
+        let t = LeaseTable::new();
+        let f = fp(44);
+        t.lease_for(&f).unwrap();
+        let ep: SocketAddr = "198.51.100.1:40000".parse().unwrap();
+
+        // 1. Rotate with short 40ms TTL for deterministic local test
+        t.rotate_epoch_with_ttl(&f, ep, Duration::from_millis(40));
+        assert!(!t.is_epoch_expired(&f));
+
+        // Packet accepted during active epoch lifetime
+        let (ok, ev) = t.observe_tunnel_packet(&f, 1, 10, ep);
+        assert!(ok);
+        assert_eq!(ev, AnchorEvent::WindowAdvance);
+
+        // 2. Wait for epoch decay (> 40ms)
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(t.is_epoch_expired(&f));
+
+        // 3. Replay of old counter or new counter from decayed epoch fails
+        let (ok_replay, ev_replay) = t.observe_tunnel_packet(&f, 1, 10, ep);
+        assert!(!ok_replay, "Replayed packet from decayed epoch must be rejected");
+        assert_eq!(ev_replay, AnchorEvent::NoChange);
+
+        let (ok_new, _) = t.observe_tunnel_packet(&f, 1, 11, ep);
+        assert!(!ok_new, "New packet from decayed epoch must be rejected");
+
+        // 4. Ingress level: when epoch decays and client re-handshakes to epoch 2,
+        // captured wire datagram from epoch 1 replayed against post-decay session returns AuthFail
+        let ingress = VpnIngress::new();
+        let key = [0x77u8; 32];
+        let packet = vec![0x33u8; 64];
+        let wire = seal_datagram(&key, 1, 10, &packet);
+
+        // Valid while expected_epoch == 1
+        let outcome1 = ingress.open(&key, "decay_test", 1, &wire);
+        assert!(matches!(outcome1, OpenOutcome::Accepted { .. }));
+
+        // Replay in same epoch -> Replay
+        let outcome_rep = ingress.open(&key, "decay_test", 1, &wire);
+        assert!(matches!(outcome_rep, OpenOutcome::Replay));
+
+        // After decay & session advance to epoch 2: old wire packet -> AuthFail!
+        ingress.evict("decay_test");
+        let outcome_post_decay = ingress.open(&key, "decay_test", 2, &wire);
+        assert!(
+            matches!(outcome_post_decay, OpenOutcome::AuthFail),
+            "Decayed epoch wire packet must fail with AuthFail"
+        );
     }
 }

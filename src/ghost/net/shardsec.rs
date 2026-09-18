@@ -18,7 +18,10 @@ pub struct SealedShard {
     pub index: u8,
     pub ciphertext: Vec<u8>,
     pub tag: [u8; 16],
+    pub is_honey: bool,
 }
+
+pub const HONEY_TRAP_LABEL: &[u8] = b"GGN_HONEY_TRAP_KEY_V1";
 
 fn shard_key(master: &[u8; 32], epoch: u64, nonce: &[u8; 12], index: u8) -> [u8; 32] {
     let mut info = Vec::with_capacity(SHARDSEC_LABEL.len() + 8 + 12 + 1);
@@ -53,7 +56,56 @@ pub fn seal_shard(
         .expect("owned shard seal");
     let tag = shard[shard.len() - 16..].try_into().expect("AEAD tag");
     shard.truncate(shard.len() - 16);
-    SealedShard { index, ciphertext: shard, tag }
+    SealedShard { index, ciphertext: shard, tag, is_honey: false }
+}
+
+/// Invention §15: Honey-Shards — Adversarial Tamper Traps.
+///
+/// Seals a shard with a deliberately poisoned trap tag derived from [`HONEY_TRAP_LABEL`].
+/// A Byzantine on-path relay that alters bytes will produce an authentication
+/// anomaly that isolates the adversary on the reputation matrix.
+pub fn seal_honey_shard(
+    master: &[u8; 32],
+    epoch: u64,
+    nonce: &[u8; 12],
+    direction: NonceDirection,
+    index: u8,
+    mut shard: Vec<u8>,
+) -> SealedShard {
+    let mut trap_master = *master;
+    for (i, b) in HONEY_TRAP_LABEL.iter().enumerate() {
+        trap_master[i % 32] ^= b;
+    }
+    let key = shard_key(&trap_master, epoch, nonce, index);
+    let shard_nonce = shard_nonce(nonce, index);
+    xchacha_seal_in_place(&key, &shard_nonce, epoch, direction, &mut shard)
+        .expect("owned shard seal");
+    let tag = shard[shard.len() - 16..].try_into().expect("AEAD tag");
+    shard.truncate(shard.len() - 16);
+    SealedShard { index, ciphertext: shard, tag, is_honey: true }
+}
+
+/// Verifies whether a honey shard arrived intact with its expected trap tag.
+/// Returns Ok(true) if the honey shard was untampered, Ok(false) if tampered by Byzantine relay.
+pub fn verify_honey_shard(
+    master: &[u8; 32],
+    epoch: u64,
+    nonce: &[u8; 12],
+    direction: NonceDirection,
+    honey: &SealedShard,
+) -> bool {
+    if !honey.is_honey || honey.index >= 3 {
+        return false;
+    }
+    let mut trap_master = *master;
+    for (i, b) in HONEY_TRAP_LABEL.iter().enumerate() {
+        trap_master[i % 32] ^= b;
+    }
+    let key = shard_key(&trap_master, epoch, nonce, honey.index);
+    let shard_nonce = shard_nonce(nonce, honey.index);
+    let mut ciphertext = honey.ciphertext.clone();
+    ciphertext.extend_from_slice(&honey.tag);
+    xchacha_open(&key, &shard_nonce, epoch, direction, &mut ciphertext).is_ok()
 }
 
 /// Authenticate and open one independently sealed shard.
@@ -158,5 +210,29 @@ mod tests {
         let sealed = seal_message(&[7; 32], 1, &[9; 12], NonceDirection::ResponderToInitiator, b"plaintext");
         let available = vec![Some(sealed[1].clone()), None, None];
         assert!(open_message(&[7; 32], 1, &[9; 12], NonceDirection::ResponderToInitiator, &available).is_err());
+    }
+
+    #[test]
+    fn test_honey_shard_tamper_detection() {
+        let master = [0x33u8; 32];
+        let epoch = 12u64;
+        let nonce = [0x55u8; 12];
+        let dir = NonceDirection::InitiatorToResponder;
+        let payload = b"trap_payload_shard_data".to_vec();
+
+        // Legitimate honey shard verifies intact
+        let honey = seal_honey_shard(&master, epoch, &nonce, dir, 1, payload);
+        assert!(honey.is_honey);
+        assert!(verify_honey_shard(&master, epoch, &nonce, dir, &honey));
+
+        // Tampering with the honey shard payload fails canary verification
+        let mut tampered = honey.clone();
+        tampered.ciphertext[0] ^= 0x01;
+        assert!(!verify_honey_shard(&master, epoch, &nonce, dir, &tampered));
+
+        // Normal shard is not a honey shard
+        let normal = seal_shard(&master, epoch, &nonce, dir, 0, b"normal".to_vec());
+        assert!(!normal.is_honey);
+        assert!(!verify_honey_shard(&master, epoch, &nonce, dir, &normal));
     }
 }
