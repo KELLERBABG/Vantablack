@@ -26,8 +26,8 @@
 // fields, which is exactly what `Explorer -> Properties -> Details` would show.
 // `version_resource_is_readable_by_the_shell` in src/ghost/icon.rs guards this.
 1 VERSIONINFO
- FILEVERSION 0,5,0,0
- PRODUCTVERSION 0,5,0,0
+ FILEVERSION 0,6,0,0
+ PRODUCTVERSION 0,6,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -40,12 +40,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Keller Systems"
             VALUE "FileDescription", "Vantablack Desktop Client"
-            VALUE "FileVersion", "0.5.0"
+            VALUE "FileVersion", "0.6.0"
             VALUE "InternalName", "ggn"
             VALUE "LegalCopyright", "Copyright (c) 2026 Keller Systems"
             VALUE "OriginalFilename", "ggn.exe"
             VALUE "ProductName", "Vantablack"
-            VALUE "ProductVersion", "0.5.0"
+            VALUE "ProductVersion", "0.6.0"
         END
     END
     BLOCK "VarFileInfo"
