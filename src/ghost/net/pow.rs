@@ -11,9 +11,13 @@
 //! - Puzzles automatically expire after `ttl_secs` to prevent pre-computation.
 
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use dashmap::DashMap;
+
 /// Maximum allowable time skew / validity window for a PoW challenge (5 minutes).
+
 pub const DEFAULT_POW_TTL_SECS: u64 = 300;
 
 /// Default baseline difficulty (12 leading zero bits ~ avg 4,096 hashes, ~1-5ms on CPU).
@@ -178,7 +182,121 @@ impl DynamicPowGovernor {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Invention §50: Anti-Fragile Tarpit — Attacker Compute Penalty
+// ══════════════════════════════════════════════════════════════════
+
+/// Record tracking violation history and active penalty difficulty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TarpitPenalty {
+    pub violations: u32,
+    pub last_violation_ts: u64,
+    pub active_penalty_bits: u8,
+}
+
+/// Anti-Fragile Tarpit: forces attackers into escalating Hashcash compute traps.
+///
+/// Ties failed handshakes, authentication anomalies, and tampered honey shards
+/// directly into escalating PoW difficulty for the offending peer:
+/// - Baseline: `base_difficulty` bits (e.g. 10 bits).
+/// - Failed handshake: +2 difficulty bits per failure (4x compute penalty).
+/// - Honey-shard tamper (§15): +4 difficulty bits immediately (16x compute penalty).
+/// - Maximum cap: `max_difficulty` bits (e.g. 24 bits ~ 16M hashes).
+/// - Successful authentication decays or clears penalties.
+#[derive(Debug, Clone)]
+pub struct AntiFragileTarpit {
+    pub base_difficulty: u8,
+    pub max_difficulty: u8,
+    pub penalty_ttl_secs: u64,
+    penalties: Arc<DashMap<[u8; 32], TarpitPenalty>>,
+}
+
+impl AntiFragileTarpit {
+    pub fn new(base_difficulty: u8, max_difficulty: u8, penalty_ttl_secs: u64) -> Self {
+        Self {
+            base_difficulty,
+            max_difficulty,
+            penalty_ttl_secs,
+            penalties: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Record a failed handshake or unauthenticated probe from a peer.
+    pub fn record_failed_handshake(&self, peer_id: &[u8; 32], now: u64) -> u8 {
+        self.escalate_penalty(peer_id, 2, now)
+    }
+
+    /// Record a honey-shard canary tag tampering event (§15) from a peer.
+    /// Honey-shard tampering is a proven Byzantine violation and escalates immediately by +4 bits.
+    pub fn record_honey_shard_tamper(&self, peer_id: &[u8; 32], now: u64) -> u8 {
+        self.escalate_penalty(peer_id, 4, now)
+    }
+
+    fn escalate_penalty(&self, peer_id: &[u8; 32], added_bits: u8, now: u64) -> u8 {
+        let mut entry = self.penalties.entry(*peer_id).or_insert(TarpitPenalty {
+            violations: 0,
+            last_violation_ts: now,
+            active_penalty_bits: 0,
+        });
+
+        // If previous penalty expired, reset
+        if now
+            > entry
+                .last_violation_ts
+                .saturating_add(self.penalty_ttl_secs)
+        {
+            entry.violations = 0;
+            entry.active_penalty_bits = 0;
+        }
+
+        entry.violations = entry.violations.saturating_add(1);
+        entry.last_violation_ts = now;
+        entry.active_penalty_bits = entry.active_penalty_bits.saturating_add(added_bits);
+
+        self.base_difficulty
+            .saturating_add(entry.active_penalty_bits)
+            .min(self.max_difficulty)
+    }
+
+    /// Get current required difficulty for this peer.
+    pub fn difficulty_for_peer(&self, peer_id: &[u8; 32], now: u64) -> u8 {
+        if let Some(entry) = self.penalties.get(peer_id) {
+            if now
+                <= entry
+                    .last_violation_ts
+                    .saturating_add(self.penalty_ttl_secs)
+            {
+                return self
+                    .base_difficulty
+                    .saturating_add(entry.active_penalty_bits)
+                    .min(self.max_difficulty);
+            }
+        }
+        self.base_difficulty
+    }
+
+    /// Creates a personalized PoW challenge reflecting the peer's tarpit difficulty.
+    pub fn create_challenge(
+        &self,
+        peer_id: &[u8; 32],
+        server_salt: [u8; 32],
+        now: u64,
+        ttl_secs: u64,
+    ) -> PowChallenge {
+        let difficulty = self.difficulty_for_peer(peer_id, now);
+        let mut ch = PowChallenge::new(server_salt, *peer_id, difficulty, ttl_secs);
+        ch.timestamp = now;
+        ch
+    }
+
+    /// Record a successful authenticated exchange, resetting the peer's tarpit penalty.
+    pub fn record_success(&self, peer_id: &[u8; 32]) {
+        self.penalties.remove(peer_id);
+    }
+}
+
 #[cfg(test)]
+
 mod tests {
     use super::*;
 
@@ -239,5 +357,36 @@ mod tests {
         assert_eq!(gov.compute_difficulty(14, 10), 13);
         // Huge flood -> capped at max_difficulty
         assert_eq!(gov.compute_difficulty(100_000, 10), 24);
+    }
+
+    #[test]
+    fn test_antifragile_tarpit_penalty_escalation_and_recovery() {
+        let tarpit = AntiFragileTarpit::new(8, 20, 300);
+        let attacker_id = [0xEEu8; 32];
+        let now = 1_000_000u64;
+
+        // Baseline difficulty is 8 bits
+        assert_eq!(tarpit.difficulty_for_peer(&attacker_id, now), 8);
+
+        // Failed handshake increases difficulty by +2 bits (8 -> 10)
+        let diff1 = tarpit.record_failed_handshake(&attacker_id, now);
+        assert_eq!(diff1, 10);
+        assert_eq!(tarpit.difficulty_for_peer(&attacker_id, now), 10);
+
+        // Another failed handshake increases by +2 bits (10 -> 12)
+        let diff2 = tarpit.record_failed_handshake(&attacker_id, now + 1);
+        assert_eq!(diff2, 12);
+
+        // Tampering with a §15 honey shard increases by +4 bits immediately (12 -> 16)
+        let diff3 = tarpit.record_honey_shard_tamper(&attacker_id, now + 2);
+        assert_eq!(diff3, 16);
+
+        // Challenge reflects the escalated 16-bit difficulty
+        let challenge = tarpit.create_challenge(&attacker_id, [0xAAu8; 32], now + 2, 60);
+        assert_eq!(challenge.difficulty, 16);
+
+        // Successful authentication clears penalties back to base difficulty
+        tarpit.record_success(&attacker_id);
+        assert_eq!(tarpit.difficulty_for_peer(&attacker_id, now + 3), 8);
     }
 }

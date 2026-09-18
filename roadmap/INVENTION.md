@@ -40,8 +40,17 @@ The current SOTA and invention implementation baseline has graduated the reposit
 - **§28 Present-Tense Mesh** (cryptographic presence claim binding beacon entropy in `layers::l1_kem`)
 - **§36 Shards over Tor** (multi-circuit SOCKS5 shard egress dispatcher in `net::relay`)
 - **§37 Universal Shard-Tunnel** (generic port forwarder for arbitrary TCP/UDP protocols over 576B GTF frames in `net::universal_tunnel`)
+- **§50 Anti-Fragile Tarpit** (attacker compute penalty via escalating PoW traps on failed handshakes and honey-shard canary triggers in `net::pow`)
+- **§22 Autonomous Dead-Drop Mesh Storage** (serverless blind Tahoe-style GTF ciphertext vaults addressed by SHA-256 drop commitments in `net::dead_drop`)
+- **§32 Diffusion Routing** (epidemic gossip flooding emergency mode behind `GHOST_DIFFUSION=1` with bounded hop and loop suppression in `net::diffusion`)
+- **§33 Self-Eating Storage** (adaptive Poisson decay inversely linked to network error rate with client keep-proof renewal in `net::dead_drop`)
+- **§27 Spatio-Temporal Erosion Codes** (deliberate data fading across space-time coordinates requiring multi-epoch presence in `net::shardsec`)
+- **§29 Windowing the Blackout** (DTN Merkle-tree anti-entropy state reconciliation across communication partitions in `net::dtn_reconcile`)
+- **§45 Anonymous Capability Economy** (threshold group credentials with identity-free quota authorization and anti-double-spend in `net::relay`)
+- **§48 Deploy-Not-Design** (containerized 3-node reference mesh testbed with automated smoke test in `deploy/`)
+- **§49 Protocol Semantic Fuzzer** (property-based sequence fuzzer asserting multi-step invariants across stateful operations in `tests/semantic_fuzzer.rs`)
 
-All are live behind documented protocol/configuration paths and have green code-level regression coverage (`cargo test --target-dir C:\ggn-target --features vpn --lib` passing 403 tests).
+All are live behind documented protocol/configuration paths and have green code-level regression coverage (`cargo test --target-dir C:\ggn-target --features vpn --lib` passing 412 tests + `tests/semantic_fuzzer.rs` passing all invariant sequences).
 
 
 ---

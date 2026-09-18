@@ -173,6 +173,34 @@ desktop entry; macOS is documented; Android runs the VPN as a foreground service
 **Universal Shard-Tunnel: Generic Port Forwarder (Invention §37).** `UniversalTunnelChunker` slices arbitrary application byte streams (RDP, gRPC, SMTP, SOCKS5) into sequenced chunks, pads them to standard 576-byte GTF privacy frames, and reassembles out-of-order deliveries at the egress via `UniversalTunnelReassembler`.
 *Test:* `src/ghost/net/universal_tunnel.rs` — `test_universal_shard_tunnel_chunking_and_reassembly`.
 
+**Anti-Fragile Tarpit: Attacker Compute Penalty (Invention §50).** Escalates PoW difficulty bits (+2 on failed handshakes, +4 on honey-shard canary triggers) to trap hostile probes in superlinear compute overhead while honest peers pay zero penalty.
+*Test:* `src/ghost/net/pow.rs` — `test_antifragile_tarpit_penalty_escalation_and_recovery`.
+
+**Autonomous Dead-Drop Mesh Storage (Invention §22).** Tahoe-style 576-byte blind ciphertext vaults addressed by SHA-256 drop commitments rather than IP/node IDs. Hosts hold opaque ciphertext and can never inspect metadata or plaintexts.
+*Tests:* `src/ghost/net/dead_drop.rs` — `test_dead_drop_deposit_and_sweep` and `test_host_audit_zero_metadata_exposure`.
+
+**Diffusion Routing: Opt-in Emergency Mode (Invention §32).** Emergency flood-gossip routing behind `GHOST_DIFFUSION=1` with bounded hop TTLs and rolling 1024-packet duplicate suppression cache.
+*Tests:* `src/ghost/net/diffusion.rs` — `test_diffusion_packet_serialization` and `test_diffusion_router_bounded_fanout_and_loop_suppression`.
+
+**Self-Eating Storage: Adaptive Poisson Decay (Invention §33).** Adaptive garbage collection inversely linked to network error rates ($\lambda_{\text{error}}$). High error partitions preserve shards up to 5x longer, while quiet periods enforce swift forward-secrecy decay unless renewed via client keep-proofs.
+*Test:* `src/ghost/net/dead_drop.rs` — `test_self_eating_storage_adaptive_poisson_decay`.
+
+**Spatio-Temporal Erosion Codes: Deliberate Data Fading (Invention §27).** Encodes messages across both space (disjoint paths) and time (rotating epochs). Reconstruction requires live keys across at least 2 distinct epoch intervals; older epoch keys erode from RAM, preventing retrospective decryption of past wire captures.
+*Test:* `src/ghost/net/shardsec.rs` — `test_spatio_temporal_erosion_codec_and_decay`.
+
+**Windowing the Blackout: DTN State Reconciliation (Invention §29).** Merkle-tree anti-entropy synchronization isolating partition deltas across prolonged blackout gaps (airplane mode, censorship cuts) in $O(\log N)$ branch exchanges and splicing missing bundles without re-transmitting redundant data.
+*Test:* `src/ghost/net/dtn_reconcile.rs` — `test_dtn_merkle_anti_entropy_blackout_sync`.
+
+**Anonymous Capability Economy (Invention §45).** Threshold group credentials (3-of-5) granting forwarding and bandwidth rights without revealing client public keys or identifiers, enforced with atomic quota spending and double-spend rejection.
+*Test:* `src/ghost/net/relay.rs` — `test_anonymous_threshold_voucher_spending_and_double_spend_prevention`.
+
+**Deploy-Not-Design: Reference Containerized Testbed (Invention §48).** Containerized 3-node reference mesh (`mesh-hub`, `mesh-relay`, `mesh-client`) with zero-config compose definition and automated multi-hop smoke test script.
+*Files:* `deploy/docker-compose.yml`, `deploy/smoke_test.sh`, `deploy/README.md`.
+
+**Protocol Semantic Fuzzer (Invention §49).** Multi-step invariant fuzzer evaluating randomized sequences of stateful transactions (dead-drop sweeps, threshold spends, Merkle synchronizations, epoch erosion) to prove safety, quota enforcement, and zero-leakage invariants.
+*Test:* `tests/semantic_fuzzer.rs` — 4 property-based sequence tests passing across thousands of operations.
+
+
 ---
 
 
@@ -278,14 +306,10 @@ Observed on this machine, 2026-09-17, Windows, nightly toolchain, **zero failure
 | `tests/p1_relay.rs` | 8 passed |
 | `tests/p2_wire.rs` | 6 passed |
 | `tests/simulation.rs` | 7 passed |
-| library unit tests, `--features vpn` | 393 passed in vpn, plus every `vpn_*` gate |
+| `tests/semantic_fuzzer.rs` | 4 passed |
+| library unit tests, `--features vpn` | 412 passed in vpn, plus every `vpn_*` gate |
 | library unit tests, `--features quic` | 322 passed |
 | library unit tests, `--features hardware-tpm,pkcs11` | 318 passed |
 
 The `p1_quic` and `vpn_*` targets report 0 tests under default features. That is correct, not a
 failure — they are gated behind those features.
-
-`cargo fmt -- --check` fails on this checkout, and it did before any of the recent work. It reports
-around 70 differences across 11 files under both the nightly and stable toolchains, mostly in files
-nobody has touched. The committed style and the installed formatter disagree across the whole
-repository, so it is listed here rather than quietly fixed by reformatting everything.

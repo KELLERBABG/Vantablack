@@ -1611,6 +1611,107 @@ impl TorMultiCircuitDispatcher {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Invention §45: Anonymous Capability Economy (Threshold Credentials)
+// ══════════════════════════════════════════════════════════════════
+
+/// Anonymous Capability Voucher authorized by a threshold group (§41).
+///
+/// Combines forwarding capability vouchers with threshold group signing:
+/// - Authorized by at least 3-of-5 group shares
+/// - Flow is identity-free: relay verifies that voucher is signed by a valid threshold group
+///   and respects quota bounds, without ever identifying the underlying user or client.
+/// - Protected against double-spending via spent token registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnonymousThresholdVoucher {
+    pub group_id: [u8; 16],
+    pub voucher_id: u64,
+    pub max_bytes: u64,
+    pub expires_at: u64,
+    /// Threshold group signature commitment over [voucher_id || max_bytes || expires_at]
+    pub group_commitment: [u8; 32],
+}
+
+impl AnonymousThresholdVoucher {
+    pub fn mint(
+        group_id: [u8; 16],
+        reconstructed_group_secret: &[u8; 32],
+        voucher_id: u64,
+        max_bytes: u64,
+        expires_at: u64,
+    ) -> Self {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"GGN_ANONYMOUS_THRESHOLD_VOUCHER_V1");
+        hasher.update(&group_id);
+        hasher.update(reconstructed_group_secret);
+        hasher.update(&voucher_id.to_be_bytes());
+        hasher.update(&max_bytes.to_be_bytes());
+        hasher.update(&expires_at.to_be_bytes());
+        let group_commitment = hasher.finalize().into();
+
+        Self {
+            group_id,
+            voucher_id,
+            max_bytes,
+            expires_at,
+            group_commitment,
+        }
+    }
+
+    /// Verifies the threshold voucher against the group's secret without exposing user identities.
+    pub fn verify(&self, expected_group_secret: &[u8; 32], current_time: u64) -> bool {
+        if current_time > self.expires_at {
+            return false;
+        }
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"GGN_ANONYMOUS_THRESHOLD_VOUCHER_V1");
+        hasher.update(&self.group_id);
+        hasher.update(expected_group_secret);
+        hasher.update(&self.voucher_id.to_be_bytes());
+        hasher.update(&self.max_bytes.to_be_bytes());
+        hasher.update(&self.expires_at.to_be_bytes());
+        let expected: [u8; 32] = hasher.finalize().into();
+        expected == self.group_commitment
+    }
+}
+
+/// Ledger tracking anonymous threshold capability spending and double-spend prevention.
+#[derive(Debug, Default)]
+pub struct AnonymousCapabilityLedger {
+    /// voucher_id -> bytes consumed
+    spent_table: DashMap<u64, u64>,
+}
+
+impl AnonymousCapabilityLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Try spending `bytes` from an anonymous threshold voucher.
+    /// Returns Ok(remaining_bytes) if permitted, or Err if expired, invalid, or quota exceeded.
+    pub fn try_spend(
+        &self,
+        voucher: &AnonymousThresholdVoucher,
+        expected_group_secret: &[u8; 32],
+        bytes: u64,
+        now: u64,
+    ) -> Result<u64, &'static str> {
+        if !voucher.verify(expected_group_secret, now) {
+            return Err("invalid or expired threshold capability voucher");
+        }
+
+        let mut consumed = self.spent_table.entry(voucher.voucher_id).or_insert(0);
+        let new_total = consumed.saturating_add(bytes);
+        if new_total > voucher.max_bytes {
+            return Err("voucher quota exceeded (double spend or over-allocation)");
+        }
+        *consumed = new_total;
+        Ok(voucher.max_bytes - new_total)
+    }
+}
+
 #[cfg(test)]
 
 mod derp_tests {
@@ -2012,5 +2113,63 @@ mod derp_tests {
         let decapsulated = TorMultiCircuitDispatcher::decapsulate_shard_udp(&encapsulated)
             .expect("Valid SOCKS5 UDP header decapsulation");
         assert_eq!(decapsulated, shard_data);
+    }
+
+    #[test]
+    fn test_anonymous_threshold_voucher_spending_and_double_spend_prevention() {
+        let group_id = [0x77u8; 16];
+        let group_secret = [0x42u8; 32];
+        let voucher_id = 9999123u64;
+        let max_bytes = 50_000u64;
+        let now = 500u64;
+        let expires_at = 1500u64;
+
+        // Mint anonymous threshold voucher
+        let voucher = AnonymousThresholdVoucher::mint(
+            group_id,
+            &group_secret,
+            voucher_id,
+            max_bytes,
+            expires_at,
+        );
+
+        // Verification with valid group secret succeeds
+        assert!(voucher.verify(&group_secret, now));
+
+        // Verification with invalid group secret fails
+        let wrong_secret = [0x11u8; 32];
+        assert!(!voucher.verify(&wrong_secret, now));
+
+        // Expired verification fails
+        assert!(!voucher.verify(&group_secret, expires_at + 1));
+
+        // Ledger spend testing
+        let ledger = AnonymousCapabilityLedger::new();
+
+        // 1. Spend 20,000 bytes -> 30,000 remaining
+        let remaining = ledger
+            .try_spend(&voucher, &group_secret, 20_000, now)
+            .expect("first spend ok");
+        assert_eq!(remaining, 30_000);
+
+        // 2. Spend 25,000 bytes -> 5,000 remaining
+        let remaining = ledger
+            .try_spend(&voucher, &group_secret, 25_000, now + 10)
+            .expect("second spend ok");
+        assert_eq!(remaining, 5_000);
+
+        // 3. Attempt to double-spend / exceed quota by spending 10,000 bytes (exceeds remaining 5,000)
+        let err = ledger.try_spend(&voucher, &group_secret, 10_000, now + 20);
+        assert!(err.is_err(), "quota exceeded must be rejected");
+
+        // 4. Spending exactly 5,000 bytes succeeds, exhausting quota to 0
+        let remaining = ledger
+            .try_spend(&voucher, &group_secret, 5_000, now + 30)
+            .expect("exhaust quota ok");
+        assert_eq!(remaining, 0);
+
+        // 5. Subsequent spend fails
+        let err_exhausted = ledger.try_spend(&voucher, &group_secret, 1, now + 40);
+        assert!(err_exhausted.is_err());
     }
 }

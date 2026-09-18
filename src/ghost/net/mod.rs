@@ -15,7 +15,10 @@ pub mod carrier;
 /// and an adaptive token-bucket flow controller.
 pub mod cc;
 pub mod consumer;
+pub mod dead_drop;
+pub mod diffusion;
 pub mod dispatcher;
+pub mod dtn_reconcile;
 pub mod fallback;
 pub mod ice;
 pub mod mesh;

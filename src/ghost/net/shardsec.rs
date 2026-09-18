@@ -275,7 +275,117 @@ impl TemporalShardScheduler {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Invention §27: Spatio-Temporal Erosion Codes (Deliberate Data Fading)
+// ══════════════════════════════════════════════════════════════════
+
+/// A shard bound to a specific space-time coordinate (shard_index, epoch_slot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceTimeShard {
+    pub index: u8,
+    pub epoch_slot: u64,
+    pub sealed_shard: SealedShard,
+}
+
+/// Spatio-Temporal Erosion Codec.
+///
+/// Encodes a message such that reconstruction requires presence across BOTH space (disjoint paths)
+/// and time (distinct epoch intervals). Old shards deliberately erode over time: as an epoch expires
+/// (§4 Self-Destructing Epochs), its decryption key is wiped from memory, rendering past wire captures
+/// un-openable.
+/// An adversary who raids a server or harvests traffic at one snapshot in time cannot recover
+/// the secret without having captured live keys across at least 2 distinct epoch windows.
+pub struct SpatioTemporalErosionCodec;
+
+impl SpatioTemporalErosionCodec {
+    /// Encode and seal message across a space-time ladder:
+    /// - Shard 0 @ Epoch E
+    /// - Shard 1 @ Epoch E + 1
+    /// - Shard 2 @ Epoch E + 2
+    pub fn encode_space_time(
+        epoch_master_keys: &[[u8; 32]; 3],
+        base_epoch: u64,
+        nonce: &[u8; 12],
+        direction: NonceDirection,
+        plaintext: &[u8],
+    ) -> Vec<SpaceTimeShard> {
+        let mut framed = (plaintext.len() as u16).to_be_bytes().to_vec();
+        framed.extend_from_slice(plaintext);
+        if framed.len() % 2 != 0 {
+            framed.push(0);
+        }
+        let shards = l4_rs::encode(&mut framed);
+        shards
+            .into_iter()
+            .enumerate()
+            .map(|(i, shard)| {
+                let epoch = base_epoch + (i as u64);
+                let sealed = seal_shard(
+                    &epoch_master_keys[i],
+                    epoch,
+                    nonce,
+                    direction,
+                    i as u8,
+                    shard,
+                );
+                SpaceTimeShard {
+                    index: i as u8,
+                    epoch_slot: epoch,
+                    sealed_shard: sealed,
+                }
+            })
+            .collect()
+    }
+
+    /// Reconstruct from available surviving space-time shards.
+    /// Requires that at least 2 shards have valid keys from their respective epochs.
+    /// If an epoch has decayed/eroded (key wiped/unavailable), that shard cannot be opened.
+    pub fn reconstruct_space_time(
+        available_epoch_keys: &[Option<[u8; 32]>; 3],
+        _base_epoch: u64,
+        nonce: &[u8; 12],
+        direction: NonceDirection,
+        shards: &[SpaceTimeShard],
+    ) -> Result<Vec<u8>, &'static str> {
+        let mut opened_shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
+
+        for st in shards {
+            let idx = st.index as usize;
+            if idx >= 3 {
+                continue;
+            }
+            if let Some(key) = &available_epoch_keys[idx] {
+                if let Ok(pt) = open_shard(key, st.epoch_slot, nonce, direction, &st.sealed_shard) {
+                    opened_shards[idx] = Some(pt);
+                }
+            }
+        }
+
+        if opened_shards.iter().filter(|s| s.is_some()).count() < 2 {
+            return Err("spatio-temporal erosion: fewer than 2 valid epoch keys available");
+        }
+
+        l4_rs::reconstruct(&mut opened_shards).map_err(|_| "Reed-Solomon reconstruction failed")?;
+
+        let first = opened_shards[0].as_ref().ok_or("missing shard 0")?;
+        let second = opened_shards[1].as_ref().ok_or("missing shard 1")?;
+        let mut framed = Vec::with_capacity(first.len() + second.len());
+        framed.extend_from_slice(first);
+        framed.extend_from_slice(second);
+        if framed.len() < 2 {
+            return Err("truncated payload");
+        }
+        let length = u16::from_be_bytes([framed[0], framed[1]]) as usize;
+        if length + 2 > framed.len() {
+            return Err("invalid payload length");
+        }
+        framed.truncate(length + 2);
+        Ok(framed[2..].to_vec())
+    }
+}
+
 #[cfg(test)]
+
 mod tests {
 
     use super::*;
@@ -394,5 +504,55 @@ mod tests {
         let reconstructed = open_message(&master, epoch, &nonce, dir, &full_capture)
             .expect("Full temporal window must reconstruct");
         assert_eq!(reconstructed, secret);
+    }
+
+    #[test]
+    fn test_spatio_temporal_erosion_codec_and_decay() {
+        let key_e0 = [0x10u8; 32];
+        let key_e1 = [0x20u8; 32];
+        let key_e2 = [0x30u8; 32];
+        let epoch_keys = [key_e0, key_e1, key_e2];
+        let base_epoch = 1000u64;
+        let nonce = [0x77u8; 12];
+        let dir = NonceDirection::InitiatorToResponder;
+        let secret = b"secret_fading_across_space_and_time";
+
+        let st_shards = SpatioTemporalErosionCodec::encode_space_time(
+            &epoch_keys,
+            base_epoch,
+            &nonce,
+            dir,
+            secret,
+        );
+        assert_eq!(st_shards.len(), 3);
+        assert_eq!(st_shards[0].epoch_slot, base_epoch);
+        assert_eq!(st_shards[1].epoch_slot, base_epoch + 1);
+        assert_eq!(st_shards[2].epoch_slot, base_epoch + 2);
+
+        // Case 1: Attacker at single snapshot only holds key for Epoch 0 (Epoch 1 & 2 keys uncompromised)
+        let single_epoch_capture = [Some(key_e0), None, None];
+        let failed_open = SpatioTemporalErosionCodec::reconstruct_space_time(
+            &single_epoch_capture,
+            base_epoch,
+            &nonce,
+            dir,
+            &st_shards,
+        );
+        assert!(
+            failed_open.is_err(),
+            "Single epoch key must open 0 bytes of secret"
+        );
+
+        // Case 2: Legitimate peer holds keys across at least 2 epochs (e.g. Epoch 0 and Epoch 2)
+        let multi_epoch_holder = [Some(key_e0), None, Some(key_e2)];
+        let opened = SpatioTemporalErosionCodec::reconstruct_space_time(
+            &multi_epoch_holder,
+            base_epoch,
+            &nonce,
+            dir,
+            &st_shards,
+        )
+        .expect("2 space-time keys must successfully reconstruct");
+        assert_eq!(opened, secret);
     }
 }

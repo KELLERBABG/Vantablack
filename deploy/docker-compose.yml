@@ -1,0 +1,76 @@
+# Global Ghost Net — Reference Deployment Testbed (Invention §48: Deploy-Not-Design)
+#
+# Spin up a containerized 3-node reference mesh:
+#   1. Hub (Exit & Dead-Drop Vault)
+#   2. Relay (Blind Forwarder & Anonymous Capability Ledger)
+#   3. Client (Shatter Router & Diffusion Initiator)
+#
+# Usage:
+#   docker compose up -d
+#   ./smoke_test.sh
+
+version: '3.8'
+
+services:
+  mesh-hub:
+    build:
+      context: ..
+      dockerfile: Dockerfile.wan
+    container_name: ggn-ref-hub
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=hub
+      - LISTEN_ADDR=0.0.0.0:8000
+      - GHOST_POW_DIFFICULTY=12
+      - GHOST_DEAD_DROP=1
+      - GHOST_DTN_RECONCILE=1
+    networks:
+      ggn_testbed:
+        ipv4_address: 172.29.1.10
+
+  mesh-relay:
+    build:
+      context: ..
+      dockerfile: Dockerfile.wan
+    container_name: ggn-ref-relay
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=relay
+      - LISTEN_ADDR=0.0.0.0:8000
+      - GHOST_DIFFUSION=1
+      - GHOST_ANON_CAPABILITY=1
+      - NETEM_RULE=delay 20ms 4ms
+    networks:
+      ggn_testbed:
+        ipv4_address: 172.29.1.20
+    depends_on:
+      - mesh-hub
+
+  mesh-client:
+    build:
+      context: ..
+      dockerfile: Dockerfile.wan
+    container_name: ggn-ref-client
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=client
+      - LISTEN_ADDR=0.0.0.0:8000
+      - GHOST_DIFFUSION=1
+      - GHOST_SPATIO_TEMPORAL=1
+    ports:
+      - "18080:8080"
+    networks:
+      ggn_testbed:
+        ipv4_address: 172.29.1.30
+    depends_on:
+      - mesh-relay
+
+networks:
+  ggn_testbed:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/16
