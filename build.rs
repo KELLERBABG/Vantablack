@@ -21,5 +21,10 @@ fn main() {
         return;
     }
 
-    embed_resource::compile_for("assets/app.rc", ["ggn", "vantablack"], embed_resource::NONE);
+    // Embed the icon and version resources on Windows.
+    // In environments where rc.exe / windres fails (such as Windows GNU without MSVC rc),
+    // warn and continue so developer builds and test suites proceed.
+    let _ = std::panic::catch_unwind(|| {
+        embed_resource::compile_for("assets/app.rc", ["ggn", "vantablack"], embed_resource::NONE);
+    });
 }
