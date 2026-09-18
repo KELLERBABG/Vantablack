@@ -28,7 +28,7 @@
 #define MyAppDirName "GlobalGhostNet"
 #define MyAppPublisher "Keller Systems"
 #define MyAppURL "https://vantablack.kellersystems.dev/"
-#define MyAppRepoURL "https://github.com/KELLERBABG/Global-Ghost-Net"
+#define MyAppRepoURL "https://github.com/KELLERBABG/Vantablack"
 
 ; Supplied by the build script from the compiled binary's version resource.
 #ifndef MyAppVersion

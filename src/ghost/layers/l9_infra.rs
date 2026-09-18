@@ -141,7 +141,7 @@ pub async fn initialize_node() -> anyhow::Result<()> {
     info!("Crypto: identity_file=identity.key, PSK rotation=24h");
     info!("Routing: CGR=enabled, max_hops=5, store_forward=enabled");
     info!("Security: ZK auth=optional, temporal_isolation=enabled");
-    info!("Download URL: https://github.com/global-ghost-net/vantablack/releases/latest");
+    info!("Download URL: https://github.com/KELLERBABG/Vantablack/releases/latest");
 
     Ok(())
 }

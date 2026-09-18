@@ -168,7 +168,7 @@ docker compose -f docker-compose.wan.yml down
 ## Install on Windows
 
 The recommended way to install on Windows is the setup file attached to every
-[release](https://github.com/KELLERBABG/Global-Ghost-Net/releases):
+[release](https://github.com/KELLERBABG/Vantablack/releases):
 
 ```
 ggn-<version>-windows-setup.exe

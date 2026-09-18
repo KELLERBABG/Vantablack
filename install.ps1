@@ -30,7 +30,7 @@ $repoDir = "$destDir\Global-Ghost-Net"
 if (Test-Path $repoDir) {
     git -C $repoDir pull --ff-only origin main
 } else {
-    git clone https://github.com/KELLERBABG/Global-Ghost-Net.git $repoDir
+    git clone https://github.com/KELLERBABG/Vantablack.git $repoDir
 }
 
 Write-Host "[*] Compiling the desktop application (native window + tray icon)..." -ForegroundColor Yellow

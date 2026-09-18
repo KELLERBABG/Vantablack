@@ -34,7 +34,7 @@ if [ -d "$REPO_DIR" ]; then
     git -C "$REPO_DIR" pull --ff-only origin main
 else
     printf '\033[1;33m[*] Cloning Vantablack...\033[0m\n'
-    git clone https://github.com/KELLERBABG/Global-Ghost-Net.git "$REPO_DIR"
+    git clone https://github.com/KELLERBABG/Vantablack.git "$REPO_DIR"
 fi
 
 # The default build is the desktop application: a native window plus a tray
