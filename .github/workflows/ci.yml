@@ -214,8 +214,42 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Launch Level 1 WAN Mesh Containers
+        # All seven services in this compose file build the same Dockerfile, so a
+        # plain `up --build` fans out seven concurrent, unauthenticated requests
+        # to Docker Hub. Its auth endpoint resets that burst -- "failed to fetch
+        # oauth token ... write: connection reset by peer" -- which is a
+        # registry-side flake, not a build error. Pre-pull the two base images
+        # once, serialise the builds, and retry, so it cannot fail the job.
+        env:
+          COMPOSE_PARALLEL_LIMIT: "1"
         run: |
-          docker compose -f docker-compose.wan.yml up -d --build
+          for image in rust:1.85-slim-bookworm debian:bookworm-slim; do
+            for attempt in 1 2 3 4 5; do
+              if docker pull "$image"; then break; fi
+              echo "docker pull $image failed (attempt $attempt); retrying"
+              sleep $(( attempt * 5 ))
+            done
+            if ! docker image inspect "$image" > /dev/null 2>&1; then
+              echo "::error::could not pull base image $image from Docker Hub"
+              exit 1
+            fi
+          done
+
+          built=0
+          for attempt in 1 2 3; do
+            if docker compose -f docker-compose.wan.yml up -d --build; then
+              built=1
+              break
+            fi
+            echo "compose up failed (attempt $attempt); retrying"
+            sleep $(( attempt * 15 ))
+          done
+          if [ "$built" -ne 1 ]; then
+            echo "::error::docker compose up failed after 3 attempts"
+            exit 1
+          fi
+          docker compose -f docker-compose.wan.yml ps
+
           sleep 15
           docker ps
           docker logs vantablack-carrier-1
