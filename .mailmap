@@ -1,0 +1,12 @@
+# .mailmap — canonical author mapping for this repository
+# GitHub uses this file to unify contributor identities in the graph.
+# All variants below resolve to KELLERBABG <contact@kellersystems.dev>
+
+KELLERBABG <contact@kellersystems.dev> Keller Systems <contact@kellersystems.dev>
+KELLERBABG <contact@kellersystems.dev> KELLERBABG <228480080+KELLERBABG@users.noreply.github.com>
+KELLERBABG <contact@kellersystems.dev> KELLERBABG <papababg02@gmail.com>
+
+# Reject / absorb any rogue agent identities (belt-and-suspenders)
+KELLERBABG <contact@kellersystems.dev> Reasonix <agent@localhost>
+KELLERBABG <contact@kellersystems.dev> LNegenborn <LNegenborn@users.noreply.github.com>
+KELLERBABG <contact@kellersystems.dev> Codebuff <noreply@codebuff.com>
