@@ -59,9 +59,10 @@ val intent = Intent(context, GhostVpnService::class.java)
 ContextCompat.startForegroundService(context, intent)
 ```
 
-The session key is adopted automatically: the Rust core runs the same hybrid
-handshake (Kyber-512 + X25519) as the desktop binary upon `start()`, derives
-the master key and wraps all traffic in GTF bulk wire frames (`0x02` tunnel bit).
+The session key is adopted automatically: upon `start()` the Rust core runs the
+legacy ML-KEM-512 + X25519 hybrid handshake — the construction the desktop binary
+still accepts as its fallback suite — derives the master key and wraps all
+traffic in GTF bulk wire frames (`0x02` tunnel bit).
 
 ## Verification Status
 

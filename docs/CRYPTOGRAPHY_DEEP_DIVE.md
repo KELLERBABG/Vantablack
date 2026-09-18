@@ -12,7 +12,7 @@ Mass-surveillance adversaries frequently engage in **"Store Now, Decrypt Later"*
 
 To neutralize this threat, Vantablack employs a **hybrid post-quantum cryptographic architecture**:
 1. **Classical Hard Problem:** Elliptic curve discrete logarithm over Curve25519 (128-bit classical security).
-2. **Post-Quantum Hard Problem:** Module Learning with Errors (MLWE) over polynomial rings via ML-KEM-512 (Kyber-512 / FIPS 203).
+2. **Post-Quantum Hard Problem:** Module Learning with Errors (MLWE) over polynomial rings via ML-KEM-768 (Kyber / FIPS 203).
 
 ---
 
@@ -23,12 +23,12 @@ Every peer session negotiates an ephemeral symmetric key using a dual-primitive 
 ### Step 1: Ephemeral Key Generation
 Both the initiator (Node A) and responder (Node B) generate fresh, ephemeral key pairs per session:
 - **Node A:** Generates an ephemeral X25519 scalar key pair.
-- **Node B:** Generates an ephemeral ML-KEM-512 key pair (encapsulation key `ek`, decapsulation key `dk`) and an ephemeral X25519 key pair.
+- **Node B:** Generates an ephemeral ML-KEM-768 key pair (encapsulation key `ek`, decapsulation key `dk`) and an ephemeral X25519 key pair.
 
 ### Step 2: Encapsulation & Exchange
 1. Node A encapsulates a 32-byte post-quantum shared secret against Node B's encapsulation key:
    ```text
-   (ciphertext_kem, shared_secret_kem) = ML-KEM-512_Encapsulate(ek_B)
+   (ciphertext_kem, shared_secret_kem) = ML-KEM-768_Encapsulate(ek_B)
    ```
 2. Node A computes the classical Diffie-Hellman shared secret:
    ```text
@@ -43,7 +43,7 @@ PRK = HKDF-Extract(Salt: SessionSalt XOR PSK, shared_secret_ecdh || shared_secre
 MasterKey = HKDF-Expand(PRK, Info: "vantablack-v1-hybrid-master", Length: 32 bytes)
 ```
 
-**Security Guarantee:** If a quantum computer solves X25519, the master key remains secret due to the lattice-based ML-KEM-512 secret. Conversely, if an unforeseen algebraic shortcut weakens lattice cryptography, the proven security of X25519 protects the tunnel.
+**Security Guarantee:** If a quantum computer solves X25519, the master key remains secret due to the lattice-based ML-KEM-768 secret. Conversely, if an unforeseen algebraic shortcut weakens lattice cryptography, the proven security of X25519 protects the tunnel.
 
 ---
 

@@ -6,14 +6,14 @@
 
 ### Abstract
 
-Vantablack is an autonomous, post-quantum WAN mesh routing daemon. Operating entirely peer-to-peer over UDP, nodes establish zero-trust, forward-secret tunnels that protect traffic against both mass surveillance and cryptographically relevant quantum computers. The architecture eliminates centralized coordinators, certificate authorities, and single points of infrastructure failure by combining hybrid post-quantum key exchange (X25519 + ML-KEM-512), Reed-Solomon asymmetric shard routing, anti-traffic-analysis jitter padding, 64-bit sliding window replay protection, and decentralized DNS seed discovery.
+Vantablack is an autonomous, post-quantum WAN mesh routing daemon. Operating entirely peer-to-peer over UDP, nodes establish zero-trust, forward-secret tunnels that protect traffic against both mass surveillance and cryptographically relevant quantum computers. The architecture eliminates centralized coordinators, certificate authorities, and single points of infrastructure failure by combining hybrid post-quantum key exchange (X25519 + ML-KEM-768), Reed-Solomon asymmetric shard routing, anti-traffic-analysis jitter padding, 64-bit sliding window replay protection, and decentralized DNS seed discovery.
 
 ---
 
 ### 1. Architectural Principles
 
 1. **Serverless Decentralization:** Every node operates simultaneously as a router and a relay. There is no central directory server.
-2. **Post-Quantum Defense-in-Depth:** Key agreement combines classical elliptic-curve Diffie-Hellman (X25519) with lattice-based key encapsulation (ML-KEM-512 / FIPS 203) alongside optional pre-shared salt mixing.
+2. **Post-Quantum Defense-in-Depth:** Key agreement combines classical elliptic-curve Diffie-Hellman (X25519) with lattice-based key encapsulation (ML-KEM-768 / FIPS 203) alongside optional pre-shared salt mixing.
 3. **Traffic Morphing:** Frames are padded with variable pseudorandom jitter, rendering datagrams indistinguishable from uniform white noise to intermediate deep packet inspection (DPI) systems.
 4. **Resilient Erasure Multipath:** Datagrams are sharded via Reed-Solomon RS(2,1) for path diversity and packet-loss resilience (any 2 of 3 shards reconstruct intact payloads). Datagram confidentiality on the wire is enforced by authenticated encryption (L2 AEAD / ShardSec per-shard keys).
 
@@ -24,7 +24,7 @@ Vantablack is an autonomous, post-quantum WAN mesh routing daemon. Operating ent
 | Layer | Component | Implementation | Function |
 |---|---|---|---|
 | **L0** | Identity | Ed25519 | Cryptographic node identity and beacon signing |
-| **L1** | Key Exchange | X25519 + ML-KEM-512 | Hybrid post-quantum key encapsulation with HKDF-SHA256 |
+| **L1** | Key Exchange | X25519 + ML-KEM-768 | Hybrid post-quantum key encapsulation with HKDF-SHA256 |
 | **L2** | AEAD Transport | ChaCha20-Poly1305 | 256-bit encryption with directional session-bound nonces |
 | **L3** | Secret Sharing | Shamir SSS (GF256) | Threshold key distribution and split recovery (2-of-3 threshold) |
 | **L4** | Erasure Coding | Reed-Solomon RS(2,1) | Multi-path fragment dispersal & availability (any 2 of 3 shards reconstruct) |

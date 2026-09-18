@@ -29,7 +29,7 @@ Instead of funneling traffic through a central VPN provider where it can be moni
 
 ## Why Use It?
 
-* **Quantum-Resilient Privacy:** Uses hybrid ML-KEM-512 (Kyber / FIPS 203) and ephemeral X25519 ECDH. Data captured by state surveillance today cannot be decrypted when cryptographically relevant quantum computers arrive.
+* **Quantum-Resilient Privacy:** Uses hybrid ML-KEM-768 (Kyber / FIPS 203) and ephemeral X25519 ECDH, falling back to ML-KEM-512 for peers that only speak the legacy construction. Data captured by state surveillance today cannot be decrypted when cryptographically relevant quantum computers arrive.
 * **Asymmetric Shard Routing:** Every message is split into 3 mathematical shards (Reed-Solomon RS(2,1)) dispatched across divergent internet paths for packet-loss resilience. Payload confidentiality is strictly enforced by AEAD encryption, while erasure coding guarantees reconstruction from any 2 shards without retransmission.
 * **Byzantine Tamper Resistance:** Pairwise combinatorial Poly1305 MAC tag verification isolates and drops corrupted shards in real-time, reconstructing intact payloads via pristine alternate paths.
 * **Zero Infrastructure Costs:** No need to pay for a central VPS. Connect your devices seamlessly using free Cloudflare DNS seeds and automatic local peer caching.
@@ -356,7 +356,7 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 
 | Threat / Scenario | Defense Mechanism | Protection Level |
 | :--- | :--- | :---: |
-| **Quantum Computing Decryption** | Hybrid ML-KEM-512 (Kyber) + Ephemeral X25519 ECDH | **Immune** |
+| **Quantum Computing Decryption** | Hybrid ML-KEM-768 (Kyber) + Ephemeral X25519 ECDH | **Immune** |
 | **Single-Node Eavesdropping** | RS(2,1) Reed-Solomon asymmetric multi-path sharding | **Immune** |
 | **Byzantine Node Tampering** | Pairwise combinatorial Poly1305 AEAD validation | **Immune** |
 | **Deep Packet Inspection (DPI)** | L5 Random Jitter Padding (16–64 bytes) + Uniform Frames | **Immune** |
@@ -378,7 +378,7 @@ Vantablack implements the 10-layer GHOST protocol stack:
 |Layer | Component            | Specification                 |
 +------+----------------------+-------------------------------+
 | L0   | Permanent Identity   | Ed25519 cryptographic keys    |
-| L1   | Hybrid KEM           | X25519 + ML-KEM-512 (Kyber)   |
+| L1   | Hybrid KEM           | X25519 + ML-KEM-768 (Kyber)   |
 | L2   | Authenticated AEAD   | ChaCha20-Poly1305 + HKDF      |
 | L3   | Secret Sharing       | Shamir SSS (GF256, 2-of-3)    |
 | L4   | Erasure Coding       | Reed-Solomon RS(2,1) shards   |
@@ -402,7 +402,7 @@ For engineers, cryptographers, and contributors wishing to inspect the mathemati
 * [**Protocol Whitepaper**](docs/WHITEPAPER.md) — Architectural overview of the GHOST network layers (L0 through L9).
 * [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) — In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
 * [**LAN over WAN (VPN Layer)**](docs/LAN_OVER_WAN.md) — Road-warrior userspace VPN architecture, TUN drivers, and mobile network roaming.
-* [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-512, X25519 hybrid key exchange, directional nonces, and memory security.
+* [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-768, X25519 hybrid key exchange, directional nonces, and memory security.
 * [**Zero-Cost Peer Discovery Guide**](docs/PEER_DISCOVERY_GUIDE.md) — Step-by-step walkthrough for configuring free Cloudflare DNS seeds and local caching.
 * [**Configuration Reference**](config.env.example) — Parameter reference for network ports, transit rate limits, and egress allowlists.
 

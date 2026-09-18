@@ -11,7 +11,7 @@ Traditional onion networks (such as Tor) were designed around TCP circuits, cent
 Vantablack implements onion routing **from first principles** in pure Rust:
 1. **Zero Legacy Dependencies:** No C/C++ libraries, no OpenSSL, no legacy circuit protocols.
 2. **Datagram-Native (UDP):** Operates on Ghost Transport Frames (GTF) over UDP, eliminating TCP circuit stalls, head-of-line blocking, and TCP fingerprinting.
-3. **Post-Quantum Layering:** Key encapsulation at each layer uses hybrid **ML-KEM-512 (Kyber)** and **X25519**, defending transit payloads against future quantum decryption.
+3. **Post-Quantum Layering:** Key encapsulation at each layer uses hybrid **ML-KEM-768 (Kyber)** and **X25519**, defending transit payloads against future quantum decryption.
 4. **No Central Directory Authorities:** Relays discover each other through decentralized DNS seeds, peer-to-peer exchange, and local signed beacons—completely eliminating trusted directory servers.
 5. **Level 2 Multi-Hop Carrier Mesh:** Supports nested, hop-decremented forwarding across carrier networks, verified under real-world WAN latency and packet loss conditions using Linux `tc netem`.
 
