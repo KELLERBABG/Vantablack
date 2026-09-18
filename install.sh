@@ -2,7 +2,7 @@
 # Vantablack — automated node installer (POSIX sh).
 #
 # Served at the site root as advertised by the landing page:
-#   curl -sSf https://ggn.kellersystems.dev/install.sh | sh
+#   curl -sSf https://vantablack.kellersystems.dev/install.sh | sh
 #
 # The daemon takes NO command-line arguments: it is configured entirely through
 # environment variables (see config.env.example). `printf` is used rather than

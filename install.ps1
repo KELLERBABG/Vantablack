@@ -1,7 +1,7 @@
 # Vantablack — automated node installer (Windows PowerShell).
 #
 # Served at the site root as advertised by the landing page:
-#   irm https://ggn.kellersystems.dev/install.ps1 | iex
+#   irm https://vantablack.kellersystems.dev/install.ps1 | iex
 #
 # The daemon takes NO command-line arguments: it is configured entirely through
 # environment variables (see config.env.example).

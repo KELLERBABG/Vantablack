@@ -394,7 +394,7 @@ Vantablack implements the 10-layer GHOST protocol stack:
 
 ## Technical Documentation & Deep Dives
 
-Interactive documentation portal is live at [**ggn.kellersystems.dev/docs**](https://ggn.kellersystems.dev/docs).
+Interactive documentation portal is live at [**vantablack.kellersystems.dev/docs**](https://vantablack.kellersystems.dev/docs).
 
 For engineers, cryptographers, and contributors wishing to inspect the mathematics, security models, and implementation details:
 
