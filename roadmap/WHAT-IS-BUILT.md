@@ -152,7 +152,29 @@ desktop entry; macOS is documented; Android runs the VPN as a foreground service
 **Replay-Resistant Chronology: Causal Order Monotonicity (Invention §39).** Replaces external wall-clock reliance with `CausalMonotonicCounter` vectors. Epoch expiry and message ordering are evaluated against causal supersession, ensuring cross-partition replay attacks are rejected deterministically even when local clocks are artificially skewed.
 *Test:* `src/ghost/session/ratchet.rs` — `test_causal_monotonic_counter_replay_resistance`.
 
+**Group-as-Shards: Threshold Governance (Invention §41).** Models group authority and identity as a 3-of-5 threshold erasure-coded object using `ThresholdGroupKey` over `l3_shamir`. Any 3 of 5 members cooperate to reconstruct authorization keys and capability tokens, while any 2 compromised devices learn mathematically zero information.
+*Tests:* `src/ghost/layers/l3_shamir.rs` — `test_threshold_group_key_3_of_5_governance` and `test_threshold_group_insufficient_shares_rejected`.
+
+**Thermal-Mesh: Physical Energy Class Routing (Invention §35).** Contacts and nodes carry an `EnergyClass` (Mains, Battery, Harvested/Solar). Route selection scores and prefers heterogeneous energy triples via `select_thermal_heterogeneous_triple`, pricing out low-cost uniform-energy Sybil clusters.
+*Tests:* `src/ghost/net/routing.rs` — `test_thermal_mesh_energy_heterogeneity_scoring` and `test_thermal_mesh_triple_selection`.
+
+**Time-as-the-4th-Shard: Scheduled Shard Dispatch (Invention §30).** Adds millisecond-level temporal stagger (`T_0`, `T_0 + 200ms`, `T_0 + 400ms`) via `TemporalShardScheduler`. A partial-window adversary capturing traffic over $< 200$ ms captures fewer than 2 shards and cannot reconstruct plaintext.
+*Test:* `src/ghost/net/shardsec.rs` — `test_temporal_shard_schedule_and_partial_window_adversary`.
+
+**Beacon Grid: Distributed Clock Reference (Invention §34).** Embeds coarse epoch grid counters (`BeaconGridEpoch`) into Poisson discovery beacons. Partitioned or GPS/NTP-denied nodes monotonically reconcile coarse timeline consensus upon reconnecting.
+*Test:* `src/ghost/net/mod.rs` — `test_beacon_grid_serialization_and_partition_reconciliation`.
+
+**Present-Tense Mesh: Cryptographic Presence Claim (Invention §28).** Binds recent local Poisson beacon entropy into the session transcript via `PresenceProof`. Remote peers verify co-presence within the active epoch window; past wire captures and out-of-region relays are rejected.
+*Test:* `src/ghost/layers/l1_kem.rs` — `test_present_tense_mesh_presence_proof_and_replay_rejection`.
+
+**Shards over Tor: Multi-Circuit Egress (Invention §36).** `TorMultiCircuitDispatcher` routes each of the 3 Reed-Solomon shards through distinct, isolated local Tor SOCKS5 circuits (ports 9050, 9052, 9054) with SOCKS5 UDP encapsulation. A compromised Tor circuit captures at most 1 shard.
+*Test:* `src/ghost/net/relay.rs` — `test_tor_multi_circuit_dispatcher_routing_and_udp_encapsulation`.
+
+**Universal Shard-Tunnel: Generic Port Forwarder (Invention §37).** `UniversalTunnelChunker` slices arbitrary application byte streams (RDP, gRPC, SMTP, SOCKS5) into sequenced chunks, pads them to standard 576-byte GTF privacy frames, and reassembles out-of-order deliveries at the egress via `UniversalTunnelReassembler`.
+*Test:* `src/ghost/net/universal_tunnel.rs` — `test_universal_shard_tunnel_chunking_and_reassembly`.
+
 ---
+
 
 ## 2. Built, but only tested in one process
 

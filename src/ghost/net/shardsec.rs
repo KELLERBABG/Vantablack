@@ -199,8 +199,85 @@ pub fn open_message(
     Ok(framed[2..].to_vec())
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Invention §30: Time-as-the-4th-Shard (Scheduled Shard Dispatch)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// A shard scheduled for temporal egress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledShard {
+    pub shard: SealedShard,
+    /// Delay offset in milliseconds relative to T_0.
+    pub delay_ms: u64,
+}
+
+/// Temporal dispatch scheduler for Reed-Solomon shards.
+///
+/// Dispatches shards not only across space (independent routes) but scheduled
+/// across time (T_0, T_0 + delta, next beacon epoch).
+/// An adversary who intercepts traffic over a limited capture window (e.g. < delta)
+/// captures fewer than 2 shards and cannot reconstruct the plaintext.
+#[derive(Debug, Clone)]
+pub struct TemporalShardScheduler {
+    pub base_delay_ms: u64,
+    pub jitter_ms: u64,
+}
+
+impl Default for TemporalShardScheduler {
+    fn default() -> Self {
+        Self {
+            base_delay_ms: 200, // 200ms nominal staggered dispatch
+            jitter_ms: 0,
+        }
+    }
+}
+
+impl TemporalShardScheduler {
+    pub fn new(base_delay_ms: u64) -> Self {
+        Self {
+            base_delay_ms,
+            jitter_ms: 0,
+        }
+    }
+
+    /// Schedule egress flights for a 3-shard message.
+    /// Shard 0: T_0 (0 ms delay)
+    /// Shard 1: T_0 + base_delay_ms (e.g. 200 ms)
+    /// Shard 2: T_0 + 2 * base_delay_ms (e.g. 400 ms)
+    pub fn schedule(&self, shards: Vec<SealedShard>) -> Vec<ScheduledShard> {
+        shards
+            .into_iter()
+            .enumerate()
+            .map(|(i, shard)| {
+                let delay_ms = (i as u64) * self.base_delay_ms
+                    + (self.jitter_ms % (self.base_delay_ms.max(1) + 1));
+                ScheduledShard { shard, delay_ms }
+            })
+            .collect()
+    }
+
+    /// Simulates what an attacker captures given an observation window `[window_start_ms, window_end_ms]`.
+    /// Returns only the shards dispatched within that temporal window.
+    pub fn intercept_window(
+        scheduled: &[ScheduledShard],
+        window_start_ms: u64,
+        window_end_ms: u64,
+    ) -> Vec<Option<SealedShard>> {
+        let mut captured = vec![None, None, None];
+        for s in scheduled {
+            if s.delay_ms >= window_start_ms && s.delay_ms <= window_end_ms {
+                if (s.shard.index as usize) < 3 {
+                    captured[s.shard.index as usize] = Some(s.shard.clone());
+                }
+            }
+        }
+        captured
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::ghost::layers::l2_aead::random_xnonce;
 
@@ -280,5 +357,42 @@ mod tests {
         let normal = seal_shard(&master, epoch, &nonce, dir, 0, b"normal".to_vec());
         assert!(!normal.is_honey);
         assert!(!verify_honey_shard(&master, epoch, &nonce, dir, &normal));
+    }
+
+    #[test]
+    fn test_temporal_shard_schedule_and_partial_window_adversary() {
+        let master = [0x7au8; 32];
+        let epoch = 100u64;
+        let nonce = [0x11u8; 12];
+        let dir = NonceDirection::InitiatorToResponder;
+        let secret = b"temporal_scheduled_message";
+
+        let sealed = seal_message(&master, epoch, &nonce, dir, secret);
+        assert_eq!(sealed.len(), 3);
+
+        let scheduler = TemporalShardScheduler::new(200);
+        let scheduled = scheduler.schedule(sealed);
+        assert_eq!(scheduled.len(), 3);
+        assert_eq!(scheduled[0].delay_ms, 0);
+        assert_eq!(scheduled[1].delay_ms, 200);
+        assert_eq!(scheduled[2].delay_ms, 400);
+
+        // Adversary with short capture window (0ms to 100ms) only intercepts shard 0
+        let partial_capture = TemporalShardScheduler::intercept_window(&scheduled, 0, 100);
+        assert!(partial_capture[0].is_some());
+        assert!(partial_capture[1].is_none());
+        assert!(partial_capture[2].is_none());
+        // Fewer than 2 shards must fail to open
+        let open_res = open_message(&master, epoch, &nonce, dir, &partial_capture);
+        assert!(
+            open_res.is_err(),
+            "Partial temporal capture (1 shard) must not reconstruct"
+        );
+
+        // Adversary or recipient with full window (0ms to 500ms) receives all shards and reconstructs
+        let full_capture = TemporalShardScheduler::intercept_window(&scheduled, 0, 500);
+        let reconstructed = open_message(&master, epoch, &nonce, dir, &full_capture)
+            .expect("Full temporal window must reconstruct");
+        assert_eq!(reconstructed, secret);
     }
 }

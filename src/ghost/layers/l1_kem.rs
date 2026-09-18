@@ -141,6 +141,93 @@ pub fn derive_hybrid_master_key_with_suite(
     master_key
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Invention §28: Present-Tense Mesh — Cryptographic Presence Claim
+// ══════════════════════════════════════════════════════════════════
+
+/// Cryptographic presence claim proving physical presence in the live beacon epoch.
+///
+/// Nodes bind recent beacon entropy (observed from local broadcast / Poisson beacons)
+/// into the session handshake. A replay from a past epoch, a captured wire transcript,
+/// or a faraway adversary outside the local broadcast horizon cannot provide
+/// matching beacon entropy for the current window and is rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresenceProof {
+    /// Hash of recent local beacon entropy.
+    pub beacon_entropy_hash: [u8; 32],
+    /// Beacon grid or local epoch window index.
+    pub epoch_window: u64,
+}
+
+impl PresenceProof {
+    pub const PRESENCE_DOMAIN: &'static [u8] = b"GGN_PRESENT_TENSE_PROOF_V1";
+
+    pub fn new(beacon_entropy: &[u8], epoch_window: u64) -> Self {
+        use sha2::Digest;
+        let mut hasher = Sha256::new();
+        hasher.update(Self::PRESENCE_DOMAIN);
+        hasher.update(&epoch_window.to_be_bytes());
+        hasher.update(beacon_entropy);
+        let res = hasher.finalize();
+        let mut beacon_entropy_hash = [0u8; 32];
+        beacon_entropy_hash.copy_from_slice(&res);
+        Self {
+            beacon_entropy_hash,
+            epoch_window,
+        }
+    }
+
+    /// Verifies whether the claimed presence matches the local beacon entropy window.
+    /// Returns Ok(()) if valid, or an Err with reason if out of window or entropy mismatch.
+    pub fn verify(
+        &self,
+        expected_entropy: &[u8],
+        current_epoch_window: u64,
+        max_window_skew: u64,
+    ) -> Result<(), &'static str> {
+        let diff = if self.epoch_window > current_epoch_window {
+            self.epoch_window - current_epoch_window
+        } else {
+            current_epoch_window - self.epoch_window
+        };
+        if diff > max_window_skew {
+            return Err("presence proof epoch window out of bounds (replay or future claim)");
+        }
+        let expected = Self::new(expected_entropy, self.epoch_window);
+        if expected.beacon_entropy_hash != self.beacon_entropy_hash {
+            return Err("presence proof entropy mismatch (remote peer not co-present in epoch)");
+        }
+        Ok(())
+    }
+}
+
+/// Derives master key binding cryptographic presence into the session transcript.
+pub fn derive_hybrid_master_key_with_presence(
+    suite: HybridCipherSuite,
+    x25519_shared: &[u8; 32],
+    kyber_shared: &[u8],
+    psk: Option<&[u8; 32]>,
+    presence: Option<&PresenceProof>,
+) -> [u8; 32] {
+    let mut base_salt = match psk {
+        Some(key) => *key,
+        None => [0u8; 32],
+    };
+    if let Some(proof) = presence {
+        for (i, b) in proof.beacon_entropy_hash.iter().enumerate() {
+            base_salt[i % 32] ^= b;
+        }
+    }
+    let mut ikm = [x25519_shared.as_slice(), kyber_shared].concat();
+    if let Some(proof) = presence {
+        ikm.extend_from_slice(&proof.epoch_window.to_be_bytes());
+    }
+    let hk = Hkdf::<Sha256>::new(Some(&base_salt[..]), &ikm);
+    let mut master_key = [0u8; 32];
+    hk.expand(suite.hkdf_label(), &mut master_key).unwrap();
+    master_key
+}
+
 /// Domain-separation label for the transcript-bound hybrid KDF (SOTA G2/G3).
 pub const HYBRID_BIND_LABEL: &[u8] = b"GHOST_NET_HYBRID_BIND_v2";
 
@@ -1459,5 +1546,65 @@ mod tests {
             resp_entropy
         );
         let _ = leg_p;
+    }
+
+    #[test]
+    fn test_present_tense_mesh_presence_proof_and_replay_rejection() {
+        let current_entropy = b"live_poisson_beacon_entropy_pool_data";
+        let live_epoch = 50u64;
+
+        // Honest peer mints presence proof for the current epoch
+        let proof = PresenceProof::new(current_entropy, live_epoch);
+        assert!(proof.verify(current_entropy, live_epoch, 1).is_ok());
+
+        // Slight window jitter (+/- 1 epoch) is accepted
+        assert!(proof.verify(current_entropy, live_epoch + 1, 1).is_ok());
+        assert!(proof.verify(current_entropy, live_epoch - 1, 1).is_ok());
+
+        // Replay from distant past epoch (e.g. epoch 10 vs live 50) is rejected
+        let stale_proof = PresenceProof::new(current_entropy, 10);
+        let stale_res = stale_proof.verify(current_entropy, live_epoch, 1);
+        assert!(
+            stale_res.is_err(),
+            "Replay from past epoch must be rejected"
+        );
+
+        // Proof with mismatched entropy (attacker outside the beacon zone) is rejected
+        let fake_entropy = b"attacker_forged_or_remote_entropy_data";
+        let mismatched_proof = PresenceProof::new(fake_entropy, live_epoch);
+        let mismatch_res = mismatched_proof.verify(current_entropy, live_epoch, 1);
+        assert!(
+            mismatch_res.is_err(),
+            "Mismatched beacon entropy must be rejected"
+        );
+
+        // Key derivation with presence proof binds the presence claim
+        let x_ss = [0x11u8; 32];
+        let kyber_ss = [0x22u8; 32];
+        let key1 = derive_hybrid_master_key_with_presence(
+            HybridCipherSuite::X25519MlKem512V2,
+            &x_ss,
+            &kyber_ss,
+            None,
+            Some(&proof),
+        );
+        let key2 = derive_hybrid_master_key_with_presence(
+            HybridCipherSuite::X25519MlKem512V2,
+            &x_ss,
+            &kyber_ss,
+            None,
+            Some(&proof),
+        );
+        assert_eq!(key1, key2);
+
+        // Mismatched presence proof derives completely different master key
+        let key_other = derive_hybrid_master_key_with_presence(
+            HybridCipherSuite::X25519MlKem512V2,
+            &x_ss,
+            &kyber_ss,
+            None,
+            Some(&mismatched_proof),
+        );
+        assert_ne!(key1, key_other);
     }
 }

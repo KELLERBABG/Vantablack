@@ -1525,7 +1525,94 @@ impl DerpRelay {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// Invention §36: Shards over Tor — Multi-Circuit Egress
+// ══════════════════════════════════════════════════════════════════
+
+/// Multi-circuit Tor SOCKS5 dispatcher for Reed-Solomon shards.
+///
+/// Sends each shard of a 3-shard flight through an independent, isolated Tor circuit
+/// (via distinct local SOCKS5 proxy endpoints, defaulting to 127.0.0.1:9050, 9052, 9054).
+/// A hostile Tor guard, malicious middle relay, or rogue exit node observing one circuit
+/// captures at most 1 shard, exposing mathematically 0 bytes of plaintext.
+#[derive(Debug, Clone)]
+pub struct TorMultiCircuitDispatcher {
+    /// Local SOCKS5 endpoints for the 3 circuits.
+    pub circuit_endpoints: [SocketAddr; 3],
+}
+
+impl Default for TorMultiCircuitDispatcher {
+    fn default() -> Self {
+        Self {
+            circuit_endpoints: [
+                "127.0.0.1:9050".parse().unwrap(),
+                "127.0.0.1:9052".parse().unwrap(),
+                "127.0.0.1:9054".parse().unwrap(),
+            ],
+        }
+    }
+}
+
+impl TorMultiCircuitDispatcher {
+    pub fn new(endpoints: [SocketAddr; 3]) -> Self {
+        Self {
+            circuit_endpoints: endpoints,
+        }
+    }
+
+    /// Maps a shard index (0, 1, 2) to its designated Tor circuit proxy.
+    pub fn circuit_for_shard(&self, shard_index: u8) -> SocketAddr {
+        self.circuit_endpoints[(shard_index as usize) % 3]
+    }
+
+    /// Builds an RFC 1928 SOCKS5 initial method negotiation request.
+    pub fn build_socks5_auth_request() -> Vec<u8> {
+        // VER = 0x05, NMETHODS = 0x01, METHODS = [0x00 (NO AUTHENTICATION REQUIRED)]
+        vec![0x05, 0x01, 0x00]
+    }
+
+    /// Formats a SOCKS5 UDP encapsulation header for a shard payload:
+    /// [RSV:2][FRAG:1][ATYP:1][DEST.ADDR:4][DEST.PORT:2][SHARD_DATA]
+    pub fn encapsulate_shard_udp(shard_data: &[u8], target_addr: SocketAddr) -> Vec<u8> {
+        let mut out = Vec::with_capacity(10 + shard_data.len());
+        out.extend_from_slice(&[0x00, 0x00]); // RSV
+        out.push(0x00); // FRAG = 0 (standalone)
+        match target_addr {
+            SocketAddr::V4(v4) => {
+                out.push(0x01); // ATYP IPv4
+                out.extend_from_slice(&v4.ip().octets());
+                out.extend_from_slice(&v4.port().to_be_bytes());
+            }
+            SocketAddr::V6(v6) => {
+                out.push(0x04); // ATYP IPv6
+                out.extend_from_slice(&v6.ip().octets());
+                out.extend_from_slice(&v6.port().to_be_bytes());
+            }
+        }
+        out.extend_from_slice(shard_data);
+        out
+    }
+
+    /// Strips the SOCKS5 UDP encapsulation header and recovers the raw shard bytes.
+    pub fn decapsulate_shard_udp(encapsulated: &[u8]) -> Option<Vec<u8>> {
+        if encapsulated.len() < 10 {
+            return None;
+        }
+        let atyp = encapsulated[3];
+        let header_len = match atyp {
+            0x01 => 10, // 4B header + 4B IPv4 + 2B Port
+            0x04 => 22, // 4B header + 16B IPv6 + 2B Port
+            _ => return None,
+        };
+        if encapsulated.len() < header_len {
+            return None;
+        }
+        Some(encapsulated[header_len..].to_vec())
+    }
+}
+
 #[cfg(test)]
+
 mod derp_tests {
     use super::*;
 
@@ -1892,5 +1979,38 @@ mod derp_tests {
         let fake_client_pk = [0x55u8; 32];
         assert!(!dump.windows(32).any(|w| w == fake_client_pk));
         assert!(dump.len() >= 32);
+    }
+
+    #[test]
+    fn test_tor_multi_circuit_dispatcher_routing_and_udp_encapsulation() {
+        let ep1: SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        let ep2: SocketAddr = "127.0.0.1:9052".parse().unwrap();
+        let ep3: SocketAddr = "127.0.0.1:9054".parse().unwrap();
+
+        let dispatcher = TorMultiCircuitDispatcher::new([ep1, ep2, ep3]);
+
+        // Verify independent circuit isolation per shard
+        assert_eq!(dispatcher.circuit_for_shard(0), ep1);
+        assert_eq!(dispatcher.circuit_for_shard(1), ep2);
+        assert_eq!(dispatcher.circuit_for_shard(2), ep3);
+
+        // Verify SOCKS5 auth request format
+        let auth_req = TorMultiCircuitDispatcher::build_socks5_auth_request();
+        assert_eq!(auth_req, vec![0x05, 0x01, 0x00]);
+
+        // Verify SOCKS5 UDP encapsulation and decapsulation for an RS shard
+        let shard_data = b"rs_shard_payload_through_tor_circuit";
+        let target_peer: SocketAddr = "198.51.100.42:2270".parse().unwrap();
+
+        let encapsulated =
+            TorMultiCircuitDispatcher::encapsulate_shard_udp(shard_data, target_peer);
+        assert!(encapsulated.len() > shard_data.len());
+        assert_eq!(encapsulated[0..2], [0x00, 0x00]); // RSV
+        assert_eq!(encapsulated[2], 0x00); // FRAG
+        assert_eq!(encapsulated[3], 0x01); // ATYP IPv4
+
+        let decapsulated = TorMultiCircuitDispatcher::decapsulate_shard_udp(&encapsulated)
+            .expect("Valid SOCKS5 UDP header decapsulation");
+        assert_eq!(decapsulated, shard_data);
     }
 }

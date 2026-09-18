@@ -53,6 +53,23 @@ impl LinkMedium {
     }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Invention §35: Thermal-Mesh (Energy-Heterogeneous Routing)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Physical energy class of a node or link.
+///
+/// Route selection uses energy heterogeneity as an anti-Sybil constraint:
+/// a uniform-energy cluster (e.g. cloud VMs) is deprioritized in favor of
+/// heterogeneous triples (Mains + Battery + Harvested/Solar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EnergyClass {
+    #[default]
+    Mains, // Plugged desktop/server with stable grid power
+    Battery,   // Mobile device / battery-constrained node
+    Harvested, // Solar / energy-harvesting / intermittent node
+}
+
 /// A contact window between two nodes.
 #[derive(Debug, Clone, Default)]
 pub struct Contact {
@@ -69,6 +86,8 @@ pub struct Contact {
     pub range_km: f64,
     /// Physical bearer for this contact.
     pub medium: LinkMedium,
+    /// Energy class of the contact / bearer node.
+    pub energy_class: EnergyClass,
     /// Link rate in bits per second; `0.0` means unspecified. Used to derive
     /// [`Contact::x_cap`] and to price queuing in a capacity-aware route.
     pub rate_bps: f64,
@@ -117,6 +136,12 @@ impl Contact {
     /// Pin a measured one-way light time, overriding the geometric model.
     pub fn with_measured_owlt(mut self, owlt_secs: f64) -> Self {
         self.measured_owlt_secs = Some(owlt_secs.max(0.0));
+        self
+    }
+
+    /// Set the energy class of this contact.
+    pub fn with_energy_class(mut self, energy_class: EnergyClass) -> Self {
+        self.energy_class = energy_class;
         self
     }
 
@@ -236,6 +261,29 @@ impl Journey {
         }
         nodes[1..nodes.len() - 1].to_vec()
     }
+
+    /// Sequence of energy classes across all hops in this journey.
+    pub fn energy_classes(&self) -> Vec<EnergyClass> {
+        self.contacts.iter().map(|(c, _)| c.energy_class).collect()
+    }
+
+    /// Dominant / terminating hop energy class of the journey.
+    pub fn primary_energy_class(&self) -> EnergyClass {
+        self.contacts
+            .last()
+            .map(|(c, _)| c.energy_class)
+            .unwrap_or_default()
+    }
+}
+
+/// Computes the heterogeneity score of a set of energy classes.
+/// Returns the number of distinct energy classes represented (e.g. 3 for Mains+Battery+Harvested).
+pub fn energy_heterogeneity_score(classes: &[EnergyClass]) -> usize {
+    let mut unique = std::collections::HashSet::new();
+    for &c in classes {
+        unique.insert(c);
+    }
+    unique.len()
 }
 
 /// Knobs for the earliest-arrival search.
@@ -344,6 +392,43 @@ impl ContactPlan {
 
     pub fn is_empty(&self) -> bool {
         self.contacts.is_empty()
+    }
+
+    /// Invention §35: Selects a triple of candidate journeys for 3 RS shards,
+    /// searching and picking candidate paths that maximize physical energy heterogeneity
+    /// (preferring Mains + Battery + Harvested/Solar over uniform clusters).
+    pub fn select_thermal_heterogeneous_triple(
+        candidates: &[Journey],
+    ) -> Option<(Journey, Journey, Journey)> {
+        if candidates.len() < 3 {
+            return None;
+        }
+        let mut best_triple = None;
+        let mut best_score = 0;
+        for i in 0..candidates.len() {
+            for j in (i + 1)..candidates.len() {
+                for k in (j + 1)..candidates.len() {
+                    let classes = [
+                        candidates[i].primary_energy_class(),
+                        candidates[j].primary_energy_class(),
+                        candidates[k].primary_energy_class(),
+                    ];
+                    let score = energy_heterogeneity_score(&classes);
+                    if score > best_score {
+                        best_score = score;
+                        best_triple = Some((
+                            candidates[i].clone(),
+                            candidates[j].clone(),
+                            candidates[k].clone(),
+                        ));
+                        if score == 3 {
+                            return best_triple;
+                        }
+                    }
+                }
+            }
+        }
+        best_triple
     }
 
     /// Register (or refresh) a **measured** direct contact to a peer.
@@ -1239,5 +1324,69 @@ mod tests {
             );
             assert!(c.x_cap > 0.0);
         }
+    }
+
+    #[test]
+    fn test_thermal_mesh_energy_heterogeneity_scoring() {
+        let uniform = [EnergyClass::Mains, EnergyClass::Mains, EnergyClass::Mains];
+        assert_eq!(
+            energy_heterogeneity_score(&uniform),
+            1,
+            "Uniform cluster must score 1"
+        );
+
+        let partial = [EnergyClass::Mains, EnergyClass::Battery, EnergyClass::Mains];
+        assert_eq!(
+            energy_heterogeneity_score(&partial),
+            2,
+            "Two distinct classes must score 2"
+        );
+
+        let full_hetero = [
+            EnergyClass::Mains,
+            EnergyClass::Battery,
+            EnergyClass::Harvested,
+        ];
+        assert_eq!(
+            energy_heterogeneity_score(&full_hetero),
+            3,
+            "All three distinct must score 3"
+        );
+    }
+
+    #[test]
+    fn test_thermal_mesh_triple_selection() {
+        // Build 4 journeys: 2 mains, 1 battery, 1 solar/harvested
+        let mut j_mains1 = Journey::new();
+        let c1 = Contact::new("A", "B", 0.0, 100.0, 1000.0).with_energy_class(EnergyClass::Mains);
+        j_mains1.append(c1, 10.0);
+
+        let mut j_mains2 = Journey::new();
+        let c2 = Contact::new("A", "C", 0.0, 100.0, 1000.0).with_energy_class(EnergyClass::Mains);
+        j_mains2.append(c2, 10.0);
+
+        let mut j_battery = Journey::new();
+        let c3 = Contact::new("A", "D", 0.0, 100.0, 1000.0).with_energy_class(EnergyClass::Battery);
+        j_battery.append(c3, 10.0);
+
+        let mut j_harvested = Journey::new();
+        let c4 =
+            Contact::new("A", "E", 0.0, 100.0, 1000.0).with_energy_class(EnergyClass::Harvested);
+        j_harvested.append(c4, 10.0);
+
+        let candidates = vec![j_mains1, j_mains2, j_battery, j_harvested];
+        let triple = ContactPlan::select_thermal_heterogeneous_triple(&candidates)
+            .expect("Must select a triple");
+
+        let classes = [
+            triple.0.primary_energy_class(),
+            triple.1.primary_energy_class(),
+            triple.2.primary_energy_class(),
+        ];
+        assert_eq!(
+            energy_heterogeneity_score(&classes),
+            3,
+            "Must pick a fully heterogeneous triple (Mains + Battery + Harvested)"
+        );
     }
 }

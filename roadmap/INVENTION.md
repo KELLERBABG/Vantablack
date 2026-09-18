@@ -30,8 +30,19 @@ The current SOTA and invention implementation baseline has graduated the reposit
 - **§19 Hardware Rooted Identity** (TPM 2.0 PCR boot measurement quotes + SecureMemGuard anti-tamper proved in `layers::l8_memsec`)
 - **§20 Ephemeral Amnesia Mode** (zero-disk RAM-only identity lifecycle proved in `l0_identity.rs`)
 - **Proof-of-Work (PoW) Anti-Abuse Engine** (cryptographic client puzzle challenge/solver with dynamic governor and $O(1)$ zero-allocation verifier in `net::pow`)
+- **§38 Shape-Shifting Wire** (negotiated camouflage & rotating wire dialects in `net::mod`)
+- **§40 Identity-Agnostic Channels** (zero-identity blind capability tokens in `net::relay`)
+- **§39 Replay-Resistant Chronology** (causal monotonic DAG ordering over wall-clock in `session::ratchet`)
+- **§41 Group-as-Shards** (3-of-5 threshold group governance in `layers::l3_shamir`)
+- **§35 Thermal-Mesh** (physical energy-class route heterogeneity in `net::routing`)
+- **§30 Time-as-the-4th-Shard** (temporal shard scheduling & partial-window protection in `net::shardsec`)
+- **§34 Beacon Grid** (coarse epoch clock reconciliation over Poisson beacons in `net::mod`)
+- **§28 Present-Tense Mesh** (cryptographic presence claim binding beacon entropy in `layers::l1_kem`)
+- **§36 Shards over Tor** (multi-circuit SOCKS5 shard egress dispatcher in `net::relay`)
+- **§37 Universal Shard-Tunnel** (generic port forwarder for arbitrary TCP/UDP protocols over 576B GTF frames in `net::universal_tunnel`)
 
-All are live behind documented protocol/configuration paths and have green code-level regression coverage (`cargo test --target-dir C:\ggn-target --features vpn --lib` passing 390 tests).
+All are live behind documented protocol/configuration paths and have green code-level regression coverage (`cargo test --target-dir C:\ggn-target --features vpn --lib` passing 403 tests).
+
 
 ---
 
@@ -311,12 +322,18 @@ To deliver value with maximum efficiency, Part II spikes are sequenced by implem
 | **1** | **§38 Shape-Shifting Wire** (Negotiated Camouflage) | `ghost::net::mod` (`CamouflageWrapper`) | **Low** (Dynamic dialect probing & rotation) | **COMPLETE** |
 | **2** | **§40 Identity-Agnostic Channels** (Blind Forwarding) | `ghost::net::relay` (`ForwardingCapabilityVoucher`) | **Low-Medium** (Capability token verification without peer identity) | **COMPLETE** |
 | **3** | **§39 Replay-Resistant Chronology** (Causal Order) | `ghost::session::ratchet` & `vpn::mod` | **Low-Medium** (DAG monotonicity over wall-clock) | **COMPLETE** |
-| **4** | **§41 Group-as-Shards** (Threshold Governance) | `ghost::layers::l4_rs` & `l3_shamir` | **Medium** (3-of-5 threshold group key reconstruction) | Queued |
-| **5** | **§22 Autonomous Dead-Drop Mesh Storage** (Fleet Vault) | `ghost::net::relay` / storage module | **Medium** (Consolidated §22, §23, §26: 576B blind ciphertext blobs) | Queued |
-| **6** | **§32 Diffusion Routing** (Opt-in Emergency Mode) | `ghost::net::mesh` / `relay` | **Medium** (Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1`) | Queued |
-| **7** | **§35 Thermal-Mesh** (Energy-Heterogeneous Routing) | `ghost::net::carrier` / `mesh` | **Medium** (Energy class path weighting) | Queued |
-| **8** | **§50 Anti-Fragile Tarpit** (Attacker Compute Penalty) | `ghost::net::pow` & `l5_noise` | **Medium-High** (Tying honey-shards to PoW compute trap) | Queued |
-| **9** | **§46 Mesh Red-Team Harness** (Adversarial Simulation) | `tests/scale_mesh.rs` & `attack_harness` | **High** (Deterministic 100-node in-process adversarial harness) | Queued |
+| **4** | **§41 Group-as-Shards** (Threshold Governance) | `ghost::layers::l3_shamir` | **Low-Medium** (3-of-5 threshold group key reconstruction) | **COMPLETE** |
+| **5** | **§35 Thermal-Mesh** (Energy-Heterogeneous Routing) | `ghost::net::routing` | **Low-Medium** (Energy class route weighting) | **COMPLETE** |
+| **6** | **§30 Time-as-the-4th-Shard** (Scheduled Shard Dispatch) | `ghost::net::shardsec` | **Low** (Temporal egress dispatch scheduling) | **COMPLETE** |
+| **7** | **§34 Beacon Grid** (Distributed Clock Reference) | `ghost::net::mod` | **Low** (Poisson beacon epoch grid reconciliation) | **COMPLETE** |
+| **8** | **§28 Present-Tense Mesh** (Cryptographic Presence Claim) | `ghost::layers::l1_kem` | **Low-Medium** (Beacon entropy handshake binding) | **COMPLETE** |
+| **9** | **§36 Shards over Tor** (Multi-Circuit Egress) | `ghost::net::relay` | **Low-Medium** (Multi-circuit SOCKS5 shard routing) | **COMPLETE** |
+| **10** | **§37 Universal Shard-Tunnel** (Generic Port Forwarder) | `ghost::net::universal_tunnel` | **Low-Medium** (Generic stream forwarder into 576B GTF frames) | **COMPLETE** |
+| **11** | **§22 Autonomous Dead-Drop Mesh Storage** (Fleet Vault) | `ghost::net::relay` / storage module | **Medium** (Consolidated §22, §23, §26: 576B blind ciphertext blobs) | Queued |
+| **12** | **§32 Diffusion Routing** (Opt-in Emergency Mode) | `ghost::net::mesh` / `relay` | **Medium** (Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1`) | Queued |
+| **13** | **§50 Anti-Fragile Tarpit** (Attacker Compute Penalty) | `ghost::net::pow` & `l5_noise` | **Medium-High** (Tying honey-shards to PoW compute trap) | Queued |
+| **14** | **§46 Mesh Red-Team Harness** (Adversarial Simulation) | `tests/scale_mesh.rs` & `attack_harness` | **High** (Deterministic 100-node in-process adversarial harness) | Queued |
+
 
 *Note: Disadvantageous or theoretically impossible items (§54 Causal Capsule) are cut. Heavy edge-case primitives (§32 Diffusion Routing) are kept as opt-in emergency modes with zero overhead in default operation.*
 

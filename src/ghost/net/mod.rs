@@ -25,6 +25,7 @@ pub mod pow;
 pub mod quic;
 pub mod relay;
 pub mod shardsec;
+pub mod universal_tunnel;
 
 /// Which framing an optional transport used for a frame (SOTA P1-2).
 ///
@@ -151,6 +152,97 @@ pub fn poisson_beacon_gap(uniform_sample: f64, mean_interval_secs: f64) -> Durat
     let min_secs = 1.0f64;
     let max_secs = (mean_interval_secs * 3.0).max(10.0);
     Duration::from_secs_f64(secs.clamp(min_secs, max_secs))
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Invention §34: Beacon Grid — Distributed Clock & Epoch Reference
+// ══════════════════════════════════════════════════════════════════
+
+/// Prefix tag for Beacon Grid metadata embedded inside discovery beacons.
+pub const BEACON_GRID_MAGIC: &[u8; 4] = b"BGRD";
+
+/// Distributed clock and coarse temporal reference derived from Poisson beacons.
+///
+/// Enables partitioned or GPS/NTP-denied nodes to maintain a monotonic timeline
+/// and agree on a coarse "epoch grid" within tolerance on reconnect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BeaconGridEpoch {
+    /// Monotonic grid epoch sequence number.
+    pub grid_epoch: u64,
+    /// Number of beacon cycles observed within current epoch.
+    pub cycle_count: u32,
+    /// Hash commitment of local beacon entropy at current epoch.
+    pub entropy_commitment: [u8; 16],
+}
+
+impl BeaconGridEpoch {
+    pub fn new(grid_epoch: u64, cycle_count: u32, entropy_commitment: [u8; 16]) -> Self {
+        Self {
+            grid_epoch,
+            cycle_count,
+            entropy_commitment,
+        }
+    }
+
+    /// Serializes the beacon grid extension into bytes: [BGRD:4][epoch:8][cycles:4][hash:16] = 32 bytes.
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut buf = [0u8; 32];
+        buf[0..4].copy_from_slice(BEACON_GRID_MAGIC);
+        buf[4..12].copy_from_slice(&self.grid_epoch.to_be_bytes());
+        buf[12..16].copy_from_slice(&self.cycle_count.to_be_bytes());
+        buf[16..32].copy_from_slice(&self.entropy_commitment);
+        buf
+    }
+
+    /// Deserializes a beacon grid extension block.
+    pub fn from_bytes(slice: &[u8]) -> Option<Self> {
+        if slice.len() < 32 || &slice[0..4] != BEACON_GRID_MAGIC {
+            return None;
+        }
+        let grid_epoch = u64::from_be_bytes(slice[4..12].try_into().ok()?);
+        let cycle_count = u32::from_be_bytes(slice[12..16].try_into().ok()?);
+        let mut entropy_commitment = [0u8; 16];
+        entropy_commitment.copy_from_slice(&slice[16..32]);
+        Some(Self {
+            grid_epoch,
+            cycle_count,
+            entropy_commitment,
+        })
+    }
+
+    /// Reconciles local grid epoch upon observing remote beacon grid from a peer after partition.
+    /// Monotonically advances local epoch to match or exceed remote epoch if remote is further ahead,
+    /// updating entropy consensus. Returns true if local state advanced.
+    pub fn reconcile(&mut self, remote: &BeaconGridEpoch) -> bool {
+        if remote.grid_epoch > self.grid_epoch {
+            self.grid_epoch = remote.grid_epoch;
+            self.cycle_count = remote.cycle_count;
+            self.entropy_commitment = remote.entropy_commitment;
+            true
+        } else if remote.grid_epoch == self.grid_epoch && remote.cycle_count > self.cycle_count {
+            self.cycle_count = remote.cycle_count;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Advance epoch to next monotonic cycle.
+    pub fn tick(&mut self, next_entropy_slice: &[u8]) {
+        self.cycle_count += 1;
+        if self.cycle_count >= 10 {
+            // 10 beacon cycles form an epoch grid step
+            self.grid_epoch += 1;
+            self.cycle_count = 0;
+        }
+        // Fold entropy
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&self.entropy_commitment);
+        hasher.update(next_entropy_slice);
+        let res = hasher.finalize();
+        self.entropy_commitment.copy_from_slice(&res[..16]);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1689,6 +1781,35 @@ mod wire_v2_tests {
         let (pkt3, mode3) = session.wrap_and_advance(frame);
         assert_eq!(mode3, CamouflageMode::HttpsChunk);
         assert_eq!(session.unwrap(&pkt3, mode3).unwrap(), frame);
+    }
+
+    #[test]
+    fn test_beacon_grid_serialization_and_partition_reconciliation() {
+        let grid1 = BeaconGridEpoch::new(10, 4, [0xAAu8; 16]);
+        let bytes = grid1.to_bytes();
+        let deserialized = BeaconGridEpoch::from_bytes(&bytes).expect("Valid beacon grid bytes");
+        assert_eq!(deserialized, grid1);
+
+        // Partition scenario: node A has fallen behind at epoch 10
+        let mut node_a = grid1;
+        // Node B was partitioned but had advanced to epoch 15
+        let node_b = BeaconGridEpoch::new(15, 2, [0xBBu8; 16]);
+
+        // When node A receives B's beacon grid, it monotonically reconciles
+        let advanced = node_a.reconcile(&node_b);
+        assert!(advanced, "Node A must advance to remote epoch");
+        assert_eq!(node_a.grid_epoch, 15);
+        assert_eq!(node_a.cycle_count, 2);
+        assert_eq!(node_a.entropy_commitment, [0xBBu8; 16]);
+
+        // Stale beacon grid from an older epoch is ignored
+        let stale_peer = BeaconGridEpoch::new(12, 9, [0xCCu8; 16]);
+        let stale_res = node_a.reconcile(&stale_peer);
+        assert!(
+            !stale_res,
+            "Stale epoch grid must not regress monotonic timeline"
+        );
+        assert_eq!(node_a.grid_epoch, 15);
     }
 }
 
