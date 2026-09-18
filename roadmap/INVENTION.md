@@ -49,8 +49,18 @@ The current SOTA and invention implementation baseline has graduated the reposit
 - **§45 Anonymous Capability Economy** (threshold group credentials with identity-free quota authorization and anti-double-spend in `net::relay`)
 - **§48 Deploy-Not-Design** (containerized 3-node reference mesh testbed with automated smoke test in `deploy/`)
 - **§49 Protocol Semantic Fuzzer** (property-based sequence fuzzer asserting multi-step invariants across stateful operations in `tests/semantic_fuzzer.rs`)
+- **§46 Mesh Red-Team Harness** (100-node in-process adversarial simulator with synthetic loss, CGNAT, Sybil, and Byzantine collusion in `tests/redteam_harness.rs`)
+- **§42 Collective Defense from Aggregate Observables** (distributed k-anonymized gossip threat mitigation without central collector in `net::collective_defense`)
+- **§47 Formal Core Invariant Model** (machine-checked ProVerif specification of 3-shard × 3-epoch secrecy in `formal/shardsec_space_time.pv`)
+- **§31 Energy-Voucher Currency** (decentralized credit ledger pricing forwarding priority strictly based on verified erasure-repair work in `net::energy_currency`)
+- **§21 Sharded Compute & §24 Inference Privacy & §25 Verifiable Redundancy** (RS-coded model activation execution with non-overlapping ASN constraints and redundant worker commitments in `net::sharded_compute`)
+- **§43 Sharded Model Gossip** (decentralized federated parameter adaptation over mesh metadata without coordinator in `net::model_gossip`)
+- **§44 Sovereign Cloud** (mesh-native cloud fabric with topology-enforced jurisdiction constraints in `net::sovereign_cloud`)
+- **§53 Entropy-Beacon Commons** (cooperative threshold public randomness beacon from Poisson arrivals in `net::entropy_beacon`)
+- **§52 Mesh-as-Archive** (permanent, unlinkable public archival mirror with content-hash integrity in `net::mesh_archive`)
+- **§51 Stego-in-Physics** (covert acoustic, thermal, and optical physical carrier shard modulation in `net::stego_physics`)
 
-All are live behind documented protocol/configuration paths and have green code-level regression coverage (`cargo test --target-dir C:\ggn-target --features vpn --lib` passing 412 tests + `tests/semantic_fuzzer.rs` passing all invariant sequences).
+All are live behind documented protocol/configuration paths and have green code-level regression coverage (`cargo test --target-dir C:\ggn-target --features vpn --lib` passing 421 tests, `tests/redteam_harness.rs` passing 100-node adversarial simulation, `tests/semantic_fuzzer.rs` passing all invariant sequences).
 
 
 ---

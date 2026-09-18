@@ -14,20 +14,28 @@ pub mod carrier;
 /// Also implements a lightweight ACK engine for reliable delivery over UDP,
 /// and an adaptive token-bucket flow controller.
 pub mod cc;
+pub mod collective_defense;
 pub mod consumer;
 pub mod dead_drop;
 pub mod diffusion;
 pub mod dispatcher;
 pub mod dtn_reconcile;
+pub mod energy_currency;
+pub mod entropy_beacon;
 pub mod fallback;
 pub mod ice;
 pub mod mesh;
+pub mod mesh_archive;
+pub mod model_gossip;
 pub mod orbit;
 pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod relay;
+pub mod sharded_compute;
 pub mod shardsec;
+pub mod sovereign_cloud;
+pub mod stego_physics;
 pub mod universal_tunnel;
 
 /// Which framing an optional transport used for a frame (SOTA P1-2).

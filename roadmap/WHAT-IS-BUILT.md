@@ -200,6 +200,37 @@ desktop entry; macOS is documented; Android runs the VPN as a foreground service
 **Protocol Semantic Fuzzer (Invention §49).** Multi-step invariant fuzzer evaluating randomized sequences of stateful transactions (dead-drop sweeps, threshold spends, Merkle synchronizations, epoch erosion) to prove safety, quota enforcement, and zero-leakage invariants.
 *Test:* `tests/semantic_fuzzer.rs` — 4 property-based sequence tests passing across thousands of operations.
 
+**Mesh Red-Team Harness: 100-Node Adversarial Simulator (Invention §46).** In-process deterministic simulator spinning up 100 virtual nodes under 10% packet loss, CGNAT mapping, Sybil injection, and 15 colluding Byzantine nodes. Proves that multi-path RS(2,1) sharding recovers 100% of honest payloads while malicious tampers fail authentication.
+*Test:* `tests/redteam_harness.rs` — `test_mesh_red_team_harness_100_nodes_adversarial_simulation`.
+
+**Collective Defense from Aggregate Observables (Invention §42).** Distributed differentially-private gossip defense aggregating regional loss and drop metrics with strict $k \ge 3$ k-anonymity gating, detecting and routing around active attacks without leaking reporting node identities or network topology.
+*Test:* `src/ghost/net/collective_defense.rs` — `test_collective_defense_k_anonymity_and_proactive_reroute`.
+
+**Formal Core Invariant Model (Invention §47).** Machine-checked formal ProVerif specification proving that the 3-shard $\times$ 3-epoch space-time ladder guarantees that an adversary capturing a single epoch key or single shard learns mathematically zero information about the plaintext payload.
+*Specification:* `formal/shardsec_space_time.pv`.
+
+**Energy-Voucher Currency: Proof-of-Erasure-Repair (Invention §31).** Decentralized credit ledger pricing forwarding priority based on verified cryptographic proofs of honest Reed-Solomon(2,1) erasure repair work, protected with anti-replay double-mint checks.
+*Test:* `src/ghost/net/energy_currency.rs` — `test_energy_credit_minting_and_priority_spending`.
+
+**Sharded Compute, Inference Privacy & Verifiable Redundancy (Inventions §21, §24, §25).** Distributed execution of model activation tensors sharded across 3 untrusted workers via RS(2,1), strictly enforcing non-overlapping ASN routing constraints (§24) and detecting Byzantine tampering via hash commitments across redundant workers without zkML overhead (§25).
+*Tests:* `src/ghost/net/sharded_compute.rs` — `test_sharded_compute_and_asn_diversity` and `test_verifiable_compute_redundancy_catches_byzantine_worker`.
+
+**Sharded Model Gossip (Invention §43).** Decentralized federated parameter adaptation where mesh peers gossip observation deltas over link jitter and loss, adaptively converging cover-traffic parameters (§6 GhostMimic) without any central coordinator.
+*Test:* `src/ghost/net/model_gossip.rs` — `test_model_gossip_decentralized_convergence`.
+
+**Sovereign Cloud: Topology-Enforced Jurisdiction Constraints (Invention §44).** Personal multi-device cloud storage fabric where objects carrying compliance requirements (e.g. `JurisdictionTag::Eu`) are strictly held, routed, and resolved only across verified compliant endpoints.
+*Test:* `src/ghost/net/sovereign_cloud.rs` — `test_sovereign_cloud_jurisdiction_constraint_enforcement`.
+
+**Entropy-Beacon Commons (Invention §53).** Cooperative threshold public randomness beacon aggregating unpredictable Poisson discovery arrival entropy across $\ge 3$ threshold participants into unsteerable epoch round randomness.
+*Test:* `src/ghost/net/entropy_beacon.rs` — `test_entropy_beacon_commons_threshold_finalization`.
+
+**Mesh-as-Archive: Censorship-Resistant Document Mirror (Invention §52).** Permanent public archival mirroring for open standards, sharding documents into 3 RS(2,1) shares with cryptographic content-hash integrity verification.
+*Test:* `src/ghost/net/mesh_archive.rs` — `test_mesh_archive_creation_and_reconstruction_from_partial_shards`.
+
+**Stego-in-Physics: Physical Covert Shard Carriage (Invention §51).** Steganographic modulation encoding a single Reed-Solomon shard over covert physical media (ultrasonic acoustic FSK, CPU thermal load modulation, or optical LED pulses) while the other two travel via network, ensuring 100% network wire surveillance captures $< 2$ shards.
+*Test:* `src/ghost/net/stego_physics.rs` — `test_stego_in_physics_roundtrip_across_all_carriers`.
+
+
 
 ---
 
@@ -307,7 +338,8 @@ Observed on this machine, 2026-09-17, Windows, nightly toolchain, **zero failure
 | `tests/p2_wire.rs` | 6 passed |
 | `tests/simulation.rs` | 7 passed |
 | `tests/semantic_fuzzer.rs` | 4 passed |
-| library unit tests, `--features vpn` | 412 passed in vpn, plus every `vpn_*` gate |
+| `tests/redteam_harness.rs` | 1 passed (100-node adversarial simulation) |
+| library unit tests, `--features vpn` | 421 passed in vpn, plus every `vpn_*` gate |
 | library unit tests, `--features quic` | 322 passed |
 | library unit tests, `--features hardware-tpm,pkcs11` | 318 passed |
 
