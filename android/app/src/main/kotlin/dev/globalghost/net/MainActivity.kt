@@ -131,9 +131,10 @@ class MainActivity : Activity() {
             setPadding(0, 28, 0, 28)
             setOnClickListener {
                 if (GhostVpnService.isRunning) {
-                    val count = GhostVpnService.triggerScan()
                     Toast.makeText(this@MainActivity, "LAN discovery sweep broadcasted! Nodes connecting...", Toast.LENGTH_SHORT).show()
-                    updateStatus()
+                    GhostVpnService.triggerScan {
+                        handler.post { updateStatus() }
+                    }
                 } else {
                     Toast.makeText(this@MainActivity, "Activate Private Mesh first to scan Wi-Fi", Toast.LENGTH_SHORT).show()
                 }
@@ -359,7 +360,9 @@ class MainActivity : Activity() {
             GhostVpnService.isRunning = true
             updateUiState(true)
             handler.postDelayed({
-                GhostVpnService.triggerScan()
+                GhostVpnService.triggerScan {
+                    handler.post { updateStatus() }
+                }
                 updateStatus()
             }, 1000)
         } else {

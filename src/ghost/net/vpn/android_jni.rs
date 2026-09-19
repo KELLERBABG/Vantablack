@@ -392,6 +392,7 @@ fn perform_lan_discovery(
 pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
     let (Some(tun), Some(sock), Some(hub)) = (core.tun.as_mut(), core.sock.as_ref(), core.hub_addr)
     else {
+        std::thread::sleep(Duration::from_millis(50));
         return;
     };
     let Some(session_key) = *core.session_key.lock() else {
@@ -424,6 +425,7 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
 pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     let (Some(sock), Some(tun), Some(hub)) = (core.sock.as_ref(), core.tun.as_mut(), core.hub_addr)
     else {
+        std::thread::sleep(Duration::from_millis(50));
         return false;
     };
     let Some(session_key) = *core.session_key.lock() else {

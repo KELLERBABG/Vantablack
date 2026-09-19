@@ -2011,6 +2011,9 @@ async fn initiate_handshake(
     let mut c = pdu;
     let raw = l4_rs::encode(&mut c);
     let tag = [0u8; 16];
+    let is_bulk = raw
+        .iter()
+        .any(|s| frame_shard(s).len() > vantablack::ghost::net::MAX_PAYLOAD_LEN);
     for i in 0..3 {
         let _ = send_gtf(
             sock,
@@ -2020,7 +2023,7 @@ async fn initiate_handshake(
             i as u8,
             &frame_shard(&raw[i]),
             &tag,
-            false,
+            is_bulk,
         )
         .await;
     }
@@ -2411,6 +2414,9 @@ async fn handle_pkt(
         let mut rc = resp;
         let raw = l4_rs::encode(&mut rc);
         let tag = [0u8; 16];
+        let is_bulk = raw
+            .iter()
+            .any(|s| frame_shard(s).len() > vantablack::ghost::net::MAX_PAYLOAD_LEN);
         for i in 0..3 {
             let _ = send_gtf(
                 sock,
@@ -2420,7 +2426,7 @@ async fn handle_pkt(
                 i as u8,
                 &frame_shard(&raw[i]),
                 &tag,
-                false,
+                is_bulk,
             )
             .await;
         }

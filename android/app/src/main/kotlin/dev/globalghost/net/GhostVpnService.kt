@@ -128,6 +128,7 @@ class GhostVpnService : VpnService() {
         //    traffic loops back into the TUN), connect to the hub.
         val ch = DatagramChannel.open()
         ch.configureBlocking(true)
+        ch.socket().broadcast = true
         ch.socket().bind(null)
         // Bind to the callback's network before protect/connect. This prevents
         // Android from silently moving the protected socket back to Wi-Fi after
@@ -233,9 +234,20 @@ class GhostVpnService : VpnService() {
         @Volatile var isRunning = false
         @Volatile var activePtr: Long = 0L
 
-        fun triggerScan(): Int {
+        fun triggerScan(onComplete: ((Int) -> Unit)? = null) {
             val p = activePtr
-            return if (p != 0L) GhostCore.scanLan(p) else 0
+            if (p != 0L) {
+                Thread {
+                    val count = try {
+                        GhostCore.scanLan(p)
+                    } catch (_: Throwable) {
+                        0
+                    }
+                    onComplete?.invoke(count)
+                }.start()
+            } else {
+                onComplete?.invoke(0)
+            }
         }
 
         fun getFingerprint(): String {

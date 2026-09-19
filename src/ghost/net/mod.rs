@@ -1258,7 +1258,7 @@ pub fn build_gtf_frame(
     auth_tag: &[u8; 16],
     bulk: bool,
 ) -> Vec<u8> {
-    if bulk {
+    if bulk || payload.len() > MAX_PAYLOAD_LEN {
         build_bulk_frame(session_hash, counter, shard_index, payload, auth_tag)
     } else {
         build_privacy_frame(session_hash, counter, shard_index, payload, auth_tag)
@@ -1272,12 +1272,9 @@ fn build_privacy_frame(
     payload: &[u8],
     auth_tag: &[u8; 16],
 ) -> Vec<u8> {
-    assert!(
-        payload.len() <= MAX_PAYLOAD_LEN,
-        "Payload ({} bytes) exceeds privacy frame capacity ({} bytes)",
-        payload.len(),
-        MAX_PAYLOAD_LEN
-    );
+    if payload.len() > MAX_PAYLOAD_LEN {
+        return build_bulk_frame(session_hash, counter, shard_index, payload, auth_tag);
+    }
 
     let mut packet = vec![0u8; GTF_BASE_SIZE];
     packet[OFFSET_SESSION_HASH..OFFSET_SESSION_HASH + 4].copy_from_slice(&session_hash);

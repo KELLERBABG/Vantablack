@@ -40,12 +40,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Keller Systems"
             VALUE "FileDescription", "Vantablack Desktop Client"
-            VALUE "FileVersion", "0.7.4"
+            VALUE "FileVersion", "0.7.5"
             VALUE "InternalName", "ggn"
-            VALUE "LegalCopyright", "Copyright (c) 2026 Keller Systems"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Keller Systems"
             VALUE "OriginalFilename", "ggn.exe"
-            VALUE "ProductName", "Vantablack"
-            VALUE "ProductVersion", "0.7.4"
+            VALUE "ProductName", "Global Ghost Net"
+            VALUE "ProductVersion", "0.7.5"
         END
     END
     BLOCK "VarFileInfo"
