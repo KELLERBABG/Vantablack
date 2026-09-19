@@ -31,7 +31,7 @@ class GhostVpnService : VpnService() {
     private var drainThread: Thread? = null
     @Volatile private var running = false
     private var hubFp: String = ""
-    private var hubAddr: SocketAddress = InetSocketAddress("192.0.2.1", 0)
+    private var hubAddr: SocketAddress? = null
     private var dnsServer: String = "10.66.0.1"
     private var searchDomain: String? = null
     private var activeNetwork: Network? = null
@@ -56,21 +56,25 @@ class GhostVpnService : VpnService() {
         hubFp = intent?.getStringExtra(EXTRA_HUB_FP)?.trim() ?: hubFp
         intent?.getStringExtra(EXTRA_HUB_ADDR)?.trim()?.let {
             val s = it.replace(" ", "")
-            val host: String
-            val port: Int
-            if (s.contains(':')) {
-                host = s.substringBeforeLast(':')
-                port = s.substringAfterLast(':').toIntOrNull() ?: 55225
-            } else if (s.count { c -> c == '.' } == 4) {
-                // e.g. 192.168.178.36.55225 (user accidentally typed dot instead of colon)
-                host = s.substringBeforeLast('.')
-                port = s.substringAfterLast('.').toIntOrNull() ?: 55225
+            if (s.isNotEmpty() && !s.equals("auto", ignoreCase = true)) {
+                val host: String
+                val port: Int
+                if (s.contains(':')) {
+                    host = s.substringBeforeLast(':')
+                    port = s.substringAfterLast(':').toIntOrNull() ?: 55225
+                } else if (s.count { c -> c == '.' } == 4) {
+                    host = s.substringBeforeLast('.')
+                    port = s.substringAfterLast('.').toIntOrNull() ?: 55225
+                } else {
+                    host = s
+                    port = 55225
+                }
+                if (port in 1..65535 && host.isNotEmpty()) {
+                    // createUnresolved avoids blocking DNS lookups on the main thread (prevents NetworkOnMainThreadException)
+                    hubAddr = InetSocketAddress.createUnresolved(host, port)
+                }
             } else {
-                host = s
-                port = 55225
-            }
-            if (port in 1..65535 && host.isNotEmpty()) {
-                hubAddr = InetSocketAddress(host, port)
+                hubAddr = null
             }
         }
         dnsServer = intent?.getStringExtra(EXTRA_DNS) ?: dnsServer
@@ -100,20 +104,15 @@ class GhostVpnService : VpnService() {
         try { tun?.close() } catch (_: Throwable) {}
         channel = null; tun = null
 
-        // 1. TUN: overlay IP + routes for the home LAN + DNS. MTU 1280 must
-        //    match AndroidTun::mtu() in the Rust core.
+        // 1. TUN: overlay IP (10.66.0.0/24) + DNS.
+        // We do NOT add 192.168.x.x routes to the TUN so local Wi-Fi LAN traffic remains native and unhijacked.
         val builder = Builder()
             .setSession("Vantablack Mesh")
             .addAddress("10.66.0.10", 24)
             .addRoute("10.66.0.0", 24)     // the overlay itself
-            .addRoute("192.168.178.0", 24) // home LAN Fritz!Box
-            .addRoute("192.168.1.0", 24)   // home LAN standard
-            .addRoute("192.168.0.0", 24)   // home LAN alternate
             .setMtu(1280)
 
         // Only register a DNS server if an explicit, valid non-overlay DNS was specified.
-        // Omitting addDnsServer() allows Android to continue using the native system resolver
-        // (Wi-Fi router/mobile carrier), preventing DNS blackholing for apps like Discord.
         if (dnsServer.isNotEmpty() && dnsServer != "10.66.0.1") {
             try {
                 builder.addDnsServer(dnsServer)
@@ -124,33 +123,39 @@ class GhostVpnService : VpnService() {
         tun = builder.establish()
         val tunFd = tun?.fd ?: run { stopSelf(); return }
 
-        // 2. Outer socket: create, PROTECT (mandatory â€” without it the mesh
-        //    traffic loops back into the TUN), connect to the hub.
+        // 2. Outer UDP socket: bind to standard mesh port 55225 (with fallback), enable broadcast, and PROTECT.
         val ch = DatagramChannel.open()
         ch.configureBlocking(true)
         ch.socket().broadcast = true
-        ch.socket().bind(null)
-        // Bind to the callback's network before protect/connect. This prevents
-        // Android from silently moving the protected socket back to Wi-Fi after
-        // a Wi-Fi -> LTE transition.
+        ch.socket().reuseAddress = true
+        try {
+            ch.socket().bind(InetSocketAddress(55225))
+        } catch (_: Throwable) {
+            ch.socket().bind(null)
+        }
         network?.let {
             try { it.bindSocket(ch.socket()) } catch (_: Throwable) { /* best effort on older OEMs */ }
         }
         protect(ch.socket()) // protect BEFORE send: no packet may ever leave unprotected
-        // Do not call ch.connect(hubAddr) here so the underlying socket remains a standard
-        // UDP socket capable of both sendto() and send() without EISCONN restrictions.
         val sockFd = ParcelFileDescriptor.fromDatagramSocket(ch.socket()).detachFd()
         channel = ch
 
         // 3. Native core takes both fds.
-        val hubAddrStr = (hubAddr as InetSocketAddress).let {
-            "${it.address?.hostAddress ?: it.hostName}:${it.port}"
+        val hubAddrStr = if (hubAddr != null) {
+            val h = hubAddr as InetSocketAddress
+            if (h.isUnresolved) {
+                "${h.hostName}:${h.port}"
+            } else {
+                "${h.address?.hostAddress ?: h.hostName}:${h.port}"
+            }
+        } else {
+            "auto"
         }
         if (!GhostCore.start(ptr, tunFd, sockFd, hubAddrStr)) {
             stopSelf(); return
         }
 
-        // 4. Pumps: TUNâ†’mesh and meshâ†’TUN (map the desktop binary's pumps).
+        // 4. Pumps: TUN→mesh and mesh→TUN (map the desktop binary's pumps).
         running = true
         isRunning = true
         activeNetwork = network
@@ -206,7 +211,15 @@ class GhostVpnService : VpnService() {
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setOngoing(true)
             .build()
-        startForeground(2270, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(2270, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(2270, notification)
+            }
+        } catch (_: Throwable) {
+            try { startForeground(2270, notification) } catch (_: Throwable) {}
+        }
     }
 
     private fun shutdown() {

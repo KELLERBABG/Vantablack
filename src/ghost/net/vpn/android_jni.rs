@@ -194,6 +194,7 @@ pub struct AndroidCore {
     pub session_key: Mutex<Option<[u8; 32]>>,
     pub session_hash: Mutex<[u8; 4]>,
     pub tx_seq: AtomicU32,
+    pub known_peers: Mutex<std::collections::HashMap<std::net::SocketAddr, ([u8; 32], [u8; 4])>>,
 }
 
 unsafe impl Send for AndroidCore {}
@@ -237,9 +238,19 @@ fn perform_handshake(
                     if ctr == 1 {
                         let si = buf[OFFSET_SHARD_INDEX] as usize;
                         if si < 3 {
-                            let pe = OFFSET_AUTH_TAG_START.min(amt);
-                            if pe > OFFSET_PAYLOAD_START {
-                                if let Some(sd) = unframe(&buf[OFFSET_PAYLOAD_START..pe]) {
+                            let is_bulk = buf[OFFSET_FLAGS] & 0x01 != 0;
+                            let pe = if is_bulk {
+                                BULK_OFFSET_AUTH_TAG_START.min(amt)
+                            } else {
+                                OFFSET_AUTH_TAG_START.min(amt)
+                            };
+                            let ps = if is_bulk {
+                                BULK_OFFSET_PAYLOAD_START
+                            } else {
+                                OFFSET_PAYLOAD_START
+                            };
+                            if pe > ps {
+                                if let Some(sd) = unframe(&buf[ps..pe]) {
                                     shards[si] = Some(sd);
                                 }
                             }
@@ -293,11 +304,12 @@ fn perform_handshake(
 fn perform_lan_discovery(
     sock: &UdpSocket,
     identity: &GhostIdentity,
-) -> Option<(std::net::SocketAddr, [u8; 32], [u8; 4])> {
+) -> Vec<(std::net::SocketAddr, [u8; 32], [u8; 4])> {
     let _ = sock.set_broadcast(true);
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(350)));
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(150)));
 
-    let (xs, xp) = generate_x25519_keypair();
+    let xs = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+    let xp = x25519_dalek::PublicKey::from(&xs);
     let (kp, ks) = generate_kyber_keypair();
     let pdu = build_handshake_pdu(
         &identity.public_key_bytes(),
@@ -308,35 +320,95 @@ fn perform_lan_discovery(
     let mut c = pdu;
     let raw = l4_rs::encode(&mut c);
     let tag = [0u8; 16];
-    let targets: [std::net::SocketAddr; 2] = [
+
+    let mut subnets: Vec<[u8; 3]> = Vec::new();
+
+    // Dynamically detect local LAN subnets
+    for common in &[[192, 168, 178], [192, 168, 1], [192, 168, 0], [10, 0, 0]] {
+        if let Ok(temp_sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if temp_sock
+                .connect(format!("{}.{}.{}.1:80", common[0], common[1], common[2]))
+                .is_ok()
+            {
+                if let Ok(la) = temp_sock.local_addr() {
+                    if let std::net::IpAddr::V4(v4) = la.ip() {
+                        let vo = v4.octets();
+                        if vo[0] != 127 && vo[0] != 0 && !(vo[0] == 169 && vo[1] == 254) {
+                            let sn = [vo[0], vo[1], vo[2]];
+                            if !subnets.contains(&sn) {
+                                subnets.push(sn);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if subnets.is_empty() {
+        subnets.push([192, 168, 178]);
+    }
+
+    // 1. Broadcast discovery packets to standard ports and subnet broadcasts
+    let mut broadcast_targets: Vec<std::net::SocketAddr> = vec![
         "255.255.255.255:55225".parse().unwrap(),
         "255.255.255.255:2270".parse().unwrap(),
     ];
-    for target in &targets {
+    for sn in &subnets {
+        if let Ok(sa) = format!("{}.{}.{}.255:55225", sn[0], sn[1], sn[2]).parse() {
+            broadcast_targets.push(sa);
+        }
+    }
+    for target in &broadcast_targets {
         for i in 0..3 {
             let framed = frame_shard(&raw[i]);
-            let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, false);
+            let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, true);
             let _ = sock.send_to(&gtf, *target);
         }
     }
 
-    let mut shards: Vec<Option<Vec<u8>>> = vec![None; 3];
+    // 2. Active subnet unicast probe: send handshake shards directly to hosts on LAN
+    for sn in &subnets {
+        for host in 1..=254 {
+            let target_sa: std::net::SocketAddr = std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(sn[0], sn[1], sn[2], host)),
+                55225,
+            );
+            for i in 0..3 {
+                let framed = frame_shard(&raw[i]);
+                let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, true);
+                let _ = sock.send_to(&gtf, target_sa);
+            }
+        }
+    }
+
+    let mut discovered = Vec::new();
+    let mut peer_shards: std::collections::HashMap<std::net::SocketAddr, Vec<Option<Vec<u8>>>> =
+        std::collections::HashMap::new();
     let mut buf = vec![0u8; 2048];
     let start = std::time::Instant::now();
-    let mut responder_src = None;
 
-    while start.elapsed() < Duration::from_millis(1500) {
+    while start.elapsed() < Duration::from_millis(2000) {
         if let Ok((amt, src)) = sock.recv_from(&mut buf) {
             if amt >= MIN_FRAME_SIZE {
                 let ctr = parse_packet_counter(&buf[..amt]);
                 if ctr == 1 {
                     let si = buf[OFFSET_SHARD_INDEX] as usize;
                     if si < 3 {
-                        let pe = OFFSET_AUTH_TAG_START.min(amt);
-                        if pe > OFFSET_PAYLOAD_START {
-                            if let Some(sd) = unframe(&buf[OFFSET_PAYLOAD_START..pe]) {
-                                shards[si] = Some(sd);
-                                responder_src = Some(src);
+                        let is_bulk = buf[OFFSET_FLAGS] & 0x01 != 0;
+                        let pe = if is_bulk {
+                            BULK_OFFSET_AUTH_TAG_START.min(amt)
+                        } else {
+                            OFFSET_AUTH_TAG_START.min(amt)
+                        };
+                        let ps = if is_bulk {
+                            BULK_OFFSET_PAYLOAD_START
+                        } else {
+                            OFFSET_PAYLOAD_START
+                        };
+                        if pe > ps {
+                            if let Some(sd) = unframe(&buf[ps..pe]) {
+                                let entry = peer_shards.entry(src).or_insert_with(|| vec![None; 3]);
+                                entry[si] = Some(sd);
                             }
                         }
                     }
@@ -344,47 +416,58 @@ fn perform_lan_discovery(
             }
         }
 
-        if shards.iter().filter(|s| s.is_some()).count() >= 2 {
-            let m = shards
-                .iter()
-                .filter_map(|x| x.as_ref().map(|v| v.len()))
-                .max()
-                .unwrap_or(0);
-            for ref mut v in shards.iter_mut().flatten() {
-                while v.len() < m {
-                    v.push(0);
-                }
+        // Check if any peer has collected >= 2 shards
+        let mut completed_peers = Vec::new();
+        for (&src, shards) in peer_shards.iter_mut() {
+            if shards.iter().filter(|s| s.is_some()).count() >= 2 {
+                completed_peers.push(src);
             }
-            let mut w: Vec<_> = (0..3)
-                .map(|i| shards.get(i).and_then(|x| x.clone()))
-                .collect();
-            if l4_rs::reconstruct(&mut w).is_ok() {
-                if let (Some(a), Some(b)) = (w[0].as_ref(), w[1].as_ref()) {
-                    let resp_data = [a.as_slice(), b.as_slice()].concat();
-                    if resp_data.len() >= RESPONSE_BLOB_LEN
-                        && resp_data.starts_with(b"GHOST_RESPONSE__")
-                    {
-                        let mut rd = resp_data;
-                        rd.truncate(RESPONSE_BLOB_LEN);
-                        if let Some(resp) = parse_response_pdu(&rd) {
-                            if let Some(res_src) = responder_src {
+        }
+
+        for src in completed_peers {
+            if let Some(mut shards) = peer_shards.remove(&src) {
+                let m = shards
+                    .iter()
+                    .filter_map(|x| x.as_ref().map(|v| v.len()))
+                    .max()
+                    .unwrap_or(0);
+                for ref mut v in shards.iter_mut().flatten() {
+                    while v.len() < m {
+                        v.push(0);
+                    }
+                }
+                let mut w: Vec<_> = (0..3)
+                    .map(|i| shards.get(i).and_then(|x| x.clone()))
+                    .collect();
+                if l4_rs::reconstruct(&mut w).is_ok() {
+                    if let (Some(a), Some(b)) = (w[0].as_ref(), w[1].as_ref()) {
+                        let resp_data = [a.as_slice(), b.as_slice()].concat();
+                        if resp_data.len() >= RESPONSE_BLOB_LEN
+                            && resp_data.starts_with(b"GHOST_RESPONSE__")
+                        {
+                            let mut rd = resp_data;
+                            rd.truncate(RESPONSE_BLOB_LEN);
+                            if let Some(resp) = parse_response_pdu(&rd) {
                                 let ct = Ciphertext::<MlKem512>::from(resp.kyber_ct);
                                 let ky_ss = ks.decapsulate(&ct);
                                 let xs = xs.diffie_hellman(&PublicKey::from(resp.x25519_pub));
                                 let d = derive_hybrid_master_key(xs.as_bytes(), ky_ss.as_slice());
                                 let sh = compute_session_hash(&d);
-                                let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
-                                return Some((res_src, d, sh));
+                                discovered.push((src, d, sh));
                             }
                         }
                     }
                 }
             }
         }
+
+        if !discovered.is_empty() && start.elapsed() > Duration::from_millis(800) {
+            break;
+        }
     }
 
     let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
-    None
+    discovered
 }
 
 /// One TUN→mesh step: read a packet from the TUN, seal it, wrap in GTF bulk frame,
@@ -514,6 +597,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
         session_key: Mutex::new(None),
         session_hash: Mutex::new([0u8; 4]),
         tx_seq: AtomicU32::new(2),
+        known_peers: Mutex::new(std::collections::HashMap::new()),
     });
     Box::into_raw(core) as jlong
 }
@@ -573,6 +657,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
         if let Ok(hub) = addr.parse::<std::net::SocketAddr>() {
             core.hub_addr = Some(hub);
             if let Some((key, sh)) = perform_handshake(&sock, hub, &core.identity) {
+                core.known_peers.lock().insert(hub, (key, sh));
                 core.state.rotate_epoch();
                 core.state.set_key(key);
                 *core.session_key.lock() = Some(key);
@@ -582,13 +667,17 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
         }
     } else {
         // Autonomous Wi-Fi Discovery
-        if let Some((peer, key, sh)) = perform_lan_discovery(&sock, &core.identity) {
-            core.hub_addr = Some(peer);
-            core.state.rotate_epoch();
-            core.state.set_key(key);
-            *core.session_key.lock() = Some(key);
-            *core.session_hash.lock() = sh;
-            core.tx_seq.store(2, Ordering::Relaxed);
+        let found = perform_lan_discovery(&sock, &core.identity);
+        for (peer, key, sh) in found {
+            core.known_peers.lock().insert(peer, (key, sh));
+            if core.hub_addr.is_none() {
+                core.hub_addr = Some(peer);
+                core.state.rotate_epoch();
+                core.state.set_key(key);
+                *core.session_key.lock() = Some(key);
+                *core.session_hash.lock() = sh;
+                core.tx_seq.store(2, Ordering::Relaxed);
+            }
         }
     }
 
@@ -618,7 +707,10 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getPeersCount(
     let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else {
         return 0;
     };
-    if core.session_key.lock().is_some() {
+    let count = core.known_peers.lock().len();
+    if count > 0 {
+        count as jint
+    } else if core.session_key.lock().is_some() {
         1
     } else {
         0
@@ -637,16 +729,24 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     let Some(sock) = core.sock.as_ref() else {
         return 0;
     };
-    if let Some((peer, key, sh)) = perform_lan_discovery(sock, &core.identity) {
-        core.hub_addr = Some(peer);
-        core.state.rotate_epoch();
-        core.state.set_key(key);
-        *core.session_key.lock() = Some(key);
-        *core.session_hash.lock() = sh;
-        core.tx_seq.store(2, Ordering::Relaxed);
-        1
+    let found = perform_lan_discovery(sock, &core.identity);
+    let count = found.len();
+    for (peer, key, sh) in found {
+        core.known_peers.lock().insert(peer, (key, sh));
+        if core.hub_addr.is_none() {
+            core.hub_addr = Some(peer);
+            core.state.rotate_epoch();
+            core.state.set_key(key);
+            *core.session_key.lock() = Some(key);
+            *core.session_hash.lock() = sh;
+            core.tx_seq.store(2, Ordering::Relaxed);
+        }
+    }
+    let total = core.known_peers.lock().len();
+    if total > 0 {
+        total as jint
     } else {
-        0
+        count as jint
     }
 }
 

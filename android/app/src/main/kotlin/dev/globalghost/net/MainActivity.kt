@@ -132,8 +132,15 @@ class MainActivity : Activity() {
             setOnClickListener {
                 if (GhostVpnService.isRunning) {
                     Toast.makeText(this@MainActivity, "LAN discovery sweep broadcasted! Nodes connecting...", Toast.LENGTH_SHORT).show()
-                    GhostVpnService.triggerScan {
-                        handler.post { updateStatus() }
+                    GhostVpnService.triggerScan { count ->
+                        handler.post {
+                            updateStatus()
+                            if (count > 0) {
+                                Toast.makeText(this@MainActivity, "Found $count peer(s) on LAN!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(this@MainActivity, "Scan complete — listening for incoming peer sweeps", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     }
                 } else {
                     Toast.makeText(this@MainActivity, "Activate Private Mesh first to scan Wi-Fi", Toast.LENGTH_SHORT).show()

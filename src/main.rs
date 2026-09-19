@@ -3718,17 +3718,61 @@ fn save_consumer_settings(path: &str, settings: &ConsumerSettings) {
     }
 }
 
+fn is_virtual_or_link_local(ip: std::net::Ipv4Addr) -> bool {
+    let oct = ip.octets();
+    // Loopback or 0.0.0.0
+    if oct[0] == 127 || oct[0] == 0 {
+        return true;
+    }
+    // APIPA / link-local
+    if oct[0] == 169 && oct[1] == 254 {
+        return true;
+    }
+    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255) is heavily used by Hyper-V / WSL2 / Docker
+    if oct[0] == 172 && (16..=31).contains(&oct[1]) {
+        return true;
+    }
+    false
+}
+
 /// Best-effort LAN address of this machine, used to build the pairing URI.
-/// A UDP `connect` transmits nothing — it only asks the kernel which local
-/// address it would use to reach a public target.
+/// Probes common physical home gateways first to prevent virtual adapters (WSL/Hyper-V/Docker)
+/// from hijacking the primary LAN IP.
 fn detect_lan_ip() -> String {
-    std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|sock| {
-            sock.connect("1.1.1.1:80")?;
-            sock.local_addr()
-        })
-        .map(|addr| addr.ip().to_string())
-        .unwrap_or_else(|_| "127.0.0.1".to_string())
+    let candidates = [
+        "192.168.178.1:80", // Fritz!Box
+        "192.168.1.1:80",   // Standard home router
+        "192.168.0.1:80",   // Standard cable/D-Link
+        "192.168.2.1:80",   // Speedport
+        "10.0.0.1:80",      // Standard 10.x home router
+        "10.1.1.1:80",
+        "1.1.1.1:80", // Fallback public WAN
+        "8.8.8.8:80",
+    ];
+
+    let mut fallback_virtual = None;
+
+    for target in &candidates {
+        if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if sock.connect(target).is_ok() {
+                if let Ok(local) = sock.local_addr() {
+                    if let std::net::IpAddr::V4(ipv4) = local.ip() {
+                        if !is_virtual_or_link_local(ipv4) {
+                            return ipv4.to_string();
+                        } else if fallback_virtual.is_none()
+                            && ipv4.octets()[0] != 127
+                            && ipv4.octets()[0] != 0
+                            && !(ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254)
+                        {
+                            fallback_virtual = Some(ipv4.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fallback_virtual.unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
 fn record_active_peer(sa: SocketAddr) {
@@ -3749,27 +3793,49 @@ fn record_active_peer(sa: SocketAddr) {
 }
 
 /// Autonomous LAN discovery sweep: broadcasts beacons to 255.255.255.255 on 2270 and mesh_port,
-/// and actively probes all hosts in the local /24 subnet.
+/// and actively probes all hosts in the local /24 subnet (and common home subnets).
 async fn sweep_lan_subnet(
     nc: &Arc<GhostNode>,
     pending_hs: &Arc<DashMap<String, PendingHandshake>>,
     mesh_port: u16,
 ) {
     let local_ip_str = detect_lan_ip();
-    let Ok(local_ip) = local_ip_str.parse::<std::net::Ipv4Addr>() else {
-        return;
-    };
-    let octets = local_ip.octets();
-    if octets[0] == 127 || octets[0] == 0 {
-        return;
+    let mut subnets_to_sweep: Vec<[u8; 3]> = Vec::new();
+
+    if let Ok(local_ip) = local_ip_str.parse::<std::net::Ipv4Addr>() {
+        let oct = local_ip.octets();
+        if oct[0] != 127 && oct[0] != 0 && !(oct[0] == 169 && oct[1] == 254) {
+            subnets_to_sweep.push([oct[0], oct[1], oct[2]]);
+        }
     }
 
-    tracing::info!(
-        subnet = %format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2]),
-        "Starting autonomous LAN discovery sweep..."
-    );
+    // Proactively check if other common physical subnets (e.g. Fritz!Box 192.168.178.x or 192.168.1.x)
+    // are routable on any local interface and sweep them as well
+    for common in &[[192, 168, 178], [192, 168, 1], [192, 168, 0]] {
+        if !subnets_to_sweep.contains(common) {
+            if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                if sock
+                    .connect(format!("{}.{}.{}.1:80", common[0], common[1], common[2]))
+                    .is_ok()
+                {
+                    if let Ok(la) = sock.local_addr() {
+                        if let std::net::IpAddr::V4(v4) = la.ip() {
+                            let vo = v4.octets();
+                            if [vo[0], vo[1], vo[2]] == *common {
+                                subnets_to_sweep.push(*common);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-    // 1. Broadcast signed beacons to 255.255.255.255 on both standard beacon port (2270) and mesh port
+    if subnets_to_sweep.is_empty() {
+        subnets_to_sweep.push([192, 168, 178]);
+    }
+
+    // 1. Broadcast signed beacons on both standard beacon port (2270) and mesh port
     if let Ok(b_sock) = UdpSocket::bind("0.0.0.0:0").await {
         let _ = b_sock.set_broadcast(true);
         let pq_commit = nc.identity.pq_commitment();
@@ -3781,37 +3847,43 @@ async fn sweep_lan_subnet(
             false,
             Some(&pq_commit),
         );
-        let targets = [
+        let mut targets = vec![
             "255.255.255.255:2270".parse::<SocketAddr>().ok(),
             format!("255.255.255.255:{}", mesh_port)
                 .parse::<SocketAddr>()
                 .ok(),
-            format!("{}.{}.{}.255:2270", octets[0], octets[1], octets[2])
-                .parse::<SocketAddr>()
-                .ok(),
-            format!(
-                "{}.{}.{}.255:{}",
-                octets[0], octets[1], octets[2], mesh_port
-            )
-            .parse::<SocketAddr>()
-            .ok(),
         ];
+        for s in &subnets_to_sweep {
+            targets.push(
+                format!("{}.{}.{}.255:2270", s[0], s[1], s[2])
+                    .parse::<SocketAddr>()
+                    .ok(),
+            );
+            targets.push(
+                format!("{}.{}.{}.255:{}", s[0], s[1], s[2], mesh_port)
+                    .parse::<SocketAddr>()
+                    .ok(),
+            );
+        }
         for t in targets.into_iter().flatten() {
             let _ = b_sock.send_to(&beacon_pkt, t).await;
         }
     }
 
-    // 2. Active subnet probe: Send handshake probe to hosts in the subnet
-    for host in 1..=254 {
-        if host == octets[3] {
-            continue;
-        }
-        let target_ip = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], host);
-        let target_sa = SocketAddr::new(std::net::IpAddr::V4(target_ip), mesh_port);
-        initiate_handshake(nc, &nc.socket, target_sa, pending_hs).await;
+    // 2. Active subnet probes: Send handshake probe to hosts in all detected subnets
+    for s in &subnets_to_sweep {
+        tracing::info!(
+            subnet = %format!("{}.{}.{}.0/24", s[0], s[1], s[2]),
+            "Starting autonomous LAN discovery sweep..."
+        );
+        for host in 1..=254 {
+            let target_ip = std::net::Ipv4Addr::new(s[0], s[1], s[2], host);
+            let target_sa = SocketAddr::new(std::net::IpAddr::V4(target_ip), mesh_port);
+            initiate_handshake(nc, &nc.socket, target_sa, pending_hs).await;
 
-        if host % 32 == 0 {
-            tokio::time::sleep(Duration::from_millis(15)).await;
+            if host % 32 == 0 {
+                tokio::time::sleep(Duration::from_millis(15)).await;
+            }
         }
     }
     tracing::info!("Autonomous LAN discovery sweep complete");
