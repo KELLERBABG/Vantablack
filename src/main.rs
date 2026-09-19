@@ -4684,7 +4684,10 @@ async fn run_node(
             // Load cached peers from local disk (peers.cache)
             let peers_cache = vantablack::ghost::paths::data_file("peers.cache");
             if let Ok(cache_str) = std::fs::read_to_string(&peers_cache) {
-                for line in cache_str.lines().map(|l| l.trim()) {
+                for line in cache_str
+                    .lines()
+                    .map(|l| l.trim().trim_start_matches('\u{feff}'))
+                {
                     if let Ok(sa) = line.parse::<SocketAddr>() {
                         if !seeds.contains(&sa) {
                             seeds.push(sa);
@@ -4822,7 +4825,11 @@ async fn run_node(
     // Pairing target advertised in the QR code: this host's LAN address, the
     // control-center port and the node fingerprint. The fingerprint is stable
     // across runs because the Ed25519 identity is persisted in identity.key.
-    let mesh_port = nc.socket.local_addr().map(|a| a.port()).unwrap_or(metrics_port);
+    let mesh_port = nc
+        .socket
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or(metrics_port);
     let lan_host = format!("{}:{}", detect_lan_ip(), mesh_port);
     let pair_uri = format!(
         "ggn://pair?nid={fp}&fp={fp}&host={host}",
@@ -4936,6 +4943,7 @@ async fn run_node(
         // without the transport it reports the same zeroes it would in a build that
         // has none.
         let carrier_m = Arc::clone(&carrier);
+        let phs_m = Arc::clone(&pending_hs);
         tokio::spawn(async move {
             let bind_addr = format!("0.0.0.0:{}", mp);
             match tokio::net::TcpListener::bind(&bind_addr).await {
@@ -4977,6 +4985,7 @@ async fn run_node(
                             let lan_host_ref = lan_host_m.clone();
                             let pair_uri_ref = pair_uri_m.clone();
                             let carrier_ref = Arc::clone(&carrier_m);
+                            let phs_ref = Arc::clone(&phs_m);
                             tokio::spawn(async move {
                                 let mut buf = [0u8; 4096];
                                 if let Ok(n) = stream.read(&mut buf).await {
@@ -5173,6 +5182,67 @@ async fn run_node(
                                         })
                                         .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/peers/add") {
+                                        let val = json_body(&req);
+                                        let addr_str = val
+                                            .get("address")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .trim();
+                                        match addr_str.parse::<SocketAddr>() {
+                                            Ok(target_addr) => {
+                                                initiate_handshake(
+                                                    &nc_ref,
+                                                    &nc_ref.socket,
+                                                    target_addr,
+                                                    &phs_ref,
+                                                )
+                                                .await;
+                                                let peers_cache =
+                                                    vantablack::ghost::paths::data_file(
+                                                        "peers.cache",
+                                                    );
+                                                if let Ok(mut current) =
+                                                    std::fs::read_to_string(&peers_cache)
+                                                {
+                                                    if !current.contains(addr_str) {
+                                                        if !current.ends_with('\n')
+                                                            && !current.is_empty()
+                                                        {
+                                                            current.push('\n');
+                                                        }
+                                                        current.push_str(addr_str);
+                                                        current.push('\n');
+                                                        let _ =
+                                                            std::fs::write(&peers_cache, current);
+                                                    }
+                                                } else {
+                                                    let _ = std::fs::write(
+                                                        &peers_cache,
+                                                        format!("{}\n", addr_str),
+                                                    );
+                                                }
+                                                let body = serde_json::json!({
+                                                    "success": true,
+                                                    "address": addr_str,
+                                                    "message": format!("Handshake initiated with {}", target_addr)
+                                                })
+                                                .to_string();
+                                                ("HTTP/1.1 200 OK", body, "application/json")
+                                            }
+                                            Err(e) => {
+                                                let body = serde_json::json!({
+                                                    "success": false,
+                                                    "error": format!("Invalid address format '{}': {}", addr_str, e)
+                                                })
+                                                .to_string();
+                                                (
+                                                    "HTTP/1.1 400 Bad Request",
+                                                    body,
+                                                    "application/json",
+                                                )
+                                            }
+                                        }
                                     } else if req.starts_with("GET /api/settings") {
                                         let s = cs_ref.read().clone();
                                         let route_mode_active = match s.route_mode.as_str() {

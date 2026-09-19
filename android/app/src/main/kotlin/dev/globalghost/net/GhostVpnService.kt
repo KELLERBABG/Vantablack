@@ -99,15 +99,26 @@ class GhostVpnService : VpnService() {
 
         // 1. TUN: overlay IP + routes for the home LAN + DNS. MTU 1280 must
         //    match AndroidTun::mtu() in the Rust core.
-        tun = Builder()
-            .setSession("GGN LAN-over-WAN")
+        val builder = Builder()
+            .setSession("Vantablack Mesh")
             .addAddress("10.66.0.10", 24)
-            .addRoute("192.168.1.0", 24)   // the home LAN
             .addRoute("10.66.0.0", 24)     // the overlay itself
-            .addDnsServer(dnsServer)
-            .apply { searchDomain?.let { addSearchDomain(it) } }
+            .addRoute("192.168.178.0", 24) // home LAN Fritz!Box
+            .addRoute("192.168.1.0", 24)   // home LAN standard
+            .addRoute("192.168.0.0", 24)   // home LAN alternate
             .setMtu(1280)
-            .establish()
+
+        // Only register a DNS server if an explicit, valid non-overlay DNS was specified.
+        // Omitting addDnsServer() allows Android to continue using the native system resolver
+        // (Wi-Fi router/mobile carrier), preventing DNS blackholing for apps like Discord.
+        if (dnsServer.isNotEmpty() && dnsServer != "10.66.0.1") {
+            try {
+                builder.addDnsServer(dnsServer)
+            } catch (_: Throwable) {}
+        }
+        searchDomain?.let { builder.addSearchDomain(it) }
+
+        tun = builder.establish()
         val tunFd = tun?.fd ?: run { stopSelf(); return }
 
         // 2. Outer socket: create, PROTECT (mandatory â€” without it the mesh

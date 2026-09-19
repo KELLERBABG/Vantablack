@@ -228,7 +228,10 @@ fn perform_handshake(
         let start = std::time::Instant::now();
 
         while start.elapsed() < Duration::from_millis(1000) {
-            if let Ok((amt, _src)) = sock.recv_from(&mut buf).or_else(|_| sock.recv(&mut buf).map(|n| (n, hub_addr))) {
+            if let Ok((amt, _src)) = sock
+                .recv_from(&mut buf)
+                .or_else(|_| sock.recv(&mut buf).map(|n| (n, hub_addr)))
+            {
                 if amt >= MIN_FRAME_SIZE {
                     let ctr = parse_packet_counter(&buf[..amt]);
                     if ctr == 1 {
@@ -322,8 +325,7 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
 /// One mesh→TUN step: recv a GTF datagram from hub, open it, and write the inner
 /// IP packet into the TUN.
 pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
-    let (Some(sock), Some(tun), Some(hub)) =
-        (core.sock.as_ref(), core.tun.as_mut(), core.hub_addr)
+    let (Some(sock), Some(tun), Some(hub)) = (core.sock.as_ref(), core.tun.as_mut(), core.hub_addr)
     else {
         return false;
     };
@@ -333,7 +335,10 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     };
     let session_hash = *core.session_hash.lock();
 
-    match sock.recv_from(buf).or_else(|_| sock.recv(buf).map(|n| (n, hub))) {
+    match sock
+        .recv_from(buf)
+        .or_else(|_| sock.recv(buf).map(|n| (n, hub)))
+    {
         Ok((n, src)) => {
             if Some(src) != core.hub_addr {
                 return false;
