@@ -95,16 +95,34 @@ impl FallbackPath {
 /// where the datagram has to arrive. A peer that advertises no relay candidate is
 /// not reachable through TURN at all, because nothing of ours can create a
 /// mapping in its NAT toward a server it never contacted.
+fn is_lan_addr(addr: &SocketAddr) -> bool {
+    match addr.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        std::net::IpAddr::V6(ip) => ip.is_loopback(),
+    }
+}
+
+/// Choose the fallback path for a peer.
+///
+/// Prefers external WAN relays over local LAN peers so that outbound WAN traffic
+/// goes directly to the destination or external relay rather than bouncing through
+/// other LAN nodes.
 pub fn choose_fallback(
     our_fp: &str,
     target_fp: &str,
     relay_candidates: &[(String, SocketAddr)],
     turn: Option<SocketAddr>,
 ) -> Option<FallbackPath> {
-    if let Some((relay_fp, relay_addr)) = relay_candidates
+    let candidate = relay_candidates
         .iter()
-        .find(|(fp, _)| fp != our_fp && fp != target_fp)
-    {
+        .find(|(fp, addr)| fp != our_fp && fp != target_fp && !is_lan_addr(addr))
+        .or_else(|| {
+            relay_candidates
+                .iter()
+                .find(|(fp, _)| fp != our_fp && fp != target_fp)
+        });
+
+    if let Some((relay_fp, relay_addr)) = candidate {
         return Some(FallbackPath::MeshRelay {
             relay_fp: relay_fp.clone(),
             relay_addr: *relay_addr,

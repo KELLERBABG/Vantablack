@@ -77,10 +77,13 @@ class GhostVpnService : VpnService() {
         searchDomain = intent?.getStringExtra(EXTRA_SEARCH_DOMAIN)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
-        if (hubFp.isEmpty()) { stopSelf(); return START_NOT_STICKY }
+        if (hubFp.isEmpty()) {
+            hubFp = "auto"
+        }
         if (ptr == 0L) {
             ptr = GhostCore.init(hubFp)
             if (ptr == 0L) { stopSelf(); return START_NOT_STICKY }
+            activePtr = ptr
         }
         if (!running) {
             Thread {
@@ -213,6 +216,7 @@ class GhostVpnService : VpnService() {
         try { channel?.close() } catch (_: Throwable) {}
         try { tun?.close() } catch (_: Throwable) {}
         if (ptr != 0L) { GhostCore.destroy(ptr); ptr = 0 }
+        activePtr = 0L
     }
 
     override fun onDestroy() {
@@ -227,5 +231,21 @@ class GhostVpnService : VpnService() {
         const val EXTRA_DNS = "dns_server"
         const val EXTRA_SEARCH_DOMAIN = "search_domain"
         @Volatile var isRunning = false
+        @Volatile var activePtr: Long = 0L
+
+        fun triggerScan(): Int {
+            val p = activePtr
+            return if (p != 0L) GhostCore.scanLan(p) else 0
+        }
+
+        fun getFingerprint(): String {
+            val p = activePtr
+            return if (p != 0L) GhostCore.getFingerprint(p) else ""
+        }
+
+        fun getPeersCount(): Int {
+            val p = activePtr
+            return if (p != 0L) GhostCore.getPeersCount(p) else 0
+        }
     }
 }

@@ -290,6 +290,103 @@ fn perform_handshake(
     None
 }
 
+fn perform_lan_discovery(
+    sock: &UdpSocket,
+    identity: &GhostIdentity,
+) -> Option<(std::net::SocketAddr, [u8; 32], [u8; 4])> {
+    let _ = sock.set_broadcast(true);
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(350)));
+
+    let (xs, xp) = generate_x25519_keypair();
+    let (kp, ks) = generate_kyber_keypair();
+    let pdu = build_handshake_pdu(
+        &identity.public_key_bytes(),
+        |d| identity.sign(d).to_bytes(),
+        &xp,
+        &kp,
+    );
+    let mut c = pdu;
+    let raw = l4_rs::encode(&mut c);
+    let tag = [0u8; 16];
+    let targets: [std::net::SocketAddr; 2] = [
+        "255.255.255.255:55225".parse().unwrap(),
+        "255.255.255.255:2270".parse().unwrap(),
+    ];
+    for target in &targets {
+        for i in 0..3 {
+            let framed = frame_shard(&raw[i]);
+            let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, false);
+            let _ = sock.send_to(&gtf, *target);
+        }
+    }
+
+    let mut shards: Vec<Option<Vec<u8>>> = vec![None; 3];
+    let mut buf = vec![0u8; 2048];
+    let start = std::time::Instant::now();
+    let mut responder_src = None;
+
+    while start.elapsed() < Duration::from_millis(1500) {
+        if let Ok((amt, src)) = sock.recv_from(&mut buf) {
+            if amt >= MIN_FRAME_SIZE {
+                let ctr = parse_packet_counter(&buf[..amt]);
+                if ctr == 1 {
+                    let si = buf[OFFSET_SHARD_INDEX] as usize;
+                    if si < 3 {
+                        let pe = OFFSET_AUTH_TAG_START.min(amt);
+                        if pe > OFFSET_PAYLOAD_START {
+                            if let Some(sd) = unframe(&buf[OFFSET_PAYLOAD_START..pe]) {
+                                shards[si] = Some(sd);
+                                responder_src = Some(src);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if shards.iter().filter(|s| s.is_some()).count() >= 2 {
+            let m = shards
+                .iter()
+                .filter_map(|x| x.as_ref().map(|v| v.len()))
+                .max()
+                .unwrap_or(0);
+            for ref mut v in shards.iter_mut().flatten() {
+                while v.len() < m {
+                    v.push(0);
+                }
+            }
+            let mut w: Vec<_> = (0..3)
+                .map(|i| shards.get(i).and_then(|x| x.clone()))
+                .collect();
+            if l4_rs::reconstruct(&mut w).is_ok() {
+                if let (Some(a), Some(b)) = (w[0].as_ref(), w[1].as_ref()) {
+                    let resp_data = [a.as_slice(), b.as_slice()].concat();
+                    if resp_data.len() >= RESPONSE_BLOB_LEN
+                        && resp_data.starts_with(b"GHOST_RESPONSE__")
+                    {
+                        let mut rd = resp_data;
+                        rd.truncate(RESPONSE_BLOB_LEN);
+                        if let Some(resp) = parse_response_pdu(&rd) {
+                            let ct = Ciphertext::<MlKem512>::from(resp.kyber_ct);
+                            let ky_ss = ks.decapsulate(&ct);
+                            let xs = xs.diffie_hellman(&PublicKey::from(resp.x25519_pub));
+                            let d = derive_hybrid_master_key(xs.as_bytes(), ky_ss.as_slice());
+                            let sh = compute_session_hash(&d);
+                            let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+                            if let Some(res_src) = responder_src {
+                                return Some((res_src, d, sh));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
+    None
+}
+
 /// One TUN→mesh step: read a packet from the TUN, seal it, wrap in GTF bulk frame,
 /// and send via the protected socket to the hub.
 pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
@@ -377,7 +474,7 @@ impl Drop for AndroidCore {
 
 #[allow(unused_imports)]
 use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jboolean, jint, jlong, jlongArray};
+use jni::sys::{jboolean, jint, jlong, jlongArray, jstring};
 use jni::JNIEnv;
 
 fn throw(env: &mut JNIEnv, msg: &str) {
@@ -393,23 +490,21 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
 ) -> jlong {
     let fp: String = match env.get_string(&hub_fp) {
         Ok(s) => s.into(),
-        Err(_) => {
-            throw(&mut env, "bad fingerprint");
-            return 0;
-        }
+        Err(_) => "".to_string(),
     };
-    if fp.is_empty() {
-        throw(&mut env, "hub fingerprint required");
-        return 0;
-    }
     let identity = GhostIdentity::generate_fresh();
+    let effective_fp = if fp.is_empty() || fp == "auto" {
+        hex::encode(&identity.public_key_bytes()[..8])
+    } else {
+        fp
+    };
     let core = Box::new(AndroidCore {
-        state: Arc::new(ClientState::new(fp.clone(), [0u8; 32])),
+        state: Arc::new(ClientState::new(effective_fp.clone(), [0u8; 32])),
         ingress: Arc::new(VpnIngress::new()),
         tun: None,
         sock: None,
         hub_addr: None,
-        hub_fp: fp,
+        hub_fp: effective_fp,
         stop: Arc::new(AtomicBool::new(false)),
         rx_ctr: Arc::new(AtomicU32::new(0)),
         tx_ctr: Arc::new(AtomicU32::new(0)),
@@ -461,33 +556,96 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
     };
     let addr: String = match env.get_string(&hub_addr) {
         Ok(s) => s.into(),
-        Err(_) => {
-            throw(&mut env, "bad hub address");
-            return 0;
-        }
+        Err(_) => "".to_string(),
     };
-    let Ok(hub) = addr.parse::<std::net::SocketAddr>() else {
-        throw(&mut env, "hub address must be ip:port");
-        return 0;
-    };
-    core.hub_addr = Some(hub);
     core.tun = Some(AndroidTun::from_fd(tun_fd));
     use std::os::fd::FromRawFd;
     let sock = Arc::new(unsafe { UdpSocket::from_raw_fd(sock_fd) });
+    let _ = sock.set_broadcast(true);
 
-    // Perform the post-quantum hybrid handshake directly on the protected socket
-    if let Some((key, sh)) = perform_handshake(&sock, hub, &core.identity) {
+    if !addr.is_empty()
+        && addr != "auto"
+        && !addr.starts_with("0.0.0.0")
+        && !addr.starts_with("192.0.2.1")
+    {
+        if let Ok(hub) = addr.parse::<std::net::SocketAddr>() {
+            core.hub_addr = Some(hub);
+            if let Some((key, sh)) = perform_handshake(&sock, hub, &core.identity) {
+                core.state.rotate_epoch();
+                core.state.set_key(key);
+                *core.session_key.lock() = Some(key);
+                *core.session_hash.lock() = sh;
+                core.tx_seq.store(2, Ordering::Relaxed);
+            }
+        }
+    } else {
+        // Autonomous Wi-Fi Discovery
+        if let Some((peer, key, sh)) = perform_lan_discovery(&sock, &core.identity) {
+            core.hub_addr = Some(peer);
+            core.state.rotate_epoch();
+            core.state.set_key(key);
+            *core.session_key.lock() = Some(key);
+            *core.session_hash.lock() = sh;
+            core.tx_seq.store(2, Ordering::Relaxed);
+        }
+    }
+
+    core.sock = Some(sock);
+    1
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getFingerprint(
+    env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jstring {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else {
+        return env.new_string("").unwrap().into_raw();
+    };
+    let fp = hex::encode(&core.identity.public_key_bytes()[..8]);
+    env.new_string(fp).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getPeersCount(
+    _env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jint {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else {
+        return 0;
+    };
+    if core.session_key.lock().is_some() {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
+    _env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jint {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
+        return 0;
+    };
+    let Some(sock) = core.sock.as_ref() else {
+        return 0;
+    };
+    if let Some((peer, key, sh)) = perform_lan_discovery(sock, &core.identity) {
+        core.hub_addr = Some(peer);
         core.state.rotate_epoch();
         core.state.set_key(key);
         *core.session_key.lock() = Some(key);
         *core.session_hash.lock() = sh;
         core.tx_seq.store(2, Ordering::Relaxed);
+        1
     } else {
-        // Handshake failed or pending
+        0
     }
-
-    core.sock = Some(sock);
-    1
 }
 
 /// `fun stats(ptr: Long): LongArray` — [rxPackets, txPackets, epoch, txCounter]

@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 // type is imported where it is used rather than in every build.
 #[cfg(feature = "quic")]
 use std::net::IpAddr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -2351,6 +2351,7 @@ async fn handle_pkt(
         }
         let fp = hex::encode(&hs.identity_pk[..8]);
         peers.insert(fp.clone(), *src);
+        record_active_peer(*src);
         let mut session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
         session.set_cipher_suite(selected);
         session.pin_peer_identity(hs.identity_pk);
@@ -2424,6 +2425,7 @@ async fn handle_pkt(
             .await;
         }
         peers.insert(hex::encode(&hs.identity_pk[..8]), *src);
+        record_active_peer(*src);
         let fp = hex::encode(&hs.identity_pk[..8]);
         let mut session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
         session.set_cipher_suite(hs.suite);
@@ -2489,10 +2491,29 @@ async fn handle_pkt(
             .await;
         }
         peers.insert(fp.clone(), *src);
+        record_active_peer(*src);
         let session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
         session.pin_peer_identity(hs.identity_pk);
         node.sessions.insert(fp, session);
         tracing::info!(peer = %src, "Uniform handshake session established");
+        return;
+    }
+
+    // Inbound LAN / WAN discovery beacon on main mesh socket
+    if data.len() >= 112 && &data[..16] == BEACON_PREFIX {
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(&data[16..48]);
+        let mut sig = [0u8; 64];
+        sig.copy_from_slice(&data[48..112]);
+        if l0_identity::verify_peer_signature(&pk, &data[16..48], &sig) {
+            let beacon_fp = hex::encode(&pk[..8]);
+            if beacon_fp != node.fingerprint() {
+                tracing::info!(peer = %src, fingerprint = %beacon_fp, "Mesh beacon received on main socket");
+                if !peers.contains_key(&beacon_fp) && pending_hs.len() < MAX_PENDING_HANDSHAKES {
+                    initiate_handshake(&node, sock, *src, pending_hs).await;
+                }
+            }
+        }
         return;
     }
 
@@ -2619,6 +2640,7 @@ async fn handle_pkt(
             .await;
         }
         peers.insert(fp.clone(), *src);
+        record_active_peer(*src);
         let responder_session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
         // Pin the initiator's identity key: it is what a later ratchet step is
         // verified against, and without it a step is refused rather than trusted.
@@ -3701,6 +3723,92 @@ fn detect_lan_ip() -> String {
         })
         .map(|addr| addr.ip().to_string())
         .unwrap_or_else(|_| "127.0.0.1".to_string())
+}
+
+fn record_active_peer(sa: SocketAddr) {
+    let peers_cache = vantablack::ghost::paths::data_file("peers.cache");
+    let addr_str = sa.to_string();
+    if let Ok(mut current) = std::fs::read_to_string(&peers_cache) {
+        if !current.contains(&addr_str) {
+            if !current.ends_with('\n') && !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(&addr_str);
+            current.push('\n');
+            let _ = std::fs::write(&peers_cache, current);
+        }
+    } else {
+        let _ = std::fs::write(&peers_cache, format!("{}\n", addr_str));
+    }
+}
+
+/// Autonomous LAN discovery sweep: broadcasts beacons to 255.255.255.255 on 2270 and mesh_port,
+/// and actively probes all hosts in the local /24 subnet.
+async fn sweep_lan_subnet(
+    nc: &Arc<GhostNode>,
+    pending_hs: &Arc<DashMap<String, PendingHandshake>>,
+    mesh_port: u16,
+) {
+    let local_ip_str = detect_lan_ip();
+    let Ok(local_ip) = local_ip_str.parse::<std::net::Ipv4Addr>() else {
+        return;
+    };
+    let octets = local_ip.octets();
+    if octets[0] == 127 || octets[0] == 0 {
+        return;
+    }
+
+    tracing::info!(
+        subnet = %format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2]),
+        "Starting autonomous LAN discovery sweep..."
+    );
+
+    // 1. Broadcast signed beacons to 255.255.255.255 on both standard beacon port (2270) and mesh port
+    if let Ok(b_sock) = UdpSocket::bind("0.0.0.0:0").await {
+        let _ = b_sock.set_broadcast(true);
+        let pq_commit = nc.identity.pq_commitment();
+        let beacon_pkt = build_beacon_packet(
+            &nc.identity.public_key_bytes(),
+            |d| nc.identity.sign(d).to_bytes(),
+            None,
+            None,
+            false,
+            Some(&pq_commit),
+        );
+        let targets = [
+            "255.255.255.255:2270".parse::<SocketAddr>().ok(),
+            format!("255.255.255.255:{}", mesh_port)
+                .parse::<SocketAddr>()
+                .ok(),
+            format!("{}.{}.{}.255:2270", octets[0], octets[1], octets[2])
+                .parse::<SocketAddr>()
+                .ok(),
+            format!(
+                "{}.{}.{}.255:{}",
+                octets[0], octets[1], octets[2], mesh_port
+            )
+            .parse::<SocketAddr>()
+            .ok(),
+        ];
+        for t in targets.into_iter().flatten() {
+            let _ = b_sock.send_to(&beacon_pkt, t).await;
+        }
+    }
+
+    // 2. Active subnet probe: Send handshake probe to hosts in the subnet
+    for host in 1..=254 {
+        if host == octets[3] {
+            continue;
+        }
+        let target_ip = std::net::Ipv4Addr::new(octets[0], octets[1], octets[2], host);
+        let target_sa = SocketAddr::new(std::net::IpAddr::V4(target_ip), mesh_port);
+        initiate_handshake(nc, &nc.socket, target_sa, pending_hs).await;
+
+        if host % 32 == 0 {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+        }
+    }
+    tracing::info!("Autonomous LAN discovery sweep complete");
 }
 
 /// Parse the JSON body of a request (everything after the header block).
@@ -4837,6 +4945,52 @@ async fn run_node(
         host = lan_host
     );
 
+    let scan_interval_secs = Arc::new(AtomicU32::new(3600)); // Default 1 hour
+    let scan_notify = Arc::new(tokio::sync::Notify::new());
+
+    // Autonomous Private Mesh LAN discovery background engine:
+    // Immediate sweep on startup, periodic sweep (1h / 4h), and on-demand trigger.
+    {
+        let nc_sweep = Arc::clone(&nc);
+        let phs_sweep = Arc::clone(&pending_hs);
+        let scan_notify_sweep = Arc::clone(&scan_notify);
+        let interval_atomic = Arc::clone(&scan_interval_secs);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            sweep_lan_subnet(&nc_sweep, &phs_sweep, mesh_port).await;
+
+            loop {
+                let secs = interval_atomic.load(Ordering::Relaxed);
+                let delay = if secs == 0 {
+                    Duration::from_secs(3600 * 24)
+                } else {
+                    Duration::from_secs(secs as u64)
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {
+                        let active_nodes = nc_sweep.sessions.len();
+                        if active_nodes >= 5 {
+                            tracing::info!(
+                                active_nodes,
+                                "Private mesh quorum achieved (>= 5 nodes) - running autonomous local mesh"
+                            );
+                        } else {
+                            tracing::info!(
+                                active_nodes,
+                                "Private mesh has < 5 nodes - WAN mesh assisted mode active"
+                            );
+                        }
+                        sweep_lan_subnet(&nc_sweep, &phs_sweep, mesh_port).await;
+                    }
+                    _ = scan_notify_sweep.notified() => {
+                        tracing::info!("Manual LAN discovery sweep triggered");
+                        sweep_lan_subnet(&nc_sweep, &phs_sweep, mesh_port).await;
+                    }
+                }
+            }
+        });
+    }
+
     if metrics_enabled {
         // VPN counters for `/metrics` and `/healthz`. Rendered by a helper so the
         // endpoint stays readable; the base v0.4.0 metric set is untouched, and
@@ -4944,6 +5098,8 @@ async fn run_node(
         // has none.
         let carrier_m = Arc::clone(&carrier);
         let phs_m = Arc::clone(&pending_hs);
+        let scan_notify_m = Arc::clone(&scan_notify);
+        let scan_interval_m = Arc::clone(&scan_interval_secs);
         tokio::spawn(async move {
             let bind_addr = format!("0.0.0.0:{}", mp);
             match tokio::net::TcpListener::bind(&bind_addr).await {
@@ -4986,6 +5142,8 @@ async fn run_node(
                             let pair_uri_ref = pair_uri_m.clone();
                             let carrier_ref = Arc::clone(&carrier_m);
                             let phs_ref = Arc::clone(&phs_m);
+                            let scan_notify_ref = Arc::clone(&scan_notify_m);
+                            let scan_interval_ref = Arc::clone(&scan_interval_m);
                             tokio::spawn(async move {
                                 let mut buf = [0u8; 4096];
                                 if let Ok(n) = stream.read(&mut buf).await {
@@ -5074,6 +5232,12 @@ async fn run_node(
                                             "uptime_seconds": uptime,
                                             "peers_count": peers_count,
                                             "active_sessions": sessions_count,
+                                            "private_mesh": {
+                                                "active_nodes": sessions_count,
+                                                "autonomous_local": sessions_count >= 5,
+                                                "mode": if sessions_count >= 5 { "autonomous_local" } else { "wan_mesh_assisted" },
+                                                "scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
+                                            },
                                             // No RTT probe runs against peers in this build, so
                                             // report null rather than a hard-coded number.
                                             "latency_ms": serde_json::Value::Null,
@@ -5243,6 +5407,29 @@ async fn run_node(
                                                 )
                                             }
                                         }
+                                    } else if req.starts_with("POST /api/mesh/scan") {
+                                        scan_notify_ref.notify_one();
+                                        let body = serde_json::json!({
+                                            "success": true,
+                                            "message": "LAN discovery sweep initiated",
+                                            "current_peers": nc_ref.sessions.len(),
+                                            "autonomous_local": nc_ref.sessions.len() >= 5
+                                        })
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/mesh/config") {
+                                        let val = json_body(&req);
+                                        if let Some(secs) =
+                                            val.get("scan_interval_secs").and_then(|v| v.as_u64())
+                                        {
+                                            scan_interval_ref.store(secs as u32, Ordering::Relaxed);
+                                        }
+                                        let body = serde_json::json!({
+                                            "success": true,
+                                            "scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed)
+                                        })
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /api/settings") {
                                         let s = cs_ref.read().clone();
                                         let route_mode_active = match s.route_mode.as_str() {

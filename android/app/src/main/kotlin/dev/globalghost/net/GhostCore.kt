@@ -41,4 +41,13 @@ object GhostCore {
 
     /** Free the native core. The fds remain owned by the JVM objects. */
     external fun destroy(ptr: Long)
+
+    /** Retrieve this node's 8-byte hexadecimal identity fingerprint */
+    external fun getFingerprint(ptr: Long): String
+
+    /** Returns count of active authenticated peers (0 or 1) */
+    external fun getPeersCount(ptr: Long): Int
+
+    /** Triggers autonomous Wi-Fi broadcast discovery sweep */
+    external fun scanLan(ptr: Long): Int
 }

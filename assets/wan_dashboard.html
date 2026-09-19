@@ -701,7 +701,7 @@
         <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 2.18l7 3.12v4.7c0 4.54-3.05 8.78-7 9.88-3.95-1.1-7-5.34-7-9.88V6.3l7-3.12z"/>
       </svg>
       <span class="brand-name">VANTABLACK</span>
-      <span class="brand-badge">v0.7.3</span>
+      <span class="brand-badge">v0.7.4</span>
       <div class="titlebar-status">
         <span class="status-dot" id="header-status-dot"></span>
         <span id="header-status-text">DISCONNECTED</span>
@@ -818,8 +818,23 @@
       <!-- TAB 2: PEERS -->
       <div class="tab-pane" id="tab-peers">
         <div class="section-header">
-          <span class="section-title">Connected Mesh Devices</span>
-          <button class="action-btn" style="padding: 6px 14px; font-size: 12px;" onclick="refreshStatus()">Refresh</button>
+          <div>
+            <span class="section-title">Connected Mesh Devices</span>
+            <div id="mesh-topology-badge" style="font-size: 11px; color: var(--emerald); margin-top: 4px;">Private Mesh: Discovering...</div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="action-btn" style="padding: 6px 14px; font-size: 12px; background: #2563eb;" onclick="scanLanNow()" id="btn-scan-lan">🔍 Scan LAN for Nodes</button>
+            <button class="action-btn" style="padding: 6px 14px; font-size: 12px;" onclick="refreshStatus()">Refresh</button>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; justify-content: space-between; background: var(--surface-raised); padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border);">
+          <span style="font-size: 12px; color: var(--text-muted);">Autonomous LAN Discovery Interval:</span>
+          <select id="scan-interval-select" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="updateScanInterval(this.value)">
+            <option value="3600">Every 1 Hour (Standard)</option>
+            <option value="14400">Every 4 Hours</option>
+            <option value="0">Manual Scan Only</option>
+          </select>
         </div>
 
         <div class="input-row">
@@ -1122,10 +1137,61 @@
           document.getElementById('footer-uptime').innerText = formatted;
         }
 
+        if (data.private_mesh) {
+          const pm = data.private_mesh;
+          const badge = document.getElementById('mesh-topology-badge');
+          if (badge) {
+            if (pm.autonomous_local) {
+              badge.innerHTML = `<span style="color: var(--emerald);">● Autonomous Local Mesh (${pm.active_nodes} Nodes) — Quorum achieved, no WAN needed</span>`;
+            } else {
+              badge.innerHTML = `<span style="color: var(--amber);">○ WAN Mesh Assisted (${pm.active_nodes} Nodes) — Needs &lt;5 nodes WAN assistance</span>`;
+            }
+          }
+          const sel = document.getElementById('scan-interval-select');
+          if (sel && !sel.matches(':focus') && pm.scan_interval_secs !== undefined) {
+            sel.value = String(pm.scan_interval_secs);
+          }
+        }
+
         renderPeers(data.peers || []);
 
       } catch (e) {
         // Node starting up
+      }
+    }
+
+    async function scanLanNow() {
+      const btn = document.getElementById('btn-scan-lan');
+      if (btn) {
+        btn.innerText = 'Scanning...';
+        btn.disabled = true;
+      }
+      try {
+        await fetch('/api/mesh/scan', { method: 'POST' });
+        setTimeout(() => {
+          if (btn) {
+            btn.innerText = '🔍 Scan LAN for Nodes';
+            btn.disabled = false;
+          }
+          refreshStatus();
+        }, 1200);
+      } catch (e) {
+        if (btn) {
+          btn.innerText = '🔍 Scan LAN for Nodes';
+          btn.disabled = false;
+        }
+      }
+    }
+
+    async function updateScanInterval(val) {
+      try {
+        await fetch('/api/mesh/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scan_interval_secs: parseInt(val, 10) })
+        });
+      } catch (e) {
+        console.warn('Scan interval update error', e);
       }
     }
 
