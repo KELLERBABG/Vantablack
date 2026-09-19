@@ -367,13 +367,13 @@ fn perform_lan_discovery(
                         let mut rd = resp_data;
                         rd.truncate(RESPONSE_BLOB_LEN);
                         if let Some(resp) = parse_response_pdu(&rd) {
-                            let ct = Ciphertext::<MlKem512>::from(resp.kyber_ct);
-                            let ky_ss = ks.decapsulate(&ct);
-                            let xs = xs.diffie_hellman(&PublicKey::from(resp.x25519_pub));
-                            let d = derive_hybrid_master_key(xs.as_bytes(), ky_ss.as_slice());
-                            let sh = compute_session_hash(&d);
-                            let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
                             if let Some(res_src) = responder_src {
+                                let ct = Ciphertext::<MlKem512>::from(resp.kyber_ct);
+                                let ky_ss = ks.decapsulate(&ct);
+                                let xs = xs.diffie_hellman(&PublicKey::from(resp.x25519_pub));
+                                let d = derive_hybrid_master_key(xs.as_bytes(), ky_ss.as_slice());
+                                let sh = compute_session_hash(&d);
+                                let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
                                 return Some((res_src, d, sh));
                             }
                         }
