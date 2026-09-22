@@ -1,6 +1,6 @@
 # Cryptographic Deep Dive: Post-Quantum Hybrid Defense
 
-This document details the mathematical and algorithmic foundations of the cryptographic suite powering Vantablack, including hybrid key exchange, authenticated data transport, combinatorial Byzantine tamper resistance, and anti-replay session mechanics.
+This document details the mathematical and algorithmic foundations of the cryptographic suite powering Vantablack, including hybrid key exchange, authenticated data transport, ShardSec per-shard Byzantine tamper resistance, and anti-replay session mechanics.
 
 ---
 
@@ -61,9 +61,11 @@ Payload frames are authenticated and encrypted using **ChaCha20-Poly1305** (RFC 
 
 ---
 
-## 4. Combinatorial RS(2,1) + Poly1305 Byzantine Tamper Isolation
+## 4. Byzantine Tamper Isolation: ShardSec + Combinatorial RS(2,1) / Poly1305
 
-When operating over untrusted carrier networks, adversarial nodes may alter encrypted bytes in flight without knowledge of the decryption key. Reed-Solomon RS(2,1) erasure coding mathematically enables payload recovery from any 2 of 3 shards, while Poly1305 provides cryptographic integrity verification:
+When operating over untrusted carrier networks, adversarial nodes may alter encrypted bytes in flight without knowledge of the decryption key. The production daemon's defense is **ShardSec (default-on since 0.7.7)**: after RS(2,1) encoding, each shard is sealed under its own HKDF-derived key (session secret, epoch, message nonce, shard index) with its own Poly1305 tag (`ghost::net::shardsec`). A tampered shard therefore fails *its own* tag during receive — before reconstruction — and is discarded; the remaining pristine shards (any 2 of 3) rebuild the message. Tampering is rejected at the shard and never propagates.
+
+Underneath, Reed-Solomon RS(2,1) erasure coding mathematically enables payload recovery from any 2 of 3 shards, while Poly1305 provides cryptographic integrity verification:
 
 ```text
 Outbound Payload
@@ -76,8 +78,8 @@ Shard 0   Shard 1     Shard 2
             Corrupted!)
 ```
 
-### Pairwise Combinatorial Verification Algorithm
-When the receiver gathers $\ge 2$ shards, it attempts pair reconstruction:
+### Pairwise Combinatorial Verification Algorithm (Level 2 simulation mechanism)
+The pairwise evaluation below is the demonstration mechanism exercised by the Level 2 WAN simulation (`dec_join_tamper_resistant`); the shipped daemon relies on ShardSec's per-shard tags, which make the pairing unnecessary — a bad shard is already excluded before any pair is formed. When the receiver gathers $\ge 2$ shards, it attempts pair reconstruction:
 1. **Pair $(0, 1)$:** Reconstruct with $S_0, S_1 \rightarrow$ Compute Poly1305 tag $\rightarrow$ **Tag mismatch (rejected)**.
 2. **Pair $(1, 2)$:** Reconstruct with $S_1, S_2 \rightarrow$ Compute Poly1305 tag $\rightarrow$ **Tag mismatch (rejected)**.
 3. **Pair $(0, 2)$:** Reconstruct with $S_0, S_2 \rightarrow$ Compute Poly1305 tag $\rightarrow$ **Tag valid (ACCEPTED)**.
@@ -118,8 +120,8 @@ To prevent passive network observers from inferring packet contents via size or 
 
 The cryptographic invariants are continually benchmarked across a 7-node Level 2 carrier mesh simulation topology under four explicit flight test scenarios:
 
-1. **Scenario 1 (Byzantine Tamper Resistance):** Pairwise combinatorial RS(2,1) and Poly1305 MAC tag verification isolates in-flight corrupted shards from compromised carriers without retransmission.
+1. **Scenario 1 (Byzantine Tamper Resistance):** In-flight corrupted shards are isolated from compromised carriers without retransmission — in the daemon via ShardSec per-shard Poly1305 tags (default-on), and in the simulation additionally via pairwise combinatorial RS(2,1) evaluation.
 2. **Scenario 2 (L6 Anti-Replay Defense):** Monotonic sequence tracking through `SessionGuard`'s sliding window rejects cloned packets and injected replay counters.
-3. **Scenario 3 (L5 Traffic Shaping & Analysis Resistance):** Trailing 16–64B randomized noise pads 512-byte canonical GTF frames, frustrating passive statistical timing and size analysis.
+3. **Scenario 3 (L5 Traffic Shaping & Analysis Resistance):** The daemon's constant-size 576-byte frames (fixed keyed jitter tail, AEAD-associated) plus Poisson cover traffic frustrate passive statistical timing and size analysis; the simulation additionally demonstrates the variable-length variant — trailing 16–64B of randomized noise padding canonical 512-byte GTF frames.
 4. **Scenario 4 (Real-time Convergence Latency):** Autonomous Chaos Monkey severing triggers sub-55ms failover to hot-standby carrier routes.
 5. **Telemetry Surface:** Real-time state metrics are exposed via JSON at `/api/telemetry` and displayed on the reactive dashboard (`assets/wan_dashboard.html`) on port 8080.

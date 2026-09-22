@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/License-MIT-059669?style=flat-square)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-Rust%20(Pure)-orange?style=flat-square)](https://www.rust-lang.org/)
 [![Runtime](https://img.shields.io/badge/Runtime-Tokio%20Async-blue?style=flat-square)](https://tokio.rs/)
-[![Crypto](https://img.shields.io/badge/Crypto-ML--KEM--512%20%7C%20X25519-blueviolet?style=flat-square)](docs/SPECIFICATIONS.md)
+[![Crypto](https://img.shields.io/badge/Crypto-ML--KEM--768%2F512%20%7C%20X25519-blueviolet?style=flat-square)](docs/SPECIFICATIONS.md)
 
 <br>
 
@@ -30,10 +30,10 @@ Instead of funneling traffic through a central VPN provider where it can be moni
 ## Why Use It?
 
 * **Quantum-Resilient Privacy:** Uses hybrid ML-KEM-768 (Kyber / FIPS 203) and ephemeral X25519 ECDH, falling back to ML-KEM-512 for peers that only speak the legacy construction. Data captured by state surveillance today cannot be decrypted when cryptographically relevant quantum computers arrive.
+* **Per-Shard Authentication (ShardSec, default-on):** Every Reed-Solomon shard is sealed under its own HKDF-derived key, so a corrupted or maliciously altered shard fails its own Poly1305 tag and is discarded *before* reconstruction — tampering is rejected rather than propagated. Receivers accept legacy frames too, so mixed fleets interoperate.
 * **Asymmetric Shard Routing:** Every message is split into 3 mathematical shards (Reed-Solomon RS(2,1)) dispatched across divergent internet paths for packet-loss resilience. Payload confidentiality is strictly enforced by AEAD encryption, while erasure coding guarantees reconstruction from any 2 shards without retransmission.
-* **Byzantine Tamper Resistance:** Pairwise combinatorial Poly1305 MAC tag verification isolates and drops corrupted shards in real-time, reconstructing intact payloads via pristine alternate paths.
 * **Zero Infrastructure Costs:** No need to pay for a central VPS. Connect your devices seamlessly using free Cloudflare DNS seeds and automatic local peer caching.
-* **Anti-Traffic Fingerprinting:** Layer 5 traffic shaping injects randomized jitter noise (16–64 bytes) to defeat deep packet inspection (DPI), packet-length analysis, and timing correlation.
+* **Anti-Traffic Fingerprinting:** Privacy frames are a constant 576 bytes on the wire — a fixed 64-byte keyed jitter tail (authenticated as AEAD associated data) plus Poisson-distributed cover traffic remove both the packet-length and the silence signals that deep packet inspection (DPI) and timing correlation feed on.
 * **Instant SOCKS5 Proxy:** Runs a built-in proxy on `127.0.0.1:1080` out of the box, allowing any browser, terminal tool, or application to immediately route through the mesh.
 * **Self-Healing & Chaos Resilience:** Autonomous multi-path failover seamlessly switches around severed carrier links with zero packet loss or connection drops.
 
@@ -92,13 +92,13 @@ Vantablack includes a complete **Level 2 Multi-Hop WAN Mesh Simulation Environme
 
 ---
 
-## 4 Active Test Scenarios
+## 4 Active Test Scenarios (Level 2 Simulation)
 
-The Level 2 WAN simulation autonomously evaluates 4 critical cryptographic and networking resilience invariants:
+The Level 2 WAN simulation autonomously evaluates 4 resilience invariants. These are **validation scenarios for the defenses listed above**, exercised under controlled netem impairments; where the simulation demonstrates a mechanism differently from the shipped daemon (noted inline), the daemon's production mechanism is the one described in the feature list and the threat table.
 
 ### Scenario 1: Byzantine Tamper Isolation (RS(2,1) + Combinatorial Poly1305)
 * **Mechanics:** `mesh-carrier-2` acts as an active Byzantine adversary (`BYZANTINE_TAMPER=1`), deliberately corrupting 4 bytes of in-flight encrypted shard payloads every 3 cycles.
-* **Defense:** When all 3 shards arrive, the receiver executes pairwise combinatorial reconstruction:
+* **Defense:** The daemon rejects corrupted shards via ShardSec per-shard AEAD (default-on). The simulation additionally demonstrates a pairwise combinatorial reconstruction check on the fully assembled ciphertext:
   - Pair $(0, 1)$ testing (excludes Shard 2)
   - Pair $(0, 2)$ testing (excludes Shard 1)
   - Pair $(1, 2)$ testing (excludes Shard 0)
@@ -356,14 +356,14 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 
 | Threat / Scenario | Defense Mechanism | Protection Level |
 | :--- | :--- | :---: |
-| **Quantum Computing Decryption** | Hybrid ML-KEM-768 (Kyber) + Ephemeral X25519 ECDH | **Immune** |
-| **Single-Node Eavesdropping** | RS(2,1) Reed-Solomon asymmetric multi-path sharding | **Immune** |
-| **Byzantine Node Tampering** | Pairwise combinatorial Poly1305 AEAD validation | **Immune** |
-| **Deep Packet Inspection (DPI)** | L5 Random Jitter Padding (16–64 bytes) + Uniform Frames | **Immune** |
-| **Packet Replay Attacks** | Sliding window bitmask guard (`SessionGuard` / `SessionGuardU64`) | **Immune** |
-| **Carrier Failover / Severance** | Dynamic `AdaptiveShardRouter` with Poisson fitness tracking | **Resilient (<55ms)** |
-| **In-Memory Scraping** | Volatile zeroization on drop + AES-256-XTS RAM protection | **Hardened** |
-| **Central Server Seizure** | Pure decentralized P2P architecture with local `peers.cache` | **Immune** |
+| **Quantum Computing Decryption** | Hybrid ML-KEM-768 (Kyber) + Ephemeral X25519 ECDH; handshake symbolically modeled in `formal/` (ProVerif) | **Resistant** |
+| **Single-Node Eavesdropping** | RS(2,1) Reed-Solomon sharding across divergent paths — no single carrier holds a whole message | **Resistant** |
+| **Byzantine Node Tampering** | ShardSec per-shard AEAD (default-on): a corrupted shard fails its own Poly1305 tag and is discarded before reconstruction | **Detected & isolated** |
+| **Deep Packet Inspection (DPI)** | Constant-size privacy frames + fixed 64-byte keyed jitter tail (AEAD-associated) + Poisson cover traffic. No published traffic-analysis experiments; resistance is by design, not yet by measurement | **Mitigated** |
+| **Packet Replay Attacks** | 64-bit sliding-window bitmask guard (`SessionGuard` / `SessionGuardU64`), enforced before decryption | **Blocked** |
+| **Carrier Failover / Severance** | Dynamic `AdaptiveShardRouter` with Poisson fitness tracking | **Resilient (≤55ms, measured in simulation)** |
+| **In-Memory Scraping** | Volatile zeroization of key material on drop; XTS RAM-region and verified ring-buffer primitives ship in `l8_memsec` (constructed at node init, not runtime-applied to all RAM) | **Hardened** |
+| **Central Server Seizure** | Pure decentralized P2P architecture with local `peers.cache`; DNS seeds are optional rendezvous points, not infrastructure | **No central point exists** |
 
 ---
 
@@ -382,11 +382,11 @@ Vantablack implements the 10-layer GHOST protocol stack:
 | L2   | Authenticated AEAD   | ChaCha20-Poly1305 + HKDF      |
 | L3   | Secret Sharing       | Shamir SSS (GF256, 2-of-3)    |
 | L4   | Erasure Coding       | Reed-Solomon RS(2,1) shards   |
-| L5   | Traffic Shaping      | 16-64B jitter cover padding   |
+| L5   | Traffic Shaping      | Constant-size frames, keyed 64B jitter tail + Poisson cover traffic |
 | L6   | Session Guard        | Sliding window replay bitmask |
-| L7   | Forward Error Corr.  | LDPC parity-check matrix      |
-| L8   | Memory Defense       | AES-256-XTS RAM encryption    |
-| L9   | Infrastructure Trust | TPM/HSM enclave & NTS sync    |
+| L7   | Forward Error Corr.  | LDPC codec ships as a library primitive (unit-tested); not applied to wire traffic in this release — roadmap for high-BER links |
+| L8   | Memory Defense       | Key zeroization is runtime-active; the AES-256-XTS RAM-region encryptor and verified ring buffer ship as primitives (constructed at node init, not yet applied to all RAM) |
+| L9   | Infrastructure Trust | Packaging is real; TPM 2.0 / PKCS#11 / NTS are feature-gated stubs — roadmap |
 +------+----------------------+-------------------------------+
 ```
 
@@ -430,6 +430,12 @@ cargo run --bin wan_mesh --no-default-features
 ```
 
 ---
+
+## Experimental Research Modules (not on the wire path)
+
+The `src/ghost/net/` tree ships a set of compiled, unit-tested research modules that are **not invoked by the node's data path**. They are retained as available primitives and direction-of-travel, not as active behavior; auditors should treat them as dormant surface:
+
+`sovereign_cloud` (jurisdiction-tagged storage placement), `energy_currency` (signed erasure-repair credit proofs), `stego_physics` (physical side-channel shard carriage: acoustic/thermal/optical — modulation math only, no device I/O), `sharded_compute` (RS-sharded inference with ASN diversity), `model_gossip` (federated cover-traffic parameter learning), `dead_drop` (blind commitment-addressed storage with Poisson decay), `mesh_archive` (content-hashed public RS(2,1) archives), `diffusion` (epidemic emergency shard dispersal), `collective_defense` (k-anonymous regional threat aggregation), `entropy_beacon` (threshold public randomness), `dtn_reconcile` (Merkle anti-entropy after partitions).
 
 ## License
 

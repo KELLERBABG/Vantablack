@@ -79,9 +79,9 @@ Nodes feature an internal SOCKS5 proxy engine listening on `127.0.0.1:1080`:
 
 The architecture incorporates a 7-node carrier simulation topology (`vantablack-carrier-1..5`, `mesh-client`, `mesh-exit`) modeled under Linux kernel `tc netem` latency, jitter, and packet loss emulation. The deployment validates 4 continuous resilience invariants:
 
-1. **Scenario 1 (Byzantine Tamper Resistance):** Pairwise combinatorial RS(2,1) testing against Poly1305 authentication tags isolates actively corrupted shards from compromised carriers without packet retransmission.
+1. **Scenario 1 (Byzantine Tamper Resistance):** The daemon's production defense is ShardSec per-shard AEAD (default-on): each shard carries its own Poly1305 tag, so a corrupted shard fails its own tag and is discarded before reconstruction. The simulation additionally demonstrates pairwise combinatorial RS(2,1) testing against the assembled ciphertext's Poly1305 tag to isolate and name the corrupted carrier.
 2. **Scenario 2 (Layer 6 Anti-Replay Defense):** The `SessionGuard` 64-bit sliding window bitmask detects and rejects duplicate clone transmissions and injected replay counters.
-3. **Scenario 3 (Layer 5 Traffic Shaping & Analysis Resistance):** Canonical 512-byte GTF frames are padded with 16–64 bytes of cryptographically randomized jitter, defeating statistical traffic classification and deep packet inspection (DPI).
+3. **Scenario 3 (Layer 5 Traffic Shaping & Analysis Resistance):** The daemon emits constant-size 576-byte privacy frames with a fixed 64-byte keyed jitter tail (authenticated as AEAD associated data) plus Poisson cover traffic. The simulation demonstrates the variable-length variant — 16–64 bytes of random padding — producing continuously varying wire lengths that defeat statistical traffic classification and DPI.
 4. **Scenario 4 (Real-time Convergence Latency Measurement):** An autonomous Chaos Monkey periodically severs the high-latency satellite carrier (`Carrier 3`), triggering sub-55ms failover to hot-standby `Carrier 5` via the `AdaptiveShardRouter`.
 
 ---

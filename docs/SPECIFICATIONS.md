@@ -132,23 +132,15 @@ When multiple hops are chained (e.g., Client $\rightarrow$ Carrier 1 $\rightarro
 
 ### 2.3 Layer 5 Traffic Shaping & Jitter Format
 
-To defeat passive Deep Packet Inspection (DPI) and timing correlation attacks, payloads are dynamically padded with cryptographically randomized jitter:
+Two mechanisms remove the wire signals (packet length, packet silence) that passive DPI and timing correlation feed on:
 
-```text
-+----------------------------+-----------------------+----------------------------------+
-| original_len (2 Bytes BE)  | payload (original)    | random_jitter (16 to 64 Bytes)   |
-+----------------------------+-----------------------+----------------------------------+
-```
+**Production daemon (default).** Privacy frames are a **constant 576 bytes**: a 512-byte authenticated GTF body plus a fixed 64-byte **jitter tail**. The tail is not random padding — it is *derived, keyed, and authenticated*:
 
-1. **Jitter Injection (`apply_l5_jitter_padding`):**
-   - $L_{\text{orig}} = \text{len}(\text{payload})$ (stored as 2 bytes big-endian).
-   - $J_{\text{len}} \leftarrow \text{UniformRandom}(16, 64)$.
-   - $J_{\text{bytes}} \leftarrow \text{CryptographicRandomBytes}(J_{\text{len}})$.
-   - $\text{WireData} = L_{\text{orig}} \mathbin{\Vert} \text{payload} \mathbin{\Vert} J_{\text{bytes}}$.
-2. **Jitter Stripping (`strip_l5_jitter_padding`):**
-   - Reads $L_{\text{orig}} = \text{u16::from\_be\_bytes}([B_0, B_1])$.
-   - Validates that $2 + L_{\text{orig}} \le \text{len}(\text{WireData})$.
-   - Truncates slice to $[2 \dots 2 + L_{\text{orig}}]$, discarding all trailing jitter bytes.
+1. **Tail derivation (`net::tail_for`):** the sender computes the tail as an HMAC-SHA256 keyed PRF over the session key and the message's own seal metadata (nonce, epoch, AEAD direction), expanded to 64 bytes in 32-byte blocks. Deriving rather than drawing it means all three shards of one message share one tail — they are pieces of one AEAD ciphertext — and the frame builder can recompute what the sealer authenticated.
+2. **Authentication:** the tail travels *after* the authenticated region and is fed to `xchacha_open_with_aad` as **associated data** on receive. The receiver does not recompute it; it authenticates the exact bytes on the wire. A rewritten tail breaks the Poly1305 tag.
+3. **Cover traffic (`spawn_cover_task`):** every established session emits dummy messages (real RS(2,1) groups carrying `DUMMY_MAGIC`) at a constant mean rate of 2 frames/s with **exponentially distributed inter-arrival gaps** — a Poisson stream, so the gaps themselves are not a signature. Cover rides the real data path and is dropped by the receiver on the decrypted marker, never on the forgeable header flag.
+
+**Level 2 simulation.** The `wan_mesh` demo binary demonstrates the *variable-length* variant of this defense: `apply_l5_jitter_padding` prepends a 2-byte length prefix and appends `UniformRandom(16, 64)` cryptographic random bytes, producing wire lengths of 528–576 B. The shipped daemon deliberately fixed the frame length instead (constant size removes the length channel entirely and keeps every path uniform); the variable-length mechanism remains a documented simulation behavior.
 
 ---
 
@@ -367,12 +359,17 @@ from instead of keeping their first measurement forever.
 
 ---
 
-## 5. Byzantine Tamper Isolation: Combinatorial RS(2,1) + Poly1305
+## 5. Byzantine Tamper Isolation: ShardSec Per-Shard AEAD
 
-When an adversarial carrier corrupts in-flight data, standard error-correction decoding fails. Vantablack implements combinatorial pairwise testing:
+When an adversarial carrier corrupts in-flight data, standard error-correction decoding fails. The production daemon's defense is **ShardSec (default-on since 0.7.7)**: after Reed-Solomon encoding, *each shard is sealed under its own key* — HKDF-derived from the session secret, epoch, message nonce, and shard index (`ghost::net::shardsec`) — and carries its own Poly1305 tag.
 
-### Combinatorial Evaluation
-For received shards $S = [S_0, S_1, S_2]$:
+### Production mechanism (ShardSec)
+1. Each arriving shard is opened **before reconstruction** under its own derived key (`RxContext::ingest`).
+2. A tampered shard fails its own tag and is discarded; the remaining pristine shards (any 2 of 3) reconstruct the message. Tampering is *rejected at the shard*, not propagated to the message.
+3. All shards of one message share one wire counter and are opened with the chain's key for that counter; the chain position is committed exactly once per assembled message. Receivers accept legacy (message-level AEAD) frames in the same stream — the per-frame `FLAG_SHARDSEC` bit decides how a frame is opened, so mixed fleets interoperate. `GHOST_SHARDSEC=off` emits legacy frames for diagnosis against pre-0.7.7 peers.
+
+### Simulation mechanism (combinatorial pairwise)
+The Level 2 WAN simulation additionally demonstrates a **combinatorial pairwise evaluation** on the assembled ciphertext (`dec_join_tamper_resistant` in `src/bin/wan_mesh.rs`). For received shards $S = [S_0, S_1, S_2]$:
 1. When 3 shards arrive, form all 2-shard combinations:
    - **Pair $(0, 1)$:** Reconstruct with $S_0, S_1$, verify ChaCha20-Poly1305 MAC.
    - **Pair $(0, 2)$:** Reconstruct with $S_0, S_2$, verify ChaCha20-Poly1305 MAC.
@@ -429,7 +426,7 @@ The carrier simulation runs four continuous autonomous test scenarios verifying 
 
 ### Scenario 1: Byzantine Tamper Resistance
 - **Threat Model:** Carrier 2 (`172.28.1.12`) acts as an active in-path adversary, mutating 4 bytes of encrypted payload in transit (`payload[len - 4..len] ^= [0x33, 0x55, 0xAA, 0xFF]`) on every 3rd packet.
-- **Defense Mechanism:** Pairwise combinatorial Reed-Solomon evaluation in `dec_join_tamper_resistant()` tests pairs $(0,1)$, $(0,2)$, and $(1,2)$ against Poly1305 MAC tags.
+- **Defense Mechanism:** The daemon rejects corrupted shards via ShardSec per-shard AEAD (default-on): each shard carries its own Poly1305 tag, so the mutated shard fails its own tag and is discarded before reconstruction, and the honest pair rebuilds the payload. The simulation additionally demonstrates pairwise combinatorial Reed-Solomon evaluation in `dec_join_tamper_resistant()`, testing pairs $(0,1)$, $(0,2)$, and $(1,2)$ against Poly1305 MAC tags.
 - **Result:** Pairs containing the corrupted shard fail Poly1305 authentication. The honest pair $(0,2)$ succeeds, perfectly reconstructing the original payload without retransmission. Carrier 2 is marked `TAMPER REJECTED (Poly1305 Tag Failed)`.
 
 ### Scenario 2: Layer 6 Anti-Replay Defense
@@ -439,8 +436,8 @@ The carrier simulation runs four continuous autonomous test scenarios verifying 
 
 ### Scenario 3: Layer 5 Traffic Shaping & Analysis Resistance
 - **Threat Model:** Adversaries use passive Deep Packet Inspection (DPI) to identify application protocols by examining packet length distributions and timing intervals.
-- **Defense Mechanism:** `apply_l5_jitter_padding()` prepends a 2-byte length prefix and appends a uniform random byte buffer of 16 to 64 bytes (`rand::thread_rng().gen_range(16..=64)`) to each 512-byte canonical GTF frame.
-- **Result:** Outbound datagram lengths vary continuously across time ($528\text{ B} \dots 576\text{ B}$), preventing traffic fingerprinting and correlation.
+- **Defense Mechanism:** The daemon emits constant-size 576 B privacy frames with a fixed 64-byte keyed jitter tail (HMAC-derived, authenticated as AEAD associated data — see §2.3) plus Poisson cover traffic. The simulation demonstrates the variable-length variant: `apply_l5_jitter_padding()` prepends a 2-byte length prefix and appends a uniform random byte buffer of 16 to 64 bytes (`rand::thread_rng().gen_range(16..=64)`) to each 512-byte canonical GTF frame.
+- **Result (simulation):** Outbound datagram lengths vary continuously across time ($528\text{ B} \dots 576\text{ B}$), preventing traffic fingerprinting and correlation. The production daemon holds length constant instead and removes the silence channel with cover traffic.
 
 ### Scenario 4: Real-time Convergence Latency Measurement (Chaos Monkey)
 - **Threat Model:** Physical infrastructure outage or link severing. Every 10 flight cycles, the autonomous Chaos Monkey severs Carrier 3 (`172.28.1.13`), simulating a total satellite uplink blackout.

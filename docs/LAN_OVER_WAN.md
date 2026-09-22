@@ -152,7 +152,7 @@ The LAN over WAN architecture is tested within the Docker 7-node carrier simulat
 
 - **Linux `tc netem` Link Conditions:** Link delays from 25ms to 160ms, jitter up to 25ms, and packet loss rates up to 8%.
 - **Live Failover Convergence:** When primary carrier routes degrade or are severed by Chaos Monkey, the `AdaptiveShardRouter` re-routes tunnel traffic to hot standby carriers within 55 ms, preserving TCP connections without session drop or re-keying.
-- **Byzantine Protection:** Intermediary carrier tampering is detected via combinatorial Poly1305 MAC tag checks, ensuring tunnel frames cannot be forged or manipulated in transit.
+- **Byzantine Protection:** Intermediary carrier tampering is detected via ShardSec per-shard Poly1305 MAC tags (default-on) — every tunnel shard carries its own authentication tag, so forged or manipulated frames are rejected before reconstruction.
 
 ---
 

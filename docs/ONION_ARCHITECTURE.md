@@ -111,7 +111,7 @@ Unlike traditional single-path circuits where a single malicious relay can inter
 
 1. Outbound data is fragmented into two data shards and one parity shard.
 2. Each shard is routed across **independent, divergent carrier paths**.
-3. **Byzantine Fault Isolation:** If an adversary compromises an intermediary node (such as `Carrier 2`) and corrupts the shard in flight, the receiver executes pairwise combinatorial Poly1305 validation, detects the forgery, discards the tampered shard, and reconstructs the data from the remaining two uncorrupted paths.
+3. **Byzantine Fault Isolation:** If an adversary compromises an intermediary node (such as `Carrier 2`) and corrupts the shard in flight, the receiver rejects it via ShardSec per-shard AEAD (default-on): each shard carries its own Poly1305 tag, so the forged shard fails its own tag, is discarded before reconstruction, and the data is rebuilt from the remaining two uncorrupted paths.
 4. An eavesdropper intercepting any single hop obtains only an incomplete mathematical shard containing zero readable information.
 
 ---
@@ -133,7 +133,7 @@ Under these combined conditions, onion-routed multi-hop shards maintain sub-seco
 ## 5. Replay & Timing Attack Mitigations
 
 - **64-Bit Replay Sliding Window (`SessionGuard`):** Every node maintains an atomic sliding window bitmask. Replayed onion packets are discarded before entering decryption buffers.
-- **Layer 5 Traffic Shaping Jitter:** Datagrams include 16 to 64 bytes of cryptographically randomized trailing jitter padding, defeating passive packet-length fingerprinting.
+- **Layer 5 Traffic Shaping Jitter:** Privacy frames are a constant 576 bytes — a fixed 64-byte keyed jitter tail (HMAC-derived and authenticated as AEAD associated data) plus Poisson cover traffic, defeating both passive packet-length fingerprinting and the silence channel.
 - **Fixed-Slot Temporal Isolation:** Decapsulation and crypto verification routines execute in constant-time slots to mitigate side-channel timing analysis.
 
 ---
@@ -142,9 +142,9 @@ Under these combined conditions, onion-routed multi-hop shards maintain sub-seco
 
 The onion mesh architecture operates under continuous automated verification across four explicit flight test scenarios, monitored live at port `8080`:
 
-1. **Scenario 1: Byzantine Tamper Resistance:** Intermediate carrier adversary mutation (`Carrier 2`) is isolated via pairwise combinatorial RS(2,1) + Poly1305 verification. Corrupted shards are dropped, and intact payload is recovered.
+1. **Scenario 1: Byzantine Tamper Resistance:** Intermediate carrier adversary mutation (`Carrier 2`) is isolated via ShardSec per-shard Poly1305 verification (the daemon's production defense); the simulation additionally demonstrates pairwise combinatorial RS(2,1) evaluation on the assembled ciphertext. Corrupted shards are dropped, and intact payload is recovered.
 2. **Scenario 2: Layer 6 Anti-Replay Defense:** Duplicate onion datagrams injected with stale sequence counters are blocked by the `SessionGuard` sliding window bitmask before decryption.
-3. **Scenario 3: Layer 5 Traffic Shaping & Analysis Resistance:** Dynamic 16–64 byte random jitter covers canonical 512-byte GTF privacy frames, defeating flow watermarking and packet-length fingerprinting.
+3. **Scenario 3: Layer 5 Traffic Shaping & Analysis Resistance:** The daemon's constant-size frames (576 B, fixed keyed tail) plus Poisson cover traffic defeat flow watermarking and packet-length fingerprinting; the simulation additionally demonstrates the variable-length 16–64 byte random-padding variant.
 4. **Scenario 4: Real-time Convergence Latency Measurement:** Autonomous Chaos Monkey periodically severs Carrier 3 (satellite uplink); `AdaptiveShardRouter` reassigns traffic to Carrier 5 within 55 ms without connection disruption.
 5. **Live Observability:** Telemetry metrics (`/api/telemetry`) and interactive dashboard (`assets/wan_dashboard.html` on `http://localhost:8080`) display live carrier topology, RTTs, security event alerts, and convergence latency.
 
