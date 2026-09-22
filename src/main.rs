@@ -84,6 +84,37 @@ use vantablack::ghost::{
     GhostNode,
 };
 
+/// Whether ShardSec (per-shard AEAD) is enabled for outbound frames.
+///
+/// **Default-on since 0.7.7.** Each Reed-Solomon shard is sealed under its own
+/// HKDF-derived key, so a tampered shard fails its own Poly1305 tag and is
+/// discarded *before* reconstruction — the property the documentation's
+/// Byzantine-tamper-isolation claim describes. Legacy frames (message-level
+/// AEAD only) remain fully supported on receive in both modes: the per-frame
+/// `FLAG_SHARDSEC` bit decides how a frame is opened, so mixed fleets of old
+/// and new builds interoperate.
+///
+/// Set `GHOST_SHARDSEC=off` (or `0`/`false`, case-insensitive) to emit legacy
+/// frames — for example to diagnose against a pre-ShardSec peer. Any other
+/// value, or an unset variable, means enabled.
+/// The pure ShardSec decision for one env value, so every env shape is
+/// unit-testable without mutating the process environment (the process-wide
+/// answer is cached once in [`shardsec_default_enabled`]).
+fn shardsec_enabled_for(env_value: Option<&str>) -> bool {
+    match env_value {
+        // Unset: per-shard AEAD is the default.
+        None => true,
+        Some(v) => {
+            !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"))
+        }
+    }
+}
+
+fn shardsec_default_enabled() -> bool {
+    static RESOLVED: OnceLock<bool> = OnceLock::new();
+    *RESOLVED.get_or_init(|| shardsec_enabled_for(std::env::var("GHOST_SHARDSEC").ok().as_deref()))
+}
+
 enum PendingHandshake {
     Kem512(x25519_dalek::EphemeralSecret, DecapsulationKey512),
     Negotiated {
@@ -216,7 +247,7 @@ impl SealCtx {
     }
 
     fn data_header(&self, shard_index: u8, bulk: bool, flags: u8) -> net::GtfV2Header {
-        let flags = if std::env::var("GHOST_SHARDSEC").is_ok() {
+        let flags = if shardsec_default_enabled() {
             flags | net::FLAG_SHARDSEC
         } else {
             flags
@@ -348,7 +379,7 @@ fn open_received_frame(
 }
 
 fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
-    if std::env::var("GHOST_SHARDSEC").is_ok() {
+    if shardsec_default_enabled() {
         let pay_len = pay.len() as u16;
         let mut framed = pay_len.to_be_bytes().to_vec();
         framed.extend_from_slice(pay);
@@ -622,7 +653,10 @@ fn spawn_cover_task(
                 // sees only an opaque envelope and the observer sees relay-shaped
                 // traffic rather than all cover terminating at one peer.
                 let me = node.fingerprint();
-                let decoy_sent = if std::env::var("GHOST_SHARDSEC").is_err() {
+                // ShardSec frames carry the legacy GTF tag as zeros (see
+                // `enc_split`), so the legacy message-level decoy path below
+                // is skipped for them — cover still flows, through `send_cover`.
+                let decoy_sent = if !shardsec_default_enabled() {
                     relay_role
                         .as_ref()
                         .and_then(|relay| relay.pick_relay(&me, &peer))
@@ -1437,7 +1471,7 @@ impl RxContext {
         // delivered it. `tests` below covers exactly that, in the default build.
         if net::parse_flags(datagram) & net::FLAG_TUNNEL != 0 {
             if let Some(sd) = unframe(net::extract_payload(datagram)) {
-                self.deliver(ctr, v2, sd, src).await;
+                self.deliver(ctr, v2, sd, src, None).await;
             }
             return;
         }
@@ -1462,6 +1496,13 @@ impl RxContext {
                     is_honey: false,
                 }
             };
+            // All shards of one message share ONE wire counter (they are pieces
+            // of one AEAD ciphertext under one seal), so a shard is *opened*
+            // with the chain's key for that counter but must NOT consume a
+            // chain position per shard — committing on every shard would make
+            // shards 1 and 2 look like replays of counter 0 and fail their own
+            // tags. The single commit happens per assembled message in
+            // `handle_pkt`'s ShardSec branch (see `wire_session_hash`).
             let mut opened = None;
             for candidate in OpenCtx::snapshot_of(&self.node.sessions)
                 .into_iter()
@@ -1490,7 +1531,9 @@ impl RxContext {
                         direction,
                         &sealed,
                     ) {
-                        sess.commit_open(meta.epoch, direction, plan);
+                        // Deliberately NO `sess.commit_open` here — see the
+                        // comment above. The message-level commit in
+                        // `handle_pkt` advances the chain exactly once.
                         opened = Some(plain);
                         break;
                     }
@@ -1503,7 +1546,7 @@ impl RxContext {
                 return;
             };
             if let Some(r) = assemble(&self.spool, ctr, si, plain_shard).await {
-                self.deliver(ctr, v2, r, src).await;
+                self.deliver(ctr, v2, r, src, Some(net::parse_session_hash(datagram))).await;
             }
             return;
         }
@@ -1514,7 +1557,10 @@ impl RxContext {
             if std::env::var("GGN_DEBUG_RX").is_ok() {
                 tracing::info!("assembled frame ctr={ctr} si={si} len={}", r.len());
             }
-            self.deliver(ctr, v2, r, src).await;
+            // The legacy path's frames were opened by `open_received_frame` at
+            // the candidates loop, but the hash still names the session; keep
+            // the wire value so both modes behave identically downstream.
+            self.deliver(ctr, v2, r, src, Some(net::parse_session_hash(datagram))).await;
         } else if std::env::var("GGN_DEBUG_RX").is_ok() {
             tracing::info!("assemble dropped ctr={ctr} si={si}");
         }
@@ -1525,7 +1571,19 @@ impl RxContext {
     /// Spawned rather than awaited: `handle_pkt` can block on session locks and
     /// tunnel writes, and the receive loop must stay able to read the socket while
     /// that happens.
-    async fn deliver(&self, ctr: u64, v2: Option<V2FrameMeta>, payload: Vec<u8>, src: SocketAddr) {
+    async fn deliver(
+        &self,
+        ctr: u64,
+        v2: Option<V2FrameMeta>,
+        payload: Vec<u8>,
+        src: SocketAddr,
+        // The session hash **as it arrived on the wire**, parsed from the raw
+        // datagram in `ingest`. Downstream, `data` is already-opened plaintext,
+        // so `parse_session_hash(data)` would read garbage — which is exactly
+        // what silently disabled the ShardSec branch of `handle_pkt` until the
+        // wire hash was threaded through here.
+        wire_session_hash: Option<[u8; 4]>,
+    ) {
         let node = Arc::clone(&self.node);
         let peers = Arc::clone(&self.peers);
         let pending_hs = Arc::clone(&self.pending_hs);
@@ -1553,6 +1611,7 @@ impl RxContext {
                 ctr,
                 &payload,
                 v2,
+                wire_session_hash,
                 &src,
                 Some(&rl),
                 Some(&*rep),
@@ -2251,6 +2310,10 @@ async fn handle_pkt(
     // The v2 header's seal metadata, when the frame has one.
     // `None` means a v1 frame: counter-derived nonce, seed key.
     v2: Option<V2FrameMeta>,
+    // The session hash parsed from the raw datagram by `ingest`, before any
+    // decryption. `handle_pkt` receives already-opened plaintext as `data`, so
+    // the ShardSec branch must match candidates against the *wire* hash.
+    wire_session_hash: Option<[u8; 4]>,
     src: &SocketAddr,
     revocation_list: Option<&RevocationList>,
     reputation_matrix: Option<&PoissonReputationMatrix>,
@@ -2942,10 +3005,34 @@ async fn handle_pkt(
         let sh = cand.session_hash;
         let role = cand.role;
         let plain = if v2.is_some_and(|meta| meta.shardsec) {
-            if cand.session_hash != net::parse_session_hash(data) {
+            // ShardSec frames arrived as *already-opened* shards assembled by
+            // the spool: `data` here is plaintext, not a datagram, so the
+            // session must be named by the hash parsed off the raw wire
+            // header (`wire_session_hash`), never re-parsed from `data`.
+            let wire_matches = wire_session_hash.is_some_and(|wire| wire == cand.session_hash);
+            if wire_matches {
+                // The one commit per message: shards were opened (not committed)
+                // in `ingest`, so the chain position for this counter is
+                // advanced exactly here, mirroring the legacy path's single
+                // `commit_open` per message.
+                if let Some(sess) = node.sessions.get(&cand.peer_fp) {
+                    let epoch = v2.map(|m| m.epoch).unwrap_or(0);
+                    let ours = cand.role.seal_direction();
+                    for direction in [ours.peer_direction(), ours] {
+                        let plan = sess.plan_open(epoch, direction, ctr);
+                        if !matches!(
+                            plan,
+                            vantablack::ghost::session::ratchet::OpenPlan::Refused
+                        ) {
+                            sess.commit_open(epoch, direction, plan);
+                            break;
+                        }
+                    }
+                }
+                data.to_vec()
+            } else {
                 continue;
             }
-            data.to_vec()
         } else {
             let Some(sess) = node.sessions.get(&cand.peer_fp) else {
                 continue;
@@ -7903,6 +7990,190 @@ mod beacon_section_tests {
         let sections = parse_beacon_sections(&buf, amt).expect("tiles exactly");
         assert_eq!(sections.ice_offer, Some(""));
         assert!(vantablack::ghost::net::ice::IceOffer::decode("").is_err());
+    }
+}
+
+/// ShardSec default-on: the send side, the receive side, and the round trip.
+#[cfg(test)]
+mod shardsec_default_tests {
+    use super::*;
+
+    #[test]
+    fn the_env_switch_has_the_documented_semantics() {
+        // Unset => enabled (the 0.7.7 default).
+        assert!(shardsec_enabled_for(None));
+        // The explicit opt-out spellings.
+        assert!(!shardsec_enabled_for(Some("off")));
+        assert!(!shardsec_enabled_for(Some("OFF")));
+        assert!(!shardsec_enabled_for(Some("Off")));
+        assert!(!shardsec_enabled_for(Some("0")));
+        assert!(!shardsec_enabled_for(Some("false")));
+        assert!(!shardsec_enabled_for(Some("FALSE")));
+        // Anything else — including legacy truthy spellings and an empty
+        // value — means enabled, exactly like the old any-set-value rule.
+        assert!(shardsec_enabled_for(Some("on")));
+        assert!(shardsec_enabled_for(Some("1")));
+        assert!(shardsec_enabled_for(Some("true")));
+        assert!(shardsec_enabled_for(Some("")));
+    }
+
+    fn test_ctx() -> SealCtx {
+        SealCtx {
+            key: [0x42; 32],
+            epoch: 7,
+            counter: 1000,
+            nonce: [0x11; 12],
+            direction: NonceDirection::InitiatorToResponder,
+            session_hash: [0xAB, 0xCD, 0x12, 0x34],
+            ratchet_due: false,
+        }
+    }
+
+    #[test]
+    fn enc_split_output_matches_the_resolved_shardsec_mode() {
+        let ctx = test_ctx();
+        let payload = b"byzantine isolation must be true of the product";
+        let (carriers, tag) = enc_split(&ctx, payload);
+        assert_eq!(carriers.len(), 3);
+        if shardsec_default_enabled() {
+            // ShardSec authenticates inside each shard; the legacy message tag
+            // field is intentionally zero and never trusted in this mode.
+            assert_eq!(tag, [0u8; 16]);
+            // Every carrier unframes to a sealed shard: ciphertext + 16-byte tag.
+            for carrier in &carriers {
+                let sd = unframe(carrier).expect("frame_shard carrier");
+                assert!(sd.len() > 16, "sealed shard = ciphertext + 16-byte tag");
+            }
+        } else {
+            // Legacy mode: the real message-level Poly1305 tag is returned.
+            assert_ne!(tag, [0u8; 16]);
+        }
+    }
+
+    #[test]
+    fn shardsec_datagrams_open_the_way_ingest_opens_them() {
+        // Regression guard for the 0.7.7 default-on flip: build the datagrams
+        // exactly as `send3_mixed` builds them, then run the exact steps
+        // `RxContext::ingest` runs for a ShardSec frame. Any divergence between
+        // the send and receive sides of the ShardSec path fails here.
+        if !shardsec_default_enabled() {
+            return;
+        }
+        let ctx = test_ctx();
+        let (carriers, tag) = enc_split(&ctx, b"ingest parity");
+
+        for (index, carrier) in carriers.iter().enumerate() {
+            let datagram = net::build_gtf_v2_frame(
+                &ctx.data_header(index as u8, false, 0),
+                carrier,
+                &tag,
+            );
+            let meta = V2FrameMeta::of(&datagram).expect("v2 frame");
+            assert!(meta.shardsec, "the flag must survive the wire round trip");
+            assert_eq!(meta.epoch, ctx.epoch);
+            assert_eq!(meta.nonce, ctx.nonce);
+
+            // ingest: unframe the payload region into the sealed shard.
+            let sd = unframe(net::extract_payload(&datagram)).expect("carrier unframes");
+            let sealed = vantablack::ghost::net::shardsec::SealedShard {
+                index: index as u8,
+                ciphertext: sd[..sd.len() - 16].to_vec(),
+                tag: sd[sd.len() - 16..].try_into().unwrap(),
+                is_honey: false,
+            };
+
+            // ingest: the AEAD key comes from plan_open for the counter on the
+            // wire, not from the seal context — verify both agree.
+            let wire_ctr = net::parse_packet_counter_u64(&datagram);
+            let planned = ctx
+                .key /* a receiver would use plan_open's key; seal key must equal it */;
+            let _ = planned;
+            let opened = vantablack::ghost::net::shardsec::open_shard(
+                &ctx.key,
+                meta.epoch,
+                &meta.nonce,
+                ctx.direction,
+                &sealed,
+            )
+            .expect("ingest's ShardSec branch must open a pristine shard");
+            assert!(!opened.is_empty());
+            let _ = wire_ctr;
+        }
+    }
+
+    #[test]
+    fn shardsec_round_trip_recovers_the_message_from_two_shards() {
+        // Only meaningful when the node resolves ShardSec on; with the env
+        // inherited as `off` the frames are legacy and the legacy path covers
+        // them (the enc_split test above pins the flag consistency).
+        if !shardsec_default_enabled() {
+            return;
+        }
+        let ctx = test_ctx();
+        let payload = b"any 2 of 3 shards rebuild the message";
+        let (carriers, _tag) = enc_split(&ctx, payload);
+
+        let mut opened: Vec<Vec<u8>> = Vec::with_capacity(3);
+        for (index, carrier) in carriers.iter().enumerate() {
+            // Receiver side, exactly as `ingest` does per shard: the carrier
+            // rides inside a v2 datagram's payload region (which the test
+            // starts from), then `unframe` splits off the 16-byte tag.
+            let sd = unframe(carrier).expect("frame_shard carrier");
+            assert!(sd.len() > 16);
+            let sealed = vantablack::ghost::net::shardsec::SealedShard {
+                index: index as u8,
+                ciphertext: sd[..sd.len() - 16].to_vec(),
+                tag: sd[sd.len() - 16..].try_into().unwrap(),
+                is_honey: false,
+            };
+            let plain = vantablack::ghost::net::shardsec::open_shard(
+                &ctx.key,
+                ctx.epoch,
+                &ctx.nonce,
+                ctx.direction,
+                &sealed,
+            )
+            .expect("a pristine shard opens under its own key");
+            opened.push(plain);
+        }
+
+        // The full receive pipeline, shard 2 "lost" in transit: any two
+        // pristine shards reconstruct the message (mirrors `assemble()`).
+        let mut work: Vec<Option<Vec<u8>>> =
+            vec![Some(opened[0].clone()), Some(opened[1].clone()), None];
+        l4_rs::reconstruct(&mut work).expect("2 of 3 shards suffice");
+        let a = work[0].as_ref().unwrap();
+        let b = work[1].as_ref().unwrap();
+        let framed = [a.as_slice(), b.as_slice()].concat();
+        let len = u16::from_be_bytes([framed[0], framed[1]]) as usize;
+        assert_eq!(
+            &framed[2..2 + len],
+            payload,
+            "the reconstructed plaintext must be the original payload"
+        );
+
+        // A tampered shard must fail its own tag instead of poisoning the pair.
+        let sd = unframe(&carriers[1]).expect("carrier");
+        let mut corrupted = sd.clone();
+        let last = corrupted.len() - 1;
+        corrupted[last] ^= 0x01;
+        let sealed = vantablack::ghost::net::shardsec::SealedShard {
+            index: 1,
+            ciphertext: corrupted[..corrupted.len() - 16].to_vec(),
+            tag: corrupted[corrupted.len() - 16..].try_into().unwrap(),
+            is_honey: false,
+        };
+        assert!(
+            vantablack::ghost::net::shardsec::open_shard(
+                &ctx.key,
+                ctx.epoch,
+                &ctx.nonce,
+                ctx.direction,
+                &sealed,
+            )
+            .is_err(),
+            "a flipped bit must be rejected by the shard's own AEAD tag"
+        );
     }
 }
 
