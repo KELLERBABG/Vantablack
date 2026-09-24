@@ -1,4 +1,4 @@
-//! Cover Traffic & Traffic-Shaping Verification Test (Roadmap Item 8)
+//! Cover Traffic & Traffic-Shaping Verification Test
 //!
 //! Verifies:
 //! 1. 100 real packets sent through simulated mesh generate interleaved dummy frames.

@@ -1,4 +1,4 @@
-//! Seed Corpus Generator for Vantablack Fuzz Targets (Roadmap Item 5)
+//! Seed Corpus Generator for Vantablack Fuzz Targets
 
 use std::fs;
 use std::path::Path;

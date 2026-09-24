@@ -377,7 +377,7 @@ fn a_relay_candidate_is_only_used_once_every_direct_pair_has_failed() {
     );
 }
 
-// ── Complete RFC 4787 NAT Matrix & TURN Fallback Suite (Roadmap Item 3) ──
+// ── Complete RFC 4787 NAT Matrix & TURN Fallback Suite ──
 
 fn full_cone_nat(name: &'static str, external_ip: std::net::IpAddr, first_port: u16) -> Nat {
     Nat::new(
