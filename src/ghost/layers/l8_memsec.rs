@@ -76,13 +76,9 @@ impl XtsMemoryEncryptor {
 
 /// A memory region protected by XTS encryption when not in active use.
 pub struct EncryptedMemoryRegion {
-    /// The encrypted data buffer.
     data: Vec<u8>,
-    /// XTS encryptor for this region.
     encryptor: Arc<XtsMemoryEncryptor>,
-    /// Whether the region is currently decrypted.
     is_decrypted: bool,
-    /// Sector offset for tweak computation.
     sector_offset: u64,
 }
 
@@ -118,7 +114,6 @@ impl EncryptedMemoryRegion {
 
 impl Drop for EncryptedMemoryRegion {
     fn drop(&mut self) {
-        // Zero the data on drop
         for byte in self.data.iter_mut() {
             *byte = 0;
         }
@@ -137,13 +132,9 @@ impl Drop for EncryptedMemoryRegion {
 pub struct VerifiedRingBuffer<T: Send + Clone> {
     /// Ring buffer slots wrapped in UnsafeCell for sound interior mutability.
     slots: Vec<std::cell::UnsafeCell<Option<T>>>,
-    /// Capacity of the ring buffer.
     capacity: usize,
-    /// Write index (atomic, producer side).
     write_idx: AtomicUsize,
-    /// Read index (atomic, consumer side).
     read_idx: AtomicUsize,
-    /// Number of items dropped due to full buffer.
     drops: AtomicUsize,
 }
 
@@ -152,8 +143,6 @@ pub struct VerifiedRingBuffer<T: Send + Clone> {
 unsafe impl<T: Send + Clone> Sync for VerifiedRingBuffer<T> {}
 
 impl<T: Send + Clone> VerifiedRingBuffer<T> {
-    /// Create a new ring buffer with N slots. N is verified to be a power of 2
-    /// for efficient modulo operations.
     pub fn new(capacity: usize) -> Self {
         assert!(
             capacity.is_power_of_two(),
@@ -172,18 +161,16 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
         }
     }
 
-    /// Push an item into the buffer. Returns false if the buffer is full.
     pub fn try_push(&self, item: T) -> bool {
         let write = self.write_idx.load(Ordering::Acquire);
         let read = self.read_idx.load(Ordering::Acquire);
 
-        // Check if buffer is full
         if write.wrapping_sub(read) >= self.capacity {
             self.drops.fetch_add(1, Ordering::Relaxed);
             return false;
         }
 
-        let idx = write & (self.capacity - 1); // power-of-2 modulo
+        let idx = write & (self.capacity - 1);
 
         // SAFETY: We verified the buffer is not full, and SPSC guarantees
         // no concurrent writer for this slot. UnsafeCell provides sound interior mutability.
@@ -196,13 +183,12 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
         true
     }
 
-    /// Pop an item from the buffer. Returns None if empty.
     pub fn try_pop(&self) -> Option<T> {
         let write = self.write_idx.load(Ordering::Acquire);
         let read = self.read_idx.load(Ordering::Acquire);
 
         if read == write {
-            return None; // Buffer empty
+            return None;
         }
 
         let idx = read & (self.capacity - 1);
@@ -214,12 +200,10 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
         item
     }
 
-    /// Check if the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.write_idx.load(Ordering::Acquire) == self.read_idx.load(Ordering::Acquire)
     }
 
-    /// Check if the buffer is full.
     pub fn is_full(&self) -> bool {
         self.write_idx
             .load(Ordering::Acquire)
@@ -227,14 +211,12 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
             >= self.capacity
     }
 
-    /// Get the number of items in the buffer.
     pub fn len(&self) -> usize {
         self.write_idx
             .load(Ordering::Acquire)
             .wrapping_sub(self.read_idx.load(Ordering::Acquire))
     }
 
-    /// Get the total number of drops (failed pushes).
     pub fn drops(&self) -> usize {
         self.drops.load(Ordering::Relaxed)
     }
@@ -247,26 +229,18 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
 /// Models the eBPF/XDP approach where the NIC can perform the 4-byte
 /// session hash lookup directly without copying data to userspace.
 pub struct ZeroCopyPacket<'a> {
-    /// Pointer to the raw packet data (as if in an XDP frame).
     pub data: &'a [u8],
-    /// Pre-parsed session hash (first 4 bytes).
     pub session_hash: [u8; 4],
-    /// Pre-parsed packet counter (bytes 4-8).
     pub counter: u32,
-    /// Pre-parsed shard index (byte 8).
     pub shard_index: u8,
-    /// Source interface identifier.
     pub iface_index: u32,
 }
 
 /// A zero-copy XDP-like dispatcher that performs the session hash lookup
 /// without copying the packet payload.
 pub struct XdpDispatcher {
-    /// Worker dispatch table: worker index per session hash prefix.
     dispatch_table: Vec<AtomicUsize>,
-    /// Number of worker threads.
     num_workers: usize,
-    /// Total packets dispatched.
     dispatched: AtomicUsize,
 }
 
@@ -306,19 +280,12 @@ impl XdpDispatcher {
 /// Tolerant Networking (DTN) infrastructure.
 #[derive(Debug, Clone)]
 pub struct BundleProtocolHeader {
-    /// Bundle version (7 for BPv7).
     pub version: u8,
-    /// Source endpoint ID (IPN URI scheme: ipn:node_number.service_number).
     pub source_eid: String,
-    /// Destination endpoint ID.
     pub destination_eid: String,
-    /// Creation timestamp (seconds since epoch).
     pub creation_timestamp: u64,
-    /// Lifetime of the bundle (seconds).
     pub lifetime: u64,
-    /// Payload length (bytes).
     pub payload_length: u64,
-    /// CRC type (0 = no CRC, 1 = CRC-16, 2 = CRC-32, 3 = CRC-32C).
     pub crc_type: u8,
 }
 
@@ -422,11 +389,8 @@ impl BundleProtocolHeader {
 /// before real deployment.
 #[derive(Debug, Clone)]
 pub struct DopplerShiftSimulator {
-    /// Relative velocity between satellites (m/s).
     pub relative_velocity_ms: f64,
-    /// Carrier frequency (Hz) — typical laser comms at 1550 nm ≈ 193 THz.
     pub carrier_freq_hz: f64,
-    /// Speed of light (m/s).
     c: f64,
 }
 
@@ -434,7 +398,7 @@ impl Default for DopplerShiftSimulator {
     fn default() -> Self {
         Self {
             relative_velocity_ms: 0.0,
-            carrier_freq_hz: 193.0e12, // 1550 nm optical carrier
+            carrier_freq_hz: 193.0e12,
             c: 299_792_458.0,
         }
     }

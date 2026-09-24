@@ -888,24 +888,6 @@ pub fn build_negotiated_handshake_pdu(
 }
 
 pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshakeBlob> {
-    // Tolerate a single trailing 0x00 parity pad from l4_rs::encode (odd-length
-    // inputs are padded to even before RS sharding). Strip it if present so
-    // both the old odd-length PDUs (after RS) and the new even-length PDUs
-    // parse.
-    let mut effective_len = data.len();
-    let mut stripped_pad = false;
-    if effective_len > 0 && data[effective_len - 1] == 0x00 {
-        // Only strip if stripping yields a plausible PDU length; otherwise the
-        // trailing zero might be part of the signature.
-        let candidate_len = effective_len - 1;
-        // Minimum viable length check matches the guard above minus one.
-        if candidate_len >= 16 + 1 + 32 + 32 + 32 + 64 {
-            // Try parsing the stripped view first; if it parses, use it.
-            stripped_pad = true;
-            effective_len = candidate_len;
-        }
-    }
-    // Helper to attempt parse with a given effective slice length.
     let try_parse = |len: usize, allow_reserved: bool| -> Option<NegotiatedHandshakeBlob> {
         if len < 16 + 1 + 32 + 32 + 32 + 64 + if allow_reserved { 1 } else { 0 }
             || !data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC)
@@ -949,8 +931,13 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
         at += 32;
         // New PDUs include a reserved 0x00 byte before the signature; old PDUs
         // do not. Accept both.
-        if allow_reserved && at < len && data[at] == 0x00 && len == at + 1 + 64 {
+        if at < len && data[at] == 0x00 {
+            if !allow_reserved || len != at + 1 + 64 {
+                return None;
+            }
             at += 1;
+        } else if len != at + 64 {
+            return None;
         }
         let signature: [u8; 64] = data.get(at..at + 64)?.try_into().ok()?;
         if at + 64 != len
@@ -968,20 +955,18 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
             signature,
         })
     };
-    // Prefer the new format (with reserved byte) when parsing the effective
-    // length; fall back to old format for backwards compat, and finally try
-    // the original length if we stripped a pad erroneously.
-    if let Some(blob) = try_parse(effective_len, true) {
+
+    if let Some(blob) = try_parse(data.len(), true) {
         return Some(blob);
     }
-    if let Some(blob) = try_parse(effective_len, false) {
+    if let Some(blob) = try_parse(data.len(), false) {
         return Some(blob);
     }
-    if stripped_pad {
-        if let Some(blob) = try_parse(data.len(), true) {
-            return Some(blob);
-        }
-        if let Some(blob) = try_parse(data.len(), false) {
+
+    // Tolerate a single trailing 0x00 parity pad from l4_rs::encode on legacy
+    // odd-length PDUs (which become even-length after RS padding).
+    if data.len() % 2 == 0 && data.last() == Some(&0x00) && data.len() > 1 {
+        if let Some(blob) = try_parse(data.len() - 1, false) {
             return Some(blob);
         }
     }

@@ -93,9 +93,7 @@ pub enum OpenPlan {
 /// every message key and make this cosmetic.
 #[derive(Clone)]
 pub struct MsgChain {
-    /// One-way chain, advanced once per message and never rewound.
     chain: [u8; 32],
-    /// The counter the chain is positioned at: the next message to be sealed.
     pos: u64,
     /// Keys for counters jumped over, kept so out-of-order arrivals still open. Bounded
     /// by [`MAX_SKIP`] entries, oldest evicted.
@@ -121,17 +119,14 @@ impl MsgChain {
         }
     }
 
-    /// The counter this chain will seal or expect next.
     pub fn pos(&self) -> u64 {
         self.pos
     }
 
-    /// How many skipped keys are currently held (for tests and stats).
     pub fn skipped_len(&self) -> usize {
         self.skipped.len()
     }
 
-    /// Take the next message key, moving the chain past it. Sender side.
     pub fn advance(&mut self) -> [u8; 32] {
         let (next, key) = kdf_ck(&self.chain);
         self.chain.zeroize();

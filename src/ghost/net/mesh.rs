@@ -42,30 +42,20 @@ pub const EMBEDDED_DEFAULT_CONFIG: &[(&str, u16, &str)] = &[
 /// A STUN-style NAT binding discovered via hole-punching.
 #[derive(Debug, Clone)]
 pub struct NatBinding {
-    /// The peer's public address as seen by a STUN server.
     pub public_addr: SocketAddr,
-    /// The peer's claimed local address.
     pub local_addr: SocketAddr,
-    /// When this binding was last verified.
     pub last_verified: Instant,
-    /// Number of successful hole-punch attempts.
     pub punch_successes: u32,
-    /// Mapping lifetime in seconds (typical NAT: 30-120s).
     pub lifetime_secs: u64,
 }
 
 /// NAT traversal state for a known peer.
 #[derive(Debug, Clone)]
 pub struct NatPeerState {
-    /// Peer's fingerprint.
     pub fingerprint: String,
-    /// Peer's public address (as seen by external server).
     pub public_addr: SocketAddr,
-    /// Our local address we're binding from.
     pub local_addr: SocketAddr,
-    /// Whether the hole-punch succeeded.
     pub connected: bool,
-    /// Last keepalive sent to maintain NAT mapping.
     pub last_keepalive: Instant,
 }
 
@@ -438,24 +428,16 @@ pub const DEFAULT_PATH_FITNESS: f64 = 0.5;
 /// number nobody measured (`cwnd = 10_000_000.0; // Assume`).
 #[derive(Debug, Clone)]
 pub struct PathMetrics {
-    /// Smoothed round-trip time (µs), from RTT samples only.
     pub srtt_us: f64,
-    /// Lowest RTT observed (µs) — the baseline a queue is measured against.
     pub min_rtt_us: f64,
-    /// Packet loss rate (0.0 - 1.0), EWMA.
     pub loss_rate: f64,
     /// Congestion window (bytes): grown additively on delivery, halved on loss
     /// (RFC 5681 §3.1).
     pub cwnd: u64,
-    /// Delivered bytes per second as actually observed, EWMA.
     pub delivery_bps: f64,
-    /// Bytes observed delivered on this path.
     pub delivered_bytes: u64,
-    /// Loss events observed.
     pub loss_events: u64,
-    /// When a measurement last arrived. A stale measurement is not evidence.
     pub last_updated: Instant,
-    /// Number of RTT samples collected.
     pub samples: u64,
 }
 
@@ -606,13 +588,9 @@ impl PathMetrics {
 /// A shard routing decision: which peer gets which shard.
 #[derive(Debug, Clone)]
 pub struct ShardRoute {
-    /// Peer fingerprint to route through.
     pub peer_fingerprint: String,
-    /// Shard index (0, 1, or 2).
     pub shard_index: u8,
-    /// Weight for load balancing (0.0-1.0).
     pub weight: f64,
-    /// Expected completion probability.
     pub reliability: f64,
 }
 
@@ -624,11 +602,8 @@ pub struct ShardRoute {
 /// - Slow/poor peers can be skipped (we only need 2 of 3)
 /// - If one path drops, the other 2 still reconstruct
 pub struct AdaptiveShardRouter {
-    /// Per-peer path metrics.
     path_metrics: Arc<DashMap<String, PathMetrics>>,
-    /// Minimum acceptable fitness for a path to be used.
     min_fitness: f64,
-    /// RS data shards needed (k).
     data_shards: usize,
 }
 
@@ -878,17 +853,11 @@ impl AdaptiveShardRouter {
 /// A record of forwarding reciprocity between two peers.
 #[derive(Debug, Clone)]
 pub struct ReciprocityRecord {
-    /// Bytes forwarded BY us FOR this peer.
     pub bytes_forwarded_for_them: u64,
-    /// Bytes forwarded BY this peer FOR us.
     pub bytes_forwarded_for_us: u64,
-    /// Shards successfully relayed by this peer for us.
     pub shards_relayed_for_us: u64,
-    /// Shards we dropped when asked to forward for them.
     pub shards_dropped_for_them: u64,
-    /// Ratio of service received to service provided.
     pub reciprocity_ratio: f64,
-    /// When this record was last updated.
     pub last_activity: Instant,
 }
 
@@ -906,9 +875,8 @@ impl Default for ReciprocityRecord {
 }
 
 impl ReciprocityRecord {
-    /// Update the reciprocity ratio.
+    /// Update the reciprocity ratio:
     /// Ratio = (bytes forwarded for us by peer) / (bytes forwarded for them by us)
-    /// Ratio < 0.3 means the peer is leeching (we give much more than we receive).
     pub fn update_ratio(&mut self) {
         let sent = self.bytes_forwarded_for_them.max(1);
         let recv = self.bytes_forwarded_for_us;
@@ -926,15 +894,10 @@ impl ReciprocityRecord {
 /// Monitors peer reciprocity and evicts leechers.
 /// Extends the PoissonReputationMatrix with concrete resource accounting.
 pub struct TitForTatEnforcer {
-    /// Reciprocity records keyed by (us, them).
     reciprocity: Arc<DashMap<(String, String), ReciprocityRecord>>,
-    /// Reference to the reputation matrix for Byzantine scoring.
     reputation: Arc<PoissonReputationMatrix>,
-    /// Our fingerprint.
     our_fingerprint: String,
-    /// Leechers that have been evicted (session torn down).
     evicted: Arc<DashMap<String, bool>>,
-    /// Threshold: minimum bytes forwarded by peer before we complain.
     min_forward_bytes: u64,
 }
 
@@ -1089,22 +1052,15 @@ impl TitForTatEnforcer {
 
 /// A complete mesh peer node with all production subsystems.
 pub struct MeshNode {
-    /// Our fingerprint.
     pub fingerprint: String,
-    /// NAT hole-punching subsystem.
     pub nat: NatHolePuncher,
-    /// Adaptive shard routing subsystem.
     pub router: AdaptiveShardRouter,
-    /// Tit-for-tat enforcement subsystem.
     pub tft: Arc<TitForTatEnforcer>,
-    /// Localized peer registry (fingerprint → address, distance).
     peer_registry: Arc<DashMap<String, (SocketAddr, u32)>>,
-    /// Whether this node is actively routing.
     pub routing_enabled: AtomicBool,
 }
 
 impl MeshNode {
-    /// Create a new mesh node.
     pub async fn new(fingerprint: String, reputation: Arc<PoissonReputationMatrix>) -> Self {
         Self {
             tft: Arc::new(TitForTatEnforcer::new(fingerprint.clone(), reputation)),
@@ -1116,14 +1072,12 @@ impl MeshNode {
         }
     }
 
-    /// Register a discovered peer in the local registry.
     pub fn register_peer(&self, fp: &str, addr: SocketAddr, distance: u32) {
         self.peer_registry.insert(fp.to_string(), (addr, distance));
         self.nat.register_peer(fp, addr, addr);
         debug!("Mesh: registered peer {} at distance {}", fp, distance);
     }
 
-    /// Get peers within a given hop distance.
     pub fn peers_within(&self, max_distance: u32) -> Vec<(String, SocketAddr)> {
         self.peer_registry
             .iter()
@@ -1180,18 +1134,13 @@ impl MeshNode {
 /// can be based on round-robin or timer-based intervals.
 #[derive(Debug)]
 pub struct ExitIpRotator {
-    /// List of available egress IP addresses.
     pub egress_ips: Vec<std::net::IpAddr>,
-    /// Round-robin index.
     pub current_idx: std::sync::atomic::AtomicUsize,
-    /// Optional timer-based rotation interval (e.g. 10 minutes).
     pub rotation_interval: Option<std::time::Duration>,
-    /// Timestamp of last rotation.
     pub last_rotation: std::time::Instant,
 }
 
 impl ExitIpRotator {
-    /// Create a new rotator with the given egress IP pool.
     pub fn new(ips: Vec<std::net::IpAddr>) -> Self {
         Self {
             egress_ips: ips,
@@ -1219,12 +1168,10 @@ impl ExitIpRotator {
         }
     }
 
-    /// Set a timer-based rotation interval.
     pub fn set_rotation_interval(&mut self, interval: std::time::Duration) {
         self.rotation_interval = Some(interval);
     }
 
-    /// Check if a rotation is due based on the timer.
     pub fn should_rotate(&self) -> bool {
         if let Some(interval) = self.rotation_interval {
             self.last_rotation.elapsed() >= interval
@@ -1233,7 +1180,6 @@ impl ExitIpRotator {
         }
     }
 
-    /// Force a rotation to the next IP.
     pub fn rotate(&mut self) -> bool {
         if self.egress_ips.len() < 2 {
             return false;
@@ -1244,17 +1190,14 @@ impl ExitIpRotator {
         true
     }
 
-    /// Add an egress IP to the pool.
     pub fn add_ip(&mut self, ip: std::net::IpAddr) {
         self.egress_ips.push(ip);
     }
 
-    /// Remove an egress IP from the pool.
     pub fn remove_ip(&mut self, ip: &std::net::IpAddr) {
         self.egress_ips.retain(|e| e != ip);
     }
 
-    /// Number of egress IPs in the pool.
     pub fn pool_size(&self) -> usize {
         self.egress_ips.len()
     }

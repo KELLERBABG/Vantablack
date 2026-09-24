@@ -54,30 +54,20 @@ use rand::RngCore;
 use std::fs;
 use std::path::Path;
 
-/// Default filename for the persistent identity key.
 pub const IDENTITY_FILE: &str = "identity.key";
-
-/// Environment variable that overrides [`IDENTITY_FILE`].
 pub const IDENTITY_FILE_ENV: &str = "GHOST_IDENTITY_FILE";
 
-/// Magic at the head of an identity file written by this version.
 const IDENTITY_MAGIC: &[u8; 8] = b"GGNIDENT";
-/// Version byte for the hybrid (Ed25519 + ML-DSA-65) format.
 const IDENTITY_VERSION_HYBRID: u8 = 2;
-/// A v1 identity file is exactly the Ed25519 seed and nothing else.
 const IDENTITY_V1_LEN: usize = 32;
-/// v2: `GGNIDENT`(8) + version(1) + Ed25519 seed(32) + ML-DSA seed(32).
 const IDENTITY_V2_LEN: usize = 8 + 1 + 32 + 32;
 
 /// Encoded ML-DSA-65 signature length (FIPS 204). Asserted against the crate in
 /// tests, so a dependency change that alters it fails loudly instead of
 /// mis-parsing signatures written by the other side.
 pub const ML_DSA_65_SIG_LEN: usize = 3309;
-/// Encoded ML-DSA-65 verifying-key length.
 pub const ML_DSA_65_PK_LEN: usize = 1952;
-/// Ed25519 signature length.
 pub const ED25519_SIG_LEN: usize = 64;
-/// A hybrid signature is the Ed25519 half followed by the ML-DSA-65 half.
 pub const HYBRID_SIG_LEN: usize = ED25519_SIG_LEN + ML_DSA_65_SIG_LEN;
 
 /// Resolve the identity-key path for this process.
@@ -109,14 +99,11 @@ pub fn identity_file_path() -> String {
 /// complete proof.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HybridSignature {
-    /// Ed25519 signature (64 bytes).
     pub ed25519: [u8; ED25519_SIG_LEN],
-    /// ML-DSA-65 signature ([`ML_DSA_65_SIG_LEN`] bytes).
     pub pq: Vec<u8>,
 }
 
 impl HybridSignature {
-    /// Wire encoding: Ed25519 half first, then the ML-DSA-65 half.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HYBRID_SIG_LEN);
         out.extend_from_slice(&self.ed25519);

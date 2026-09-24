@@ -30,7 +30,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
-/// Maximum number of concurrent streams per session.
 pub const MAX_STREAMS: u16 = 256;
 
 /// Re-key threshold for the *legacy* 32-bit counter, kept for the watchdog that
@@ -38,12 +37,9 @@ pub const MAX_STREAMS: u16 = 256;
 /// sentinel values in it, so this is a warning line, not a wall.
 pub const REKEY_THRESHOLD: u64 = 0xFFFF_FFFF_C000_0000; // 75% of u64::MAX
 
-/// Magic bytes for the re-key handshake PDU.
 pub const REKEY_MAGIC: &[u8; 16] = b"GHOST_REKEY____!";
-/// Magic bytes for the re-key response PDU.
 pub const REKEY_RESPONSE_MAGIC: &[u8; 16] = b"GHOST_REKEY_RSP!";
 
-/// Size of the re-key handshake PDU: 16 magic + 32 X25519 + 800 Kyber + 64 sig = 912
 pub const REKEY_BLOB_LEN: usize = 912;
 /// Size of the re-key response PDU: 16 magic + 32 X25519 + 768 ct + 32 confirm + 64 sig = 912.
 ///
@@ -62,25 +58,16 @@ pub struct Session {
     /// Per-peer inbound replay guard — the 64-bit sliding window, which is the
     /// primary replay defence now that the wire counter is 64-bit.
     pub guard: Mutex<SessionGuardU64>,
-    /// Peer's identity fingerprint (first 8 bytes of Ed25519 PK, hex).
     pub peer_fingerprint: String,
-    /// When this session was established.
     pub established_at: Instant,
-    /// 4-byte session hash for GTF frame headers.
     pub session_hash: [u8; 4],
     /// Which side initiated this session (drives AEAD nonce direction).
     pub role: SessionRole,
-    /// ACK engine for reliable delivery (Mutex for &mut access).
     pub ack_engine: Arc<std::sync::Mutex<AckEngine>>,
-    /// Active streams for multiplexing.
     pub streams: Arc<DashMap<u16, StreamState>>,
-    /// Next available stream ID.
     pub next_stream_id: AtomicU16,
-    /// Throughput statistics.
     pub stats: Arc<ThroughputStats>,
-    /// Whether to use bulk frames for this session (auto-detected).
     pub use_bulk: bool,
-    /// KEM suite authenticated by the handshake transcript.
     pub cipher_suite: HybridCipherSuite,
 
     // ── Ratchet State ────────────────────────────────────
@@ -95,11 +82,8 @@ pub struct Session {
     /// When the in-flight step started, so a lost answer is retried rather than
     /// wedging the session at the current epoch forever.
     ratchet_step_at: Mutex<Option<Instant>>,
-    /// How many ratchet steps this session completed, for status output.
     pub ratchet_steps: AtomicU64,
-    /// Whether a step is in flight (so a due ratchet does not start a second one).
     pub ratchet_in_progress: AtomicBool,
-    /// Forced expedited ratchet requested due to gap > MAX_SKIP or epoch exhaustion.
     pub forced_ratchet_due: AtomicBool,
     /// The peer's Ed25519 identity key, pinned when the session was established.
     ///
@@ -118,7 +102,6 @@ pub struct Session {
     peer_pq_pk: Mutex<Option<Vec<u8>>>,
     /// Received chunks of the peer's hybrid identity binding.
     pq_incoming_chunks: Mutex<std::collections::HashMap<u8, Vec<u8>>>,
-    /// When PQ auth was initiated.
     pub pq_auth_requested_at: Instant,
 }
 
@@ -138,15 +121,10 @@ pub struct RatchetAnswer {
 /// The material one v2 message is sealed with.
 #[derive(Clone)]
 pub struct SealMaterial {
-    /// Epoch key for our sending direction.
     pub key: [u8; 32],
-    /// Ratchet generation `key` belongs to; goes in the frame header.
     pub epoch: u64,
-    /// Monotone sequence number for replay protection.
     pub counter: u64,
-    /// Random 96-bit nonce, carried verbatim on the wire.
     pub nonce: [u8; 12],
-    /// The direction the key seals in (for the receiver's chain selection).
     pub direction: NonceDirection,
     /// Whether this message filled the epoch: the caller should start a ratchet
     /// step. Traffic continues on the current epoch until that step completes.
@@ -155,7 +133,6 @@ pub struct SealMaterial {
 
 /// State for an individual multiplexed stream.
 pub struct StreamState {
-    /// Stream type / purpose identifier.
     pub stream_type: StreamType,
     /// Inbound reassembly buffer (ordered by sequence number).
     pub recv_buf: Vec<Option<Bytes>>,

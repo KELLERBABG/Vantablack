@@ -291,7 +291,6 @@ impl V2FrameMeta {
 /// code snapshotted the master key: taking a `get_mut` (for the replay guard) while
 /// an iterator is alive deadlocks the task. The epoch keys are copied rather than
 /// borrowed, so the ratchet's lock is never held across the receive path.
-/// A lock-free snapshot of everything needed to *open* frames from one session.
 struct OpenCtx {
     peer_fp: String,
     master_key: [u8; 32],
@@ -563,7 +562,6 @@ pub(crate) async fn send3_mixed(
 /// across a WAN, large enough that a link is never silent.
 const COVER_FRAMES_PER_SEC: f64 = 2.0;
 
-/// Frames per cover message: an RS(2,1) group, the same as any data message.
 const COVER_FRAMES_PER_MESSAGE: f64 = 3.0;
 
 /// How long until the next cover message.

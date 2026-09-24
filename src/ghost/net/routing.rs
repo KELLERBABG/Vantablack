@@ -75,11 +75,8 @@ pub enum EnergyClass {
 pub struct Contact {
     pub source: NodeId,
     pub destination: NodeId,
-    /// Start of the visibility window (seconds since epoch or offset).
     pub t_start: Timestamp,
-    /// End of the visibility window.
     pub t_end: Timestamp,
-    /// Maximum data capacity in bits.
     pub x_cap: f64,
     /// Slant range between the endpoints, kilometres. The geometric input to
     /// [`latency`] when no measurement is available.

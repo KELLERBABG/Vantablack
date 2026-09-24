@@ -45,7 +45,6 @@ pub const RELAY_MAGIC: &[u8; 4] = b"RLY!";
 /// else's ciphertext or hand an onion body to the tunnel as if it were a frame.
 pub const BLIND_MAGIC: &[u8; 4] = b"BLND";
 
-/// Maximum number of hops in a relay path.
 pub const MAX_HOPS: usize = 5;
 
 /// Maximum time (seconds) a bundle is held in store-and-forward before expiry.
@@ -202,14 +201,12 @@ pub const SPHINX_SHARD_LEN: usize = 576;
 pub const SPHINX_HOP_TAG_LEN: usize = 16;
 pub const SPHINX_MAX_HOP_NAME: usize = 32;
 
-/// Peeled hop information for intermediate relays
 #[derive(Debug, Clone)]
 pub struct PeeledSphinxHop {
     pub next_hop: String,
     pub inner_payload: Vec<u8>,
 }
 
-/// Sphinx-Shard Onion constructor and decoder
 pub struct SphinxShardOnion;
 
 impl SphinxShardOnion {
@@ -228,20 +225,17 @@ impl SphinxShardOnion {
             ChaCha20Poly1305, Nonce,
         };
 
-        // Layer 3 (Exit): payload + shard index
         let mut exit_plaintext = Vec::with_capacity(2 + shard_data.len());
         exit_plaintext.push(shard_idx);
         exit_plaintext.push(shard_data.len() as u8);
         exit_plaintext.extend_from_slice(shard_data);
 
         let exit_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
-        // PEN-2 NOTE: same as guard — wire format change pending.
         let exit_nonce = Nonce::from_slice(&[0x33u8; 12]);
         let exit_sealed = exit_cipher
             .encrypt(exit_nonce, exit_plaintext.as_ref())
             .expect("seal exit");
 
-        // Layer 2 (Middle): routing instruction to exit + exit ciphertext
         let mut middle_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + exit_sealed.len());
         let mut exit_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
         let bytes_to_copy = exit_hop.as_bytes().len().min(SPHINX_MAX_HOP_NAME);
@@ -250,13 +244,11 @@ impl SphinxShardOnion {
         middle_plaintext.extend_from_slice(&exit_sealed);
 
         let middle_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(middle_key));
-        // PEN-2 NOTE: same as guard — wire format change pending.
         let middle_nonce = Nonce::from_slice(&[0x22u8; 12]);
         let middle_sealed = middle_cipher
             .encrypt(middle_nonce, middle_plaintext.as_ref())
             .expect("seal middle");
 
-        // Layer 1 (Guard): routing instruction to middle + middle ciphertext
         let mut guard_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + middle_sealed.len());
         let mut middle_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
         let bytes_to_copy_m = middle_hop.as_bytes().len().min(SPHINX_MAX_HOP_NAME);

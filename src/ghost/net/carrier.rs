@@ -103,7 +103,6 @@ impl std::fmt::Display for PqMismatch {
 
 impl std::error::Error for PqMismatch {}
 
-/// A commitment for a readable log line (hex, truncated to the first 8 bytes).
 fn short(commitment: &[u8; 32]) -> String {
     hex::encode(&commitment[..8])
 }
@@ -111,9 +110,7 @@ fn short(commitment: &[u8; 32]) -> String {
 /// The identity of one link: a peer, reached over one of *our* local addresses.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LinkKey {
-    /// The peer's fingerprint — the identity the mesh authenticated.
     pub fingerprint: String,
-    /// Our local address on this link.
     pub local: IpAddr,
 }
 
@@ -135,14 +132,9 @@ fn local_of(link: &QuicLink) -> IpAddr {
 /// way. A disabled registry answers every question truthfully: nothing to send
 /// on.
 pub struct Carrier {
-    /// The endpoint that listens, and the dialling endpoint when no local address
-    /// has been named (`GHOST_QUIC_LOCAL_ADDRS`).
     transport: Option<Arc<QuicTransport>>,
-    /// Additional endpoints, each bound to one named local address: the extra
-    /// half of a multi-homed host. Empty on a single-homed one.
     paths: DashMap<IpAddr, Arc<QuicTransport>>,
     links: DashMap<LinkKey, Arc<QuicLink>>,
-    /// Post-quantum commitment pinned per peer fingerprint (P2-1).
     pins: DashMap<String, [u8; 32]>,
 }
 
@@ -237,7 +229,6 @@ impl Carrier {
         Ok(self.add_path(transport))
     }
 
-    /// The named local paths, with the address each is bound to.
     pub fn paths(&self) -> Vec<(IpAddr, Arc<QuicTransport>)> {
         self.paths
             .iter()
@@ -364,17 +355,10 @@ impl Carrier {
         Some(Arc::clone(entry.value()))
     }
 
-    /// The link to a peer on the lowest local address, evicting a closed one.
-    ///
-    /// This is the single-path answer, and the one a caller that does not care
-    /// which path is used should ask for.
     pub fn link(&self, fp: &str) -> Option<Arc<QuicLink>> {
         self.links(fp).into_iter().next()
     }
 
-    /// Distinct peers holding at least one live link.
-    ///
-    /// Counted by fingerprint, not by entry: a peer with two paths is one peer.
     pub fn peer_count(&self) -> usize {
         let peers: HashSet<String> = self
             .links
@@ -384,7 +368,6 @@ impl Carrier {
         peers.len()
     }
 
-    /// Live links across every peer and path.
     pub fn link_count(&self) -> usize {
         self.links.len()
     }
@@ -418,7 +401,6 @@ impl Carrier {
         }
     }
 
-    /// Forget one link, by peer and path. A peer with two paths keeps the other.
     pub fn forget_link(&self, fp: &str, local: IpAddr) {
         let key = LinkKey {
             fingerprint: fp.to_string(),

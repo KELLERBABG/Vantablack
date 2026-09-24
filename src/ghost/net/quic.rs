@@ -60,11 +60,8 @@ use crate::ghost::layers::l0_identity::{
     ML_DSA_65_PK_LEN, ML_DSA_65_SIG_LEN,
 };
 
-/// ALPN protocol identifier. A peer that does not offer it is not one of ours.
 pub const QUIC_ALPN: &[u8] = b"ggn-quic-1";
-/// Default UDP port for the QUIC transport (the mesh uses 2270).
 pub const QUIC_DEFAULT_PORT: u16 = 2271;
-/// Label for the identity channel binding (RFC 5705).
 pub const ID_BINDING_LABEL: &[u8] = b"ggn-quic-identity-binding";
 /// Version 2 of the binding: a hybrid proof (Ed25519 + ML-DSA-65).
 ///
@@ -73,17 +70,9 @@ pub const ID_BINDING_LABEL: &[u8] = b"ggn-quic-identity-binding";
 /// byte datagrams) or a handshake PDU (~880 bytes). A 5.4 kB proof fits a stream
 /// and nothing else in this stack.
 pub const BINDING_VERSION_HYBRID: u8 = 2;
-/// Version 1 length: `[Ed25519 pk][Ed25519 sig]` — the pre-P2-1 message.
 pub const BINDING_LEN_V1: usize = 96;
-/// Version 2 length: version(1) + Ed25519 pk(32) + ML-DSA-65 pk(1952) +
-/// Ed25519 sig(64) + ML-DSA-65 sig(3309).
 pub const BINDING_LEN_V2: usize = 1 + 32 + ML_DSA_65_PK_LEN + ED25519_SIG_LEN + ML_DSA_65_SIG_LEN;
-/// Largest frame accepted on a stream. Bounded so a hostile peer cannot make us
-/// allocate without limit before any decryption has happened.
 pub const MAX_STREAM_FRAME: usize = 64 * 1024;
-/// How many received frames may queue before the ingress side drops. Dropping is
-/// the right failure for the datagram path (the RS code recovers); the stream
-/// path waits instead of dropping, because it promised delivery.
 pub const INGRESS_QUEUE: usize = 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -148,7 +137,6 @@ const DATAGRAM_ROOM_TIMEOUT: Duration = Duration::from_millis(50);
 /// transport is compiled in.
 pub use super::CarrierPath as FramePath;
 
-/// Per-link counters an operator (or a benchmark) can read.
 #[derive(Debug, Default)]
 pub struct LinkStats {
     pub datagrams_sent: AtomicU64,
