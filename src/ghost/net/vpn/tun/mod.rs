@@ -260,6 +260,18 @@ mod wintun {
 #[cfg(windows)]
 pub use wintun::{find_dll, WintunTun};
 
+/// Check if wintun.dll is available on the machine.
+#[cfg(windows)]
+pub fn is_wintun_installed() -> bool {
+    find_dll().is_some()
+}
+
+/// Check if wintun.dll is available on the machine (false on non-windows).
+#[cfg(not(windows))]
+pub fn is_wintun_installed() -> bool {
+    false
+}
+
 // ── Unix: /dev/net/tun ──────────────────────────────────────────────
 
 #[cfg(unix)]

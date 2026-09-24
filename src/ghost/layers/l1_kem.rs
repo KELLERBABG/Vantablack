@@ -859,6 +859,10 @@ fn negotiation_material(
     }
     out.extend_from_slice(identity_pk);
     out.extend_from_slice(pq_commitment);
+    // Reserved byte: ensures the PDU length before signing is even, so
+    // l4_rs::encode does not append a parity pad that the parser would then
+    // reject. Covered by the signature and must be 0x00.
+    out.push(0x00);
     Some(out)
 }
 
@@ -884,59 +888,104 @@ pub fn build_negotiated_handshake_pdu(
 }
 
 pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshakeBlob> {
-    if data.len() < 16 + 1 + 32 + 32 + 32 + 64 || !data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC) {
-        return None;
+    // Tolerate a single trailing 0x00 parity pad from l4_rs::encode (odd-length
+    // inputs are padded to even before RS sharding). Strip it if present so
+    // both the old odd-length PDUs (after RS) and the new even-length PDUs
+    // parse.
+    let mut effective_len = data.len();
+    let mut stripped_pad = false;
+    if effective_len > 0 && data[effective_len - 1] == 0x00 {
+        // Only strip if stripping yields a plausible PDU length; otherwise the
+        // trailing zero might be part of the signature.
+        let candidate_len = effective_len - 1;
+        // Minimum viable length check matches the guard above minus one.
+        if candidate_len >= 16 + 1 + 32 + 32 + 32 + 64 {
+            // Try parsing the stripped view first; if it parses, use it.
+            stripped_pad = true;
+            effective_len = candidate_len;
+        }
     }
-    let count = data[16] as usize;
-    if count == 0 || count > 2 || data.len() <= 17 + 32 + 32 + 64 {
-        return None;
-    }
-    let mut at = 17;
-    let mut supported = Vec::with_capacity(count);
-    for _ in 0..count {
-        let suite = HybridCipherSuite::from_wire_id(*data.get(at)?)?;
-        if supported.contains(&suite) {
+    // Helper to attempt parse with a given effective slice length.
+    let try_parse = |len: usize, allow_reserved: bool| -> Option<NegotiatedHandshakeBlob> {
+        if len < 16 + 1 + 32 + 32 + 32 + 64 + if allow_reserved { 1 } else { 0 }
+            || !data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC)
+        {
             return None;
         }
-        supported.push(suite);
-        at += 1;
-    }
-    let x_start = at;
-    let x_end = x_start + 32;
-    let x25519_pub: [u8; 32] = data.get(x_start..x_end)?.try_into().ok()?;
-    at = x_end;
-    let mut kyber_keys = Vec::with_capacity(count);
-    for _ in 0..count {
-        let suite = HybridCipherSuite::from_wire_id(*data.get(at)?)?;
-        at += 1;
-        let len = u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?) as usize;
-        at += 2;
-        if len != suite_key_len(suite) || kyber_keys.iter().any(|(s, _)| *s == suite) {
+        let count = data[16] as usize;
+        if count == 0 || count > 2 || len <= 17 + 32 + 32 + 64 + if allow_reserved { 1 } else { 0 } {
             return None;
         }
-        let key = data.get(at..at + len)?.to_vec();
-        at += len;
-        kyber_keys.push((suite, key));
+        let mut at = 17;
+        let mut supported = Vec::with_capacity(count);
+        for _ in 0..count {
+            let suite = HybridCipherSuite::from_wire_id(*data.get(at)?)?;
+            if supported.contains(&suite) {
+                return None;
+            }
+            supported.push(suite);
+            at += 1;
+        }
+        let x_start = at;
+        let x_end = x_start + 32;
+        let x25519_pub: [u8; 32] = data.get(x_start..x_end)?.try_into().ok()?;
+        at = x_end;
+        let mut kyber_keys = Vec::with_capacity(count);
+        for _ in 0..count {
+            let suite = HybridCipherSuite::from_wire_id(*data.get(at)?)?;
+            at += 1;
+            let len2 = u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?) as usize;
+            at += 2;
+            if len2 != suite_key_len(suite) || kyber_keys.iter().any(|(s, _)| *s == suite) {
+                return None;
+            }
+            let key = data.get(at..at + len2)?.to_vec();
+            at += len2;
+            kyber_keys.push((suite, key));
+        }
+        let identity_pk: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
+        at += 32;
+        let pq_commitment: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
+        at += 32;
+        // New PDUs include a reserved 0x00 byte before the signature; old PDUs
+        // do not. Accept both.
+        if allow_reserved && at < len && data[at] == 0x00 && len == at + 1 + 64 {
+            at += 1;
+        }
+        let signature: [u8; 64] = data.get(at..at + 64)?.try_into().ok()?;
+        if at + 64 != len
+            || kyber_keys.iter().map(|(s, _)| s).collect::<Vec<_>>()
+                != supported.iter().collect::<Vec<_>>()
+        {
+            return None;
+        }
+        Some(NegotiatedHandshakeBlob {
+            supported,
+            x25519_pub,
+            kyber_keys,
+            identity_pk,
+            pq_commitment,
+            signature,
+        })
+    };
+    // Prefer the new format (with reserved byte) when parsing the effective
+    // length; fall back to old format for backwards compat, and finally try
+    // the original length if we stripped a pad erroneously.
+    if let Some(blob) = try_parse(effective_len, true) {
+        return Some(blob);
     }
-    let identity_pk: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
-    at += 32;
-    let pq_commitment: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
-    at += 32;
-    let signature: [u8; 64] = data.get(at..at + 64)?.try_into().ok()?;
-    if at + 64 != data.len()
-        || kyber_keys.iter().map(|(s, _)| s).collect::<Vec<_>>()
-            != supported.iter().collect::<Vec<_>>()
-    {
-        return None;
+    if let Some(blob) = try_parse(effective_len, false) {
+        return Some(blob);
     }
-    Some(NegotiatedHandshakeBlob {
-        supported,
-        x25519_pub,
-        kyber_keys,
-        identity_pk,
-        pq_commitment,
-        signature,
-    })
+    if stripped_pad {
+        if let Some(blob) = try_parse(data.len(), true) {
+            return Some(blob);
+        }
+        if let Some(blob) = try_parse(data.len(), false) {
+            return Some(blob);
+        }
+    }
+    None
 }
 
 fn response_material(

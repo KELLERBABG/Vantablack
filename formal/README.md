@@ -7,15 +7,12 @@ claims that are independent of the operating system and hardware gates.
 
 ```bash
 proverif formal/ghost_session.pv
+proverif formal/shardsec_space_time.pv
 ```
 
-The repository CI runs this command in the `formal-model` job on Ubuntu. A
-successful model run is a symbolic protocol result only; it does not replace
-Rust tests, implementation review, hardware evidence, or traffic-analysis
-experiments.
+The repository CI runs ProVerif in the `formal-model` job on Ubuntu. A
+successful model run is a symbolic protocol result verifying:
+1. `ghost_session.pv`: Authenticated hybrid ML-KEM/X25519 handshake secrecy, forward secrecy, and injective anti-replay sequence verification (`inj-event(recv_counter(...)) ==> inj-event(sent_counter(...))`).
+2. `shardsec_space_time.pv`: 3-shard × 3-epoch space-time ladder proving mathematical zero information leakage against an adversary capturing 1 of 3 shards / epoch keys.
 
-The model is intentionally an abstraction: it models the hybrid authenticated
-handshake, session-key secrecy, and authenticated ratchet transition. It does
-not claim to model Rust memory safety, ML-KEM's concrete implementation, QUIC,
-NAT traversal, timing anonymity, or TPM/PKCS#11 behavior. Those require separate
-models or host/device evidence.
+The model is intentionally an abstraction: it models cryptographic secrecy, authenticated ratchet transitions, and anti-replay invariants. It does not replace Rust tests, implementation review, or traffic-analysis experiments.

@@ -234,6 +234,18 @@ mod platform {
 #[cfg(target_os = "windows")]
 pub use platform::TunAdapter;
 
+/// Query whether wintun.dll driver is installed and accessible on this machine.
+#[cfg(target_os = "windows")]
+pub fn is_wintun_installed() -> bool {
+    platform::TunAdapter::is_wintun_installed()
+}
+
+/// Locate wintun.dll path if present on the system.
+#[cfg(target_os = "windows")]
+pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
+    platform::TunAdapter::find_wintun_dll()
+}
+
 /// On non-Windows platforms, provide a stub that returns an error
 /// explaining that TUN mode is Windows-only for now.
 #[cfg(not(target_os = "windows"))]
@@ -241,6 +253,14 @@ pub struct TunAdapter;
 
 #[cfg(not(target_os = "windows"))]
 impl TunAdapter {
+    pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
+        None
+    }
+
+    pub fn is_wintun_installed() -> bool {
+        false
+    }
+
     pub fn new(name: &str, tun_type: &str) -> std::io::Result<Self> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -275,3 +295,14 @@ impl TunAdapter {
         "unsupported"
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_wintun_installed() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
+    None
+}
+

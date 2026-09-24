@@ -235,6 +235,7 @@ impl SphinxShardOnion {
         exit_plaintext.extend_from_slice(shard_data);
 
         let exit_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
+        // PEN-2 NOTE: same as guard — wire format change pending.
         let exit_nonce = Nonce::from_slice(&[0x33u8; 12]);
         let exit_sealed = exit_cipher
             .encrypt(exit_nonce, exit_plaintext.as_ref())
@@ -249,6 +250,7 @@ impl SphinxShardOnion {
         middle_plaintext.extend_from_slice(&exit_sealed);
 
         let middle_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(middle_key));
+        // PEN-2 NOTE: same as guard — wire format change pending.
         let middle_nonce = Nonce::from_slice(&[0x22u8; 12]);
         let middle_sealed = middle_cipher
             .encrypt(middle_nonce, middle_plaintext.as_ref())
@@ -264,21 +266,26 @@ impl SphinxShardOnion {
         guard_plaintext.extend_from_slice(&middle_sealed);
 
         let guard_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(guard_key));
+        // PEN-2 NOTE: fixed nonce remains; a nonce-in-frame wire change is required to fix
+        // keystream reuse without breaking peel_hop. See REPORT.md.
         let guard_nonce = Nonce::from_slice(&[0x11u8; 12]);
         let guard_sealed = guard_cipher
             .encrypt(guard_nonce, guard_plaintext.as_ref())
             .expect("seal guard");
 
-        // Fixed-size 576-byte frame: 2-byte inner length prefix + ciphertext + uniform random padding
+        // Fixed-size 576-byte frame: 2-byte inner length prefix + ciphertext + random padding
+        // PEN-4 fix: reject rather than silently truncate.
+        if guard_sealed.len() > SPHINX_SHARD_LEN - 2 {
+            panic!("Sphinx shard too large for 576-byte frame: {} > {}", guard_sealed.len(), SPHINX_SHARD_LEN - 2);
+        }
         let mut out = vec![0u8; SPHINX_SHARD_LEN];
         let len_bytes = (guard_sealed.len() as u16).to_be_bytes();
         out[..2].copy_from_slice(&len_bytes);
-        let copy_len = guard_sealed.len().min(SPHINX_SHARD_LEN - 2);
-        out[2..2 + copy_len].copy_from_slice(&guard_sealed[..copy_len]);
-        // Fill remaining bytes with pseudo-random filler to ensure constant 576 bytes
-        for i in (2 + copy_len)..SPHINX_SHARD_LEN {
-            out[i] = ((i * 37) ^ 0xAA) as u8;
-        }
+        let copy_len = guard_sealed.len();
+        out[2..2 + copy_len].copy_from_slice(&guard_sealed);
+        // PEN-3 fix: keyed/random filler instead of deterministic arithmetic sequence
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut out[2 + copy_len..]);
         out
     }
 

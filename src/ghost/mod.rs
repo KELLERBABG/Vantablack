@@ -134,15 +134,26 @@ impl GhostNode {
                             let s_hash =
                                 hex::encode(&entry.session_hash[..4.min(entry.session_hash.len())]);
                             if s_hash == hash_key {
-                                // Verify auth tag
-                                let tag = net::extract_auth_tag(&packet);
-                                if tag.len() < 16 {
-                                    warn!("Worker {}: short auth tag from {}", i, src_addr);
-                                    stats.drops.fetch_add(1, Ordering::Relaxed);
-                                    break;
-                                }
+                                // Decrypt payload BEFORE updating the replay guard.
+                                // The guard's v_max must never advance on an
+                                // unauthenticated counter (cleartext header), or a
+                                // single forged frame can poison the window.
+                                let key = entry.master_key;
+                                let mut msg = payload.clone();
+                                let plaintext = match layers::l2_aead::decrypt_in_place(
+                                    &key,
+                                    counter as u32,
+                                    &mut msg,
+                                ) {
+                                    Ok(p) => p,
+                                    Err(_) => {
+                                        stats.drops.fetch_add(1, Ordering::Relaxed);
+                                        break;
+                                    }
+                                };
 
-                                // Verify replay guard
+                                // Only after successful AEAD verification do we
+                                // commit the counter to the replay window.
                                 if !entry.check_inbound(counter) {
                                     warn!(
                                         "Worker {}: replay rejected counter={} from {}",
@@ -152,22 +163,13 @@ impl GhostNode {
                                     break;
                                 }
 
-                                // Decrypt payload (v1 frames on this path still
-                                // use the counter-derived nonce and the seed key).
-                                let key = entry.master_key;
-                                let mut msg = payload.clone();
-                                if let Ok(plaintext) = layers::l2_aead::decrypt_in_place(
-                                    &key,
-                                    counter as u32,
-                                    &mut msg,
-                                ) {
-                                    if let Ok(text) = std::str::from_utf8(plaintext) {
-                                        let text = text.trim_end_matches('\0');
-                                        info!(
-                                            "[{}] {}: {}",
-                                            worker_fp, entry.peer_fingerprint, text
-                                        );
-                                    }
+                                // Display plaintext if UTF-8.
+                                if let Ok(text) = std::str::from_utf8(plaintext) {
+                                    let text = text.trim_end_matches('\0');
+                                    info!(
+                                        "[{}] {}: {}",
+                                        worker_fp, entry.peer_fingerprint, text
+                                    );
                                 }
                                 found = true;
                                 break;

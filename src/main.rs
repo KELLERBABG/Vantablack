@@ -26,13 +26,14 @@ use ml_kem::{Ciphertext, DecapsulationKey512, DecapsulationKey768, KeyExport, Ml
 mod tray;
 #[cfg(feature = "webview")]
 mod webview;
+mod cli;
+mod control;
+mod socks;
+mod vpn;
+use control::{consumer_config_path, control_port_from_env, load_consumer_settings};
+use vpn::{init_vpn_mode, VpnMode};
 #[cfg(feature = "vpn")]
-use vantablack::ghost::net::vpn::{
-    self,
-    hub::{VpnHub, VPN_PAYLOAD_MAGIC},
-    tun::TunDevice,
-    VpnConfig, VpnRole,
-};
+use vpn::{hub::VPN_PAYLOAD_MAGIC, tun::TunDevice};
 use vantablack::ghost::{
     layers::{
         l0_identity,
@@ -60,7 +61,7 @@ use vantablack::ghost::{
     },
     net::{
         self,
-        consumer::{self, ConsumerSettings},
+        consumer::ConsumerSettings,
         fallback::{self, Fallback, FallbackPath, TurnPath},
         frame_shard,
         mesh::{ExitIpRotator, TitForTatEnforcer},
@@ -115,7 +116,7 @@ fn shardsec_default_enabled() -> bool {
     *RESOLVED.get_or_init(|| shardsec_enabled_for(std::env::var("GHOST_SHARDSEC").ok().as_deref()))
 }
 
-enum PendingHandshake {
+pub(crate) enum PendingHandshake {
     Kem512(x25519_dalek::EphemeralSecret, DecapsulationKey512),
     Negotiated {
         x_secret: x25519_dalek::EphemeralSecret,
@@ -125,7 +126,7 @@ enum PendingHandshake {
     },
 }
 
-type PendingHandshakes = Arc<DashMap<String, PendingHandshake>>;
+pub(crate) type PendingHandshakes = Arc<DashMap<String, PendingHandshake>>;
 
 /// Hard cap on the shard-reassembly spool (per-node). Entries with fewer than
 /// two shards are pruned when the cap is exceeded (anti-memory-DoS).
@@ -201,19 +202,19 @@ async fn assemble(
 /// cannot straddle a ratchet step: sealing under one epoch's key with another
 /// epoch's number produces a frame no receiver can open.
 #[derive(Clone)]
-struct SealCtx {
-    key: [u8; 32],
-    epoch: u64,
-    counter: u64,
-    nonce: [u8; 12],
-    direction: NonceDirection,
-    session_hash: [u8; 4],
+pub(crate) struct SealCtx {
+    pub(crate) key: [u8; 32],
+    pub(crate) epoch: u64,
+    pub(crate) counter: u64,
+    pub(crate) nonce: [u8; 12],
+    pub(crate) direction: NonceDirection,
+    pub(crate) session_hash: [u8; 4],
     /// This message filled its epoch: the caller should start a ratchet step.
-    ratchet_due: bool,
+    pub(crate) ratchet_due: bool,
 }
 
 impl SealCtx {
-    fn from_session(s: &Session) -> Self {
+    pub(crate) fn from_session(s: &Session) -> Self {
         let m = s.seal_material();
         Self {
             key: m.key,
@@ -378,7 +379,7 @@ fn open_received_frame(
     }
 }
 
-fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
+pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
     if shardsec_default_enabled() {
         let pay_len = pay.len() as u16;
         let mut framed = pay_len.to_be_bytes().to_vec();
@@ -526,7 +527,7 @@ async fn send3(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx, f: &[Vec<u8>],
 
 /// Mixed variant for long-lived node-owned sockets. The queue holds only fully
 /// framed opaque datagrams, so batching cannot change authentication or routing.
-async fn send3_mixed(
+pub(crate) async fn send3_mixed(
     sock: Arc<UdpSocket>,
     dst: &SocketAddr,
     ctx: &SealCtx,
@@ -536,7 +537,10 @@ async fn send3_mixed(
     let mut pending = Vec::with_capacity(3);
     for i in 0..3 {
         let header = ctx.data_header(i as u8, false, 0);
-        let frame = net::build_gtf_v2_frame(&header, &f[i], tag);
+        let frame = match net::try_build_gtf_v2_frame(&header, &f[i], tag) {
+            Ok(v) => v,
+            Err(e) => { tracing::warn!("GTF v2 frame oversize ({}): {e}", f[i].len()); continue; }
+        };
         pending.push(enqueue_mixed_frame(&sock, *dst, frame));
     }
     for result in pending {
@@ -797,7 +801,7 @@ async fn send_datagram_via_relay(
 /// travel the one route the relay carries, and spreading them across *other*
 /// peers would send them to machines that hold no session with the target.
 #[allow(clippy::too_many_arguments)]
-async fn send3_adaptive(
+pub(crate) async fn send3_adaptive(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
     primary_dst: &SocketAddr,
@@ -1180,7 +1184,7 @@ macro_rules! spawn_carrier_tasks {
 /// datagrams it cannot read, and the target reassembles the three it receives
 /// into the same ciphertext a direct send would have produced.
 #[allow(clippy::too_many_arguments)]
-async fn send3_via_fallback(
+pub(crate) async fn send3_via_fallback(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
     target_fp: &str,
@@ -1270,21 +1274,21 @@ struct ExitTunnel {
 
 type ExitTunnels = Arc<DashMap<String, ExitTunnel>>;
 /// Initiator side: per-session channel delivering decrypted exit data.
-type SessionChannels = Arc<DashMap<[u8; 4], mpsc::UnboundedSender<Vec<u8>>>>;
+pub(crate) type SessionChannels = Arc<DashMap<[u8; 4], mpsc::UnboundedSender<Vec<u8>>>>;
 /// Initiator side: per-session "CONNECT OK" flags.
-type ConnectAcks = Arc<DashMap<[u8; 4], bool>>;
+pub(crate) type ConnectAcks = Arc<DashMap<[u8; 4], bool>>;
 /// Initiator side: the exit's OK counter per session — anchors the reorder
 /// buffer so out-of-order tunnel frames are buffered, not dropped.
 type ConnectOkCtrs = Arc<DashMap<[u8; 4], u64>>;
 /// Initiator side: per-session reorder state for exit data.
-type RxStateMap = Arc<DashMap<[u8; 4], RxState>>;
+pub(crate) type RxStateMap = Arc<DashMap<[u8; 4], RxState>>;
 
 fn exit_tunnel_key(src: &SocketAddr, sh: &[u8; 4]) -> String {
     format!("{}|{}", src, hex::encode(sh))
 }
 
 /// Direction our own sends take, given our role in the session.
-fn dir_for(role: SessionRole) -> NonceDirection {
+pub(crate) fn dir_for(role: SessionRole) -> NonceDirection {
     match role {
         SessionRole::Initiator => NonceDirection::InitiatorToResponder,
         SessionRole::Responder => NonceDirection::ResponderToInitiator,
@@ -1299,21 +1303,6 @@ fn looks_like_dest(p: &[u8]) -> bool {
         None => false,
     }
 }
-
-/// Optional VPN subsystem: hub mode (serve the home LAN) or client mode
-/// (TUN device). Created in main() from env; None = VPN off (v0.4.0 behavior).
-#[cfg(feature = "vpn")]
-#[derive(Clone)]
-enum VpnMode {
-    Hub(Arc<VpnHub>),
-    Client(
-        Arc<vpn::client::ClientState>,
-        Arc<std::sync::Mutex<vpn::tun::PlatformTun>>,
-    ),
-}
-#[cfg(not(feature = "vpn"))]
-#[derive(Clone)]
-enum VpnMode {}
 
 #[cfg(feature = "vpn")]
 /// Outer-wire send of a VPN payload: [len u16][GVPN1][tunnel datagram]
@@ -1995,7 +1984,7 @@ async fn handle_pq_auth_pdu(
 /// Initiate a mesh handshake to `t` (PEER command and the VPN client
 /// watchdog share this path). Inserts into `pending_hs`; the response
 /// completes asynchronously in handle_pkt.
-async fn initiate_handshake(
+pub(crate) async fn initiate_handshake(
     nc: &GhostNode,
     sock: &UdpSocket,
     t: SocketAddr,
@@ -3763,48 +3752,6 @@ async fn handle_exit_connect(
 // CONSUMER CONTROL PLANE HELPERS
 // ═══════════════════════════════════════════════════════════════════
 
-/// Where the consumer settings document lives (device names, egress mode,
-/// split-tunnel list). It sits in the per-user application-data directory so
-/// that moving or re-launching the binary never loses someone's device names;
-/// override the file itself with `GHOST_CONSUMER_CONFIG`, or the whole
-/// directory with `GHOST_DATA_DIR`.
-fn consumer_config_path() -> String {
-    std::env::var("GHOST_CONSUMER_CONFIG")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| vantablack::ghost::paths::data_file_string("ghost-consumer.json"))
-}
-
-/// Load consumer settings. Returns `None` when the file is absent, so the
-/// caller can fall back to env-derived defaults.
-fn load_consumer_settings(path: &str) -> Option<ConsumerSettings> {
-    let data = std::fs::read_to_string(path).ok()?;
-    match serde_json::from_str::<ConsumerSettings>(&data) {
-        Ok(settings) => Some(settings),
-        Err(e) => {
-            tracing::warn!("Ignoring unreadable consumer config {path}: {e}");
-            None
-        }
-    }
-}
-
-/// Persist consumer settings via a temp file + rename, so a crash mid-write
-/// cannot leave a truncated document behind.
-fn save_consumer_settings(path: &str, settings: &ConsumerSettings) {
-    let Ok(json) = serde_json::to_string_pretty(settings) else {
-        return;
-    };
-    let tmp = format!("{path}.tmp");
-    if std::fs::write(&tmp, json).is_err() {
-        tracing::warn!("Could not write {tmp}");
-        return;
-    }
-    if std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        tracing::warn!("Could not replace {path}");
-    }
-}
-
 fn is_virtual_or_link_local(ip: std::net::Ipv4Addr) -> bool {
     let oct = ip.octets();
     // Loopback or 0.0.0.0
@@ -3976,25 +3923,6 @@ async fn sweep_lan_subnet(
     tracing::info!("Autonomous LAN discovery sweep complete");
 }
 
-/// Parse the JSON body of a request (everything after the header block).
-fn json_body(req: &str) -> serde_json::Value {
-    req.find("\r\n\r\n")
-        .and_then(|i| serde_json::from_str::<serde_json::Value>(req[i + 4..].trim()).ok())
-        .unwrap_or(serde_json::Value::Null)
-}
-
-/// The `X-Pin` header value, when the client sent one.
-fn header_pin(req: &str) -> Option<&str> {
-    req.lines().find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        if name.trim().eq_ignore_ascii_case("x-pin") {
-            Some(value.trim())
-        } else {
-            None
-        }
-    })
-}
-
 /// Writes every log line to stderr *and* to `ghost.log`.
 ///
 /// The desktop build runs as a Windows GUI-subsystem process, which has no
@@ -4041,17 +3969,6 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TeeWriter {
     }
 }
 
-/// Port the HTTP control center listens on (`GHOST_WEB_PORT`, else the legacy
-/// `GHOST_METRICS_PORT`, else 2270). Shared by the node and the desktop window,
-/// which are now separate threads and must agree without a back-channel.
-fn control_port_from_env() -> u16 {
-    std::env::var("GHOST_WEB_PORT")
-        .or_else(|_| std::env::var("GHOST_METRICS_PORT"))
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2270)
-}
-
 /// True when this process should present a native desktop window. Headless
 /// builds (`--no-default-features`) and `GHOST_NO_GUI=1` fall back to the HTTP
 /// control center, which is the server/sidenote path.
@@ -4065,322 +3982,8 @@ fn gui_enabled() -> bool {
         .unwrap_or(true)
 }
 
-/// Round to `places` decimals for stable JSON output.
-fn round(value: f64, places: i32) -> f64 {
-    let factor = 10f64.powi(places);
-    (value * factor).round() / factor
-}
-
-/// Nearest-rank percentile of an unsorted sample set.
-fn percentile(samples: &[f64], p: f64) -> f64 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    let mut sorted = samples.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
-}
-
-fn mean(samples: &[f64]) -> f64 {
-    if samples.is_empty() {
-        0.0
-    } else {
-        samples.iter().sum::<f64>() / samples.len() as f64
-    }
-}
-
-/// Measure the node's own multi-path data path in process: encrypt and split a
-/// payload exactly as the sender does, Reed-Solomon encode it across three
-/// carrier shards, then rebuild it from TWO shards (one data shard is
-/// deliberately cut) and decrypt — the code the receiver actually runs.
-///
-/// Every figure returned is measured on this machine; none is synthetic. It is
-/// a *pipeline* benchmark (the node's own CPU cost), not a measurement of the
-/// user's internet link — that is what the live-counter figure is for.
-fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
-    // Throwaway key: per-packet cost is key-independent, and this keeps the
-    // probe away from live session material.
-    let mut key = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
-
-    const CHUNK: usize = 900; // matches the production SOCKS5 read buffer
-    let payload = vec![0x5au8; CHUNK];
-    let chunks = (total_bytes / CHUNK).max(1);
-
-    let mut send_ms: Vec<f64> = Vec::with_capacity(chunks);
-    let mut shard_ms: Vec<f64> = Vec::with_capacity(chunks * 3);
-    let mut rebuild_ms: Vec<f64> = Vec::with_capacity(chunks);
-    let mut recovered = 0usize;
-
-    let started = std::time::Instant::now();
-    for _ in 0..chunks {
-        let t0 = std::time::Instant::now();
-        // The speedtest walks the real pipeline, so it seals the same way the
-        // data path does: v2, ratchet key, transmitted nonce, 64-bit counter.
-        let bench_session = Session::new_with_role(key, "speedtest".into(), SessionRole::Initiator);
-        let bench_ctx = SealCtx::from_session(&bench_session);
-        let (carrier_frames, _tag) = enc_split(&bench_ctx, &payload);
-        send_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
-
-        // Receive side: strip each carrier's length prefix, as the node does.
-        let mut shards: Vec<Option<Vec<u8>>> = Vec::with_capacity(3);
-        for carrier in &carrier_frames {
-            let t1 = std::time::Instant::now();
-            shards.push(net::unframe(carrier));
-            shard_ms.push(t1.elapsed().as_secs_f64() * 1000.0);
-        }
-
-        // Cut carrier A's data shard and rebuild it from carriers B + C.
-        let t2 = std::time::Instant::now();
-        if let Some(slot) = shards.get_mut(0) {
-            *slot = None;
-        }
-        let widest = shards
-            .iter()
-            .filter_map(|s| s.as_ref().map(|v| v.len()))
-            .max()
-            .unwrap_or(0);
-        for shard in shards.iter_mut().flatten() {
-            while shard.len() < widest {
-                shard.push(0);
-            }
-        }
-        if l4_rs::reconstruct(&mut shards).is_ok() {
-            if let (Some(a), Some(b)) = (shards[0].as_ref(), shards[1].as_ref()) {
-                let mut merged = [a.as_slice(), b.as_slice()].concat();
-                if xchacha_open(
-                    &bench_ctx.key,
-                    &bench_ctx.nonce,
-                    bench_ctx.epoch,
-                    bench_ctx.direction,
-                    &mut merged,
-                )
-                .is_ok()
-                    && merged.len() >= 2
-                {
-                    let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
-                    if 2 + len <= merged.len() && merged[2..2 + len] == payload[..] {
-                        recovered += 1;
-                    }
-                }
-            }
-        }
-        rebuild_ms.push(t2.elapsed().as_secs_f64() * 1000.0);
-    }
-
-    let moved = (chunks * CHUNK) as f64;
-    let send_secs = (send_ms.iter().sum::<f64>() / 1000.0).max(1e-9);
-    let rebuild_secs = (rebuild_ms.iter().sum::<f64>() / 1000.0).max(1e-9);
-    let shard_mean = mean(&shard_ms);
-    let jitter = if shard_ms.is_empty() {
-        0.0
-    } else {
-        (shard_ms
-            .iter()
-            .map(|x| (x - shard_mean).powi(2))
-            .sum::<f64>()
-            / shard_ms.len() as f64)
-            .sqrt()
-    };
-
-    serde_json::json!({
-        "probe": "in-process multi-path pipeline (CPU)",
-        "chunk_bytes": CHUNK,
-        "chunks": chunks,
-        "payload_bytes": chunks * CHUNK,
-        "upload_mbps": round(moved * 8.0 / 1_000_000.0 / send_secs, 1),
-        "download_mbps": round(moved * 8.0 / 1_000_000.0 / rebuild_secs, 1),
-        // Per-packet stages are routinely sub-millisecond, so keep four
-        // decimals: rounding these to 3 would report a flat "0 ms" and look
-        // like a broken probe rather than a fast pipeline.
-        "shard_jitter_ms": round(jitter, 4),
-        "shard_transport_p95_ms": round(percentile(&shard_ms, 0.95), 4),
-        "shard_recovery_mean_ms": round(mean(&rebuild_ms), 4),
-        "reconstruction_ms": round(mean(&rebuild_ms), 4),
-        "mesh_overhead_ms": round(mean(&send_ms) + mean(&rebuild_ms), 4),
-        "recovered_chunks": recovered,
-        "lost_carriers_per_chunk": 1,
-        "elapsed_ms": round(started.elapsed().as_secs_f64() * 1000.0, 2),
-        "note": "Measures this node's own encrypt/shard/recover cost per packet. It is not your internet link speed."
-    })
-}
-
-/// Real observed throughput across the live mesh, from two counter snapshots a
-/// second apart. Reports zero when nothing is flowing, which is the truth.
-async fn measure_live_throughput(nc: &Arc<GhostNode>) -> serde_json::Value {
-    let tx0 = nc.stats.bytes_sent.load(Ordering::Relaxed);
-    let rx0 = nc.stats.bytes_recv.load(Ordering::Relaxed);
-    let started = std::time::Instant::now();
-    sleep(Duration::from_millis(1000)).await;
-    let tx1 = nc.stats.bytes_sent.load(Ordering::Relaxed);
-    let rx1 = nc.stats.bytes_recv.load(Ordering::Relaxed);
-    let secs = started.elapsed().as_secs_f64().max(1e-9);
-    let tx_bytes = tx1.saturating_sub(tx0);
-    let rx_bytes = rx1.saturating_sub(rx0);
-    serde_json::json!({
-        "window_ms": round(secs * 1000.0, 0),
-        "tx_bytes": tx_bytes,
-        "rx_bytes": rx_bytes,
-        "tx_mbps": round(tx_bytes as f64 * 8.0 / 1_000_000.0 / secs, 3),
-        "rx_mbps": round(rx_bytes as f64 * 8.0 / 1_000_000.0 / secs, 3),
-        "active_sessions": nc.sessions.len(),
-    })
-}
-
-/// Copy bytes from `r` to `w` until the reader closes.
-async fn pump<R, W>(mut r: R, mut w: W) -> std::io::Result<()>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut buf = vec![0u8; 8192];
-    loop {
-        let n = r.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        w.write_all(&buf[..n]).await?;
-        w.flush().await?;
-    }
-    Ok(())
-}
-
-/// Answer a SOCKS5 CONNECT with success and relay the client to an upstream
-/// socket we already opened locally. Used by split tunneling, where the target
-/// is deliberately *not* sent through the mesh.
-async fn socks_relay_direct(s: tokio::net::TcpStream, upstream: tokio::net::TcpStream) {
-    let mut s = s;
-    if s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_err() {
-        return;
-    }
-    let (client_r, client_w) = s.into_split();
-    let (up_r, up_w) = upstream.into_split();
-    let up = tokio::spawn(pump(client_r, up_w));
-    let down = tokio::spawn(pump(up_r, client_w));
-    let _ = tokio::join!(up, down);
-}
-
-/// Round-trip time to the public internet, from the fastest of three TCP
-/// connects. Only called when the caller explicitly opts in (`isp_probe`).
-async fn isp_rtt_ms() -> Option<f64> {
-    let mut best: Option<f64> = None;
-    for _ in 0..3 {
-        let started = std::time::Instant::now();
-        let attempt = tokio::time::timeout(
-            Duration::from_millis(700),
-            tokio::net::TcpStream::connect("1.1.1.1:443"),
-        )
-        .await;
-        match attempt {
-            Ok(Ok(_stream)) => {
-                let ms = started.elapsed().as_secs_f64() * 1000.0;
-                best = Some(best.map_or(ms, |b: f64| b.min(ms)));
-            }
-            _ => break,
-        }
-    }
-    best.map(|v| round(v, 1))
-}
-
-/// One peer entry for `/api/status` and `/api/peers`, with the consumer-facing
-/// fields the dashboard renders: friendly name, platform, presence.
-fn peer_entry(
-    nc: &GhostNode,
-    settings: &ConsumerSettings,
-    fingerprint: &str,
-    addr: &SocketAddr,
-) -> serde_json::Value {
-    let has_session = nc.sessions.contains_key(fingerprint);
-    serde_json::json!({
-        "fingerprint": fingerprint,
-        "name": settings.device_name(fingerprint),
-        "custom_name": settings.has_custom_name(fingerprint),
-        "os": settings.device_os(fingerprint),
-        "address": addr.to_string(),
-        "connected": has_session,
-        "status": consumer::peer_status(has_session, true),
-        "role": if has_session { "Active Mesh Peer" } else { "Discovered Peer" },
-        // Per-peer RTT is not measured by this build; report null rather than
-        // inventing a number the UI would then present as fact.
-        "latency_ms": serde_json::Value::Null,
-    })
-}
-
-fn handle_cli_args() -> Option<anyhow::Result<()>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        return None;
-    }
-    match args[1].as_str() {
-        "split-key" | "split_key" => {
-            let secret = if args.len() >= 3 {
-                let hex_str = args[2].trim();
-                let bytes = match hex::decode(hex_str) {
-                    Ok(b) => b,
-                    Err(e) => return Some(Err(anyhow::anyhow!("Invalid hex key: {e}"))),
-                };
-                if bytes.len() != 32 {
-                    return Some(Err(anyhow::anyhow!(
-                        "Key must be exactly 32 bytes (64 hex characters), got {}",
-                        bytes.len()
-                    )));
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&bytes);
-                arr
-            } else {
-                let mut arr = [0u8; 32];
-                rand::thread_rng().fill_bytes(&mut arr);
-                println!("Generated fresh 32-byte secret key: {}", hex::encode(arr));
-                arr
-            };
-            let shares = vantablack::ghost::layers::l3_shamir::split_secret_bytes(&secret);
-            println!("L3 Shamir Secret Sharing (2-of-3 threshold split):");
-            for (i, share) in shares.iter().enumerate() {
-                println!("  Share {}: {}", i + 1, hex::encode(share));
-            }
-            println!("Any 2 of these 3 shares will reconstruct the original secret.");
-            Some(Ok(()))
-        }
-        "join-key" | "join_key" => {
-            if args.len() < 4 {
-                println!("Usage: ggn join-key <share1_hex> <share2_hex>");
-                return Some(Err(anyhow::anyhow!("Two hex shares required")));
-            }
-            let s1 = match hex::decode(args[2].trim()) {
-                Ok(b) => b,
-                Err(e) => return Some(Err(anyhow::anyhow!("Invalid hex for share 1: {e}"))),
-            };
-            let s2 = match hex::decode(args[3].trim()) {
-                Ok(b) => b,
-                Err(e) => return Some(Err(anyhow::anyhow!("Invalid hex for share 2: {e}"))),
-            };
-            let secret = vantablack::ghost::layers::l3_shamir::join_shares(&s1, &s2);
-            println!(
-                "Reconstructed secret ({} bytes): {}",
-                secret.len(),
-                hex::encode(&secret)
-            );
-            Some(Ok(()))
-        }
-        "--help" | "-h" | "help" => {
-            println!("Vantablack (GGN) — Post-Quantum WAN Mesh Daemon");
-            println!("Usage:");
-            println!("  ggn                             Run node daemon");
-            println!("  ggn split-key [32B_HEX_KEY]     Split secret into 3 Shamir shares (2-of-3 threshold)");
-            println!(
-                "  ggn join-key <SHARE1> <SHARE2>  Reconstruct secret from any 2 Shamir shares"
-            );
-            println!("  ggn --help                      Show this help");
-            Some(Ok(()))
-        }
-        _ => None,
-    }
-}
-
 fn main() -> anyhow::Result<()> {
-    if let Some(res) = handle_cli_args() {
+    if let Some(res) = cli::handle_cli_args() {
         return res;
     }
     // The desktop window owns the main thread: tao refuses to build an
@@ -4521,136 +4124,8 @@ async fn run_node(
     //       GHOST_VPN_LAN_SUBNET, GHOST_VPN_DNS, GHOST_VPN_SEARCH,
     //       GHOST_VPN_BIND (hub LAN IP for UDP flow sockets)
     // client: GHOST_VPN_HUB_FP (hub fingerprint), GHOST_VPN_KEY (session key
-    //         hex, optional), GHOST_VPN_LOCAL_IP (overlay IP, default .10)
-    #[cfg(feature = "vpn")]
-    let vpn_mode: Option<VpnMode> = match std::env::var("GHOST_VPN").as_deref() {
-        Ok("hub") => {
-            let (subnet, prefix) = std::env::var("GHOST_VPN_LAN_SUBNET")
-                .ok()
-                .and_then(|s| {
-                    let (a, pr) = s.split_once('/')?;
-                    Some((
-                        a.parse::<std::net::Ipv4Addr>().ok()?,
-                        pr.parse::<u8>().ok()?,
-                    ))
-                })
-                .unwrap_or((std::net::Ipv4Addr::new(192, 168, 1, 0), 24));
-            let cfg = VpnConfig {
-                role: VpnRole::Hub,
-                lan_subnet: (subnet, prefix),
-                dns_server: std::env::var("GHOST_VPN_DNS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(std::net::Ipv4Addr::new(192, 168, 1, 1)),
-                search_domain: std::env::var("GHOST_VPN_SEARCH")
-                    .ok()
-                    .filter(|x| !x.is_empty()),
-                allowed_fingerprints: std::env::var("GHOST_VPN_CLIENTS")
-                    .ok()
-                    .map(|v| {
-                        v.split(',')
-                            .map(|x| x.trim().to_string())
-                            .filter(|x| !x.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                lan_bind_addr: std::env::var("GHOST_VPN_BIND")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
-                ..VpnConfig::default()
-            };
-            tracing::info!(
-                "VPN: hub mode — allowlisted clients: {}",
-                cfg.allowed_fingerprints.len()
-            );
-            Some(VpnMode::Hub(VpnHub::start(cfg)))
-        }
-        Ok("client") => {
-            let hub_fp = std::env::var("GHOST_VPN_HUB_FP").unwrap_or_default();
-            if hub_fp.is_empty() {
-                anyhow::bail!("VPN client requires GHOST_VPN_HUB_FP (hub fingerprint)");
-            }
-            let key: [u8; 32] = std::env::var("GHOST_VPN_KEY")
-                .ok()
-                .filter(|h| h.len() == 64)
-                .and_then(|h| hex::decode(h).ok())
-                .and_then(|b| b.try_into().ok())
-                .unwrap_or([0u8; 32]);
-            let local_ip: std::net::Ipv4Addr = std::env::var("GHOST_VPN_LOCAL_IP")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(std::net::Ipv4Addr::new(10, 66, 0, 10));
-            // GHOST_VPN_FAKE_TUN: run the client against the in-memory TUN so a
-            // full two-process self-test needs no wintun.dll, no Administrator
-            // and no OS interface. Same code path, same crypto, same framing —
-            // this is what makes the "nothing is wire-proven yet" gate runnable.
-            let fake_tun = std::env::var("GHOST_VPN_FAKE_TUN")
-                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-                .unwrap_or(false);
-            let tun = if fake_tun {
-                tracing::warn!(
-                    "VPN client: GHOST_VPN_FAKE_TUN is set — in-memory TUN, no OS interface \
-                     is created and no traffic can leave this machine. Self-test mode only."
-                );
-                let (dev, handle) = vpn::tun::open_fake_tun();
-                // Self-test driver, standing in for the OS: inject an ICMP echo
-                // request toward the hub overlay on a timer and report what the
-                // tunnel writes back. One echo reply proves the whole
-                // seal → mesh → hub → unseal round trip over real UDP sockets.
-                let hub_overlay = std::net::Ipv4Addr::new(
-                    vpn::OVERLAY_PREFIX,
-                    vpn::OVERLAY_SECOND_OCTET,
-                    0,
-                    vpn::OVERLAY_HUB_HOST,
-                );
-                tokio::spawn(async move {
-                    let probe = vpn::client::build_keepalive(hub_overlay, local_ip);
-                    let mut sent: u32 = 0;
-                    let mut replies_total: u32 = 0;
-                    loop {
-                        sleep(Duration::from_millis(1000)).await;
-                        handle.push_inbound(probe.clone());
-                        sent += 1;
-                        let mut replies = 0u32;
-                        for pkt in handle.drain_outbound() {
-                            // IPv4 (version nibble 4), protocol 1 (ICMP), type 0
-                            // (echo reply) at the start of the ICMP header.
-                            if pkt.len() >= 21 && (pkt[0] >> 4) == 4 && pkt[9] == 1 && pkt[20] == 0
-                            {
-                                replies += 1;
-                            }
-                        }
-                        if replies > 0 {
-                            replies_total += replies;
-                            tracing::info!(
-                                sent, replies, replies_total,
-                                "FAKE-TUN self-test: PASS — ICMP echo reply returned through the mesh"
-                            );
-                        } else {
-                            tracing::info!(sent, "FAKE-TUN self-test: probe sent, no reply yet");
-                        }
-                    }
-                });
-                Arc::new(std::sync::Mutex::new(dev))
-            } else {
-                vpn::tun::open_tun("ggn0", local_ip, std::net::Ipv4Addr::new(255, 255, 255, 0))
-                    .map(|t| Arc::new(std::sync::Mutex::new(t)))
-                    .map_err(|e| anyhow::anyhow!(
-                        "VPN client: TUN unavailable ({e}) — run as Administrator with wintun.dll \
-                         present, or set GHOST_VPN_FAKE_TUN=1 for the zero-elevation loopback self-test"
-                    ))?
-            };
-            tracing::info!("VPN: client mode — hub {hub_fp}, TUN {local_ip}");
-            Some(VpnMode::Client(
-                Arc::new(vpn::client::ClientState::new(hub_fp, key)),
-                tun,
-            ))
-        }
-        _ => None,
-    };
-    #[cfg(not(feature = "vpn"))]
-    let _vpn_mode: Option<VpnMode> = None;
+    // ── VPN (LAN-over-WAN prototype) configuration ──
+    let vpn_mode = init_vpn_mode()?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -5157,748 +4632,25 @@ async fn run_node(
     }
 
     if metrics_enabled {
-        // VPN counters for `/metrics` and `/healthz`. Rendered by a helper so the
-        // endpoint stays readable; the base v0.4.0 metric set is untouched, and
-        // with the `vpn` feature off this contributes nothing.
-        #[cfg(feature = "vpn")]
-        fn vpn_export(mode: &Option<VpnMode>) -> (&'static str, String, serde_json::Value) {
-            match mode {
-                Some(VpnMode::Hub(h)) => {
-                    let m = h.metrics();
-                    let prom = format!(
-                        "# HELP ghost_vpn_active_leases VPN hub: active overlay leases\n\
-                         # TYPE ghost_vpn_active_leases gauge\nghost_vpn_active_leases {}\n\
-                         # HELP ghost_vpn_tunnel_frames_in_total VPN hub: tunnel frames received\n\
-                         # TYPE ghost_vpn_tunnel_frames_in_total counter\nghost_vpn_tunnel_frames_in_total {}\n\
-                         # HELP ghost_vpn_tunnel_frames_out_total VPN hub: tunnel frames sent\n\
-                         # TYPE ghost_vpn_tunnel_frames_out_total counter\nghost_vpn_tunnel_frames_out_total {}\n\
-                         # HELP ghost_vpn_frames_dropped_total VPN hub: tunnel frames dropped\n\
-                         # TYPE ghost_vpn_frames_dropped_total counter\nghost_vpn_frames_dropped_total {}\n\
-                         # HELP ghost_vpn_tcp_flows VPN hub: live netstack TCP flows\n\
-                         # TYPE ghost_vpn_tcp_flows gauge\nghost_vpn_tcp_flows {}\n\
-                         # HELP ghost_vpn_udp_flows VPN hub: live UDP flow bindings\n\
-                         # TYPE ghost_vpn_udp_flows gauge\nghost_vpn_udp_flows {}\n\
-                         # HELP ghost_vpn_counter_headroom_min VPN hub: smallest remaining per-epoch tunnel-counter headroom across leases\n\
-                         # TYPE ghost_vpn_counter_headroom_min gauge\nghost_vpn_counter_headroom_min {}\n",
-                        m.leases,
-                        m.frames_in,
-                        m.frames_out,
-                        m.frames_dropped,
-                        m.tcp_flows,
-                        m.udp_flows,
-                        m.counter_headroom_min,
-                    );
-                    (
-                        "hub",
-                        prom,
-                        serde_json::json!({
-                            "leases": m.leases,
-                            "tcp_flows": m.tcp_flows,
-                            "udp_flows": m.udp_flows,
-                            "tunnel_frames_in": m.frames_in,
-                            "tunnel_frames_out": m.frames_out,
-                            "frames_dropped": m.frames_dropped,
-                            "counter_headroom_min": m.counter_headroom_min,
-                        }),
-                    )
-                }
-                Some(VpnMode::Client(c, _)) => {
-                    let ctr = c.tx_counter();
-                    let headroom = u64::MAX.saturating_sub(ctr);
-                    let dead = c.watchdog.lock().is_dead();
-                    let prom = format!(
-                        "# HELP ghost_vpn_tx_counter VPN client: per-epoch tunnel TX counter\n\
-                         # TYPE ghost_vpn_tx_counter gauge\nghost_vpn_tx_counter {ctr}\n\
-                         # HELP ghost_vpn_counter_headroom VPN client: remaining tunnel-counter headroom\n\
-                         # TYPE ghost_vpn_counter_headroom gauge\nghost_vpn_counter_headroom {headroom}\n\
-                         # HELP ghost_vpn_epoch VPN client: current session epoch\n\
-                         # TYPE ghost_vpn_epoch gauge\nghost_vpn_epoch {}\n\
-                         # HELP ghost_vpn_watchdog_dead VPN client: 1 once the watchdog declares the tunnel dead\n\
-                         # TYPE ghost_vpn_watchdog_dead gauge\nghost_vpn_watchdog_dead {}\n",
-                        c.current_epoch(),
-                        u8::from(dead),
-                    );
-                    (
-                        "client",
-                        prom,
-                        serde_json::json!({
-                            "tx_counter": ctr,
-                            "counter_headroom": headroom,
-                            "epoch": c.current_epoch(),
-                            "watchdog_dead": dead,
-                        }),
-                    )
-                }
-                None => ("disabled", String::new(), serde_json::json!({})),
-            }
-        }
-        #[cfg(not(feature = "vpn"))]
-        fn vpn_export(_mode: &Option<VpnMode>) -> (&'static str, String, serde_json::Value) {
-            ("disabled", String::new(), serde_json::json!({}))
-        }
-
-        let nc_m = Arc::clone(&nc);
-        let addrs_m = Arc::clone(&addrs);
-        let c_conn_m = Arc::clone(&consumer_connected);
-        let c_mode_m = Arc::clone(&consumer_mode);
-        let c_pin_m = Arc::clone(&consumer_pin);
-        let c_settings_m = Arc::clone(&consumer_settings);
-        let c_path_m = consumer_config.clone();
-        let lan_host_m = lan_host.clone();
-        let pair_uri_m = pair_uri.clone();
-        // Whether the local SOCKS5 listener is actually up in this process, and
-        // whether a TUN/VPN subsystem exists at all. Reported so the UI can say
-        // "selected" versus "in effect" instead of pretending.
-        let socks_listening = socks;
-        // Same cfg dance the receiver uses: `vpn_mode` only exists when the
-        // feature is on, so the non-vpn build needs its own binding.
-        #[cfg(feature = "vpn")]
-        let vpn_m: Option<VpnMode> = vpn_mode.clone();
-        #[cfg(not(feature = "vpn"))]
-        let vpn_m: Option<VpnMode> = None;
-        let mp = metrics_port;
-        // The carrier registry, so the status page can show *measured* carrier
-        // links rather than an inferred path count (B23). Present in every build:
-        // without the transport it reports the same zeroes it would in a build that
-        // has none.
-        let carrier_m = Arc::clone(&carrier);
-        let phs_m = Arc::clone(&pending_hs);
-        let scan_notify_m = Arc::clone(&scan_notify);
-        let scan_interval_m = Arc::clone(&scan_interval_secs);
-        tokio::spawn(async move {
-            let bind_addr = format!("0.0.0.0:{}", mp);
-            match tokio::net::TcpListener::bind(&bind_addr).await {
-                Ok(listener) => {
-                    tracing::info!(
-                        "Ghost Web Control Center & Telemetry listening on http://127.0.0.1:{} (LAN: http://0.0.0.0:{})",
-                        mp,
-                        mp
-                    );
-                    // Pop the control center open in a browser tab only when explicitly opted in
-                    // via GHOST_OPEN_BROWSER=1. The native desktop app is the primary experience.
-                    if std::env::var("GHOST_OPEN_BROWSER")
-                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                        .unwrap_or(false)
-                    {
-                        tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
-                            let url = format!("http://127.0.0.1:{}", mp);
-                            #[cfg(target_os = "windows")]
-                            let _ = std::process::Command::new("cmd")
-                                .args(["/C", "start", &url])
-                                .spawn();
-                            #[cfg(target_os = "macos")]
-                            let _ = std::process::Command::new("open").arg(&url).spawn();
-                            #[cfg(target_os = "linux")]
-                            let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
-                        });
-                    }
-                    loop {
-                        if let Ok((mut stream, _)) = listener.accept().await {
-                            let nc_ref = Arc::clone(&nc_m);
-                            let addrs_ref = Arc::clone(&addrs_m);
-                            let vpn_ref = vpn_m.clone();
-                            let conn_ref = Arc::clone(&c_conn_m);
-                            let mode_ref = Arc::clone(&c_mode_m);
-                            let pin_ref = Arc::clone(&c_pin_m);
-                            let cs_ref = Arc::clone(&c_settings_m);
-                            let cp_ref = c_path_m.clone();
-                            let lan_host_ref = lan_host_m.clone();
-                            let pair_uri_ref = pair_uri_m.clone();
-                            let carrier_ref = Arc::clone(&carrier_m);
-                            let phs_ref = Arc::clone(&phs_m);
-                            let scan_notify_ref = Arc::clone(&scan_notify_m);
-                            let scan_interval_ref = Arc::clone(&scan_interval_m);
-                            tokio::spawn(async move {
-                                let mut buf = [0u8; 4096];
-                                if let Ok(n) = stream.read(&mut buf).await {
-                                    let req = String::from_utf8_lossy(&buf[..n]);
-                                    let (vpn_role, vpn_prom, vpn_json) = vpn_export(&vpn_ref);
-                                    let vpn_available = vpn_ref.is_some();
-                                    // The control center binds 0.0.0.0, so it is
-                                    // reachable from the whole LAN. When GHOST_PIN
-                                    // is set, mutating endpoints demand it.
-                                    let configured_pin = pin_ref.read().clone();
-                                    let pin_ok = match configured_pin.as_deref() {
-                                        None => true,
-                                        Some(expected) => header_pin(&req) == Some(expected),
-                                    };
-                                    let is_mutation = req.starts_with("POST ");
-
-                                    // Handle CORS preflight
-                                    if req.starts_with("OPTIONS ") {
-                                        let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nConnection: close\r\n\r\n";
-                                        let _ = stream.write_all(resp.as_bytes()).await;
-                                        return;
-                                    }
-
-                                    let (status_line, body, content_type) = if is_mutation
-                                        && !pin_ok
-                                    {
-                                        (
-                                            "HTTP/1.1 401 Unauthorized",
-                                            serde_json::json!({
-                                                "success": false,
-                                                "error": "PIN required",
-                                                "pin_required": true
-                                            })
-                                            .to_string(),
-                                            "application/json",
-                                        )
-                                    } else if req.starts_with("GET /api/status") {
-                                        let is_conn = conn_ref.load(Ordering::Relaxed);
-                                        let current_mode = mode_ref.read().clone();
-                                        let has_pin = pin_ref.read().is_some();
-                                        let sent_bytes =
-                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                        let recv_bytes =
-                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                        let sent_pkts =
-                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                        let recv_pkts =
-                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                        let uptime = nc_ref.created_at.elapsed().as_secs();
-                                        let peers_count = addrs_ref.len();
-                                        let sessions_count = nc_ref.sessions.len();
-
-                                        let settings_now = cs_ref.read().clone();
-                                        let peer_entries: Vec<serde_json::Value> = addrs_ref
-                                            .iter()
-                                            .map(|entry| {
-                                                peer_entry(
-                                                    &nc_ref,
-                                                    &settings_now,
-                                                    entry.key(),
-                                                    entry.value(),
-                                                )
-                                            })
-                                            .collect();
-
-                                        let route_mode_active =
-                                            match settings_now.route_mode.as_str() {
-                                                consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
-                                                _ => socks_listening,
-                                            };
-                                        let body = serde_json::json!({
-                                            "connected": is_conn,
-                                            "mode": current_mode,
-                                            "network_id": nc_ref.fingerprint(),
-                                            "device_name": settings_now.device_name(&nc_ref.fingerprint()),
-                                            "device_os": consumer::local_os(),
-                                            "host": lan_host_ref,
-                                            "pair_uri": pair_uri_ref,
-                                            "route_mode": settings_now.route_mode,
-                                            "route_mode_active": route_mode_active,
-                                            "bypass_count": settings_now.bypass.len(),
-                                            "socks_listening": socks_listening,
-                                            "socks_port": socks_port,
-                                            "vpn_available": vpn_available,
-                                            "pin_protected": has_pin,
-                                            "uptime_seconds": uptime,
-                                            "peers_count": peers_count,
-                                            "active_sessions": sessions_count,
-                                            "private_mesh": {
-                                                "active_nodes": sessions_count,
-                                                "autonomous_local": sessions_count >= 5,
-                                                "mode": if sessions_count >= 5 { "autonomous_local" } else { "wan_mesh_assisted" },
-                                                "scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
-                                            },
-                                            // No RTT probe runs against peers in this build, so
-                                            // report null rather than a hard-coded number.
-                                            "latency_ms": serde_json::Value::Null,
-                                            // Shards fan out over the primary route plus up to
-                                            // two additional live peers.
-                                            "active_carrier_paths": if is_conn {
-                                                std::cmp::min(3, 1 + nc_ref.sessions.len().min(2))
-                                            } else {
-                                                0
-                                            },
-                                            // The optional transport as it actually is, not
-                                            // as the line above infers it: links and local
-                                            // paths are counted from live entries, so with
-                                            // multipath on (`GHOST_QUIC_MULTIPATH=1`) two
-                                            // links to one peer show up as two paths.
-                                            "carrier": {
-                                                "enabled": carrier_ref.enabled(),
-                                                "label": carrier_ref.label(),
-                                                "local_paths": carrier_ref.path_count(),
-                                                "links": carrier_ref.link_count(),
-                                                "peers": carrier_ref.peer_count(),
-                                            },
-                                            "reed_solomon_active": true,
-                                            "throughput": {
-                                                "bytes_sent": sent_bytes,
-                                                "bytes_recv": recv_bytes,
-                                                "packets_sent": sent_pkts,
-                                                "packets_recv": recv_pkts
-                                            },
-                                            "peers": peer_entries,
-                                            "vpn": vpn_role,
-                                            "vpn_stats": vpn_json
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("POST /api/connect") {
-                                        // Parse optional {"connected": bool} or toggle
-                                        let current = conn_ref.load(Ordering::Relaxed);
-                                        let new_val = if let Some(body_start) = req.find("\r\n\r\n")
-                                        {
-                                            let json_body = &req[body_start + 4..];
-                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(
-                                                json_body.trim(),
-                                            ) {
-                                                if let Some(c) =
-                                                    val.get("connected").and_then(|v| v.as_bool())
-                                                {
-                                                    c
-                                                } else {
-                                                    !current
-                                                }
-                                            } else {
-                                                !current
-                                            }
-                                        } else {
-                                            !current
-                                        };
-                                        conn_ref.store(new_val, Ordering::Relaxed);
-                                        let body = serde_json::json!({
-                                            "success": true,
-                                            "connected": new_val,
-                                            "mode": mode_ref.read().clone()
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("POST /api/mode") {
-                                        let mut new_mode = None;
-                                        if let Some(body_start) = req.find("\r\n\r\n") {
-                                            let json_body = &req[body_start + 4..];
-                                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(
-                                                json_body.trim(),
-                                            ) {
-                                                if let Some(m) =
-                                                    val.get("mode").and_then(|v| v.as_str())
-                                                {
-                                                    new_mode = Some(m.to_string());
-                                                }
-                                            }
-                                        }
-                                        if let Some(m) = new_mode {
-                                            *mode_ref.write() = m;
-                                        }
-                                        let current_mode = mode_ref.read().clone();
-                                        let body = serde_json::json!({
-                                            "success": true,
-                                            "mode": current_mode
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("GET /api/peers") {
-                                        let settings_now = cs_ref.read().clone();
-                                        let peer_entries: Vec<serde_json::Value> = addrs_ref
-                                            .iter()
-                                            .map(|entry| {
-                                                peer_entry(
-                                                    &nc_ref,
-                                                    &settings_now,
-                                                    entry.key(),
-                                                    entry.value(),
-                                                )
-                                            })
-                                            .collect();
-                                        let body = serde_json::json!({
-                                            "peers": peer_entries,
-                                            "count": peer_entries.len()
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("POST /api/peers/add") {
-                                        let val = json_body(&req);
-                                        let addr_str = val
-                                            .get("address")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .trim();
-                                        match addr_str.parse::<SocketAddr>() {
-                                            Ok(target_addr) => {
-                                                initiate_handshake(
-                                                    &nc_ref,
-                                                    &nc_ref.socket,
-                                                    target_addr,
-                                                    &phs_ref,
-                                                )
-                                                .await;
-                                                let peers_cache =
-                                                    vantablack::ghost::paths::data_file(
-                                                        "peers.cache",
-                                                    );
-                                                if let Ok(mut current) =
-                                                    std::fs::read_to_string(&peers_cache)
-                                                {
-                                                    if !current.contains(addr_str) {
-                                                        if !current.ends_with('\n')
-                                                            && !current.is_empty()
-                                                        {
-                                                            current.push('\n');
-                                                        }
-                                                        current.push_str(addr_str);
-                                                        current.push('\n');
-                                                        let _ =
-                                                            std::fs::write(&peers_cache, current);
-                                                    }
-                                                } else {
-                                                    let _ = std::fs::write(
-                                                        &peers_cache,
-                                                        format!("{}\n", addr_str),
-                                                    );
-                                                }
-                                                let body = serde_json::json!({
-                                                    "success": true,
-                                                    "address": addr_str,
-                                                    "message": format!("Handshake initiated with {}", target_addr)
-                                                })
-                                                .to_string();
-                                                ("HTTP/1.1 200 OK", body, "application/json")
-                                            }
-                                            Err(e) => {
-                                                let body = serde_json::json!({
-                                                    "success": false,
-                                                    "error": format!("Invalid address format '{}': {}", addr_str, e)
-                                                })
-                                                .to_string();
-                                                (
-                                                    "HTTP/1.1 400 Bad Request",
-                                                    body,
-                                                    "application/json",
-                                                )
-                                            }
-                                        }
-                                    } else if req.starts_with("POST /api/mesh/scan") {
-                                        scan_notify_ref.notify_one();
-                                        let body = serde_json::json!({
-                                            "success": true,
-                                            "message": "LAN discovery sweep initiated",
-                                            "current_peers": nc_ref.sessions.len(),
-                                            "autonomous_local": nc_ref.sessions.len() >= 5
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("POST /api/mesh/config") {
-                                        let val = json_body(&req);
-                                        if let Some(secs) =
-                                            val.get("scan_interval_secs").and_then(|v| v.as_u64())
-                                        {
-                                            scan_interval_ref.store(secs as u32, Ordering::Relaxed);
-                                        }
-                                        let body = serde_json::json!({
-                                            "success": true,
-                                            "scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed)
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("GET /api/settings") {
-                                        let s = cs_ref.read().clone();
-                                        let route_mode_active = match s.route_mode.as_str() {
-                                            consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
-                                            _ => socks_listening,
-                                        };
-                                        let body = serde_json::json!({
-                                            "route_mode": s.route_mode,
-                                            "route_mode_active": route_mode_active,
-                                            "route_modes": [consumer::ROUTE_MODE_SYSTEM_VPN, consumer::ROUTE_MODE_APP_SOCKS],
-                                            "bypass": s.bypass,
-                                            "bypass_count": s.bypass.len(),
-                                            "socks_listening": socks_listening,
-                                            "socks_port": socks_port,
-                                            "vpn_available": vpn_available,
-                                            "device_name": s.device_name(&nc_ref.fingerprint()),
-                                            "device_os": consumer::local_os(),
-                                            "pin_protected": pin_ref.read().is_some(),
-                                            "note": if vpn_available {
-                                                "System-wide mode binds the TUN adapter when the node starts with GHOST_VPN=client."
-                                            } else {
-                                                "This binary was built without the `vpn` feature, so system-wide TUN mode cannot be enabled yet. App-only SOCKS5 still works."
-                                            }
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("POST /api/settings") {
-                                        let val = json_body(&req);
-                                        let mut changed: Vec<String> = Vec::new();
-                                        let mut error: Option<String> = None;
-                                        let mut s = cs_ref.write();
-                                        if let Some(mode) =
-                                            val.get("route_mode").and_then(|v| v.as_str())
-                                        {
-                                            if s.set_route_mode(mode) {
-                                                changed
-                                                    .push(format!("route_mode={}", s.route_mode));
-                                            } else {
-                                                error =
-                                                    Some(format!("unknown route mode '{mode}'"));
-                                            }
-                                        }
-                                        if error.is_none() {
-                                            if let Some(rule) =
-                                                val.get("bypass_add").and_then(|v| v.as_str())
-                                            {
-                                                match s.add_bypass(rule) {
-                                                    Ok(true) => {
-                                                        changed.push(format!("bypass+{rule}"))
-                                                    }
-                                                    Ok(false) => {}
-                                                    Err(e) => error = Some(e),
-                                                }
-                                            }
-                                        }
-                                        if error.is_none() {
-                                            if let Some(rule) =
-                                                val.get("bypass_remove").and_then(|v| v.as_str())
-                                            {
-                                                if s.remove_bypass(rule) {
-                                                    changed.push(format!("bypass-{rule}"));
-                                                }
-                                            }
-                                        }
-                                        if error.is_none() {
-                                            if let Some(list) =
-                                                val.get("bypass").and_then(|v| v.as_array())
-                                            {
-                                                s.bypass.clear();
-                                                for entry in list.iter().filter_map(|v| v.as_str())
-                                                {
-                                                    if let Err(e) = s.add_bypass(entry) {
-                                                        error = Some(e);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        let response = match error {
-                                            Some(e) => (
-                                                "HTTP/1.1 400 Bad Request",
-                                                serde_json::json!({"success": false, "error": e})
-                                                    .to_string(),
-                                            ),
-                                            None => {
-                                                save_consumer_settings(&cp_ref, &s);
-                                                let route_mode_active = match s.route_mode.as_str()
-                                                {
-                                                    consumer::ROUTE_MODE_SYSTEM_VPN => {
-                                                        vpn_available
-                                                    }
-                                                    _ => socks_listening,
-                                                };
-                                                (
-                                                    "HTTP/1.1 200 OK",
-                                                    serde_json::json!({
-                                                        "success": true,
-                                                        "changed": changed,
-                                                        "route_mode": s.route_mode,
-                                                        "route_mode_active": route_mode_active,
-                                                        "bypass": s.bypass,
-                                                        "bypass_count": s.bypass.len(),
-                                                        "vpn_available": vpn_available,
-                                                        "socks_listening": socks_listening
-                                                    })
-                                                    .to_string(),
-                                                )
-                                            }
-                                        };
-                                        drop(s);
-                                        (response.0, response.1, "application/json")
-                                    } else if req.starts_with("POST /api/peers/rename") {
-                                        let val = json_body(&req);
-                                        let fp = val
-                                            .get("fingerprint")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        if fp.is_empty() {
-                                            (
-                                                "HTTP/1.1 400 Bad Request",
-                                                serde_json::json!({
-                                                    "success": false,
-                                                    "error": "fingerprint is required"
-                                                })
-                                                .to_string(),
-                                                "application/json",
-                                            )
-                                        } else {
-                                            let mut s = cs_ref.write();
-                                            if let Some(os) = val.get("os").and_then(|v| v.as_str())
-                                            {
-                                                s.set_device_os(&fp, Some(os));
-                                            }
-                                            let new_name = val
-                                                .get("name")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            let response = match s.set_device_name(&fp, new_name) {
-                                                Err(e) => (
-                                                    "HTTP/1.1 400 Bad Request",
-                                                    serde_json::json!({"success": false, "error": e})
-                                                        .to_string(),
-                                                ),
-                                                Ok(display) => {
-                                                    save_consumer_settings(&cp_ref, &s);
-                                                    (
-                                                        "HTTP/1.1 200 OK",
-                                                        serde_json::json!({
-                                                            "success": true,
-                                                            "fingerprint": fp,
-                                                            "name": display,
-                                                            "custom_name": s.has_custom_name(&fp),
-                                                            "os": s.device_os(&fp)
-                                                        })
-                                                        .to_string(),
-                                                    )
-                                                }
-                                            };
-                                            drop(s);
-                                            (response.0, response.1, "application/json")
-                                        }
-                                    } else if req.starts_with("POST /api/speedtest") {
-                                        let val = json_body(&req);
-                                        let want_isp = val
-                                            .get("isp_probe")
-                                            .and_then(|v| v.as_bool())
-                                            .unwrap_or(false);
-                                        let payload_bytes = val
-                                            .get("bytes")
-                                            .and_then(|v| v.as_u64())
-                                            .unwrap_or(256 * 1024)
-                                            .clamp(900, 4 * 1024 * 1024)
-                                            as usize;
-                                        let nc_probe = Arc::clone(&nc_ref);
-                                        let pipeline = tokio::task::spawn_blocking(move || {
-                                            run_pipeline_probe(payload_bytes)
-                                        })
-                                        .await
-                                        .unwrap_or(serde_json::Value::Null);
-                                        let live = measure_live_throughput(&nc_probe).await;
-                                        let isp = if want_isp { isp_rtt_ms().await } else { None };
-                                        let body = serde_json::json!({
-                                            "success": true,
-                                            "pipeline": pipeline,
-                                            "live": live,
-                                            "isp_rtt_ms": isp,
-                                            "isp_probe_requested": want_isp
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("GET /healthz") {
-                                        let body = serde_json::json!({
-                                            "status": "healthy",
-                                            "version": "0.4.1",
-                                            "fingerprint": nc_ref.fingerprint(),
-                                            "uptime_seconds": nc_ref.created_at.elapsed().as_secs(),
-                                            "active_sessions": nc_ref.sessions.len(),
-                                            "known_peers": addrs_ref.len(),
-                                            "vpn": vpn_role,
-                                            "vpn_stats": vpn_json
-                                        })
-                                        .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("GET /api/telemetry") {
-                                        let sessions = nc_ref.sessions.len();
-                                        let peers = addrs_ref.len();
-                                        let uptime = nc_ref.created_at.elapsed().as_secs();
-                                        let sent_bytes =
-                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                        let recv_bytes =
-                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                        let sent_pkts =
-                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                        let recv_pkts =
-                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                        let retrans =
-                                            nc_ref.stats.retransmits.load(Ordering::Relaxed);
-                                        let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
-                                        let body = serde_json::json!({
-                                            "cycle": uptime / 5,
-                                            "target": "mesh-multi-hop",
-                                            "status": "Level 2 Mesh Active",
-                                            "active_sessions": sessions,
-                                            "known_peers": peers,
-                                            "uptime_seconds": uptime,
-                                            "fingerprint": nc_ref.fingerprint(),
-                                            "packets_sent": sent_pkts,
-                                            "packets_recv": recv_pkts,
-                                            "bytes_sent": sent_bytes,
-                                            "bytes_recv": recv_bytes,
-                                            "retransmits": retrans,
-                                            "drops": drops,
-                                            "vpn": vpn_role,
-                                            "vpn_stats": vpn_json,
-                                            "frame_standard": "GTF 512B Privacy / 1472B Bulk + L5 Jitter",
-                                            "handshake_status": "ML-KEM-512 + X25519 Post-Quantum Hybrid",
-                                            "discovery_source": "DNS Seed + Multicast Beacon + peers.cache"
-                                        }).to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("GET /dashboard")
-                                        || req.starts_with("GET / ")
-                                        || req.starts_with("GET /?")
-                                    {
-                                        let html = include_str!("../assets/wan_dashboard.html");
-                                        (
-                                            "HTTP/1.1 200 OK",
-                                            html.to_string(),
-                                            "text/html; charset=utf-8",
-                                        )
-                                    } else if req.starts_with("GET /metrics") {
-                                        let sessions = nc_ref.sessions.len();
-                                        let peers = addrs_ref.len();
-                                        let uptime = nc_ref.created_at.elapsed().as_secs();
-                                        let sent_bytes =
-                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                        let recv_bytes =
-                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                        let sent_pkts =
-                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                        let recv_pkts =
-                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                        let retrans =
-                                            nc_ref.stats.retransmits.load(Ordering::Relaxed);
-                                        let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
-                                        let body = format!(
-                                            "# HELP ghost_sessions_total Active peer-to-peer sessions\n# TYPE ghost_sessions_total gauge\nghost_sessions_total {}\n# HELP ghost_known_peers_total Discovered mesh peers\n# TYPE ghost_known_peers_total gauge\nghost_known_peers_total {}\n# HELP ghost_uptime_seconds Process uptime in seconds\n# TYPE ghost_uptime_seconds counter\nghost_uptime_seconds {}\n# HELP ghost_bytes_sent_total Total bytes transmitted\n# TYPE ghost_bytes_sent_total counter\nghost_bytes_sent_total {}\n# HELP ghost_bytes_recv_total Total bytes received\n# TYPE ghost_bytes_recv_total counter\nghost_bytes_recv_total {}\n# HELP ghost_packets_sent_total Total packets sent\n# TYPE ghost_packets_sent_total counter\nghost_packets_sent_total {}\n# HELP ghost_packets_recv_total Total packets received\n# TYPE ghost_packets_recv_total counter\nghost_packets_recv_total {}\n# HELP ghost_retransmits_total Total retransmissions triggered\n# TYPE ghost_retransmits_total counter\nghost_retransmits_total {}\n# HELP ghost_drops_total Total dropped or replay-rejected frames\n# TYPE ghost_drops_total counter\nghost_drops_total {}\n",
-                                            sessions, peers, uptime, sent_bytes, recv_bytes, sent_pkts, recv_pkts, retrans, drops
-                                        );
-                                        (
-                                            "HTTP/1.1 200 OK",
-                                            body,
-                                            "text/plain; version=0.0.4; charset=utf-8",
-                                        )
-                                    } else {
-                                        (
-                                            "HTTP/1.1 404 Not Found",
-                                            "Not Found".to_string(),
-                                            "text/plain",
-                                        )
-                                    };
-                                    // VPN counters are appended rather than woven into
-                                    // the base body, so the v0.4.0 metric set stays
-                                    // byte-identical when the `vpn` feature is off.
-                                    let body = if req.starts_with("GET /metrics") {
-                                        format!("{body}{vpn_prom}")
-                                    } else {
-                                        body
-                                    };
-                                    let resp = format!(
-                                        "{}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                        status_line, content_type, body.len(), body
-                                    );
-                                    let _ = stream.write_all(resp.as_bytes()).await;
-                                }
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to bind metrics HTTP endpoint on port {}: {}", mp, e);
-                }
-            }
-        });
+        control::spawn_control_center(
+            metrics_port,
+            Arc::clone(&nc),
+            Arc::clone(&addrs),
+            Arc::clone(&consumer_connected),
+            Arc::clone(&consumer_mode),
+            Arc::clone(&consumer_pin),
+            Arc::clone(&consumer_settings),
+            consumer_config.clone(),
+            lan_host.clone(),
+            pair_uri.clone(),
+            socks,
+            socks_port,
+            vpn_mode.clone(),
+            Arc::clone(&carrier),
+            Arc::clone(&pending_hs),
+            Arc::clone(&scan_notify),
+            Arc::clone(&scan_interval_secs),
+        );
     }
     // A build with only the `tray` feature keeps the lighter tray icon that
     // opens the browser. The full desktop window is started by main(), because
@@ -5908,300 +4660,20 @@ async fn run_node(
 
     // ── SOCKS5 PROXY (initiator mode) ──
     if socks {
-        let n2 = Arc::clone(&nc);
-        let a2 = Arc::clone(&addrs);
-        let ch = Arc::clone(&sess_chan);
-        let rsm = Arc::clone(&rx_state_map);
-        let ak = Arc::clone(&connect_acks);
-        let de = Arc::clone(&default_exit);
-        let srouter_socks = Arc::clone(&shard_router);
-        let cs_socks = Arc::clone(&consumer_settings);
-        // The tunnel's egress consults the fallback table, so the proxy needs it
-        // too: a peer reachable only through a relay must carry the tunnel, not
-        // just the control frames.
-        let fallback_routes_socks = Arc::clone(&fallback_routes);
-        // The tunnel's egress prefers the optional transport where a link exists,
-        // so the proxy holds it too.
-        let carrier_socks = Arc::clone(&carrier);
-        let turn_path_socks = turn_path.clone();
-        let sp = socks_port;
-        tokio::spawn(async move {
-            let lis = tokio::net::TcpListener::bind(("127.0.0.1", sp))
-                .await
-                .expect("Failed to bind SOCKS5 proxy");
-            tracing::info!("SOCKS5 proxy ready on 127.0.0.1:{sp}");
-            loop {
-                if let Ok((mut s, _)) = lis.accept().await {
-                    let nn = Arc::clone(&n2);
-                    let aa = Arc::clone(&a2);
-                    let chh = Arc::clone(&ch);
-                    let _rsm2 = Arc::clone(&rsm);
-                    let ak2 = Arc::clone(&ak);
-                    let de2 = Arc::clone(&de);
-                    let shard_router_proxy = Arc::clone(&srouter_socks);
-                    let cs2 = Arc::clone(&cs_socks);
-                    let fallback_routes_proxy = Arc::clone(&fallback_routes_socks);
-                    let carrier_proxy = Arc::clone(&carrier_socks);
-                    let turn_path_proxy = turn_path_socks.clone();
-                    tokio::spawn(async move {
-                        let mut b = [0u8; 2];
-                        if s.read_exact(&mut b).await.is_err() || b[0] != 5 {
-                            return;
-                        }
-                        let mut m = vec![0u8; b[1] as usize];
-                        if s.read_exact(&mut m).await.is_err() {
-                            return;
-                        }
-                        if s.write_all(&[5, 0]).await.is_err() {
-                            return;
-                        }
-                        let mut h = [0u8; 4];
-                        if s.read_exact(&mut h).await.is_err() || h[1] != 1 {
-                            return;
-                        }
-                        let addr = match h[3] {
-                            1 => {
-                                let mut ip = [0u8; 4];
-                                if s.read_exact(&mut ip).await.is_err() {
-                                    return;
-                                }
-                                format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3])
-                            }
-                            3 => {
-                                let mut l = [0u8; 1];
-                                if s.read_exact(&mut l).await.is_err() {
-                                    return;
-                                }
-                                let mut d = vec![0u8; l[0] as usize];
-                                if s.read_exact(&mut d).await.is_err() {
-                                    return;
-                                }
-                                String::from_utf8_lossy(&d).to_string()
-                            }
-                            _ => return,
-                        };
-                        let mut pb = [0u8; 2];
-                        if s.read_exact(&mut pb).await.is_err() {
-                            return;
-                        }
-                        let port = u16::from_be_bytes(pb);
-
-                        // ── Split tunneling ──────────────────────────────────
-                        // Hosts the user exempted leave through the local ISP,
-                        // exactly as if the mesh were not installed. This is what
-                        // keeps banking apps and geo-checked streaming working.
-                        if cs2.read().should_bypass(&addr) {
-                            let dest_direct = format!("{addr}:{port}");
-                            tracing::info!(dest = %dest_direct, "SOCKS5: bypassing mesh (split tunnel)");
-                            match tokio::net::TcpStream::connect((addr.as_str(), port)).await {
-                                Ok(upstream) => socks_relay_direct(s, upstream).await,
-                                Err(e) => {
-                                    tracing::warn!(dest = %dest_direct, error = %e, "SOCKS5: split-tunnel dial failed");
-                                    let _ = s.write_all(&[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]).await;
-                                }
-                            }
-                            return;
-                        }
-
-                        // Prefer the explicitly configured exit node (EXIT <fp>);
-                        // fall back to the first established session.
-                        let fp = match de2.lock().unwrap().clone() {
-                            Some(fp) if aa.contains_key(&fp) => Some(fp),
-                            _ => None,
-                        };
-                        let (fp, tgt) = match fp {
-                            Some(fp) => {
-                                let addr = aa
-                                    .get(&fp)
-                                    .map(|v| *v.value())
-                                    .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                                (fp, addr)
-                            }
-                            None => match nn.sessions.iter().next() {
-                                Some(e) => {
-                                    let fp = e.key().clone();
-                                    let addr = aa
-                                        .get(&fp)
-                                        .map(|v| *v.value())
-                                        .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                                    (fp, addr)
-                                }
-                                None => {
-                                    tracing::warn!("SOCKS5: No session. Use PEER command first.");
-                                    return;
-                                }
-                            },
-                        };
-                        let ss = match nn.sessions.get(&fp) {
-                            Some(s) => s,
-                            None => {
-                                tracing::warn!("SOCKS5: No session for {fp}");
-                                return;
-                            }
-                        };
-                        let key = ss.master_key;
-                        let sh = ss.session_hash;
-                        let role = ss.role;
-                        drop(ss);
-
-                        if chh.contains_key(&sh) {
-                            tracing::warn!(
-                                "SOCKS5: another tunnel is already open on this session"
-                            );
-                            return;
-                        }
-                        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-                        chh.insert(sh, tx);
-
-                        let connect_ctr = nn
-                            .sessions
-                            .get(&fp)
-                            .map(|s| s.next_tx_counter())
-                            .unwrap_or(2);
-                        let plain_dest = format!("{}:{}", addr, port);
-                        let dest = std::env::var("GHOST_EXIT_VOUCHER")
-                            .ok()
-                            .filter(|voucher| !voucher.is_empty())
-                            .map(|voucher| format!("EXITAUTH!{voucher}!{plain_dest}"))
-                            .unwrap_or(plain_dest);
-                        tracing::info!(dest = %dest, "SOCKS5 CONNECT");
-                        let connect_ctx = nn
-                            .sessions
-                            .get(&fp)
-                            .map(|s| SealCtx::from_session(&s))
-                            .unwrap_or_else(|| SealCtx {
-                                key,
-                                epoch: 0,
-                                counter: connect_ctr,
-                                nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
-                                direction: dir_for(role),
-                                session_hash: sh,
-                                ratchet_due: false,
-                            });
-                        let (f, tag) = enc_split(&connect_ctx, dest.as_bytes());
-                        match fallback_routes_proxy.path(&fp) {
-                            Some(path) => {
-                                let _ = send3_via_fallback(
-                                    &nn,
-                                    &nn.socket,
-                                    &fp,
-                                    &connect_ctx,
-                                    &f,
-                                    &tag,
-                                    &path,
-                                    turn_path_proxy.as_ref(),
-                                )
-                                .await;
-                            }
-                            None => {
-                                send3_mixed(Arc::clone(&nn.socket), &tgt, &connect_ctx, &f, &tag)
-                                    .await
-                            }
-                        }
-                        // Wait for the exit's framed "OK" (delivered via handle_pkt).
-                        let mut connected = false;
-                        for _ in 0..50 {
-                            if ak2.get(&sh).map(|v| *v.value()).unwrap_or(false) {
-                                connected = true;
-                                break;
-                            }
-                            sleep(Duration::from_millis(100)).await;
-                        }
-                        if !connected {
-                            tracing::warn!("SOCKS5 CONNECT failed");
-                            chh.remove(&sh);
-                            return;
-                        }
-                        tracing::info!("CONNECT_OK received");
-                        if s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_err() {
-                            chh.remove(&sh);
-                            return;
-                        }
-
-                        // client → mesh (initiator direction). Chunk counters are
-                        // allocated from the session's shared tx_counter so a later
-                        // CHAT / keepalive / CONNECT can never reuse a counter the
-                        // peer already saw (replay-window collision).
-                        let (mut rd, mut wr) = s.into_split();
-                        let nn2 = Arc::clone(&nn);
-                        let fp_out = fp.clone();
-                        let key_out = key;
-                        let sh_out = sh;
-                        let tgt_out = tgt;
-                        let chh2 = Arc::clone(&chh);
-                        let srouter = Arc::clone(&shard_router_proxy);
-                        let aa_proxy = Arc::clone(&aa);
-                        // The tunnel's egress consults the fallback table: a peer
-                        // that is only reachable through a relay must carry the
-                        // tunnel too, not just the control frames.
-                        let routes_out = Arc::clone(&fallback_routes_proxy);
-                        let turn_path_out = turn_path_proxy.clone();
-                        let carrier_out = Arc::clone(&carrier_proxy);
-                        tokio::spawn(async move {
-                            let mut rbuf = vec![0u8; 900]; // keeps each RS shard ≤ 486 B privacy-frame cap
-                            loop {
-                                match rd.read(&mut rbuf).await {
-                                    Ok(0) | Err(_) => break,
-                                    Ok(n) => {
-                                        let c = nn2
-                                            .sessions
-                                            .get(&fp_out)
-                                            .map(|s| s.next_tx_counter())
-                                            .unwrap_or(2);
-                                        let ctx_out = nn2
-                                            .sessions
-                                            .get(&fp_out)
-                                            .map(|s| SealCtx::from_session(&s))
-                                            .unwrap_or_else(|| SealCtx {
-                                                key: key_out,
-                                                epoch: 0,
-                                                counter: c,
-                                                nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
-                                                direction: NonceDirection::InitiatorToResponder,
-                                                session_hash: sh_out,
-                                                ratchet_due: false,
-                                            });
-                                        let (f, tag) = enc_split(&ctx_out, &rbuf[..n]);
-                                        let me = nn2.fingerprint();
-                                        let plan = nn2.contact_plan.read().await;
-                                        let route = routes_out.path(&fp_out);
-                                        let _ = send3_adaptive(
-                                            &nn2,
-                                            &nn2.socket,
-                                            &tgt_out,
-                                            &fp_out,
-                                            &ctx_out,
-                                            &f,
-                                            &tag,
-                                            &srouter,
-                                            &aa_proxy,
-                                            Some(&plan),
-                                            &me,
-                                            route.as_ref(),
-                                            turn_path_out.as_ref(),
-                                            Some(&carrier_out),
-                                        )
-                                        .await;
-                                    }
-                                }
-                            }
-                            // Client disconnected: drop the session channel so the
-                            // mesh→client relay (rx.recv()) exits and the tunnel
-                            // slot frees for the next connection.
-                            chh2.remove(&sh_out);
-                        });
-
-                        // mesh → client: ordered decrypted data via the session channel
-                        while let Some(chunk) = rx.recv().await {
-                            if wr.write_all(&chunk).await.is_err() {
-                                break;
-                            }
-                        }
-                        chh.remove(&sh);
-                    });
-                }
-            }
-        });
+        socks::spawn_socks5_server(
+            socks_port,
+            Arc::clone(&nc),
+            Arc::clone(&addrs),
+            Arc::clone(&sess_chan),
+            Arc::clone(&rx_state_map),
+            Arc::clone(&connect_acks),
+            Arc::clone(&default_exit),
+            Arc::clone(&shard_router),
+            Arc::clone(&consumer_settings),
+            Arc::clone(&fallback_routes),
+            Arc::clone(&carrier),
+            turn_path.clone(),
+        );
     }
 
     // ── BEACON SENDER (UDP multicast) ──

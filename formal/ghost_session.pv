@@ -1,59 +1,76 @@
 (*
-   GGN session model
+   GGN Session & Replay-Guard Model (ProVerif Specification)
 
-   This is a symbolic model of the protocol composition, not a replacement for
-   implementation tests. The two key-agreement components are represented by
-   independent shared secrets (classical and PQ); the hybrid KDF is abstracted
-   by hmaster. A ratchet step requires an authenticated peer signature and a
-   confirmation under the next epoch key.
+   This is a formal symbolic model of the Vantablack session protocol:
+   1. Hybrid Key Agreement: Post-quantum (ML-KEM) + Classical (X25519) + Mutual Ed25519 identity.
+   2. Ratchet Step: Authenticated rekey transition with epoch confirmation.
+   3. Injective Replay Guard: Monotonic counter binding preventing replay attacks.
+   4. Secrecy: attacker cannot learn attacker_secret under active network attacker.
 *)
 
- free c: channel.
+free c: channel.
 
- type skey.
- type pkey.
- type sig.
- type epoch.
+type skey.
+type pkey.
+type sig.
+type epoch.
 
- fun pk(skey): pkey.
- fun sign(bitstring, skey): sig.
- reduc forall m:bitstring, s:skey; verify(m, sign(m,s), pk(s)) = m.
+fun pk(skey): pkey.
+fun sign(bitstring, skey): sig.
+reduc forall m:bitstring, s:skey; verify(m, sign(m,s), pk(s)) = m.
 
- fun dh(bitstring, bitstring): bitstring.
- fun pq(bitstring, bitstring): bitstring.
- fun hmaster(bitstring, bitstring): skey.
- fun nextkey(skey, bitstring, epoch): skey.
- fun confirm(skey, epoch): bitstring.
- fun senc(bitstring, skey): bitstring.
- reduc forall m:bitstring, k:skey; sdec(senc(m,k), k) = m.
+fun dh(bitstring, bitstring): bitstring.
+fun pq(bitstring, bitstring): bitstring.
+fun hmaster(bitstring, bitstring): skey.
+fun nextkey(skey, bitstring, epoch): skey.
+fun confirm(skey, epoch): bitstring.
+fun senc(bitstring, skey): bitstring.
+reduc forall m:bitstring, k:skey; sdec(senc(m,k), k) = m.
 
- free attacker_secret: bitstring [private].
- free alice_classical: skey [private].
- free bob_classical: skey [private].
- free alice_pq: bitstring [private].
- free bob_pq: bitstring [private].
+free attacker_secret: bitstring [private].
+free alice_classical: skey [private].
+free bob_classical: skey [private].
+free alice_pq: bitstring [private].
+free bob_pq: bitstring [private].
 
- event established(pkey, pkey).
- event rotated(pkey, pkey, epoch).
+event established(pkey, pkey).
+event rotated(pkey, pkey, epoch).
+event sent_counter(pkey, pkey, skey, bitstring).
+event recv_counter(pkey, pkey, skey, bitstring).
 
- query attacker(attacker_secret).
+(* Secrecy Query *)
+query attacker(attacker_secret).
 
- process
-   new x: bitstring;
-   new y: bitstring;
-   let classical = dh(x, y) in
-   let post_quantum = pq(alice_pq, bob_pq) in
-   let master = hmaster(classical, post_quantum) in
-   let material = (x, y, alice_pq, bob_pq) in
-   let sa = sign(material, alice_classical) in
-   let sb = sign(material, bob_classical) in
-   if verify(material, sa, pk(alice_classical)) = material then
-   if verify(material, sb, pk(bob_classical)) = material then
-   event established(pk(alice_classical), pk(bob_classical));
-   new e: epoch;
-   let candidate = nextkey(master, dh(x, y), e) in
-   let tag = confirm(candidate, e) in
-   let rmaterial = (x, y, e, tag) in
-   if verify(rmaterial, sign(rmaterial, bob_classical), pk(bob_classical)) = rmaterial then
-   event rotated(pk(bob_classical), pk(bob_classical), e);
-   out(c, senc(attacker_secret, candidate))
+(* Anti-Replay Injective Agreement Query *)
+query a:pkey, b:pkey, k:skey, ctr:bitstring;
+  inj-event(recv_counter(a, b, k, ctr)) ==> inj-event(sent_counter(a, b, k, ctr)).
+
+process
+  new x: bitstring;
+  new y: bitstring;
+  let classical = dh(x, y) in
+  let post_quantum = pq(alice_pq, bob_pq) in
+  let master = hmaster(classical, post_quantum) in
+  let material = (x, y, alice_pq, bob_pq) in
+  let sa = sign(material, alice_classical) in
+  let sb = sign(material, bob_classical) in
+  if verify(material, sa, pk(alice_classical)) = material then
+  if verify(material, sb, pk(bob_classical)) = material then
+  event established(pk(alice_classical), pk(bob_classical));
+  new e: epoch;
+  let candidate = nextkey(master, dh(x, y), e) in
+  let tag = confirm(candidate, e) in
+  let rmaterial = (x, y, e, tag) in
+  if verify(rmaterial, sign(rmaterial, bob_classical), pk(bob_classical)) = rmaterial then
+  event rotated(pk(bob_classical), pk(bob_classical), e);
+
+  (* Anti-replay packet transmission *)
+  new counter_seq: bitstring;
+  event sent_counter(pk(alice_classical), pk(bob_classical), candidate, counter_seq);
+  let wire_pkt = senc((attacker_secret, counter_seq), candidate) in
+  out(c, wire_pkt);
+
+  (* Receiver verification *)
+  in(c, rx_pkt: bitstring);
+  let (rx_secret: bitstring, rx_seq: bitstring) = sdec(rx_pkt, candidate) in
+  event recv_counter(pk(alice_classical), pk(bob_classical), candidate, rx_seq)

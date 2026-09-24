@@ -36,6 +36,15 @@ jobs:
       - name: Run VPN Subsystem Tests
         run: cargo test --features vpn --verbose
 
+      - name: Run DPI & Traffic-Analysis Measurements
+        run: cargo test --test dpi_fingerprint --verbose
+
+      - name: Run Cover Traffic & Traffic-Shaping Tests
+        run: cargo test --test cover_traffic --verbose
+
+      - name: Run Control Center API & SOCKS5 E2E Tests
+        run: cargo test --test control_center_api --verbose
+
       # The headless/server build must keep working: servers and containers use
       # `--no-default-features` and need no GTK/WebKit and no display.
       - name: Verify Headless (server) Build
@@ -204,6 +213,34 @@ jobs:
           }
           if ($failed -gt 0) { throw "$failed uninstall check(s) failed" }
 
+  windows-vpn:
+    name: Windows Real Wintun Driver & VPN Tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-vpn
+
+      - name: Download & Install Wintun Driver
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile "wintun.zip"
+          Expand-Archive -Path "wintun.zip" -DestinationPath "wintun-pkg"
+          Copy-Item "wintun-pkg\wintun\bin\amd64\wintun.dll" -Destination "."
+          Copy-Item "wintun-pkg\wintun\bin\amd64\wintun.dll" -Destination "C:\Windows\System32\"
+          Write-Host "wintun.dll installed successfully"
+
+      - name: Run Wintun Device Tests
+        shell: pwsh
+        run: |
+          cargo test --features vpn --test vpn_wintun -- --nocapture
+
   docker-wan:
     name: Level 1 Kernel Netem Multi-Container Mesh
     runs-on: ubuntu-latest
@@ -269,3 +306,45 @@ jobs:
             echo "Warning: Shards in flight, checking exit logs"
             docker logs --tail 30 vantablack-exit
           fi
+
+  fuzz:
+    name: Fuzz Smoke Gates (libFuzzer 30s)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Nightly (required for cargo-fuzz)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz-cache
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Smoke Fuzz Targets Against Committed Corpora
+        run: |
+          for target in fuzz_handle_pkt fuzz_parse_handshake_pdu fuzz_kyber_ciphertext fuzz_build_gtf_frame fuzz_parse_relay_header fuzz_unframe fuzz_parse_quic_binding; do
+            echo "=== Fuzzing target: $target for 30 seconds ==="
+            cargo fuzz run "$target" -- -max_total_time=30 || exit 1
+          done
+
+  formal-model:
+    name: ProVerif Formal Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ProVerif
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y proverif
+
+      - name: Verify Handshake, Ratchet & Replay Protection
+        run: proverif formal/ghost_session.pv
+
+      - name: Verify ShardSec 3-Shard Space-Time Secrecy
+        run: proverif formal/shardsec_space_time.pv
+

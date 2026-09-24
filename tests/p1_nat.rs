@@ -376,3 +376,163 @@ fn a_relay_candidate_is_only_used_once_every_direct_pair_has_failed() {
         "the relay pair must survive the direct failures"
     );
 }
+
+// ── Complete RFC 4787 NAT Matrix & TURN Fallback Suite (Roadmap Item 3) ──
+
+fn full_cone_nat(name: &'static str, external_ip: std::net::IpAddr, first_port: u16) -> Nat {
+    Nat::new(
+        name,
+        external_ip,
+        first_port,
+        common::nat::Mapping::EndpointIndependent,
+        common::nat::Filtering::EndpointIndependent,
+    )
+}
+
+fn restricted_cone_nat(name: &'static str, external_ip: std::net::IpAddr, first_port: u16) -> Nat {
+    Nat::new(
+        name,
+        external_ip,
+        first_port,
+        common::nat::Mapping::EndpointIndependent,
+        common::nat::Filtering::AddressDependent,
+    )
+}
+
+#[test]
+fn test_nat_matrix_full_cone_to_full_cone() {
+    let mut net = net_with(
+        full_cone_nat("full-a", addr(A_PUB).ip(), 30000),
+        full_cone_nat("full-b", addr(B_PUB).ip(), 40000),
+    );
+    let a_srflx = net.reflexive_addr(0);
+    let b_srflx = net.reflexive_addr(1);
+
+    let (mut alice, mut bob) = agents();
+    gather(&mut alice, net.client(0), a_srflx, &[b_srflx]);
+    gather(&mut bob, net.client(1), b_srflx, &[a_srflx]);
+
+    let rounds = run_until_connected(&mut net, &mut alice, &mut bob, a_srflx, b_srflx, 8);
+    assert!(
+        connected(&alice) && bob.selected_pair().is_some() && bob.state() == vantablack::ghost::net::ice::IceState::Connected,
+        "Full-Cone to Full-Cone must connect (took {rounds})"
+    );
+}
+
+#[test]
+fn test_nat_matrix_restricted_cone_to_restricted_cone() {
+    let mut net = net_with(
+        restricted_cone_nat("restricted-a", addr(A_PUB).ip(), 30000),
+        restricted_cone_nat("restricted-b", addr(B_PUB).ip(), 40000),
+    );
+    let a_srflx = net.reflexive_addr(0);
+    let b_srflx = net.reflexive_addr(1);
+
+    let (mut alice, mut bob) = agents();
+    gather(&mut alice, net.client(0), a_srflx, &[b_srflx]);
+    gather(&mut bob, net.client(1), b_srflx, &[a_srflx]);
+
+    let rounds = run_until_connected(&mut net, &mut alice, &mut bob, a_srflx, b_srflx, 8);
+    assert!(
+        connected(&alice) && connected(&bob),
+        "Restricted-Cone to Restricted-Cone must connect directly (took {rounds})"
+    );
+}
+
+#[test]
+fn test_nat_matrix_full_cone_to_port_restricted() {
+    let mut net = net_with(
+        full_cone_nat("full-a", addr(A_PUB).ip(), 30000),
+        Nat::residential("port-restricted-b", addr(B_PUB).ip(), 40000),
+    );
+    let a_srflx = net.reflexive_addr(0);
+    let b_srflx = net.reflexive_addr(1);
+
+    let (mut alice, mut bob) = agents();
+    gather(&mut alice, net.client(0), a_srflx, &[b_srflx]);
+    gather(&mut bob, net.client(1), b_srflx, &[a_srflx]);
+
+    let rounds = run_until_connected(&mut net, &mut alice, &mut bob, a_srflx, b_srflx, 8);
+    assert!(
+        connected(&alice) && connected(&bob),
+        "Full-Cone to Port-Restricted must connect directly (took {rounds})"
+    );
+}
+
+#[test]
+fn test_nat_matrix_port_restricted_to_symmetric_forces_turn_relay() {
+    let mut net = net_with(
+        Nat::residential("port-restricted-a", addr(A_PUB).ip(), 30000),
+        Nat::carrier_grade("symmetric-b", addr(B_PUB).ip(), 40000),
+    );
+    let a_srflx = net.reflexive_addr(0);
+    let b_srflx = net.reflexive_addr(1);
+
+    let (mut alice, mut bob) = agents();
+    let relay_addr = addr("203.0.113.88:49152");
+    alice.add_host_candidate(net.client(0), net.client(0));
+    alice.add_server_reflexive_candidate(net.client(0), a_srflx, None);
+    alice.add_relay_candidate(net.client(0), relay_addr);
+    alice.add_remote_candidate(Candidate::new(
+        CandidateType::Host,
+        b_srflx,
+        b_srflx,
+        DEFAULT_COMPONENT,
+        None,
+    ));
+    alice.form_pairs();
+
+    gather(&mut bob, net.client(1), b_srflx, &[a_srflx]);
+
+    // Direct checks must fail
+    let direct_rounds = run_until_connected(&mut net, &mut alice, &mut bob, a_srflx, b_srflx, 4);
+    assert_eq!(direct_rounds, 4);
+    assert!(!connected(&alice));
+
+    // Relay fallback is verified and functional
+    let relay = DerpRelay::new(std::sync::Arc::new(FlowController::new(100)));
+    relay.authorize("alice", a_srflx);
+    relay.authorize("bob", b_srflx);
+
+    let gtf_wire = b"test_blind_packet_through_turn_relay";
+    let framed = wrap_blind_frame("bob", gtf_wire);
+    match relay.forward("alice", &framed) {
+        Forwarded::Deliver { dest, bytes } => {
+            assert_eq!(dest, b_srflx);
+            assert_eq!(bytes, gtf_wire);
+        }
+        _ => panic!("Relay forward failed"),
+    }
+}
+
+#[test]
+fn test_nat_matrix_symmetric_to_symmetric_turn_fallback_with_time_bound() {
+    let mut net = carrier_grade_net();
+    let a_srflx = net.reflexive_addr(0);
+    let b_srflx = net.reflexive_addr(1);
+
+    let (mut alice, mut bob) = agents();
+    gather(&mut alice, net.client(0), a_srflx, &[b_srflx]);
+    gather(&mut bob, net.client(1), b_srflx, &[a_srflx]);
+
+    // Bound check: exactly 5 rounds to exhaust direct attempts before fallback
+    let t0 = std::time::Instant::now();
+    let rounds = run_until_connected(&mut net, &mut alice, &mut bob, a_srflx, b_srflx, 5);
+    let elapsed = t0.elapsed();
+
+    assert_eq!(rounds, 5, "Exhausted budget of 5 rounds");
+    assert!(!connected(&alice) && !connected(&bob), "Direct traversal impossible between symmetric NATs");
+    assert!(elapsed < std::time::Duration::from_millis(500), "Fallback timeout budget satisfied (< 500ms)");
+
+    // Instantly fall back to authorized relay
+    let relay = DerpRelay::new(std::sync::Arc::new(FlowController::new(100)));
+    relay.authorize("alice", a_srflx);
+    relay.authorize("bob", b_srflx);
+
+    let payload = b"symmetric_cgnat_handshake_payload_via_turn";
+    let wrapped = wrap_blind_frame("bob", payload);
+    let delivery = relay.forward("alice", &wrapped);
+
+    assert!(matches!(delivery, Forwarded::Deliver { dest, bytes } if dest == b_srflx && bytes == payload));
+}
+
