@@ -327,7 +327,16 @@ jobs:
         run: cargo install cargo-fuzz --locked
 
       - name: Build Fuzz Targets
-        run: cargo fuzz build
+        run: |
+          if ! cargo fuzz build > fuzz_build.log 2>&1; then
+            echo "::error title=Fuzz Build Failed::$(tail -n 25 fuzz_build.log | tr '\n' ' ')"
+            echo "### Fuzz Build FAILED" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat fuzz_build.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat fuzz_build.log
+            exit 1
+          fi
 
       - name: Smoke Fuzz Targets Against Committed Corpora
         run: |

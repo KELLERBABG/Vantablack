@@ -1,10 +1,11 @@
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use ml_kem::kem::{Decapsulate, Encapsulate, Kem, KeyExport, TryKeyInit};
-use ml_kem::{
+pub use ml_kem::{
     DecapsulationKey512, DecapsulationKey768, EncapsulationKey, EncapsulationKey512,
-    EncapsulationKey768, MlKem512, MlKem768,
+    EncapsulationKey768,
 };
+use ml_kem::{MlKem512, MlKem768};
 use rand::RngCore;
 use sha2::Sha256;
 /// L1 — Hybrid Key Encapsulation Mechanism (KEM) Layer
