@@ -5,6 +5,9 @@ edition = "2021"
 description = "Fuzzing targets for the GhostNet protocol stack"
 license = "MIT"
 
+[package.metadata]
+cargo-fuzz = true
+
 [dependencies]
 libfuzzer-sys = "0.4"
 vantablack = { path = "..", default-features = false, features = ["fuzzing", "quic"] }
