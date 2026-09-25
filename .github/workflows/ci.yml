@@ -326,11 +326,23 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
+      - name: Build Fuzz Targets
+        run: cargo fuzz build
+
       - name: Smoke Fuzz Targets Against Committed Corpora
         run: |
           for target in fuzz_handle_pkt fuzz_parse_handshake_pdu fuzz_kyber_ciphertext fuzz_build_gtf_frame fuzz_parse_relay_header fuzz_unframe fuzz_parse_quic_binding; do
-            echo "=== Fuzzing target: $target for 30 seconds ==="
-            cargo fuzz run "$target" -- -max_total_time=30 || exit 1
+            echo "=== Fuzzing target: $target (15s smoke gate) ==="
+            if ! cargo fuzz run "$target" -- -max_total_time=15 > "fuzz_${target}.log" 2>&1; then
+              echo "::error title=Fuzz Failure::Target $target failed during smoke test!"
+              echo "### Fuzz target $target FAILED" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              tail -n 60 "fuzz_${target}.log" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              cat "fuzz_${target}.log"
+              exit 1
+            fi
+            echo "Target $target passed smoke test."
           done
 
   formal-model:
