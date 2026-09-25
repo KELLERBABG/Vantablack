@@ -188,9 +188,7 @@ pub fn spawn_socks5_server(
                     drop(ss);
 
                     if chh.contains_key(&sh) {
-                        tracing::warn!(
-                            "SOCKS5: another tunnel is already open on this session"
-                        );
+                        tracing::warn!("SOCKS5: another tunnel is already open on this session");
                         return;
                     }
                     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -237,8 +235,7 @@ pub fn spawn_socks5_server(
                             .await;
                         }
                         None => {
-                            send3_mixed(Arc::clone(&nn.socket), &tgt, &connect_ctx, &f, &tag)
-                                .await
+                            send3_mixed(Arc::clone(&nn.socket), &tgt, &connect_ctx, &f, &tag).await
                         }
                     }
                     // Wait for the exit's framed "OK" (delivered via handle_pkt).
@@ -293,7 +290,8 @@ pub fn spawn_socks5_server(
                                             key: key_out,
                                             epoch: 0,
                                             counter: c,
-                                            nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                            nonce:
+                                                vantablack::ghost::layers::l2_aead::random_xnonce(),
                                             direction: NonceDirection::InitiatorToResponder,
                                             session_hash: sh_out,
                                             ratchet_due: false,

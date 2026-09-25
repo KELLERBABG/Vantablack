@@ -192,7 +192,10 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
                             sent += 1;
                             let mut replies = 0u32;
                             for pkt in handle.drain_outbound() {
-                                if pkt.len() >= 21 && (pkt[0] >> 4) == 4 && pkt[9] == 1 && pkt[20] == 0
+                                if pkt.len() >= 21
+                                    && (pkt[0] >> 4) == 4
+                                    && pkt[9] == 1
+                                    && pkt[20] == 0
                                 {
                                     replies += 1;
                                 }
@@ -204,7 +207,10 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
                                     "FAKE-TUN self-test: PASS — ICMP echo reply returned through the mesh"
                                 );
                             } else {
-                                tracing::info!(sent, "FAKE-TUN self-test: probe sent, no reply yet");
+                                tracing::info!(
+                                    sent,
+                                    "FAKE-TUN self-test: probe sent, no reply yet"
+                                );
                             }
                         }
                     });

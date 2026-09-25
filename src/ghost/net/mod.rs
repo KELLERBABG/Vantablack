@@ -806,7 +806,11 @@ pub fn frame_wire_version(buf: &[u8]) -> u8 {
 ///
 /// The frame is always exactly [`GTF_BASE_SIZE`] (plus jitter) or [`GTF_BULK_SIZE`],
 /// so the note about v1's payload capacity applies unchanged.
-pub fn try_build_gtf_v2_frame(h: &GtfV2Header, payload: &[u8], auth_tag: &[u8; 16]) -> Result<Vec<u8>, &'static str> {
+pub fn try_build_gtf_v2_frame(
+    h: &GtfV2Header,
+    payload: &[u8],
+    auth_tag: &[u8; 16],
+) -> Result<Vec<u8>, &'static str> {
     let (total, tag_start, cap) = if h.bulk {
         (
             GTF_BULK_SIZE,
@@ -855,8 +859,17 @@ pub fn try_build_gtf_v2_frame(h: &GtfV2Header, payload: &[u8], auth_tag: &[u8; 1
 
 /// Build a v2 GTF frame. Panics on oversize (use `try_build_gtf_v2_frame` to handle the error).
 pub fn build_gtf_v2_frame(h: &GtfV2Header, payload: &[u8], auth_tag: &[u8; 16]) -> Vec<u8> {
-    try_build_gtf_v2_frame(h, payload, auth_tag)
-        .unwrap_or_else(|e| panic!("Payload ({} bytes) exceeds GTF v2 capacity ({} bytes): {e}", payload.len(), if h.bulk { V2_MAX_BULK_PAYLOAD_LEN } else { V2_MAX_PAYLOAD_LEN }))
+    try_build_gtf_v2_frame(h, payload, auth_tag).unwrap_or_else(|e| {
+        panic!(
+            "Payload ({} bytes) exceeds GTF v2 capacity ({} bytes): {e}",
+            payload.len(),
+            if h.bulk {
+                V2_MAX_BULK_PAYLOAD_LEN
+            } else {
+                V2_MAX_PAYLOAD_LEN
+            }
+        )
+    })
 }
 
 /// Parse a v2 header. Returns `None` if the frame is not v2 or is truncated.
@@ -1329,8 +1342,15 @@ fn build_bulk_frame(
     payload: &[u8],
     auth_tag: &[u8; 16],
 ) -> Vec<u8> {
-    try_build_bulk_frame(session_hash, counter, shard_index, payload, auth_tag)
-        .unwrap_or_else(|e| panic!("Payload ({} bytes) exceeds bulk frame capacity ({} bytes): {e}", payload.len(), MAX_BULK_PAYLOAD_LEN))
+    try_build_bulk_frame(session_hash, counter, shard_index, payload, auth_tag).unwrap_or_else(
+        |e| {
+            panic!(
+                "Payload ({} bytes) exceeds bulk frame capacity ({} bytes): {e}",
+                payload.len(),
+                MAX_BULK_PAYLOAD_LEN
+            )
+        },
+    )
 }
 
 /// Determine if a received frame is in bulk mode by reading the flags byte.

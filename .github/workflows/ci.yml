@@ -315,6 +315,8 @@ jobs:
 
       - name: Install Rust Nightly (required for cargo-fuzz)
         uses: dtolnay/rust-toolchain@nightly
+        with:
+          default: true
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -340,7 +342,11 @@ jobs:
       - name: Install ProVerif
         run: |
           sudo apt-get update
-          sudo apt-get install -y proverif
+          sudo apt-get install -y ocaml-nox
+          curl -sSL https://proverif.inria.fr/proverif2.05.tar.gz | tar -xz
+          cd proverif2.05
+          ./build
+          sudo cp proverif /usr/local/bin/
 
       - name: Verify Handshake, Ratchet & Replay Protection
         run: proverif formal/ghost_session.pv

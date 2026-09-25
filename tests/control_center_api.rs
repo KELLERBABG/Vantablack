@@ -150,7 +150,10 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
         std::thread::sleep(Duration::from_millis(300));
     }
 
-    assert!(healthy, "Control Center HTTP API failed to start within 12s on port {web_port}");
+    assert!(
+        healthy,
+        "Control Center HTTP API failed to start within 12s on port {web_port}"
+    );
     println!("Control Center API is healthy on port {web_port}");
 
     // ── Test 1: GET /api/status ───────────────────────────────────────────
@@ -163,7 +166,10 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
     assert_eq!(status["socks_listening"], true);
     assert_eq!(status["socks_port"], socks_port);
     assert!(status["uptime_seconds"].as_u64().is_some());
-    println!("PASS: GET /api/status validated: network_id={}", status["network_id"]);
+    println!(
+        "PASS: GET /api/status validated: network_id={}",
+        status["network_id"]
+    );
 
     // ── Test 2: GET /api/peers ────────────────────────────────────────────
     let (code, peers) = http_request(web_port, "GET", "/api/peers", None);
@@ -283,37 +289,64 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
     });
 
     // Connect to SOCKS5 proxy on 127.0.0.1:socks_port
-    let mut socks_client = TcpStream::connect(("127.0.0.1", socks_port))
-        .expect("connect to SOCKS5 proxy port");
-    socks_client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    socks_client.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut socks_client =
+        TcpStream::connect(("127.0.0.1", socks_port)).expect("connect to SOCKS5 proxy port");
+    socks_client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socks_client
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
 
     // 1. SOCKS5 Greeting: [VER=5, NMETHODS=1, METHOD=0 (No Auth)]
-    socks_client.write_all(&[0x05, 0x01, 0x00]).expect("send greeting");
+    socks_client
+        .write_all(&[0x05, 0x01, 0x00])
+        .expect("send greeting");
     let mut greeting_resp = [0u8; 2];
-    socks_client.read_exact(&mut greeting_resp).expect("read greeting response");
-    assert_eq!(greeting_resp, [0x05, 0x00], "SOCKS5 authentication negotiation must succeed");
+    socks_client
+        .read_exact(&mut greeting_resp)
+        .expect("read greeting response");
+    assert_eq!(
+        greeting_resp,
+        [0x05, 0x00],
+        "SOCKS5 authentication negotiation must succeed"
+    );
 
     // 2. SOCKS5 Connect to 127.0.0.1:echo_port
     // Format: [VER=5, CMD=1 (CONNECT), RSV=0, ATYP=1 (IPv4), DST.ADDR (4 bytes), DST.PORT (2 bytes)]
     let mut connect_cmd = vec![0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1];
     connect_cmd.extend_from_slice(&echo_port.to_be_bytes());
-    socks_client.write_all(&connect_cmd).expect("send SOCKS5 connect");
+    socks_client
+        .write_all(&connect_cmd)
+        .expect("send SOCKS5 connect");
 
     // 3. Read SOCKS5 Connect Reply
     let mut connect_resp = [0u8; 10];
-    socks_client.read_exact(&mut connect_resp).expect("read connect reply");
+    socks_client
+        .read_exact(&mut connect_resp)
+        .expect("read connect reply");
     assert_eq!(connect_resp[0], 0x05, "reply version");
-    assert_eq!(connect_resp[1], 0x00, "reply status must be 0x00 (success / granted)");
+    assert_eq!(
+        connect_resp[1], 0x00,
+        "reply status must be 0x00 (success / granted)"
+    );
 
     // 4. Send application bytes through the established SOCKS5 tunnel
     let test_data = b"VANTABLACK_SOCKS5_END_TO_END_VERIFIED_12345";
-    socks_client.write_all(test_data).expect("write through proxy");
+    socks_client
+        .write_all(test_data)
+        .expect("write through proxy");
 
     // 5. Read back echoed response
     let mut echo_back = vec![0u8; test_data.len()];
-    socks_client.read_exact(&mut echo_back).expect("read echoed bytes");
-    assert_eq!(&echo_back[..], test_data, "Echoed bytes must match exactly through proxy");
+    socks_client
+        .read_exact(&mut echo_back)
+        .expect("read echoed bytes");
+    assert_eq!(
+        &echo_back[..],
+        test_data,
+        "Echoed bytes must match exactly through proxy"
+    );
 
     echo_handle.join().expect("echo server join");
     println!("PASS: SOCKS5 end-to-end data flow verified successfully");

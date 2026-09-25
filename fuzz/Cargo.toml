@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 libfuzzer-sys = "0.4"
-vantablack = { path = "..", features = ["fuzzing", "quic"] }
+vantablack = { path = "..", default-features = false, features = ["fuzzing", "quic"] }
 
 [[bin]]
 name = "fuzz_handle_pkt"

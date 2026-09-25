@@ -5,6 +5,7 @@
 //! and the embedded HTML dashboard.
 
 use super::*;
+use crate::vpn::daemon::{vpn_export, VpnMode};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -12,7 +13,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vantablack::ghost::net::consumer::{self, ConsumerSettings};
 use vantablack::ghost::GhostNode;
-use crate::vpn::daemon::{vpn_export, VpnMode};
 
 /// Port the HTTP control center listens on (`GHOST_WEB_PORT`, else the legacy
 /// `GHOST_METRICS_PORT`, else 2270). Shared by the node and the desktop window.
@@ -278,10 +278,14 @@ pub fn spawn_control_center(
                                     let is_conn = conn_ref.load(Ordering::Relaxed);
                                     let current_mode = mode_ref.read().clone();
                                     let has_pin = pin_ref.read().is_some();
-                                    let sent_bytes = nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                    let recv_bytes = nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                    let sent_pkts = nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                    let recv_pkts = nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                    let sent_bytes =
+                                        nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                    let recv_bytes =
+                                        nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                    let sent_pkts =
+                                        nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                    let recv_pkts =
+                                        nc_ref.stats.packets_recv.load(Ordering::Relaxed);
                                     let uptime = nc_ref.created_at.elapsed().as_secs();
                                     let peers_count = addrs_ref.len();
                                     let sessions_count = nc_ref.sessions.len();
@@ -370,10 +374,15 @@ pub fn spawn_control_center(
                                                 &phs_ref,
                                             )
                                             .await;
-                                            let peers_cache = vantablack::ghost::paths::data_file("peers.cache");
-                                            if let Ok(mut current) = std::fs::read_to_string(&peers_cache) {
+                                            let peers_cache =
+                                                vantablack::ghost::paths::data_file("peers.cache");
+                                            if let Ok(mut current) =
+                                                std::fs::read_to_string(&peers_cache)
+                                            {
                                                 if !current.contains(addr_str) {
-                                                    if !current.ends_with('\n') && !current.is_empty() {
+                                                    if !current.ends_with('\n')
+                                                        && !current.is_empty()
+                                                    {
                                                         current.push('\n');
                                                     }
                                                     current.push_str(addr_str);
@@ -381,7 +390,10 @@ pub fn spawn_control_center(
                                                     let _ = std::fs::write(&peers_cache, current);
                                                 }
                                             } else {
-                                                let _ = std::fs::write(&peers_cache, format!("{}\n", addr_str));
+                                                let _ = std::fs::write(
+                                                    &peers_cache,
+                                                    format!("{}\n", addr_str),
+                                                );
                                             }
                                             let body = serde_json::json!({
                                                 "success": true,
@@ -457,7 +469,8 @@ pub fn spawn_control_center(
                                     let total_bytes = val
                                         .get("total_bytes")
                                         .and_then(|v| v.as_u64())
-                                        .unwrap_or(2_000_000) as usize;
+                                        .unwrap_or(2_000_000)
+                                        as usize;
                                     let probe_res = run_pipeline_probe(total_bytes);
                                     ("HTTP/1.1 200 OK", probe_res.to_string(), "application/json")
                                 } else if req.starts_with("GET /api/settings") {
@@ -476,19 +489,31 @@ pub fn spawn_control_center(
                                 } else if req.starts_with("POST /api/settings") {
                                     let val = json_body(&req);
                                     let mut s = cs_ref.write();
-                                    if let Some(r) = val.get("route_mode").and_then(|v| v.as_str()) {
+                                    if let Some(r) = val.get("route_mode").and_then(|v| v.as_str())
+                                    {
                                         s.set_route_mode(r);
                                     }
-                                    if let Some(add) = val.get("bypass_add").and_then(|v| v.as_str()) {
+                                    if let Some(add) =
+                                        val.get("bypass_add").and_then(|v| v.as_str())
+                                    {
                                         let _ = s.add_bypass(add);
                                     }
-                                    if let Some(rem) = val.get("bypass_remove").and_then(|v| v.as_str()) {
+                                    if let Some(rem) =
+                                        val.get("bypass_remove").and_then(|v| v.as_str())
+                                    {
                                         s.remove_bypass(rem);
                                     }
-                                    if let Some(secs) = val.get("private_mesh_scan_interval_secs").and_then(|v| v.as_u64()) {
+                                    if let Some(secs) = val
+                                        .get("private_mesh_scan_interval_secs")
+                                        .and_then(|v| v.as_u64())
+                                    {
                                         scan_interval_ref.store(secs as u32, Ordering::Relaxed);
                                     }
-                                    if let Some(names) = val.get("set_device_name").or_else(|| val.get("set_peer_name")).and_then(|v| v.as_object()) {
+                                    if let Some(names) = val
+                                        .get("set_device_name")
+                                        .or_else(|| val.get("set_peer_name"))
+                                        .and_then(|v| v.as_object())
+                                    {
                                         for (k, v) in names {
                                             if let Some(name_str) = v.as_str() {
                                                 let _ = s.set_device_name(k, name_str);
@@ -507,10 +532,14 @@ pub fn spawn_control_center(
                                     .to_string();
                                     ("HTTP/1.1 200 OK", body, "application/json")
                                 } else if req.starts_with("GET /api/wan_telemetry") {
-                                    let sent_bytes = nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                    let recv_bytes = nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                    let sent_pkts = nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                    let recv_pkts = nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                    let sent_bytes =
+                                        nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                    let recv_bytes =
+                                        nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                    let sent_pkts =
+                                        nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                    let recv_pkts =
+                                        nc_ref.stats.packets_recv.load(Ordering::Relaxed);
                                     let retrans = nc_ref.stats.retransmits.load(Ordering::Relaxed);
                                     let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
                                     let body = serde_json::json!({
@@ -545,10 +574,14 @@ pub fn spawn_control_center(
                                     let sessions = nc_ref.sessions.len();
                                     let peers = addrs_ref.len();
                                     let uptime = nc_ref.created_at.elapsed().as_secs();
-                                    let sent_bytes = nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                    let recv_bytes = nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                    let sent_pkts = nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                    let recv_pkts = nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                    let sent_bytes =
+                                        nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                    let recv_bytes =
+                                        nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                    let sent_pkts =
+                                        nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                    let recv_pkts =
+                                        nc_ref.stats.packets_recv.load(Ordering::Relaxed);
                                     let retrans = nc_ref.stats.retransmits.load(Ordering::Relaxed);
                                     let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
                                     let body = format!(

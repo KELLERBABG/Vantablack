@@ -268,7 +268,11 @@ impl SphinxShardOnion {
         // Fixed-size 576-byte frame: 2-byte inner length prefix + ciphertext + random padding
         // PEN-4 fix: reject rather than silently truncate.
         if guard_sealed.len() > SPHINX_SHARD_LEN - 2 {
-            panic!("Sphinx shard too large for 576-byte frame: {} > {}", guard_sealed.len(), SPHINX_SHARD_LEN - 2);
+            panic!(
+                "Sphinx shard too large for 576-byte frame: {} > {}",
+                guard_sealed.len(),
+                SPHINX_SHARD_LEN - 2
+            );
         }
         let mut out = vec![0u8; SPHINX_SHARD_LEN];
         let len_bytes = (guard_sealed.len() as u16).to_be_bytes();

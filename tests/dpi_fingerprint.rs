@@ -187,7 +187,10 @@ fn dpi_test_zero_plaintext_leakage_under_http_and_api_traffic() {
         }
     }
 
-    println!("PASS: Zero plaintext signatures or ASCII leakage found across {} wire bytes", all_wire_bytes.len());
+    println!(
+        "PASS: Zero plaintext signatures or ASCII leakage found across {} wire bytes",
+        all_wire_bytes.len()
+    );
 }
 
 #[test]
@@ -203,7 +206,8 @@ fn dpi_test_shannon_entropy_statistical_indistinguishability() {
 
     // 1. Generate 50 data messages (150 wire frames) with structured low-entropy plaintexts
     for i in 0..50 {
-        let plaintext = format!("Log entry #{i}: status=OK, host=node-{i}.ghostnet, payload=json_metrics_{i}");
+        let plaintext =
+            format!("Log entry #{i}: status=OK, host=node-{i}.ghostnet, payload=json_metrics_{i}");
         let frames = produce_wire_frames(&key, epoch, i, plaintext.as_bytes(), false);
         for frame in frames {
             let payload_raw = unframe(extract_payload(&frame)).expect("unframe payload");
@@ -240,7 +244,8 @@ fn dpi_test_shannon_entropy_statistical_indistinguishability() {
     let stream_cover_entropy = shannon_entropy(&cover_wire_stream);
 
     let mean_data_norm = data_norm_entropies.iter().sum::<f64>() / data_norm_entropies.len() as f64;
-    let mean_cover_norm = cover_norm_entropies.iter().sum::<f64>() / cover_norm_entropies.len() as f64;
+    let mean_cover_norm =
+        cover_norm_entropies.iter().sum::<f64>() / cover_norm_entropies.len() as f64;
 
     println!("Aggregate Data Stream Entropy:  {stream_data_entropy:.4} / 8.0 bits/byte (Stream size: {} bytes)", data_wire_stream.len());
     println!("Aggregate Cover Stream Entropy: {stream_cover_entropy:.4} / 8.0 bits/byte (Stream size: {} bytes)", cover_wire_stream.len());
@@ -336,11 +341,21 @@ fn dpi_test_inter_arrival_timing_jitter_distribution() {
     let expected_mean = 3.0 / target_rate_hz; // 1.5s per message
 
     println!("Inter-Arrival Timing Statistics ({} samples):", n_samples);
-    println!("  - Mean interval: {:.4}s (Target: {:.4}s)", mean, expected_mean);
+    println!(
+        "  - Mean interval: {:.4}s (Target: {:.4}s)",
+        mean, expected_mean
+    );
     println!("  - Standard deviation: {:.4}s", std_dev);
     println!("  - Variance: {:.4}", variance);
-    println!("  - Coefficient of Variation (CV): {:.4}", coefficient_of_variation);
-    println!("  - Unique intervals: {} / {}", unique_gaps.len(), n_samples);
+    println!(
+        "  - Coefficient of Variation (CV): {:.4}",
+        coefficient_of_variation
+    );
+    println!(
+        "  - Unique intervals: {} / {}",
+        unique_gaps.len(),
+        n_samples
+    );
 
     // 1. Mean must be within 15% of target
     assert!(
@@ -349,7 +364,10 @@ fn dpi_test_inter_arrival_timing_jitter_distribution() {
     );
 
     // 2. Variance must be strictly positive (not a metronome)
-    assert!(variance > 0.5, "Variance too low; looks like a fixed timer!");
+    assert!(
+        variance > 0.5,
+        "Variance too low; looks like a fixed timer!"
+    );
 
     // 3. For an exponential distribution, CV (std_dev / mean) is theoretically 1.0
     assert!(

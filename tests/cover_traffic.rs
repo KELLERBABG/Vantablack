@@ -87,7 +87,8 @@ fn produce_wire_frame(
 #[test]
 fn test_cover_traffic_wire_size_indistinguishability() {
     let session_key = [0x42u8; 32];
-    let data_payload = b"GET /api/v1/resource/secure_query_user HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    let data_payload =
+        b"GET /api/v1/resource/secure_query_user HTTP/1.1\r\nHost: example.com\r\n\r\n";
     let cover_payload = DUMMY_MAGIC;
 
     let data_frames = produce_wire_frame(&session_key, 1, 100, data_payload, false);
@@ -99,10 +100,18 @@ fn test_cover_traffic_wire_size_indistinguishability() {
     // Exact wire size equivalence: both must be standard GTF privacy frame size
     let expected_size = GTF_BASE_SIZE + JITTER_MAX;
     for df in &data_frames {
-        assert_eq!(df.len(), expected_size, "Data frame size must match GTF privacy standard");
+        assert_eq!(
+            df.len(),
+            expected_size,
+            "Data frame size must match GTF privacy standard"
+        );
     }
     for cf in &cover_frames {
-        assert_eq!(cf.len(), expected_size, "Cover frame size must match GTF privacy standard exactly");
+        assert_eq!(
+            cf.len(),
+            expected_size,
+            "Cover frame size must match GTF privacy standard exactly"
+        );
     }
 }
 
@@ -167,7 +176,8 @@ fn test_simulated_mesh_100_packets_cover_traffic_ratio_and_jitter() {
 
         // Periodically inject cover message (simulating 1 cover per ~2 data bursts)
         if i % 2 == 0 {
-            let cover_wire_shards = produce_wire_frame(&session_key, epoch, counter, DUMMY_MAGIC, true);
+            let cover_wire_shards =
+                produce_wire_frame(&session_key, epoch, counter, DUMMY_MAGIC, true);
             total_cover_messages += 1;
             counter += 1;
 
@@ -198,7 +208,8 @@ fn test_simulated_mesh_100_packets_cover_traffic_ratio_and_jitter() {
             let mut recovered_cover_bytes = Vec::new();
             recovered_cover_bytes.extend_from_slice(decrypted_cover_shards[0].as_ref().unwrap());
             recovered_cover_bytes.extend_from_slice(decrypted_cover_shards[1].as_ref().unwrap());
-            let cover_len = u16::from_be_bytes(recovered_cover_bytes[0..2].try_into().unwrap()) as usize;
+            let cover_len =
+                u16::from_be_bytes(recovered_cover_bytes[0..2].try_into().unwrap()) as usize;
             let cover_payload = &recovered_cover_bytes[2..2 + cover_len];
             if is_dummy_payload(cover_payload) {
                 received_cover_dummies += 1;
@@ -231,5 +242,8 @@ fn test_simulated_mesh_100_packets_cover_traffic_ratio_and_jitter() {
     );
 
     assert!(mean_interval > 0.05, "Mean gap must be realistic");
-    assert!(cv > 0.40, "Coefficient of variation for exponential distribution must exceed 0.40 (not a metronome)");
+    assert!(
+        cv > 0.40,
+        "Coefficient of variation for exponential distribution must exceed 0.40 (not a metronome)"
+    );
 }

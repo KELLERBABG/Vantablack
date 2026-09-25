@@ -22,18 +22,15 @@ use tokio::time::sleep;
 
 use ml_kem::kem::Decapsulate;
 use ml_kem::{Ciphertext, DecapsulationKey512, DecapsulationKey768, KeyExport, MlKem512};
-#[cfg(all(feature = "tray", not(feature = "webview")))]
-mod tray;
-#[cfg(feature = "webview")]
-mod webview;
 mod cli;
 mod control;
 mod socks;
+#[cfg(all(feature = "tray", not(feature = "webview")))]
+mod tray;
 mod vpn;
+#[cfg(feature = "webview")]
+mod webview;
 use control::{consumer_config_path, control_port_from_env, load_consumer_settings};
-use vpn::{init_vpn_mode, VpnMode};
-#[cfg(feature = "vpn")]
-use vpn::{hub::VPN_PAYLOAD_MAGIC, tun::TunDevice};
 use vantablack::ghost::{
     layers::{
         l0_identity,
@@ -84,6 +81,9 @@ use vantablack::ghost::{
     },
     GhostNode,
 };
+#[cfg(feature = "vpn")]
+use vpn::{hub::VPN_PAYLOAD_MAGIC, tun::TunDevice};
+use vpn::{init_vpn_mode, VpnMode};
 
 /// Whether ShardSec (per-shard AEAD) is enabled for outbound frames.
 ///
@@ -105,9 +105,7 @@ fn shardsec_enabled_for(env_value: Option<&str>) -> bool {
     match env_value {
         // Unset: per-shard AEAD is the default.
         None => true,
-        Some(v) => {
-            !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false"))
-        }
+        Some(v) => !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false")),
     }
 }
 
@@ -538,7 +536,10 @@ pub(crate) async fn send3_mixed(
         let header = ctx.data_header(i as u8, false, 0);
         let frame = match net::try_build_gtf_v2_frame(&header, &f[i], tag) {
             Ok(v) => v,
-            Err(e) => { tracing::warn!("GTF v2 frame oversize ({}): {e}", f[i].len()); continue; }
+            Err(e) => {
+                tracing::warn!("GTF v2 frame oversize ({}): {e}", f[i].len());
+                continue;
+            }
         };
         pending.push(enqueue_mixed_frame(&sock, *dst, frame));
     }
@@ -1533,7 +1534,8 @@ impl RxContext {
                 return;
             };
             if let Some(r) = assemble(&self.spool, ctr, si, plain_shard).await {
-                self.deliver(ctr, v2, r, src, Some(net::parse_session_hash(datagram))).await;
+                self.deliver(ctr, v2, r, src, Some(net::parse_session_hash(datagram)))
+                    .await;
             }
             return;
         }
@@ -1547,7 +1549,8 @@ impl RxContext {
             // The legacy path's frames were opened by `open_received_frame` at
             // the candidates loop, but the hash still names the session; keep
             // the wire value so both modes behave identically downstream.
-            self.deliver(ctr, v2, r, src, Some(net::parse_session_hash(datagram))).await;
+            self.deliver(ctr, v2, r, src, Some(net::parse_session_hash(datagram)))
+                .await;
         } else if std::env::var("GGN_DEBUG_RX").is_ok() {
             tracing::info!("assemble dropped ctr={ctr} si={si}");
         }
@@ -3007,10 +3010,7 @@ async fn handle_pkt(
                     let ours = cand.role.seal_direction();
                     for direction in [ours.peer_direction(), ours] {
                         let plan = sess.plan_open(epoch, direction, ctr);
-                        if !matches!(
-                            plan,
-                            vantablack::ghost::session::ratchet::OpenPlan::Refused
-                        ) {
+                        if !matches!(plan, vantablack::ghost::session::ratchet::OpenPlan::Refused) {
                             sess.commit_open(epoch, direction, plan);
                             break;
                         }
@@ -6533,11 +6533,8 @@ mod shardsec_default_tests {
         let (carriers, tag) = enc_split(&ctx, b"ingest parity");
 
         for (index, carrier) in carriers.iter().enumerate() {
-            let datagram = net::build_gtf_v2_frame(
-                &ctx.data_header(index as u8, false, 0),
-                carrier,
-                &tag,
-            );
+            let datagram =
+                net::build_gtf_v2_frame(&ctx.data_header(index as u8, false, 0), carrier, &tag);
             let meta = V2FrameMeta::of(&datagram).expect("v2 frame");
             assert!(meta.shardsec, "the flag must survive the wire round trip");
             assert_eq!(meta.epoch, ctx.epoch);

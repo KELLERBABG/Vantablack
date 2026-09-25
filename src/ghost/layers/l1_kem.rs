@@ -895,7 +895,8 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
             return None;
         }
         let count = data[16] as usize;
-        if count == 0 || count > 2 || len <= 17 + 32 + 32 + 64 + if allow_reserved { 1 } else { 0 } {
+        if count == 0 || count > 2 || len <= 17 + 32 + 32 + 64 + if allow_reserved { 1 } else { 0 }
+        {
             return None;
         }
         let mut at = 17;

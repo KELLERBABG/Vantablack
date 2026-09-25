@@ -414,7 +414,9 @@ fn test_nat_matrix_full_cone_to_full_cone() {
 
     let rounds = run_until_connected(&mut net, &mut alice, &mut bob, a_srflx, b_srflx, 8);
     assert!(
-        connected(&alice) && bob.selected_pair().is_some() && bob.state() == vantablack::ghost::net::ice::IceState::Connected,
+        connected(&alice)
+            && bob.selected_pair().is_some()
+            && bob.state() == vantablack::ghost::net::ice::IceState::Connected,
         "Full-Cone to Full-Cone must connect (took {rounds})"
     );
 }
@@ -521,8 +523,14 @@ fn test_nat_matrix_symmetric_to_symmetric_turn_fallback_with_time_bound() {
     let elapsed = t0.elapsed();
 
     assert_eq!(rounds, 5, "Exhausted budget of 5 rounds");
-    assert!(!connected(&alice) && !connected(&bob), "Direct traversal impossible between symmetric NATs");
-    assert!(elapsed < std::time::Duration::from_millis(500), "Fallback timeout budget satisfied (< 500ms)");
+    assert!(
+        !connected(&alice) && !connected(&bob),
+        "Direct traversal impossible between symmetric NATs"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "Fallback timeout budget satisfied (< 500ms)"
+    );
 
     // Instantly fall back to authorized relay
     let relay = DerpRelay::new(std::sync::Arc::new(FlowController::new(100)));
@@ -533,6 +541,7 @@ fn test_nat_matrix_symmetric_to_symmetric_turn_fallback_with_time_bound() {
     let wrapped = wrap_blind_frame("bob", payload);
     let delivery = relay.forward("alice", &wrapped);
 
-    assert!(matches!(delivery, Forwarded::Deliver { dest, bytes } if dest == b_srflx && bytes == payload));
+    assert!(
+        matches!(delivery, Forwarded::Deliver { dest, bytes } if dest == b_srflx && bytes == payload)
+    );
 }
-

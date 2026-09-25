@@ -166,10 +166,7 @@ impl GhostNode {
                                 // Display plaintext if UTF-8.
                                 if let Ok(text) = std::str::from_utf8(plaintext) {
                                     let text = text.trim_end_matches('\0');
-                                    info!(
-                                        "[{}] {}: {}",
-                                        worker_fp, entry.peer_fingerprint, text
-                                    );
+                                    info!("[{}] {}: {}", worker_fp, entry.peer_fingerprint, text);
                                 }
                                 found = true;
                                 break;

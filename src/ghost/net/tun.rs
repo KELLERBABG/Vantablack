@@ -305,4 +305,3 @@ pub fn is_wintun_installed() -> bool {
 pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
     None
 }
-
