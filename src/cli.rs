@@ -62,6 +62,14 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             );
             Some(Ok(()))
         }
+        "skywave-status" | "sdr-status" => {
+            println!("Atmospheric Broadcast OS (ABOS) Skywave Interface:");
+            println!("  Carrier Band: 2–10 MHz (NVIS Skywave)");
+            println!("  Propagation: 70°–90° Near-Vertical Incidence (Zero Skip Zone)");
+            println!("  Modulation: DSSS below-noise + LDPC(256/512)");
+            println!("  Status: {}", if cfg!(feature = "sdr") { "Enabled (compiled with --features sdr)" } else { "Disabled (compile with --features sdr)" });
+            Some(Ok(()))
+        }
         "--version" | "-v" | "version" => {
             println!("vantablack {}", env!("CARGO_PKG_VERSION"));
             Some(Ok(()))
@@ -74,10 +82,12 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!(
                 "  ggn join-key <SHARE1> <SHARE2>  Reconstruct secret from any 2 Shamir shares"
             );
+            println!("  ggn sdr-status                  Show atmospheric skywave (ABOS) carrier status");
             println!("  ggn --version                   Show version information");
             println!("  ggn --help                      Show this help");
             Some(Ok(()))
         }
+
         _ => None,
     }
 }

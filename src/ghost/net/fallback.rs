@@ -54,18 +54,23 @@ pub enum FallbackPath {
     /// gave it (advertised as a relay candidate in its ICE offer), and our
     /// allocation is what carries the datagram there.
     Turn { peer_relayed: SocketAddr },
+    /// Through atmospheric ionospheric skywave (NVIS) via ABOS SDR.
+    Skywave { nvis_freq_khz: u32 },
 }
 
 impl FallbackPath {
     /// Whether traffic on this path passes a third party.
     pub fn is_relayed(&self) -> bool {
-        !matches!(self, FallbackPath::Direct)
+        match self {
+            FallbackPath::Direct | FallbackPath::Skywave { .. } => false,
+            _ => true,
+        }
     }
 
     /// The address datagrams for the target must be sent to.
     pub fn egress_addr(&self) -> Option<SocketAddr> {
         match self {
-            FallbackPath::Direct => None,
+            FallbackPath::Direct | FallbackPath::Skywave { .. } => None,
             FallbackPath::MeshRelay { relay_addr, .. } => Some(*relay_addr),
             FallbackPath::Turn { peer_relayed } => Some(*peer_relayed),
         }
@@ -77,9 +82,11 @@ impl FallbackPath {
             FallbackPath::Direct => "direct",
             FallbackPath::MeshRelay { .. } => "mesh-relay",
             FallbackPath::Turn { .. } => "turn",
+            FallbackPath::Skywave { .. } => "skywave-nvis",
         }
     }
 }
+
 
 /// Choose the cheapest fallback that can actually carry traffic to `target_fp`.
 ///

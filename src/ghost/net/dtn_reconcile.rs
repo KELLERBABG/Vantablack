@@ -44,7 +44,43 @@ impl DtnBundle {
         hasher.update(&self.payload_hash);
         hasher.finalize().into()
     }
+
+    /// Export bundle as an atmospheric skywave transmission payload (ABOS).
+    pub fn to_skywave_payload(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(64 + self.payload.len());
+        out.extend_from_slice(DTN_RECONCILE_MAGIC);
+        out.extend_from_slice(&self.bundle_id);
+        out.extend_from_slice(&self.sequence.to_be_bytes());
+        out.extend_from_slice(&self.payload_hash);
+        out.extend_from_slice(&(self.payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(&self.payload);
+        out
+    }
+
+    /// Parse a bundle received from an atmospheric skywave transmission (ABOS).
+    pub fn from_skywave_payload(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 64 || &bytes[..4] != DTN_RECONCILE_MAGIC {
+            return None;
+        }
+        let mut bundle_id = [0u8; 16];
+        bundle_id.copy_from_slice(&bytes[4..20]);
+        let sequence = u64::from_be_bytes(bytes[20..28].try_into().ok()?);
+        let mut payload_hash = [0u8; 32];
+        payload_hash.copy_from_slice(&bytes[28..60]);
+        let payload_len = u32::from_be_bytes(bytes[60..64].try_into().ok()?) as usize;
+        if bytes.len() < 64 + payload_len {
+            return None;
+        }
+        let payload = bytes[64..64 + payload_len].to_vec();
+        Some(Self {
+            bundle_id,
+            sequence,
+            payload_hash,
+            payload,
+        })
+    }
 }
+
 
 /// Merkle tree over buffered DTN bundles for logarithmic anti-entropy reconciliation.
 #[derive(Debug, Clone, Default)]

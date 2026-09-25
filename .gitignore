@@ -31,6 +31,8 @@ __pycache__/
 *.bundle
 PROTOTYPE.md
 config.env
+abos_config.json
+
 
 # Windows installer build output (scripts/build_installer.ps1).
 # `installer/` and `scripts/build_installer.ps1` are source and stay tracked;

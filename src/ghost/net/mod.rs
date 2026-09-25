@@ -32,6 +32,7 @@ pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod relay;
+pub mod sdr_bridge;
 pub mod sharded_compute;
 pub mod shardsec;
 pub mod sovereign_cloud;

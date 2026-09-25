@@ -344,7 +344,14 @@ pub fn spawn_control_center(
                                             "peer_count": carrier_ref.peer_count(),
                                             "link_count": carrier_ref.link_count(),
                                         }),
+                                        "skywave": serde_json::json!({
+                                            "enabled": cfg!(feature = "sdr"),
+                                            "carrier": "ABOS (Atmospheric Broadcast OS)",
+                                            "band": "2-10 MHz NVIS HF",
+                                            "propagation": "Near-Vertical Incidence Skywave (Zero Skip Zone)",
+                                        }),
                                         "traffic": {
+
                                             "bytes_sent": sent_bytes,
                                             "bytes_recv": recv_bytes,
                                             "packets_sent": sent_pkts,

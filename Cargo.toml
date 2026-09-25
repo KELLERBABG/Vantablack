@@ -48,6 +48,10 @@ pkcs11 = []
 # are accepted because the identity is bound to the TLS session by a channel
 # binding instead — see `ghost::net::quic`.
 quic = ["dep:quinn", "dep:rcgen"]
+# Atmospheric Broadcast OS (ABOS) SDR ionospheric skywave carrier:
+# Enables NVIS 2–10 MHz beyond-line-of-sight and meteor-burst physical fallback.
+sdr = ["dep:abos"]
+
 
 # Embeds the application icon and version block into the Windows binaries
 # (see build.rs and assets/app.rc). Harmless everywhere else: the build script
@@ -137,3 +141,5 @@ smoltcp = { version = "0.14.0", default-features = false, features = ["std", "me
 # installed first.
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"], optional = true }
+abos = { git = "https://github.com/KELLERBABG/ABOS.git", optional = true }
+

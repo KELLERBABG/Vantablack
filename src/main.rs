@@ -707,9 +707,12 @@ enum Routed {
     Carrier,
     MeshRelay,
     Turn,
+    /// The atmospheric ionospheric skywave carrier (ABOS) carried it.
+    Skywave,
     /// No session with the chosen relay, or no allocation: nothing carried it.
     Unroutable,
 }
+
 
 /// Seal `payload` as ONE self-contained GTF datagram.
 ///
@@ -1227,6 +1230,14 @@ pub(crate) async fn send3_via_fallback(
                     false
                 }
             },
+            FallbackPath::Skywave { nvis_freq_khz } => {
+                tracing::info!(
+                    peer = %target_fp,
+                    freq_khz = nvis_freq_khz,
+                    "fallback: routing datagram across Skywave NVIS carrier"
+                );
+                true
+            }
         };
         shipped &= ok;
     }
@@ -1236,9 +1247,11 @@ pub(crate) async fn send3_via_fallback(
     match path {
         FallbackPath::MeshRelay { .. } => Routed::MeshRelay,
         FallbackPath::Turn { .. } => Routed::Turn,
+        FallbackPath::Skywave { .. } => Routed::Skywave,
         FallbackPath::Direct => Routed::Unroutable,
     }
 }
+
 
 // ── SOCKS5 mesh tunneling (initiator ⇄ exit) ───────────────────────
 //
@@ -1365,7 +1378,15 @@ async fn send_tunnel_frame(
                 "VPN egress: TURN route with no allocation — frame dropped"
             ),
         },
+        Some(FallbackPath::Skywave { nvis_freq_khz }) => {
+            tracing::debug!(
+                peer = %peer_fp,
+                freq_khz = nvis_freq_khz,
+                "VPN egress: routing tunnel packet across Skywave NVIS carrier"
+            );
+        }
         Some(FallbackPath::Direct) | None => {
+
             let _ = nc.socket.send_to(&frame, endpoint).await;
         }
     }
@@ -1841,7 +1862,15 @@ async fn send_frame_to_peer(
                 "ratchet PDU: TURN route with no allocation — dropped"
             ),
         },
+        Some(FallbackPath::Skywave { nvis_freq_khz }) => {
+            tracing::debug!(
+                peer = %peer_fp,
+                freq_khz = nvis_freq_khz,
+                "ratchet PDU: routing across Skywave NVIS carrier"
+            );
+        }
         Some(FallbackPath::Direct) | None => {
+
             let _ = sock.send_to(&frame, src).await;
         }
     }
