@@ -316,7 +316,7 @@ jobs:
       - name: Install Rust Nightly (required for cargo-fuzz)
         uses: dtolnay/rust-toolchain@nightly
         with:
-          default: true
+          components: llvm-tools-preview
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -328,10 +328,9 @@ jobs:
 
       - name: Smoke Fuzz Targets Against Committed Corpora
         run: |
-          rustup default nightly
           for target in fuzz_handle_pkt fuzz_parse_handshake_pdu fuzz_kyber_ciphertext fuzz_build_gtf_frame fuzz_parse_relay_header fuzz_unframe fuzz_parse_quic_binding; do
             echo "=== Fuzzing target: $target for 30 seconds ==="
-            cargo +nightly fuzz run "$target" -- -max_total_time=30 || exit 1
+            cargo fuzz run "$target" -- -max_total_time=30 || exit 1
           done
 
   formal-model:
