@@ -137,7 +137,9 @@ The core cryptographic and transport pipeline is structured into nine distinct l
 - **`src/ghost/net/entropy_beacon.rs`**
   Decentralized randomness beacon that periodically establishes global epoch timestamps to defeat message replay attacks across time.
 - **`src/ghost/net/fallback.rs`**
-  Automatic fallback manager that switches connection strategies (direct UDP, hole punching, QUIC, or encrypted TURN relaying) when network links fail.
+  Automatic fallback manager that switches connection strategies (direct UDP, hole punching, QUIC, encrypted TURN relaying, or out-of-band atmospheric skywave) when network links fail.
+- **`src/ghost/net/sdr_bridge.rs`**
+  Physical-layer SDR bridge adapter linking Vantablack datagrams to the Atmospheric Broadcast OS (ABOS) HF skywave radio carrier under `--features sdr`.
 - **`src/ghost/net/ice.rs`**
   Interactive Connectivity Establishment implementation for negotiating network paths and coordinating firewall hole punching.
 - **`src/ghost/net/mesh.rs`**
