@@ -11,6 +11,6 @@ RUN cargo build --release --bin wan_mesh --no-default-features
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates iproute2 iptables && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/wan_mesh /usr/local/bin/wan_mesh
-COPY entrypoint.wan.sh /usr/local/bin/entrypoint.sh
+COPY scripts/entrypoint.wan.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/wan_mesh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

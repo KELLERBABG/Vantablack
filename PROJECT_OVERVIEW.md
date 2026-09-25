@@ -219,10 +219,10 @@ The core cryptographic and transport pipeline is structured into nine distinct l
   System package templates, including Arch Linux PKGBUILD and Debian packaging rules.
 - **`deploy/`**
   Systemd service unit definitions and configuration templates for headless Linux servers and relays.
-- **`docker-compose.wan.yml`, `Dockerfile.wan`, `entrypoint.wan.sh`**
+- **`docker-compose.wan.yml`, `Dockerfile.wan` & `scripts/entrypoint.wan.sh`**
   Containerized multi-node testing mesh used in continuous integration pipelines.
-- **`install.ps1` & `install.sh`**
-  One-line installer scripts for Windows PowerShell and Unix bash environments.
+- **`scripts/install.ps1` & `scripts/install.sh`**
+  One-line automated installer scripts for Windows PowerShell and Unix bash environments.
 - **`docs/`**
   Detailed cryptographic deep-dives, protocol specifications, NAT traversal matrices, and whitepapers.
 

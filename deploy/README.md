@@ -16,7 +16,7 @@ The reference deployment creates a reproducible 3-node in-container mesh:
 docker compose up -d
 
 # 2. Run automated validation smoke test
-./smoke_test.sh
+../scripts/smoke_test.sh
 
 # 3. Teardown
 docker compose down
