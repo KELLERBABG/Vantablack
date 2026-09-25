@@ -324,13 +324,14 @@ jobs:
           key: fuzz-cache
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
 
       - name: Smoke Fuzz Targets Against Committed Corpora
         run: |
+          rustup default nightly
           for target in fuzz_handle_pkt fuzz_parse_handshake_pdu fuzz_kyber_ciphertext fuzz_build_gtf_frame fuzz_parse_relay_header fuzz_unframe fuzz_parse_quic_binding; do
             echo "=== Fuzzing target: $target for 30 seconds ==="
-            cargo fuzz run "$target" -- -max_total_time=30 || exit 1
+            cargo +nightly fuzz run "$target" -- -max_total_time=30 || exit 1
           done
 
   formal-model:
@@ -342,11 +343,10 @@ jobs:
       - name: Install ProVerif
         run: |
           sudo apt-get update
-          sudo apt-get install -y ocaml-nox
+          sudo apt-get install -y ocaml
           curl -sSL https://proverif.inria.fr/proverif2.05.tar.gz | tar -xz
-          cd proverif2.05
-          ./build
-          sudo cp proverif /usr/local/bin/
+          (cd proverif2.05 && ./build -nointeract)
+          sudo cp proverif2.05/proverif /usr/local/bin/
 
       - name: Verify Handshake, Ratchet & Replay Protection
         run: proverif formal/ghost_session.pv
