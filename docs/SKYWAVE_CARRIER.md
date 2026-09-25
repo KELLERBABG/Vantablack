@@ -55,9 +55,9 @@ The Skywave fallback operates on High Frequency (HF) bands between **2 MHz and 1
 ```
 
 ### Key Physical Guarantees:
-1. **Zero Intermediate Servers:** Radiation reflects directly off ionized atmospheric plasma layers ($D, E, F_1, F_2$). Because the atmosphere itself serves as the passive reflector, `is_relayed()` evaluates to `false`. There are no cloud intermediaries, proxy servers, or telecom operators in the signal path.
-2. **Terrain Immunity:** Standard VHF/UHF tactical radios require direct line-of-sight. NVIS signals radiate almost vertically ($70^\circ\text{–}90^\circ$), bouncing back downwards into valleys, urban centers, and across mountainous terrain within a 0–500 km radius without line-of-sight dead zones.
-3. **Low Probability of Intercept / Detection (LPI/LPD):** Packets are spread across frequencies using Direct Sequence Spread Spectrum (DSSS) and pseudo-random frequency hopping (FHSS), submerging the signal beneath the atmospheric thermal noise floor ($SNR < 0\text{ dB}$).
+1. **Zero Intermediate Servers:** Radiation reflects directly off ionized atmospheric plasma layers (D, E, F1, F2). Because the atmosphere itself serves as the passive reflector, `is_relayed()` evaluates to `false`. There are no cloud intermediaries, proxy servers, or telecom operators in the signal path.
+2. **Terrain Immunity:** Standard VHF/UHF tactical radios require direct line-of-sight. NVIS signals radiate almost vertically (70°–90°), bouncing back downwards into valleys, urban centers, and across mountainous terrain within a 0–500 km radius without line-of-sight dead zones.
+3. **Low Probability of Intercept / Detection (LPI/LPD):** Packets are spread across frequencies using Direct Sequence Spread Spectrum (DSSS) and pseudo-random frequency hopping (FHSS), submerging the signal beneath the atmospheric thermal noise floor (SNR < 0 dB).
 
 ---
 
