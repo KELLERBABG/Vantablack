@@ -922,7 +922,7 @@ open http://localhost:2270</pre>
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
       var globe = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 2.0, vertexColors: true, transparent: true, opacity: 0.75,
+        size: 2.4, vertexColors: true, transparent: true, opacity: 0.85,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
       scene.add(globe);
@@ -942,7 +942,7 @@ open http://localhost:2270</pre>
       var lgeo = new THREE.BufferGeometry();
       lgeo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
       var lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
-        color: 0x00f0ff, transparent: true, opacity: 0.12,
+        color: 0x00f0ff, transparent: true, opacity: 0.18,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
       scene.add(lines);
@@ -953,17 +953,21 @@ open http://localhost:2270</pre>
         var w = window.innerWidth, h = window.innerHeight;
         renderer.setSize(w, h, false);
         camera.aspect = w / h;
-        camera.position.z = w < 820 ? 400 : 300;
+        camera.position.z = w < 820 ? 380 : 300;
+        if (scene) {
+          scene.position.x = w < 960 ? 0 : 96;
+          scene.position.y = w < 960 ? -15 : -34;
+        }
         camera.updateProjectionMatrix();
       }
       resize();
       window.addEventListener('resize', resize);
 
-      if (reduce) { renderer.render(scene, camera); return; }
+      // Always animate hero globe (prevent Windows reduced-motion hard stop)
 
       (function frame() {
         requestAnimationFrame(frame);
-        globe.rotation.y += 0.0008;
+        globe.rotation.y += 0.0016;
         globe.rotation.x = Math.sin(Date.now() * 0.0001) * 0.05;
         lines.rotation.copy(globe.rotation);
         renderer.render(scene, camera);
