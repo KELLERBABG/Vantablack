@@ -54,14 +54,6 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "Reed-Solomon RS(2,1) encoding, and replay sliding window specifications.",
             ),
             (
-                "formal-spec",
-                "FORMAL_PROTOCOL_SPECIFICATION.md",
-                "Formal Protocol Specification (RFC-Style)",
-                "Formal RFC Specification",
-                "Normative cryptographic constructions, state transitions, wire layouts, "
-                "and ProVerif security invariants for Vantablack v0.7.6.",
-            ),
-            (
                 "sota",
                 "SOTA.md",
                 "State of the Art (SOTA) Architectural Benchmark",
@@ -74,22 +66,6 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
     (
         "Architecture",
         [
-            (
-                "overview",
-                "PROJECT_OVERVIEW.md",
-                "System Overview &amp; Capabilities",
-                "System Overview",
-                "End-to-end architectural tour of the 11-layer post-quantum mesh stack, "
-                "control plane API, and deployment topologies.",
-            ),
-            (
-                "whitepaper",
-                "WHITEPAPER.md",
-                "Architecture Whitepaper",
-                "Architecture Whitepaper",
-                "Theoretical underpinnings of post-quantum WAN mesh routing, multipath "
-                "traffic dispersion, and Poisson timing reputation matrix.",
-            ),
             (
                 "crypto",
                 "CRYPTOGRAPHY_DEEP_DIVE.md",
@@ -109,7 +85,7 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
         ],
     ),
     (
-        "Networking &amp; Routing",
+        "Networking &amp; Security",
         [
             (
                 "lan-over-wan",
@@ -120,87 +96,12 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "public internet connections with transparent packet sharding.",
             ),
             (
-                "discovery",
-                "PEER_DISCOVERY_GUIDE.md",
-                "Zero-Cost Peer Discovery",
-                "Zero-Cost Peer Discovery",
-                "Setting up Cloudflare DNS seed round-robins, LAN Ed25519-signed "
-                "multicasts, and local peer cache boots without tracker infrastructure.",
-            ),
-            (
-                "nat-matrix",
-                "NAT_MATRIX.md",
-                "RFC 4787 NAT Traversal Matrix &amp; Topology Verification",
-                "RFC 4787 NAT Traversal Matrix",
-                "Empirical NAT classification matrix across Full-Cone, Restricted-Cone, "
-                "Port-Restricted, and Symmetric CGNAT with automatic blinded TURN fallback.",
-            ),
-        ],
-    ),
-    (
-        "Security &amp; Verification",
-        [
-            (
                 "security",
                 "SECURITY.md",
                 "Security Policy, Threat Model &amp; Disclosure",
                 "Security &amp; Threat Model",
                 "Cryptographic threat boundaries, formal verification scope, side-channel "
                 "hardening, and coordinated vulnerability disclosure.",
-            ),
-            (
-                "dpi-analysis",
-                "DPI_ANALYSIS.md",
-                "DPI &amp; Traffic-Analysis Measurement Report",
-                "DPI &amp; Traffic Analysis",
-                "Empirical traffic analysis measuring zero HTTP/REST keyword leakage, "
-                "Shannon entropy (7.989 bits/B), uniform 576B frames, and Poisson timing jitter.",
-            ),
-        ],
-    ),
-    (
-        "Physical Anchors (Experimental)",
-        [
-            (
-                "anchors-integration",
-                "ANCHORS_CODEBASE_INTEGRATION.md",
-                "Physical Anchors: Codebase Integration",
-                "Anchors — Codebase Integration",
-                "What is actually wired today: the skywave fallback rung, the quantum "
-                "anchor controller, the JSON contract, the ratchet entropy seam, and the "
-                "control-plane surface.",
-            ),
-            (
-                "skywave",
-                "SKYWAVE_CARRIER.md",
-                "Tactical Transports: Atmospheric Skywave (HF/SDR)",
-                "Atmospheric Skywave (SDR)",
-                "Non-line-of-sight ionospheric plasma bounce (NVIS 2–10 MHz) as the last "
-                "rung of the fallback ladder — experimental, on a virtual loopback carrier.",
-            ),
-            (
-                "qel",
-                "QUANTUM_ENTANGLEMENT_LINK.md",
-                "Quantum Entanglement Link (QEL)",
-                "Quantum Entanglement Link (QEL)",
-                "Simulated QKD and fidelity-constrained entanglement routing, fed into the "
-                "daemon through a probed subprocess controller — experimental, in-simulation.",
-            ),
-            (
-                "anchors-production",
-                "PHYSICAL_ANCHORS_PRODUCTION_GUIDE.md",
-                "Physical Anchors: Production Engineering Guide",
-                "Production Hardware Path",
-                "Hardware BOMs and the ETSI GS QKD 014 key-delivery path for turning either "
-                "anchor into real radio or optical hardware.",
-            ),
-            (
-                "abos-whitepaper",
-                "ABOS_WHITEPAPER.md",
-                "Atmospheric Broadcast OS — Technical Whitepaper",
-                "ABOS Whitepaper (vendored SDR)",
-                "The standalone ABOS SDR workspace consumed behind the optional `sdr` "
-                "feature: DSP, PHY, FEC, ionospheric sounding and DTN mesh design.",
             ),
         ],
     ),

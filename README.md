@@ -13,7 +13,7 @@
 
 <br>
 
-[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**Protocol Whitepaper**](docs/WHITEPAPER.md) &bull; [**Onion Routing Architecture**](docs/ONION_ARCHITECTURE.md) &bull; [**LAN over WAN**](docs/LAN_OVER_WAN.md) &bull; [**Configuration Reference**](config.env.example)
+[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**SOTA Benchmark**](docs/SOTA.md) &bull; [**Cryptography Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) &bull; [**Onion Routing Architecture**](docs/ONION_ARCHITECTURE.md) &bull; [**LAN over WAN**](docs/LAN_OVER_WAN.md) &bull; [**Configuration Reference**](docs/config.env.example)
 
 </div>
 
@@ -399,31 +399,12 @@ Interactive documentation portal is live at [**vantablack.kellersystems.dev/docs
 For engineers, cryptographers, and contributors wishing to inspect the mathematics, security models, and implementation details:
 
 * [**Technical Specifications**](docs/SPECIFICATIONS.md) — Low-level frame layouts, Level 2 multi-hop headers, L5 jitter wire structures, and SessionGuard bitmasks.
-* [**Protocol Whitepaper**](docs/WHITEPAPER.md) — Architectural overview of the GHOST network layers (L0 through L9).
+* [**SOTA Architectural Benchmark**](docs/SOTA.md) — Architectural and cryptographic benchmark matrix comparing Vantablack against WireGuard, Tailscale, and Tor.
 * [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) — In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
 * [**LAN over WAN (VPN Layer)**](docs/LAN_OVER_WAN.md) — Road-warrior userspace VPN architecture, TUN drivers, and mobile network roaming.
 * [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-768, X25519 hybrid key exchange, directional nonces, and memory security.
-* [**Zero-Cost Peer Discovery Guide**](docs/PEER_DISCOVERY_GUIDE.md) — Step-by-step walkthrough for configuring free Cloudflare DNS seeds and local caching.
-* [**Configuration Reference**](config.env.example) — Parameter reference for network ports, transit rate limits, and egress allowlists.
-
-### Physical Anchors — *Experimental — in-simulation*
-
-Two opt-in anchors extend the reachability ladder below the internet. Both are
-off by default, both report honestly which mode they are in, and neither has
-been verified against real hardware.
-
-* [**Anchors — Codebase Integration**](docs/ANCHORS_CODEBASE_INTEGRATION.md) — What is actually wired: the skywave fallback rung, the quantum anchor controller, the JSON contract, the ratchet entropy seam, and the control-plane surface.
-* [**Tactical Transports: Atmospheric Skywave (ABOS)**](docs/SKYWAVE_CARRIER.md) — The HF/NVIS carrier as the last rung of the fallback ladder (`GHOST_SKYWAVE=1` / `--skywave`), on a virtual loopback carrier unless overridden.
-* [**Quantum Entanglement Link (QEL)**](docs/QUANTUM_ENTANGLEMENT_LINK.md) — Simulated QKD and fidelity-constrained entanglement routing fed into the daemon (`GHOST_QUANTUM=1` / `--quantum`), or a real **ETSI GS QKD 014** appliance (`GHOST_QEL_BACKEND=etsi014`).
-* [**Physical Anchors — Production Guide**](docs/PHYSICAL_ANCHORS_PRODUCTION_GUIDE.md) — Hardware BOMs and the ETSI GS QKD 014 path for turning either anchor into real radio or optical hardware.
-
-> The skywave carrier transmits over a virtual loopback UDP channel in the
-default build and ABOS's SDR drivers are simulation stubs. On the default QEL
-backend keys come from a *simulated* noise model, not a photon measurement;
-`GHOST_QEL_BACKEND=etsi014` instead takes them from a real QKD appliance, which is
-the configuration that makes them secret — built and tested against a mock
-appliance, but never against hardware. Neither anchor is required for normal
-operation: with `GHOST_SKYWAVE` and `GHOST_QUANTUM` unset, behaviour is unchanged.
+* [**Security Policy & Audit Scope**](docs/SECURITY.md) — Threat boundaries, verification scope, and vulnerability disclosure policy.
+* [**Configuration Reference**](docs/config.env.example) — Parameter reference for network ports, transit rate limits, and egress allowlists.
 
 ---
 
