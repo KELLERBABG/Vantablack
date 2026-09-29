@@ -1,3 +1,5 @@
+"""Interactive demonstration runner for quantum network protocols and QEL bridges."""
+
 import numpy as np
 from .core import QubitState, apply, X, Z
 from .protocols import (

@@ -1,10 +1,9 @@
-// RESEARCH PROTOTYPE — not wired to production daemon
-//! Stego-in-Physics (Physical Covert Shard Carriage)
+//! Stego-in-Physics (Physical Covert Shard Carriage).
 //!
 //! STATUS: Theoretical modulation prototype & research reference implementation.
-//! This module implements pure mathematical symbol mapping and modulation algorithms.
-//! It has NO physical hardware I/O drivers (no audio DAC, thermal regulator, or
-//! LED GPIO interface) and is deliberately decoupled from the production routing daemon.
+//! Encodes a single Reed-Solomon shard over a covert physical side-channel
+//! (acoustic FSK, thermal modulation, or optical LED blink) while network shards traverse wire.
+
 //!
 //! Encodes a single Reed-Solomon shard over a covert physical side-channel
 //! (acoustic FSK tone modulation, thermal fan/load modulation, or optical LED blink)

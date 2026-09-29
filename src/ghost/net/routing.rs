@@ -1,15 +1,11 @@
-/// Contact Graph Routing (CGR) & Time-Variable Graph (TVG)
-///
-/// Implements the routing abstractions described in the Vantablack architecture:
-///
-/// ## Poisson-Distributed Error Rate Checking
-/// The reputation matrix now uses a Poisson-distributed error model to distinguish
-/// between benign cosmic radiation bit-flips (which follow a Poisson process with
-/// known rate λ_cosmic) and malicious behavior (which has a significantly higher
-/// error rate). This allows the node to issue Byzantine isolation accusations only
-/// when the probability of the observed errors being due to cosmic radiation is
-/// negligibly small (< 10^-6).
+//! Contact Graph Routing (CGR) & Time-Variable Graph (TVG).
+//!
+//! Implements predictive routing across intermittently connected nodes using Contact Graph Routing,
+//! along with Poisson-distributed error rate modeling to distinguish between benign cosmic bit-flips
+//! and Byzantine / malicious node behaviors.
+
 use std::cmp::Ordering;
+
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 

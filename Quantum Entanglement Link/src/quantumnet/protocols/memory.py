@@ -1,3 +1,5 @@
+"""Quantum memory buffer simulation with T1 relaxation and T2 dephasing dynamics."""
+
 import numpy as np
 from ..core import QubitState
 

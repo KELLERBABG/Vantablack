@@ -1,24 +1,12 @@
-/// HSM / TPM Hardware Security Module Backend
-///
-/// Provides production-grade hardware-backed key storage for the GhostNet
-/// Ed25519 identity key, preventing key exfiltration even under kernel compromise.
-///
-/// ## Implementations
-/// - `SoftwareTpm`: In-memory key storage (safe fallback for testing/dev)
-/// - `Tpm2Backend`: TPM 2.0 via `tss-esapi` (production on TPM-equipped hardware)
-/// - `Pkcs11Backend`: PKCS#11 HSM via `cryptoki` (production for YubiHSM, NitroKey, etc.)
-///
-/// ## Feature Gates
-/// - `hardware-tpm`: Enables `Tpm2Backend` (requires `tss-esapi`)
-/// - `pkcs11`: Enables `Pkcs11Backend` (requires `cryptoki`)
-/// - No features = only `SoftwareTpm` (safe fallback)
-///
-/// ## Status
-/// The hardware backends are **not wired**: `open()` always reports
-/// [`HsmError::HardwareAbsent`], so `create_hsm_backend` always resolves to
-/// `SoftwareTpm`. What P2-3 landed here is the *seam*: a typed [`HsmError`]
-/// instead of a bare `String`, and a named drop-in point for the real
-/// `tss-esapi` / `cryptoki` code on each `open()`.
+//! HSM / TPM Hardware Security Module Backend.
+//!
+//! Provides hardware-backed key storage for the GhostNet Ed25519 identity key,
+//! preventing key exfiltration even under kernel compromise.
+//!
+//! ## Implementations
+//! - `SoftwareTpm`: In-memory key storage (safe fallback for testing/dev)
+//! - `Tpm2Backend`: TPM 2.0 via `tss-esapi` (production on TPM-equipped hardware)
+//! - `Pkcs11Backend`: PKCS#11 HSM via `cryptoki` (production for YubiHSM, NitroKey, etc.)
 
 // `AtomicBool`/`Ordering`/`warn!` are only reached by the feature-gated
 // hardware backends below, so they are gated with them to keep a

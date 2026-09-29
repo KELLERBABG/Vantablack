@@ -1,3 +1,5 @@
+"""Core quantum mechanics simulator primitives, states, and operations."""
+
 from .qubit import QubitState
 from .gate import Gate, I, X, Y, Z, H, S, T, CNOT, SWAP, CZ, apply
 from .measurement import measure, measure_bell

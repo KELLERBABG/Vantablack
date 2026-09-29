@@ -1,3 +1,5 @@
+"""Standard quantum unitary gates, Pauli operators, and multi-qubit tensor products."""
+
 import numpy as np
 from .qubit import QubitState
 

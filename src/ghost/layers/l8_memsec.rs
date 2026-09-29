@@ -1,21 +1,16 @@
-/// L8 — Memory Security Layer
-///
-/// Implements secure memory handling for the GhostNet stack:
-///
-/// ## AES-XTS Memory Encryption (line 22)
-/// Encrypts active RAM state to prevent cold-boot attacks from extracting
-/// ephemeral session keys or plaintext buffers. Uses a simplified XTS mode
-/// where each 16-byte block is encrypted with a tweak derived from its address.
-///
-/// ## Verified Inter-Process Communication Buffers (line 27)
-/// Provides mathematically bounded ring buffers between the UDP socket and
-/// worker threads to prevent buffer overflows and cross-stream contamination.
-/// Each buffer has a verified capacity and strict type isolation.
-///
-/// ## eBPF/XDP Network Acceleration Abstraction (line 32)
-/// Abstracted zero-copy packet path that bypasses the OS network stack
-/// for the 4-byte session hash lookup, enabling wire-speed routing decisions.
+//! L8 — Memory Security Layer
+//!
+//! Implements secure memory handling for the GhostNet stack:
+//!
+//! - **AES-XTS Memory Encryption**: Encrypts active RAM state to prevent cold-boot
+//!   attacks from extracting ephemeral session keys or plaintext buffers using address-derived tweaks.
+//! - **Verified IPC Buffers**: Mathematically bounded ring buffers between the UDP socket
+//!   and worker threads to prevent buffer overflows and cross-stream contamination.
+//! - **eBPF/XDP Network Acceleration Abstraction**: Abstracted zero-copy packet path that
+//!   bypasses OS network stack for 4-byte session hash lookups.
+
 use std::sync::atomic::{AtomicUsize, Ordering};
+
 use std::sync::Arc;
 
 use aes::cipher::generic_array::GenericArray;

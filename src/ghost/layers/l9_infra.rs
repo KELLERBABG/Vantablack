@@ -1,22 +1,15 @@
-/// L9 — Infrastructure & Deployment Layer
-///
-/// Implements the remaining infrastructure roadmap items:
-///
-/// 1. **Portable Single Executable Packaging** (line 16)
-///    Self-contained binary with embedded default config. Uses build.rs to bake
-///    in defaults so users just download, verify the hash, and run with zero config.
-///
-/// 2. **TPM/HSM Key Enclave** (line 31)
-///    Moves the Ed25519 identity key into a hardware security module such as
-///    TPM 2.0 or ARM TrustZone so signing keys cannot be extracted even by a
-///    successful kernel zero-day exploit. Provides a simulated software TPM
-///    for development environments.
-///
-/// 3. **Network Time Security / Atomic Clock Integration** (line 33)
-///    Prevents GPS and NTP spoofing attacks from collapsing the CGR routing mesh
-///    by using Network Time Security (NTS) or onboard atomic clock references
-///    for time synchronization.
+//! L9 — Infrastructure & Deployment Layer
+//!
+//! Implements infrastructure security and deployment capabilities:
+//!
+//! 1. **Portable Single Executable Packaging**: Self-contained binary with embedded defaults.
+//! 2. **TPM/HSM Key Enclave**: Integrates hardware security modules (TPM 2.0 / ARM TrustZone)
+//!    and software emulation so signing keys cannot be extracted even by kernel compromise.
+//! 3. **Network Time Security / Atomic Clock Integration**: Prevents GPS/NTP spoofing attacks
+//!    from destabilizing routing schedules by using NTS or high-precision clock references.
+
 use std::sync::atomic::{AtomicBool, Ordering};
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::Signer;

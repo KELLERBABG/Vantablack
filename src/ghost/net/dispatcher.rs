@@ -1,16 +1,13 @@
-/// Lockless Session-Hash Packet Dispatcher
-///
-/// Replaces the single-threaded packet receiver with a lockless dispatcher
-/// that reads the first 4 bytes (session hash) of each GTF frame and routes
-/// them modulo N to a dedicated worker thread via crossbeam channels.
-///
-/// This ensures:
-/// - Per-session ordering (all packets for the same session go to the same worker)
-/// - Parallel decryption across N workers
-/// - No mutex contention on the hot path
-///
-/// The dispatcher uses a fixed-size crossbeam channel per worker.
+//! Lockless Session-Hash Packet Dispatcher.
+//!
+//! Routes inbound GTF frames modulo N to dedicated worker threads via lockless
+//! crossbeam channels based on the 4-byte session hash, ensuring:
+//! - Per-session packet ordering
+//! - Parallel multi-core decryption
+//! - Zero mutex contention on the hot path
+
 use std::net::SocketAddr;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossbeam::channel::{self, Sender, TrySendError};

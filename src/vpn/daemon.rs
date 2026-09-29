@@ -1,3 +1,8 @@
+//! VPN Daemon Lifecycle and Subsystem Management.
+//!
+//! Orchestrates VPN tunnel interface creation, telemetry export, and role transitions
+//! between client and hub overlay networking.
+
 #[cfg(feature = "vpn")]
 use std::sync::Arc;
 

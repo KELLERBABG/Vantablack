@@ -1,11 +1,9 @@
-/// L5 — Noise Injection / Jitter Padding & GhostMimic Layer
-///
-/// Adds random-length padding (0–64 bytes) to each packet beyond the
-/// base GTF size. This frustrates traffic analysis attacks that rely
-/// on correlating packet sizes to message lengths or protocol phases.
-///
-/// The jitter is appended after the auth tag and filled with random bytes,
-/// making it indistinguishable from legitimate payload to a passive observer.
+//! L5 — Noise Injection / Jitter Padding & GhostMimic Layer
+//!
+//! Adds random-length padding (0–64 bytes) to each packet beyond the
+//! base GTF size to defeat traffic analysis attacks that correlate packet sizes
+//! to message lengths or protocol phases. Also provides GhostMimic per-ASN cover traffic.
+
 use rand::Rng;
 
 /// Maximum number of jitter bytes appended to a base-size GTF packet.

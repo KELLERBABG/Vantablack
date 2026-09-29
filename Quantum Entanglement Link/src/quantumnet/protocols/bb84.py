@@ -1,3 +1,5 @@
+"""BB84 quantum key distribution (QKD) protocol simulation with intercept-resend eavesdropping."""
+
 import numpy as np
 from ..core import QubitState, H, X, Z, apply, measure
 

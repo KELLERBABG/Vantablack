@@ -1,18 +1,19 @@
-/// L6 - Session Guard Layer
-///
-/// Provides replay protection via a sliding window bitmask and session
-/// lifecycle management through hard and idle timeouts.
-///
-/// ## Window Mechanics
-/// - The default window covers the 128 most recent counter values (WINDOW_SIZE = 128)
-/// - Any counter <= v_max - 128 is unconditionally rejected (too old)
-/// - Any counter already set in the bitmask is rejected (replay detected)
-/// - A new highest counter shifts the bitmask and sets the leading bit
-/// - Also provides `ReplayWindow64` and `ReplayWindow128` for 64-bit and 32-bit counter spaces.
-///
-/// ## Timeout Policy
-/// - Hard timeout: 24 hours absolute session lifetime
-/// - Idle timeout:  30 minutes of inactivity before session expires
+//! L6 — Session Guard Layer
+//!
+//! Provides replay protection via a sliding window bitmask and session
+//! lifecycle management through hard and idle timeouts.
+//!
+//! ## Window Mechanics
+//! - The default window covers the 128 most recent counter values (WINDOW_SIZE = 128)
+//! - Any counter <= v_max - 128 is unconditionally rejected (too old)
+//! - Any counter already set in the bitmask is rejected (replay detected)
+//! - A new highest counter shifts the bitmask and sets the leading bit
+//! - Also provides `ReplayWindow64` and `ReplayWindow128` for 64-bit and 32-bit counter spaces.
+//!
+//! ## Timeout Policy
+//! - Hard timeout: 24 hours absolute session lifetime
+//! - Idle timeout:  30 minutes of inactivity before session expires
+
 use std::time::{Duration, Instant};
 
 /// Size of the sliding replay window in counter values.

@@ -1,21 +1,23 @@
-/// L2 — ChaCha20-Poly1305 AEAD Layer
-///
-/// Authenticated Encryption with Associated Data (AEAD) using the
-/// ChaCha20 stream cipher and Poly1305 message authentication code.
-///
-/// - ChaCha20 provides 256-bit stream cipher security
-/// - Poly1305 provides 128-bit authentication tag integrity
-/// - Any single-bit modification to ciphertext causes authentication failure
-///
-/// Nonce derivation (v2): 12-byte nonce = [2 bytes session_hash[0..2] | 1 byte direction | 1 byte reserved | 4 bytes counter BE]
-///   - session_hash[0..2]: First 2 bytes of the 4-byte session hash — guarantees nonce uniqueness across sessions
-///   - direction: 0x00 for initiator→responder, 0x01 for responder→initiator — prevents directional counter mirroring
-///   - reserved: 0x00 (future use)
-///   - counter[0..4]: 4-byte monotonic packet counter (big-endian)
-///
-/// This ensures unique nonces even if directional counters align across different sessions
-/// under the same master key, and prevents nonce reuse after session re-keying.
+//! L2 — ChaCha20-Poly1305 AEAD Layer
+//!
+//! Authenticated Encryption with Associated Data (AEAD) using the
+//! ChaCha20 stream cipher and Poly1305 message authentication code.
+//!
+//! - ChaCha20 provides 256-bit stream cipher security
+//! - Poly1305 provides 128-bit authentication tag integrity
+//! - Any single-bit modification to ciphertext causes authentication failure
+//!
+//! Nonce derivation (v2): 12-byte nonce = [2 bytes session_hash[0..2] | 1 byte direction | 1 byte reserved | 4 bytes counter BE]
+//!   - session_hash[0..2]: First 2 bytes of the 4-byte session hash — guarantees nonce uniqueness across sessions
+//!   - direction: 0x00 for initiator→responder, 0x01 for responder→initiator — prevents directional counter mirroring
+//!   - reserved: 0x00 (future use)
+//!   - counter[0..4]: 4-byte monotonic packet counter (big-endian)
+//!
+//! This ensures unique nonces even if directional counters align across different sessions
+//! under the same master key, and prevents nonce reuse after session re-keying.
+
 use chacha20poly1305::aead::{AeadInPlace, Error as AeadError};
+
 use chacha20poly1305::KeyInit;
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, XChaCha20Poly1305, XNonce};
 use rand::Rng;

@@ -81,7 +81,6 @@ impl DtnBundle {
     }
 }
 
-
 /// Merkle tree over buffered DTN bundles for logarithmic anti-entropy reconciliation.
 #[derive(Debug, Clone, Default)]
 pub struct DtnMerkleTree {

@@ -1,3 +1,5 @@
+"""Quantum communication and error-correction protocol implementations."""
+
 from .bell import bell_state, bell_measurement, bell_fidelity, prepare_bell_state
 from .bb84 import run_bb84
 from .e91 import run_e91

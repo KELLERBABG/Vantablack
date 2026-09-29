@@ -1,3 +1,14 @@
+//! L0 — Hybrid Identity Layer: Ed25519 + ML-DSA-65.
+//!
+//! Provides the permanent cryptographic identity of a GhostNet node combining
+//! classical Ed25519 and post-quantum ML-DSA-65 (FIPS 204) signatures to guarantee
+//! unforgeable node identity against both classical and quantum adversaries.
+//!
+//! ## Architectural Invariants
+//! - **Ed25519**: Classical half defining node fingerprint (first 8 bytes of pubkey hex).
+//! - **ML-DSA-65**: Post-quantum half derived from independent entropy to survive classical key break.
+//! - **Hybrid Signatures**: Both Ed25519 and ML-DSA-65 must verify to prevent downgrade attacks.
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use ml_dsa::{
     signature::{Signer as PqSigner, Verifier as PqVerifier},
@@ -5,52 +16,6 @@ use ml_dsa::{
     Signature as MlDsaSignature, SigningKey as MlDsaSigningKey, VerifyingKey as MlDsaVerifyingKey,
 };
 use rand::RngCore;
-/// L0 — Hybrid identity: Ed25519 + ML-DSA-65.
-///
-/// The permanent cryptographic identity of a GhostNet node, and the reason it is
-/// **hybrid** rather than Ed25519-only: every other defence in this stack —
-/// ML-KEM-512 key agreement, ChaCha20-Poly1305 transport, RS sharding — rests on
-/// the identity being unforgeable, and Ed25519 alone is forgeable by Shor's
-/// algorithm on a cryptographically relevant quantum computer. A node whose name
-/// can be forged cannot be trusted to hold a session, however good the session's
-/// own cryptography is.
-///
-/// ## Two keys, two independent secrets
-///
-/// * **Ed25519** — the classical half, and the one that defines the fingerprint
-///   (first 8 bytes of the public key, hex). Unchanged from v0.4.1, because every
-///   peer table, allowlist (`GHOST_VPN_CLIENTS`) and cached pairing is keyed on
-///   that string; re-deriving it would un-pair every existing node.
-/// * **ML-DSA-65** (FIPS 204, security category 3) — the post-quantum half. Its
-///   seed is drawn from its **own** entropy, never derived from the Ed25519 seed.
-///   That is not tidiness: a PQ key derived from the classical secret would be
-///   recovered by whoever breaks the classical key, which is exactly the event
-///   the PQ half exists to survive.
-///
-/// ## The file, and the migration
-///
-/// * **v1** (what v0.4.1 wrote): exactly 32 bytes — the Ed25519 seed.
-/// * **v2** (this): `GGNIDENT` + version byte + 32-byte Ed25519 seed + 32-byte
-///   ML-DSA seed = 73 bytes.
-///
-/// A v1 file is upgraded **in place** on first load: the Ed25519 key is preserved
-/// (so the fingerprint — and every pairing — is preserved), a fresh ML-DSA key is
-/// generated from new entropy, and the file is rewritten as v2. An unreadable file
-/// still means a fresh identity, which is the pre-existing behaviour and is
-/// reported on stderr rather than silently.
-///
-/// ## What proves what
-///
-/// [`GhostIdentity::sign`] is Ed25519 and stays 64 bytes, so the beacons and
-/// handshake PDUs that already carry it are untouched and interoperate with
-/// un-upgraded peers. [`GhostIdentity::sign_hybrid`] additionally signs with
-/// ML-DSA-65 and returns both signatures as one value; a hybrid signature is
-/// **valid only if both halves verify**, so the classical half cannot be used to
-/// downgrade a peer that checks both.
-///
-/// Signature format: 64 bytes (Ed25519), or 3373 bytes (hybrid: Ed25519 ‖ ML-DSA-65)
-/// Public key size: 32 bytes (Ed25519), 1952 bytes (ML-DSA-65)
-/// Fingerprint: first 8 bytes of the Ed25519 public key (hex-encoded)
 use std::fs;
 use std::path::Path;
 

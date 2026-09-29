@@ -1,10 +1,9 @@
-/// Windows TUN Virtual Network Interface (Admin / Full System VPN)
-///
-/// This module provides a wintun-based virtual adapter that allows the
-/// GhostNet mesh to operate as a full system VPN. When activated, the OS
-/// routes all internet traffic through the TUN device, where raw IPv4/IPv6
-/// frames are captured, sharded via RS(2,1) erasure coding, and emitted
-/// across the mesh to the exit node pool.
+//! Windows TUN Virtual Network Interface (Full System VPN).
+//!
+//! Provides a Wintun-based virtual network adapter enabling GhostNet to operate
+//! as an OS-level VPN, intercepting IP datagrams, applying Reed-Solomon erasure coding,
+//! and routing them across mesh exit nodes.
+
 ///
 /// # Architecture
 ///

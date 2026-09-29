@@ -1,3 +1,5 @@
+"""Command-line interface and CLI command dispatcher for Quantum Entanglement Link (QEL)."""
+
 import argparse
 import numpy as np
 from .core import (

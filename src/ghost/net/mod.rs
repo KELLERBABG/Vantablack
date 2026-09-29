@@ -1,19 +1,14 @@
+//! GhostNet Network Layer.
+//!
+//! Implements the Ghost Transport Frame (GTF) wire format for UDP datagrams,
+//! supporting constant-length privacy framing (576 B) and high-throughput bulk framing (1472 B).
+//! Also implements the ACK reliability engine, adaptive token-bucket flow controller,
+//! and mesh networking primitives.
+
 #[cfg(feature = "quic")]
 pub mod carrier;
-/// GhostNet Network Layer
-///
-/// Implements the Ghost Transport Frame (GTF) — the wire format for all
-/// UDP packets — with dual frame modes for maximum throughput:
-///
-/// - **Normal mode**: a constant 576-byte wire frame — 512 B of authenticated GTF
-///   plus a full-length 64 B jitter tail (the tail used to be
-///   `0..64` bytes, which made the *length* the signal; it is now fixed, so
-///   privacy frames are one size on every path)
-/// - **Bulk mode**: 1472-byte frames at full Ethernet MTU (maximum throughput)
-///
-/// Also implements a lightweight ACK engine for reliable delivery over UDP,
-/// and an adaptive token-bucket flow controller.
 pub mod cc;
+
 pub mod collective_defense;
 pub mod consumer;
 pub mod dead_drop;

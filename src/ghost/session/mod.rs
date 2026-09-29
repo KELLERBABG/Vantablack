@@ -1,19 +1,13 @@
-/// Session Management Module
-///
-/// Manages the lifecycle of peer-to-peer sessions in the GhostNet:
-/// - Session creation and teardown
-/// - Per-peer monotonic counter tracking
-/// - Stream multiplexing for concurrent data flows
-/// - Replay guard integration
-/// - Retransmission state per stream
-/// - **Automated session re-keying** when the tx_counter approaches exhaustion
-///
-/// # Re-keying Protocol
-/// When `tx_counter > REKEY_THRESHOLD` (~75% of u32::MAX), a background
-/// L1 key exchange is triggered to derive a new master key before the old
-/// counter wraps around. This prevents ChaCha20-Poly1305 nonce reuse
-/// without dropping the session connection.
+//! Session Management Module.
+//!
+//! Manages the lifecycle of peer-to-peer sessions in the GhostNet:
+//! - Session creation, state tracking, and teardown
+//! - Per-peer monotonic counter and replay guard integration
+//! - Stream multiplexing for concurrent data flows
+//! - Automated session re-keying and quantum-ratchet epoch synchronization
+
 pub mod guard;
+
 pub mod ratchet;
 
 use crate::ghost::layers::l1_kem::{compute_session_hash, HybridCipherSuite};

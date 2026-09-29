@@ -1,3 +1,5 @@
+"""Quantum state teleportation protocol via shared EPR pairs and classical communication."""
+
 import numpy as np
 from ..core import QubitState, H, CNOT, X, Z, apply, measure
 

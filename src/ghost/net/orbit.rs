@@ -1,22 +1,11 @@
+//! Orbital Mechanics & Ephemeris-Driven Predictive Discovery.
+//!
+//! Implements time-variable routing and orbital dynamics for the GhostNet mesh:
+//! - **Ephemeris-Driven Predictive Discovery**: Calculates line-of-sight contact windows using Keplerian orbital elements.
+//! - **Geographically Disjoint Shard Routing**: Enforces disparate orbital planes and ground relays for Reed-Solomon shards.
+//! - **Delta-V Propellant Cost Modeling**: Integrates Tsiolkovsky rocket equation into routing cost metrics.
+
 use ml_kem::kem::KeyExport;
-/// Orbital Mechanics & Ephemeris-Driven Predictive Discovery
-///
-/// Implements the time-variable routing infrastructure for the GhostNet mesh:
-///
-/// ## Ephemeris-Driven Predictive Discovery
-/// Uses Keplerian orbital elements to calculate when a peer satellite rises
-/// above the horizon. Nodes transmit discovery beacons only when the link is
-/// geometrically possible, preventing traffic analysis from blind beaconing.
-///
-/// ## Geographically Disjoint Shard Routing
-/// No two Reed-Solomon shards travel through the same orbital plane or ground
-/// relay, forcing an adversary to intercept traffic across multiple continents
-/// to reconstruct a message.
-///
-/// ## Delta-V Propellant Cost Modeling
-/// Uses the Tsiolkovsky rocket equation to model propellant costs in the CGR
-/// routing algorithm so evasive orbital maneuvers do not inadvertently exhaust
-/// a satellite's finite thruster fuel.
 use std::f64::consts::PI;
 
 pub const MU_EARTH: f64 = 3.986004418e14;

@@ -1,3 +1,5 @@
+"""Shor 9-qubit quantum error correction code encoding, syndrome measurement, and recovery."""
+
 import numpy as np
 from ..core import QubitState, apply, X, Z
 

@@ -1,3 +1,5 @@
+"""Superdense coding protocol transmitting two classical bits via one entangled qubit."""
+
 import numpy as np
 from ..core import QubitState, I, X, Z, apply, measure_bell
 

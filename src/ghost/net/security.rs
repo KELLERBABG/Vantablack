@@ -1,12 +1,14 @@
-/// GhostNet Security Infrastructure
-///
-/// Implements several security subsystems from the roadmap:
-/// 1. Decentralized Capability Revocation List (line 24)
-/// 2. Zero-Knowledge Membership Authentication During Discovery (line 25)
-/// 3. Decentralized Two-Line Element Distribution (line 28)
-/// 4. Memory Guard & Secure Zeroing (line 23)
-/// 5. Fixed-Slot Temporal Isolation (line 26)
+//! GhostNet Security Infrastructure.
+//!
+//! Implements security subsystems including:
+//! - Decentralized Capability Revocation Lists (dCRL)
+//! - Zero-Knowledge Membership Authentication during peer discovery
+//! - Ephemeris Two-Line Element (TLE) distribution
+//! - Memory guarding & zeroization invariants
+//! - Fixed-slot temporal isolation against side-channel analysis
+
 use std::collections::HashMap;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

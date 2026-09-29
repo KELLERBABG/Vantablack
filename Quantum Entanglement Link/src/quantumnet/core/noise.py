@@ -1,3 +1,5 @@
+"""Quantum noise models including depolarizing, dephasing, and amplitude damping channels."""
+
 import numpy as np
 from .channel import Channel
 

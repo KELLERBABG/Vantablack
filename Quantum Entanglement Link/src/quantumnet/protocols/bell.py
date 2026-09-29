@@ -1,3 +1,5 @@
+"""Bell state preparation, CHSH inequality tests, and entanglement verification."""
+
 import numpy as np
 from ..core import QubitState, H, CNOT, apply, measure_bell
 

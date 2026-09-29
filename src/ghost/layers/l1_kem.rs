@@ -1,3 +1,21 @@
+//! L1 — Hybrid Key Encapsulation Mechanism (KEM) Layer.
+//!
+//! Implements hybrid classical and post-quantum key agreement combining X25519 (ECDH)
+//! with ML-KEM-512 / ML-KEM-768 (FIPS 203) and optional Pre-Shared Key (PSK) mixing.
+//!
+//! ## Out-of-Band Symmetric Key Mixing (Defense-in-Depth)
+//! A continuously rotating 256-bit Pre-Shared Key (PSK) is mixed into the HKDF
+//! derivation as an additional salt source to provide defense-in-depth against
+//! future lattice cryptanalysis:
+//!   `master_key = HKDF-SHA256(salt = PSK || zeros, ikm = x25519_ss || kyber_ss)`
+//!
+//! ## PDU Wire Layout (944 bytes)
+//! - `[0..16]`: Magic header `GHOST_HANDSHAKE_`
+//! - `[16..48]`: X25519 ephemeral public key (32 bytes)
+//! - `[48..848]`: Kyber-512 public key (800 bytes)
+//! - `[848..880]`: Ed25519 public key (32 bytes, L0 identity)
+//! - `[880..944]`: Ed25519 signature (64 bytes, L0 proof)
+
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use ml_kem::kem::{Decapsulate, Encapsulate, Kem, KeyExport, TryKeyInit};
@@ -8,29 +26,6 @@ pub use ml_kem::{
 use ml_kem::{MlKem512, MlKem768};
 use rand::RngCore;
 use sha2::Sha256;
-/// L1 — Hybrid Key Encapsulation Mechanism (KEM) Layer
-///
-/// Implements the hybrid classical + post-quantum key exchange:
-///   X25519 (ECDH)  — Elliptic-curve Diffie-Hellman over Curve25519 (~128-bit classical security)
-///   Kyber-512      — NIST-standardized post-quantum KEM based on MLWE
-///
-/// ## Out-of-Band Symmetric Key Mixing (Defense-in-Depth)
-/// A continuously rotating 256-bit Pre-Shared Key (PSK) is mixed into the HKDF
-/// derivation as an additional entropy source. This provides defense-in-depth
-/// against future Kyber cryptanalysis: even if both X25519 and Kyber-512 are
-/// broken, an attacker who has not captured the PSK channel cannot derive the
-/// master key.
-///
-/// The PSK is mixed into the HKDF extract phase as additional salt:
-///   master_key = HKDF-SHA256(salt = PSK || zeros, ikm = x25519_ss || kyber_ss)
-///
-/// PDU layout in the PQ-Exchange:
-///   [0..16]   Magic bytes "GHOST_HANDSHAKE_"
-///   [16..48]  X25519 public key (32 bytes)
-///   [48..848] Kyber-512 public key (800 bytes)
-///   [848..880] Ed25519 public key (32 bytes)  — L0 identity
-///   [880..944] Ed25519 signature (64 bytes)   — L0 proof
-///   Total: 944 bytes
 use x25519_dalek::{EphemeralSecret, PublicKey as XPublicKey};
 
 /// The total size of the handshake PDU before sharding.

@@ -1,4 +1,10 @@
+//! Mesh Topology and Peer Discovery Engine.
+//!
+//! Manages peer discovery via bootstrap seeds, STUN hole-punching,
+//! contact plan maintenance, multi-hop relay coordination, and background gossip.
+
 use std::net::SocketAddr;
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

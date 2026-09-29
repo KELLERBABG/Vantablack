@@ -1,17 +1,11 @@
-/// Multi-hop Encrypted Packet Forwarding
-///
-/// Implements onion-style encrypted relay through intermediate GhostNet nodes.
-/// When node A wants to send to node C through node B:
-///   1. A encrypts the payload with session key A↔B (outer layer)
-///   2. A encrypts the inner payload with session key B↔C (inner layer)
-///   3. A sends to B with a RELAY header indicating the final destination
-///   4. B decrypts the outer layer, finds the RELAY header, re-encrypts with
-///      its own session key and forwards to C
-///   5. C decrypts the inner payload
-///
-/// This avoids exposing plaintext at intermediate hops since each hop only
-/// strips its own encryption layer, while the end-to-end encryption is preserved.
+//! Multi-hop Encrypted Packet Forwarding.
+//!
+//! Implements onion-style encrypted relay through intermediate GhostNet nodes,
+//! ensuring intermediate nodes strip only their outer session layer while preserving
+//! end-to-end payload confidentiality and forward secrecy.
+
 use std::net::SocketAddr;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

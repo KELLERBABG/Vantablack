@@ -1,22 +1,23 @@
-/// L7 — LDPC Forward Error Correction Layer
-///
-/// Implements Low-Density Parity-Check (LDPC) link-layer forward error correction
-/// to correct bit-level atmospheric scattering and noise before corrupted bytes
-/// reach the UDP stack.
-///
-/// This complements the Reed-Solomon shard recovery at layer 4:
-/// - LDPC (L7): corrects bit-flips at the physical/link layer
-/// - Reed-Solomon (L4): recovers entire lost packets (erasure coding)
-///
-/// The implementation uses a simple (3,6)-regular LDPC code with a parity-check
-/// matrix designed for satellite-to-ground optical links, capable of correcting
-/// up to ~10% bit error rate (BER) at the cost of ~50% overhead.
-///
-/// ## Code Parameters
-/// - Block size: 1024 bits (128 bytes)
-/// - Code rate: 1/2 (512 data bits + 512 parity bits)
-/// - Error correction capability: up to ~8% BER
-/// - Decoder: Sum-Product Algorithm (Belief Propagation) with 10 iterations
+//! L7 — LDPC Forward Error Correction Layer
+//!
+//! Implements Low-Density Parity-Check (LDPC) link-layer forward error correction
+//! to correct bit-level atmospheric scattering and noise before corrupted bytes
+//! reach the UDP stack.
+//!
+//! This complements the Reed-Solomon shard recovery at layer 4:
+//! - LDPC (L7): corrects bit-flips at the physical/link layer
+//! - Reed-Solomon (L4): recovers entire lost packets (erasure coding)
+//!
+//! The implementation uses a simple (3,6)-regular LDPC code with a parity-check
+//! matrix designed for satellite-to-ground optical links, capable of correcting
+//! up to ~10% bit error rate (BER) at the cost of ~50% overhead.
+//!
+//! ## Code Parameters
+//! - Block size: 1024 bits (128 bytes)
+//! - Code rate: 1/2 (512 data bits + 512 parity bits)
+//! - Error correction capability: up to ~8% BER
+//! - Decoder: Sum-Product Algorithm (Belief Propagation) with 10 iterations
+
 use std::fmt;
 
 /// LDPC code block size in bits.

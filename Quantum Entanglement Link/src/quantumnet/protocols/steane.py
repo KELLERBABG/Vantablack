@@ -1,3 +1,5 @@
+"""Steane 7-qubit CSS quantum error correction code implementation."""
+
 import numpy as np
 from ..core import QubitState, apply, I, X, Z, H
 

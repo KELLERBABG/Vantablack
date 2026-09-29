@@ -1,3 +1,5 @@
+"""Stabilizer formalism and Clifford tableau simulation for efficient quantum error correction."""
+
 import numpy as np
 from .qubit import QubitState
 

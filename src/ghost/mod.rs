@@ -1,19 +1,22 @@
-/// GhostNet: The Vantablack protocol core.
-///
-/// This module implements the full GHOST protocol stack as described
-/// in the Vantablack architecture:
-///
-/// L0  - Ed25519 Identity / Signing
-/// L1  - X25519 + Kyber-512 Hybrid KEM
-/// L2  - ChaCha20-Poly1305 AEAD
-/// L3  - Shamir Secret Sharing (GF256)
-/// L4  - Reed-Solomon Erasure Coding
-/// L5  - Noise Injection / Jitter Padding
-/// L6  - Session Guard / Replay Protection
-///
-/// plus the networking layer including the Ghost Transport Frame (GTF),
-/// Contact Graph Routing (CGR), and the ACK-based reliable transport.
+//! GhostNet: The Vantablack protocol core.
+//!
+//! Implements the complete GHOST protocol stack across all operational layers:
+//! - L0: Hybrid Ed25519 + ML-DSA-65 Identity & Attestation
+//! - L1: X25519 + ML-KEM-512/768 Hybrid Key Encapsulation
+//! - L2: ChaCha20-Poly1305 & XChaCha20 Authenticated Encryption
+//! - L3: Shamir Secret Sharing threshold splitting
+//! - L4: Reed-Solomon (2,1) erasure coding
+//! - L5: Jitter padding and noise injection (GhostMimic)
+//! - L6: Replay guards and session sliding windows
+//! - L7: Link-layer LDPC forward error correction
+//! - L8: AES-XTS memory encryption and bounded ring buffers
+//! - L9: Infrastructure, single-binary packaging, and hardware security
+//! - L10: Quantum Entanglement Link (QEL) and ETSI GS QKD 014 anchors
+//!
+//! Also hosts the Ghost Transport Frame (GTF), mesh routing, and ACK-based reliable transport.
+
 pub mod icon;
+
 pub mod layers;
 pub mod net;
 pub mod paths;

@@ -1,3 +1,5 @@
+"""Ekert (E91) entanglement-based quantum key distribution protocol simulation."""
+
 import numpy as np
 from ..core import QubitState, apply, measure
 from ..core.gate import Gate

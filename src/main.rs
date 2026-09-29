@@ -1,3 +1,9 @@
+//! Vantablack Daemon and Desktop Application Entrypoint.
+//!
+//! Orchestrates the runtime of a Global Ghost Net (GGN) node, bootstrapping
+//! cryptographic identities, peer discovery, mesh networking, SOCKS5 proxy,
+//! control center REST API, and native desktop UI / system tray integration.
+
 // The desktop build is a GUI application, so on Windows it must not spawn a
 // console window next to the app. Diagnostics are not lost: the log writer
 // below mirrors every line into ghost.log.

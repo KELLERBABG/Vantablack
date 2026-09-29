@@ -1,3 +1,5 @@
+"""Quantum and classical communication channel models with distance-dependent attenuation."""
+
 import numpy as np
 from .qubit import QubitState
 

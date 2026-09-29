@@ -1,3 +1,5 @@
+"""Entanglement swapping protocol enabling quantum repeater teleportation of entanglement."""
+
 import numpy as np
 from ..core import QubitState, H, CNOT, X, Z, apply, measure
 

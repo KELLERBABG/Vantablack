@@ -1,3 +1,5 @@
+"""Entanglement distillation and purification protocols (BBPSSW and Deutsch algorithms)."""
+
 import numpy as np
 from ..core import QubitState, H, CNOT, apply, measure
 

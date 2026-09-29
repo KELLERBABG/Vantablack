@@ -1,3 +1,5 @@
+"""Projective and POVM measurement operators and state-collapse simulation."""
+
 import numpy as np
 from .qubit import QubitState
 

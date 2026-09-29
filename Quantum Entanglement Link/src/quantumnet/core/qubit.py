@@ -1,3 +1,5 @@
+"""Density matrix quantum state representation and quantum information metrics."""
+
 import numpy as np
 
 
