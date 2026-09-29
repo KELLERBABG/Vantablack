@@ -1,0 +1,11 @@
+[package]
+name = "abos-phy"
+version = "0.1.0"
+edition = "2021"
+description = "ABOS Physical Layer - DSSS, FHSS, burst builder, beamforming"
+
+[dependencies]
+abos-common = { path = "../abos-common" }
+abos-dsp = { path = "../abos-dsp" }
+num-complex = "0.4"
+thiserror = "1"

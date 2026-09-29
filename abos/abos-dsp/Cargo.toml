@@ -1,0 +1,11 @@
+[package]
+name = "abos-dsp"
+version = "0.1.0"
+edition = "2021"
+description = "ABOS Digital Signal Processing - DDC, decimation, AGC, Costas loop, OFDM, FFT"
+
+[dependencies]
+abos-common = { path = "../abos-common" }
+num-complex = "0.4"
+rustfft = "6"
+thiserror = "1"

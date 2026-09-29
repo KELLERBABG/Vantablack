@@ -1,0 +1,15 @@
+[package]
+name = "abos-fec"
+version = "0.1.0"
+edition = "2021"
+description = "ABOS Forward Error Correction - LDPC, BICM interleaver, soft decision"
+
+[dependencies]
+abos-common = { path = "../abos-common" }
+num-complex = "0.4"
+rand = "0.8"
+rand_chacha = "0.3"
+thiserror = "1"
+
+[features]
+default = []

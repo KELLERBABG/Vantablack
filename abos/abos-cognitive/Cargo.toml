@@ -1,0 +1,12 @@
+[package]
+name = "abos-cognitive"
+version = "0.1.0"
+edition = "2021"
+description = "ABOS Cognitive Radio - Spectrum scanner, jammer detection, whitespace, adaptive rate"
+
+[dependencies]
+abos-common = { path = "../abos-common" }
+abos-dsp = { path = "../abos-dsp" }
+num-complex = "0.4"
+rustfft = "6"
+thiserror = "1"

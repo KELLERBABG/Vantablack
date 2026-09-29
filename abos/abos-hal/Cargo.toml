@@ -1,0 +1,11 @@
+[package]
+name = "abos-hal"
+version = "0.1.0"
+edition = "2021"
+description = "ABOS Hardware Abstraction Layer - SDR driver, DMA, GPIO, timing"
+
+[dependencies]
+abos-common = { path = "../abos-common" }
+num-complex = "0.4"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,25 @@
+[package]
+name = "abos-cli"
+version = "0.1.0"
+edition = "2021"
+description = "ABOS Command-Line Interface (provides the `abos` binary)"
+
+[[bin]]
+name = "abos"
+path = "src/main.rs"
+
+[dependencies]
+abos = { path = ".." }
+abos-common = { path = "../abos-common" }
+abos-hal = { path = "../abos-hal" }
+abos-dsp = { path = "../abos-dsp" }
+abos-phy = { path = "../abos-phy" }
+abos-fec = { path = "../abos-fec" }
+abos-protocol = { path = "../abos-protocol" }
+abos-cognitive = { path = "../abos-cognitive" }
+abos-iono = { path = "../abos-iono" }
+abos-stealth = { path = "../abos-stealth" }
+abos-storage = { path = "../abos-storage" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+num-complex = "0.4"

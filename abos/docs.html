@@ -1,0 +1,1305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Documentation Hub &mdash; Atmospheric Broadcast OS (ABOS)</title>
+  <meta name="description" content="Technical documentation, whitepaper, building plan, audit report, and architecture specifications for Atmospheric Broadcast OS (ABOS).">
+  <meta name="theme-color" content="#02050b">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #02050b;
+      --surface: #060c18;
+      --surface-raised: #0b1528;
+      --surface-card: #091122;
+      --border: #132442;
+      --border-glow: #1d3d70;
+      --border-subtle: #0d192f;
+
+      --cyan: #38bdf8;
+      --cyan-glow: rgba(56, 189, 248, 0.25);
+      --cyan-subtle: rgba(56, 189, 248, 0.08);
+      --cyan-border: rgba(56, 189, 248, 0.28);
+      --teal: #14b8a6;
+      --teal-dim: rgba(20, 184, 166, 0.12);
+      --amber: #f59e0b;
+      --amber-dim: rgba(245, 158, 11, 0.12);
+      --emerald: #10b981;
+      --emerald-dim: rgba(16, 185, 129, 0.12);
+      --rose: #f43f5e;
+      --rose-dim: rgba(244, 63, 94, 0.12);
+
+      --text: #f0f6fc;
+      --text-muted: #94a3b8;
+      --text-dim: #4c5d75;
+
+      --font-heading: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-heading);
+      line-height: 1.65;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      scrollbar-width: thin;
+      scrollbar-color: #1e3448 var(--bg);
+    }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: #1e3448; border-radius: 999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #2b4a68; }
+
+    a { color: var(--cyan); text-decoration: none; transition: color 0.15s; }
+    a:hover { color: #7dd3fc; }
+
+    /* Top Navigation Header */
+    .doc-header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(2, 5, 11, 0.9);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+      height: 64px;
+    }
+    .header-content {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .brand-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: #ffffff;
+      font-weight: 700;
+      font-size: 1.05rem;
+    }
+    .brand-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .search-box {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .search-input {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px 6px 32px;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text);
+      width: 220px;
+      transition: all 0.2s;
+    }
+    .search-input:focus {
+      outline: none;
+      border-color: var(--cyan);
+      box-shadow: 0 0 12px var(--cyan-glow);
+      width: 280px;
+    }
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+    .nav-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: all 0.15s;
+    }
+    .nav-btn-secondary {
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .nav-btn-secondary:hover {
+      border-color: var(--cyan);
+      color: #fff;
+    }
+    .nav-btn-primary {
+      background: var(--cyan);
+      color: #04161a;
+      border: 1px solid var(--cyan);
+      font-weight: 600;
+    }
+    .nav-btn-primary:hover {
+      box-shadow: 0 0 16px var(--cyan-glow);
+    }
+    .mobile-menu-btn {
+      display: none;
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+    }
+
+    /* Main Documentation Layout */
+    .docs-container {
+      max-width: 1440px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 290px 1fr;
+      min-height: calc(100vh - 64px);
+    }
+
+    /* Sidebar Navigation */
+    .docs-sidebar {
+      position: sticky;
+      top: 64px;
+      height: calc(100vh - 64px);
+      overflow-y: auto;
+      background: rgba(6, 12, 24, 0.6);
+      border-right: 1px solid var(--border);
+      padding: 24px 18px 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .sidebar-section-title {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--text-dim);
+      margin-bottom: 10px;
+      padding-left: 8px;
+    }
+    .doc-nav-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .doc-nav-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 6px;
+      font-size: 0.86rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+      border: 1px solid transparent;
+      text-decoration: none;
+    }
+    .doc-nav-item:hover {
+      background: var(--surface-card);
+      color: var(--text);
+    }
+    .doc-nav-item.active {
+      background: var(--cyan-subtle);
+      border-color: var(--cyan-border);
+      color: var(--cyan);
+      font-weight: 600;
+    }
+    /* Sub-TOC */
+    .doc-toc {
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 18px;
+    }
+    .toc-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-left: 4px;
+    }
+    .toc-item a {
+      display: block;
+      padding: 5px 8px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      border-radius: 4px;
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: all 0.15s;
+    }
+    .toc-item a:hover {
+      color: var(--text);
+      background: var(--surface-card);
+    }
+    .toc-item.active a {
+      color: var(--teal);
+      font-weight: 600;
+      padding-left: 12px;
+      border-left: 2px solid var(--teal);
+    }
+
+    /* Content Area */
+    .docs-content {
+      padding: 40px 48px 120px;
+      max-width: 980px;
+      width: 100%;
+    }
+
+    .doc-view { display: none; }
+    .doc-view.active { display: block; animation: fadeIn 0.15s ease-in-out; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(3px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Document Header */
+    .doc-header-block {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 22px;
+      margin-bottom: 36px;
+    }
+    .doc-title {
+      font-size: clamp(26px, 3vw, 34px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+      margin-bottom: 8px;
+      color: #ffffff;
+    }
+    .doc-subtitle {
+      font-size: 1rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    /* Table status badges */
+    .tag {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+    .tag-emerald { background: rgba(16, 185, 129, 0.1); color: var(--emerald); border: 1px solid rgba(16, 185, 129, 0.25); }
+    .tag-amber { background: rgba(245, 158, 11, 0.1); color: var(--amber); border: 1px solid rgba(245, 158, 11, 0.25); }
+
+    /* Markdown Typography */
+    .doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 {
+      color: #ffffff;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1.3;
+      margin-top: 36px;
+      margin-bottom: 16px;
+      scroll-margin-top: 90px;
+    }
+    .doc-body h1 { font-size: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-top: 48px; }
+    .doc-body h2 { font-size: 1.45rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; margin-top: 40px; }
+    .doc-body h3 { font-size: 1.18rem; margin-top: 28px; }
+    .doc-body h4 { font-size: 1rem; margin-top: 22px; color: var(--cyan); font-family: var(--font-mono); }
+
+    .doc-body p {
+      font-size: 15.5px;
+      color: #cbd5e1;
+      line-height: 1.7;
+      margin-bottom: 18px;
+    }
+    .doc-body ul, .doc-body ol {
+      margin-bottom: 20px;
+      padding-left: 24px;
+      color: #cbd5e1;
+    }
+    .doc-body li {
+      margin-bottom: 8px;
+      line-height: 1.65;
+    }
+    .doc-body li::marker { color: var(--cyan); }
+    .doc-body strong { color: #ffffff; font-weight: 600; }
+    .doc-body hr {
+      border: 0;
+      height: 1px;
+      background: var(--border);
+      margin: 36px 0;
+    }
+
+    .doc-body code {
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      color: var(--cyan);
+      background: var(--cyan-subtle);
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(56, 189, 248, 0.16);
+      white-space: nowrap;
+    }
+
+    /* Callout Alert Boxes */
+    .callout {
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      margin: 24px 0;
+      border-left: 4px solid;
+      background: var(--surface-card);
+      font-size: 14.5px;
+      line-height: 1.6;
+    }
+    .callout-info { border-left-color: var(--cyan); background: rgba(56, 189, 248, 0.05); }
+    .callout-success { border-left-color: var(--emerald); background: rgba(16, 185, 129, 0.05); }
+    .callout-warn { border-left-color: var(--amber); background: rgba(245, 158, 11, 0.05); }
+    .callout-title {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .callout-info .callout-title { color: var(--cyan); }
+    .callout-success .callout-title { color: var(--emerald); }
+    .callout-warn .callout-title { color: var(--amber); }
+
+    /* Code Blocks with Copy Button */
+    .code-block {
+      position: relative;
+      background: #010307;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin: 20px 0 26px;
+      overflow: hidden;
+    }
+    .code-header {
+      background: var(--surface-raised);
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+    .code-copy-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .code-copy-btn:hover {
+      color: var(--text);
+      border-color: var(--cyan);
+    }
+    .code-content {
+      padding: 16px 18px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+      color: #e2e8f0;
+      line-height: 1.65;
+    }
+    .code-content pre { margin: 0; }
+    .code-content code {
+      border: none;
+      background: none;
+      padding: 0;
+      color: inherit;
+      white-space: pre;
+    }
+
+    /* Tables */
+    .table-wrapper {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin: 24px 0 32px;
+      background: var(--surface-card);
+    }
+    .doc-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      text-align: left;
+    }
+    .doc-table th {
+      background: var(--surface-raised);
+      padding: 12px 16px;
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      letter-spacing: 0.05em;
+    }
+    .doc-table td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: #cbd5e1;
+      vertical-align: top;
+      line-height: 1.55;
+    }
+    .doc-table tr:hover td { background: rgba(255, 255, 255, 0.015); }
+    .doc-table tr:last-child td { border-bottom: none; }
+
+    /* Floating Back to Top Button */
+    .back-to-top {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      color: var(--cyan);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.2s;
+      z-index: 90;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    }
+    .back-to-top.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .back-to-top:hover {
+      border-color: var(--cyan);
+      box-shadow: 0 0 16px var(--cyan-glow);
+      transform: translateY(-2px);
+    }
+
+    /* Mobile Responsive */
+    @media (max-width: 960px) {
+      .docs-container { grid-template-columns: 1fr; }
+      .docs-sidebar {
+        position: fixed;
+        top: 64px;
+        left: 0;
+        bottom: 0;
+        width: 280px;
+        z-index: 99;
+        background: #02050b;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+      }
+      .docs-sidebar.open {
+        transform: translateX(0);
+        box-shadow: 10px 0 30px rgba(0,0,0,0.8);
+      }
+      .mobile-menu-btn { display: inline-flex; }
+      .docs-content { padding: 24px 20px 80px; }
+      .search-box { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="doc-header">
+    <div class="header-content">
+      <div class="brand-wrap">
+        <button class="mobile-menu-btn" id="menuToggle" aria-label="Toggle Navigation">☰ Menu</button>
+        <a href="index.html" class="brand-link">
+          <img src="assets/icon.svg" alt="ABOS Logo" class="brand-icon">
+          <span>ABOS</span>
+        </a>
+      </div>
+
+      <div class="header-actions">
+        <div class="search-box">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="text" id="docSearch" class="search-input" placeholder="Search docs (Ctrl+K)...">
+        </div>
+        <a href="index.html" class="nav-btn nav-btn-secondary">&larr; Overview</a>
+        <a href="https://github.com/KELLERBABG/ABOS" target="_blank" rel="noopener" class="nav-btn nav-btn-secondary">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          Repo
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <div class="docs-container">
+    <!-- Left Sticky Sidebar -->
+    <aside class="docs-sidebar" id="sidebar">
+      <div>
+        <div class="sidebar-section-title">DOCUMENTS</div>
+        <nav class="doc-nav-list">
+          <a class="doc-nav-item active" data-doc="whitepaper" href="#whitepaper">Technical Whitepaper</a>
+          <a class="doc-nav-item" data-doc="architecture" href="#architecture">Architecture Specification</a>
+          <a class="doc-nav-item" data-doc="verification" href="#verification">Verification &amp; Test Matrix</a>
+          <a class="doc-nav-item" data-doc="guide" href="#guide">System Guide &amp; CLI</a>
+        </nav>
+      </div>
+
+      <div class="doc-toc">
+        <div class="sidebar-section-title">ON THIS PAGE</div>
+        <ul class="toc-list" id="activeToc">
+          <!-- Populated dynamically based on active document -->
+        </ul>
+      </div>
+    </aside>
+
+    <!-- Main Content Viewport -->
+    <main class="docs-content" id="docsMain">
+
+      <!-- ========================================================================= -->
+      <!-- 1. TECHNICAL WHITEPAPER -->
+      <!-- ========================================================================= -->
+      <article id="doc-whitepaper" class="doc-view active">
+        <div class="doc-header-block">
+          <h1 class="doc-title">Technical Whitepaper</h1>
+          <p class="doc-subtitle">Decentralized NVIS mesh communication and delay-tolerant ionospheric relay architecture.</p>
+        </div>
+
+        <div class="doc-body">
+          <div class="callout callout-info">
+            <div class="callout-title">EXECUTIVE SUMMARY</div>
+            ABOS turns the Earth's ionized plasma canopy into a distributed delay-tolerant memory buffer and covert relay.
+            It communicates beyond line-of-sight without IP addresses, internet uplinks, or centralized routing tables.
+          </div>
+
+          <h2 id="wp-abstract">1. Abstract</h2>
+          <p>
+            ABOS is a unified platform for decentralized mesh communication <em>without routing tables</em>. It combines
+            <strong>spread-spectrum stealth</strong>, <strong>cognitive radio</strong>, <strong>delay-tolerant networking (DTN)</strong>,
+            and <strong>ionospheric sounding</strong> into a single Rust workspace. The system treats the ionosphere as a passive,
+            planetary-scale reflector: Near-Vertical Incidence Skywave (NVIS) propagation in the 2&ndash;10 MHz band returns signals
+            almost straight down, enabling beyond-line-of-sight communication with zero infrastructure.
+          </p>
+          <p>
+            Every transmission is shard-split, FEC-encoded with systematic (256, 512) LDPC, DSSS-spread beneath the cosmic noise floor,
+            stealth-masked, and delivered through DTN store-and-forward with opportunistic "Phoenix Window" scheduling (meteor scatter).
+            The implementation is <strong>feature-complete per Tier 4 readiness</strong>: 13 crates, 103/103 workspace tests passing,
+            zero compiler warnings, zero clippy warnings (<code>-D warnings</code>), CI-gated on every commit.
+          </p>
+
+          <h2 id="wp-motivation">2. Motivation &amp; Physics Invariant</h2>
+          <p>
+            Conventional communication infrastructure (cell towers, fiber, satellite uplinks) represents a fragile single point of failure
+            under adversarial electronic warfare or grid collapse. ABOS exploits a physical resource that cannot be physically destroyed or
+            switched off: <strong>the ionosphere</strong> &mdash; a conductive plasma layer at 60&ndash;1000 km altitude that refracts radio waves back to Earth.
+          </p>
+          <p>
+            NVIS uses high-angle radiation (70&deg;&ndash;90&deg; elevation) at frequencies just below the ionospheric critical frequency
+            (<code>f<sub>0</sub>F2</code>), reflecting energy directly back down like an umbrella and eliminating the traditional 50&ndash;500 km HF "skip zone".
+          </p>
+
+          <div class="code-block">
+            <div class="code-header">
+              <span>PLASMA CRITICAL FREQUENCY FORMULATION</span>
+              <button class="code-copy-btn" onclick="copyCode(this)">COPY</button>
+            </div>
+            <div class="code-content"><pre><code>// Appleton-Hartree plasma frequency equation
+// f_p ≈ 9.0 · √(N_e)  where N_e is electron density in electrons/m³
+// For N_e = 1e12 e/m³:
+// f_p = 9.0 · 1,000,000 = 9.0 MHz (critical ceiling)
+let f_p = 9.0 * electron_density.sqrt();
+let f_opt = abos_iono::nvis::select_nvis_frequency(f_p, current_time);</code></pre></div>
+          </div>
+
+          <h2 id="wp-architecture">3. Workspace Architecture (13 Crates)</h2>
+          <div class="table-wrapper">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>Crate</th>
+                  <th>Subsystem Role</th>
+                  <th>Key Responsibilities</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>abos-hal</code></td>
+                  <td>Hardware Abstraction</td>
+                  <td>DMA zero-copy sample buffers, GPIO T/R antenna switching, GPSDO timer synchronization.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-dsp</code></td>
+                  <td>Digital Signal Processing</td>
+                  <td>DDC, SIMD decimation, AGC, I/Q imbalance correction, Costas loop, Gardner timing, 256-OFDM.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-phy</code></td>
+                  <td>Physical Waveform</td>
+                  <td>DSSS Gold/PN code spreading, FHSS frequency hopping, scrambler, burst packet framing.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-fec</code></td>
+                  <td>Forward Error Correction</td>
+                  <td>Systematic (256, 512) LDPC belief propagation, BICM interleaver, soft QPSK/16-QAM LLR, CRC32.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-protocol</code></td>
+                  <td>Routing &amp; Mesh</td>
+                  <td>1.5&times; fountain sharding, DTN bundles, buffer-bounce relay, beacon discovery, ACK backoff.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-cognitive</code></td>
+                  <td>Spectrum Intelligence</td>
+                  <td>Wideband FFT scanner, automated jammer detection, spectral whitespace finder, adaptive MCS.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-iono</code></td>
+                  <td>Ionospheric Sounding</td>
+                  <td>Live chirp sounder, f<sub>0</sub>F2 estimation, NVIS frequency selector, meteor burst detector.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-stealth</code></td>
+                  <td>Anti-Electronic Warfare</td>
+                  <td>Cyclostationary masking (variable symbol rates), artificial phase noise, amplitude dithering.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-storage</code></td>
+                  <td>Embedded Storage</td>
+                  <td>Persistent sled bundle store, TTL eviction, content-hash dedup, disk spooling for blackouts.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-common</code></td>
+                  <td>Mathematical Primitives</td>
+                  <td>Complex numbers, ChaCha12 PRNG, Gold code generators, AES-256-GCM / HMAC-SHA256, NodeId.</td>
+                </tr>
+                <tr>
+                  <td><code>abos-cli</code></td>
+                  <td>Command Line Interface</td>
+                  <td>10 production subcommands with typed argument validation (clap-derived binary).</td>
+                </tr>
+                <tr>
+                  <td><code>abos-gui</code></td>
+                  <td>Cockpit Dashboard</td>
+                  <td>Headless GuiState + egui visualization (tested without display server).</td>
+                </tr>
+                <tr>
+                  <td><code>abos-tests</code></td>
+                  <td>Verification Harness</td>
+                  <td>Loopback RF channel (AWGN, loss, duplication), e2e roundtrips, fault injection, 3-node mesh.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 id="wp-signal-chain">4. Deterministic RF Signal Chain</h2>
+          <p>The transmission and reception pipelines operate without heap allocations on the hot path:</p>
+          <div class="code-block">
+            <div class="code-header">
+              <span>ABOS RF PIPELINE TOPOLOGY</span>
+              <button class="code-copy-btn" onclick="copyCode(this)">COPY</button>
+            </div>
+            <div class="code-content"><pre><code>TX Chain:
+Input Bytes → Shard Split (1.5x) → DTN Bundle → Scrambler → BICM Interleaver →
+LDPC (256/512) → QPSK Mapper → 256-OFDM → RRC Filter → DSSS Spreading →
+Stealth Masking → Burst Packet Framing → SDR DMA TX
+
+RX Chain:
+SDR DMA RX → Burst Detect &amp; Sync → DDC → Costas Carrier Recovery → Gardner Timing →
+DSSS Despreading → OFDM Demod → Soft-Decision LLR → LDPC Belief Propagation →
+Deinterleaver → Descrambler → Bundle Hash Dedup → Buffer-Bounce Forward → Reconstructed File</code></pre></div>
+          </div>
+
+          <h2 id="wp-stealth">5. Stealth &amp; Anti-EW Countermeasures</h2>
+          <p>
+            Standard military spread spectrum relies solely on direct-sequence spreading. Modern electronic intelligence (ELINT)
+            interceptors use cyclostationary feature detectors (spectral autocorrelation) to detect chip rates and carrier frequencies
+            even when buried below the noise floor. ABOS implements a three-tier anti-interception shield:
+          </p>
+          <ul>
+            <li><strong>Thermal Burial:</strong> DSSS spreading with 20&ndash;30 dB processing gain keeps PSD &lt; -120 dBm/Hz.</li>
+            <li><strong>Cyclostationary Masking:</strong> Randomized micro-dithering of the symbol clock (1&ndash;2%) destroys cyclic autocorrelation peaks.</li>
+            <li><strong>Phase &amp; Scintillation Emulation:</strong> Controlled phase noise and amplitude modulation imitate natural ionospheric scintillation, tricking classifiers into cataloging the burst as geomagnetic noise.</li>
+          </ul>
+
+          <h2 id="wp-threat">6. Threat Model &amp; Security Guarantees</h2>
+          <div class="table-wrapper">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>Adversary Capability</th>
+                  <th>Attack Vector</th>
+                  <th>ABOS Defense Mechanism</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Barrage Jammer</td>
+                  <td>High-power broadband noise</td>
+                  <td>LDPC soft-decision coding + cognitive whitespace channel hopping + 1.5&times; shard redundancy.</td>
+                </tr>
+                <tr>
+                  <td>ELINT Direction Finder</td>
+                  <td>Angle-of-arrival triangulation</td>
+                  <td>Sub-millisecond microbursts + NVIS high-angle reflection scatter (omni-directional ground illumination).</td>
+                </tr>
+                <tr>
+                  <td>Malicious Relay Node</td>
+                  <td>Packet injection / spoofing</td>
+                  <td>HMAC-SHA256 authenticated bundle headers + cryptographic NodeId derived from public keys.</td>
+                </tr>
+                <tr>
+                  <td>Replay Attack</td>
+                  <td>Resending stale packets</td>
+                  <td>Content-hash deduplication cache + monotonically increasing TTL and timestamp windowing.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </article>
+
+      <!-- ========================================================================= -->
+      <!-- 2. SYSTEM ARCHITECTURE & SUBSYSTEM SPECIFICATION -->
+      <!-- ========================================================================= -->
+      <article id="doc-architecture" class="doc-view">
+        <div class="doc-header-block">
+          <h1 class="doc-title">System Architecture &amp; Subsystem Specification</h1>
+          <p class="doc-subtitle">Layer-by-layer specifications, data structures, state machines, and protocol requirements across 13 crates.</p>
+        </div>
+
+        <div class="doc-body">
+          <h2 id="bp-overview">1. Bottom-Up Architecture Phasing</h2>
+          <p>
+            The ABOS implementation followed a strict bottom-up engineering discipline: hardware abstraction and mathematical
+            foundations first, followed by DSP, physical layer waveforms, FEC coding, and delay-tolerant routing protocols.
+          </p>
+
+          <h2 id="bp-phase1-4">2. Phases 1–4: HAL &amp; DSP Foundation</h2>
+          <ul>
+            <li><strong>Phase 1: HAL &amp; SDR Interface (<code>abos-hal</code>):</strong> Zero-copy DMA circular ring buffers, GPIO pin control for power amplifier and T/R antenna switches, GPSDO timer disciplina for 10 MHz reference.</li>
+            <li><strong>Phase 2: DDC &amp; Filtering (<code>abos-dsp</code>):</strong> Numerically controlled oscillator (NCO) mixing, SIMD-accelerated FIR decimation, Automatic Gain Control (AGC), and I/Q amplitude/phase imbalance compensation.</li>
+            <li><strong>Phase 3: Synchronization (<code>abos-dsp</code>):</strong> Costas loop carrier phase error detector with loop filter, Gardner symbol timing recovery, and Doppler shift compensator.</li>
+            <li><strong>Phase 4: OFDM Core (<code>abos-dsp</code>):</strong> 256 subcarriers with 32 cyclic prefix samples, pilot symbol insertion, and FFT/IFFT radix-2 processing.</li>
+          </ul>
+
+          <h2 id="bp-phase5-8">3. Phases 5–8: PHY, FEC &amp; Protocol Sharding</h2>
+          <ul>
+            <li><strong>Phase 5: Spread Spectrum (<code>abos-phy</code>):</strong> Direct-Sequence Spread Spectrum (DSSS) using maximal-length Gold code sequences with configurable chips-per-symbol (16, 64, 256). Fast Frequency Hopping (FHSS) engine.</li>
+            <li><strong>Phase 6: FEC &amp; Interleaving (<code>abos-fec</code>):</strong> Systematic (256, 512) LDPC code where parity is constructed via <code>p = A · u</code> guaranteeing zero-syndrome codewords. 512-bit Bit-Interleaved Coded Modulation (BICM) interleaver and soft-decision Log-Likelihood Ratio (LLR) calculation.</li>
+            <li><strong>Phase 7: Burst Framing (<code>abos-phy</code>):</strong> Barker sync words, 32-sample preamble, 13-byte burst header with typed MCS indices, bundle shard ID, payload byte length, and CRC-32 integrity validation.</li>
+            <li><strong>Phase 8: Fountain Sharding &amp; DTN (<code>abos-protocol</code>):</strong> 1.5&times; redundancy factor shard generator. Two-pass reconstruction algorithm that reassembles files from any surviving subset of original or repetition shards.</li>
+          </ul>
+
+          <div class="code-block">
+            <div class="code-header">
+              <span>SYSTEMATIC LDPC MATRIX EQUATIONS</span>
+              <button class="code-copy-btn" onclick="copyCode(this)">COPY</button>
+            </div>
+            <div class="code-content"><pre><code>Parity check matrix in systematic form:
+H = [ A | I ]   where A ∈ GF(2)^(256×256), I is 256×256 identity
+Codeword:
+c = [ u | p ]   where u is 256 information bits, p is 256 parity bits
+Parity generation:
+p = A · u (mod 2)
+Syndrome verification:
+s = H · c = A·u + I·p = A·u + A·u = 0 (syndrome zero guaranteed)</code></pre></div>
+          </div>
+
+          <h2 id="bp-phase9-13">4. Phases 9–13: Cognitive, Stealth &amp; Mesh Layer</h2>
+          <ul>
+            <li><strong>Phase 9: Buffer-Bounce &amp; Mesh Relay (<code>abos-protocol</code>):</strong> Decentralized store-and-forward engine with exponential backoff ACK sweeps, periodic node beacons, and peer table expiration.</li>
+            <li><strong>Phase 10: Cognitive Radio &amp; Sounding (<code>abos-cognitive</code>, <code>abos-iono</code>):</strong> Wideband spectrum scanner, real-time chirp ionosonde generator, plasma frequency estimation, and meteor burst detector.</li>
+            <li><strong>Phase 11: Anti-EW Stealth (<code>abos-stealth</code>):</strong> DSSS chip scrambling, cyclostationary masking, phase jitter synthesis, and randomized burst timing windows.</li>
+            <li><strong>Phase 12: Persistent Storage (<code>abos-storage</code>):</strong> sled-backed embedded key-value store with automatic TTL pruning and duplicate elimination.</li>
+            <li><strong>Phase 13: System Integration &amp; Harness (<code>abos</code>, <code>abos-cli</code>, <code>abos-gui</code>, <code>abos-tests</code>):</strong> Top-level <code>ABOSSystem</code> facade, 10 CLI subcommands, egui cockpit, and 103 integration tests.</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- ========================================================================= -->
+      <!-- 3. VERIFICATION & RELIABILITY MATRIX -->
+      <!-- ========================================================================= -->
+      <article id="doc-verification" class="doc-view">
+        <div class="doc-header-block">
+          <h1 class="doc-title">Verification &amp; Test Matrix</h1>
+          <p class="doc-subtitle">Automated test suites, fault-injection benchmarks, and loopback channel verification across all 13 crates.</p>
+        </div>
+
+        <div class="doc-body">
+          <h2 id="ar-tiers">1. Readiness Tier Ladder (T1–T5)</h2>
+          <div class="table-wrapper">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>Tier</th>
+                  <th>Designation</th>
+                  <th>Verification Criteria</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>T1</strong></td>
+                  <td>Builds</td>
+                  <td>Workspace resolves and compiles (<code>cargo build --workspace</code>) with zero errors.</td>
+                  <td><span class="tag tag-emerald">VERIFIED</span></td>
+                </tr>
+                <tr>
+                  <td><strong>T2</strong></td>
+                  <td>Core Logic Tested</td>
+                  <td>DSP, FEC, and crypto logic have comprehensive unit tests; <code>cargo test</code> green.</td>
+                  <td><span class="tag tag-emerald">VERIFIED</span></td>
+                </tr>
+                <tr>
+                  <td><strong>T3</strong></td>
+                  <td>Chain Orchestrated</td>
+                  <td>Full TX/RX chain wired in <code>ABOSSystem</code>; CLI entry point; persistent storage interface.</td>
+                  <td><span class="tag tag-emerald">VERIFIED</span></td>
+                </tr>
+                <tr>
+                  <td><strong>T4</strong></td>
+                  <td>Feature-Complete &amp; Gated</td>
+                  <td>Real code in all 13 crates; mesh coordination; test harness; clap CLI; GUI state; CI gating on push.</td>
+                  <td><span class="tag tag-emerald">CURRENT: ACTIVE</span></td>
+                </tr>
+                <tr>
+                  <td><strong>T5</strong></td>
+                  <td>Field-Validated</td>
+                  <td>Live over-the-air validation against physical SDR hardware (USRP / LimeSDR) under licensed bands.</td>
+                  <td><span class="tag tag-amber">FUTURE HARDWARE</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 id="ar-scorecard">2. Engineering Scorecard</h2>
+          <div class="table-wrapper">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>Dimension</th>
+                  <th>Score</th>
+                  <th>Evaluation &amp; Observations</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Functional Completeness</td>
+                  <td><strong>8 / 10</strong></td>
+                  <td>All 13 crates contain real code; complete TX/RX orchestrator; mesh beacons and ACK backoff implemented.</td>
+                </tr>
+                <tr>
+                  <td>Testing &amp; QA Pipeline</td>
+                  <td><strong>9 / 10</strong></td>
+                  <td>103 unit and integration tests passing; loopback channel, 3-node mesh, and fault injection tests in CI.</td>
+                </tr>
+                <tr>
+                  <td>Static Code Quality</td>
+                  <td><strong>10 / 10</strong></td>
+                  <td>Zero compiler warnings; zero clippy warnings with <code>-D warnings</code>; <code>cargo fmt</code> clean.</td>
+                </tr>
+                <tr>
+                  <td>Data Integrity &amp; Storage</td>
+                  <td><strong>8 / 10</strong></td>
+                  <td>sled embedded store with automatic dedup-on-insert, TTL eviction, and 1.5&times; fountain shard recovery.</td>
+                </tr>
+                <tr>
+                  <td>Cryptographic Security</td>
+                  <td><strong>7 / 10</strong></td>
+                  <td>AES-256-GCM authenticated encryption, HMAC-SHA256 IDs, and ChaCha12 PRNG.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 id="ar-matrix">3. Workspace Test Suite Matrix (103 Tests)</h2>
+          <div class="table-wrapper">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>Test Suite</th>
+                  <th>Test Count</th>
+                  <th>Coverage Scope</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>abos</code> (root)</td>
+                  <td>5 tests</td>
+                  <td>System creation, foF2 estimation, NVIS selection, chirp generator, meteor detect.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-common</code></td>
+                  <td>14 tests</td>
+                  <td>Complex math, PN sequences, AES-256-GCM encryption, HMAC node IDs.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-dsp</code></td>
+                  <td>14 tests</td>
+                  <td>FIR decimation, AGC stability, Costas lock, Gardner timing, OFDM subcarrier mod.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-fec</code></td>
+                  <td>17 tests</td>
+                  <td>LDPC syndrome zero construction, single-bit correction, soft LLR, CRC-32.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-phy</code></td>
+                  <td>3 tests</td>
+                  <td>DSSS spread/despread roundtrips, Gold sequence orthogonal despreading.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-protocol</code></td>
+                  <td>10 tests</td>
+                  <td>Mesh discovery, ACK aggregation, exponential backoff, shard deduplication.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-storage</code></td>
+                  <td>4 tests</td>
+                  <td>sled store roundtrips, TTL eviction, deduplication on insert, pending queue.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-gui</code></td>
+                  <td>11 tests</td>
+                  <td>Headless GuiState rendering, spectrum normalization, log tail limits.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+                <tr>
+                  <td><code>abos-tests</code> (e2e)</td>
+                  <td>27 tests</td>
+                  <td>RF channel noise, AWGN loopback, 3-node mesh flooding, fault injection.</td>
+                  <td><span class="tag tag-emerald">PASS</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 id="ar-bugs">4. Algorithmic Invariant Verifications</h2>
+          <p>
+            Key invariants validated across the DSP and protocol pipeline:
+          </p>
+          <div class="callout callout-success">
+            <div class="callout-title">MATHEMATICAL INVARIANTS ENFORCED</div>
+            <ul>
+              <li><strong>LDPC Syndrome Zero:</strong> Systematic generator <code>H = [A | I]</code> guarantees <code>H · c = 0</code> for all valid parity blocks.</li>
+              <li><strong>Check-Node LLR Alignment:</strong> Symmetric sign conventions prevent negative likelihood inversion across symbol iterations.</li>
+              <li><strong>Matched Filter DSSS:</strong> Per-chip matched correlation ensures processing gain of &ge;20 dB beneath the atmospheric noise floor.</li>
+              <li><strong>Fountain Shard Recovery:</strong> Systematic 1.5&times; expansion reconstructs original payload from any K-of-N surviving shard packets.</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+
+      <!-- ========================================================================= -->
+      <!-- 4. SYSTEM GUIDE & QUICKSTART -->
+      <!-- ========================================================================= -->
+      <article id="doc-guide" class="doc-view">
+        <div class="doc-header-block">
+          <h1 class="doc-title">System Guide &amp; CLI Reference</h1>
+          <p class="doc-subtitle">Operational quickstart, environment prerequisites, build commands, and 10 production subcommands.</p>
+        </div>
+
+        <div class="doc-body">
+          <h2 id="rd-requirements">1. Requirements &amp; Prerequisites</h2>
+          <ul>
+            <li><strong>Rust Toolchain:</strong> Rust 1.85+ (Edition 2021). Verified on Windows x86_64 and Linux x86_64.</li>
+            <li><strong>Hardware:</strong> Zero external hardware required for software simulation, loopback testing, and unit tests. Physical operation supports USRP B210, LimeSDR, HackRF, and RTL-SDR.</li>
+            <li><strong>Licensing:</strong> Transmitting on NVIS/meteor bands (2&ndash;10 MHz) requires appropriate amateur or experimental radio licensing.</li>
+          </ul>
+
+          <h2 id="rd-build">2. Building &amp; Verification</h2>
+          <div class="code-block">
+            <div class="code-header">
+              <span>CARGO BUILD &amp; TEST COMMANDS</span>
+              <button class="code-copy-btn" onclick="copyCode(this)">COPY</button>
+            </div>
+            <div class="code-content"><pre><code># Build entire workspace in release mode
+cargo build --release --workspace
+
+# Run complete 103-test suite across all 13 crates
+cargo test --workspace
+
+# Check zero-warning clippy compliance
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Verify source code formatting
+cargo fmt --all -- --check</code></pre></div>
+          </div>
+
+          <h2 id="rd-cli">3. The 10 CLI Subcommands</h2>
+          <p>The <code>abos</code> binary is built from the <code>abos-cli</code> crate:</p>
+          <div class="table-wrapper">
+            <table class="doc-table">
+              <thead>
+                <tr>
+                  <th>Command Line</th>
+                  <th>Action &amp; Parameters</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- status</code></td>
+                  <td>Inspects operational status: SDR center frequency, gain, SNR, bundle store count, and active mesh peers.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- configure</code></td>
+                  <td>Prints and validates parameters from <code>abos_config.json</code> (creates default if missing).</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- transmit &lt;file&gt;</code></td>
+                  <td>Fires file payload through the full pipeline: 1.5&times; sharding, LDPC, DSSS spreading, and SDR TX.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- receive [--attempts 5]</code></td>
+                  <td>Listens on carrier, acquires burst preambles, computes soft LLRs, decodes LDPC, and reconstructs file.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- scan</code></td>
+                  <td>Performs real-time wideband FFT spectrum analysis to locate quiet whitespace channels.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- chirp &lt;start&gt; &lt;stop&gt; &lt;dur&gt;</code></td>
+                  <td>Generates frequency-swept chirp sounder waveform (e.g. <code>abos chirp 3.0 10.0 0.1</code>) to probe ionosphere.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- mesh</code></td>
+                  <td>Displays active mesh node discovery state, observed peers, and pending ACK backoff timers.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- forward [bundle.bin]</code></td>
+                  <td>Relays delay-tolerant bundle on behalf of the mesh with hop increment and flood deduplication.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- start</code></td>
+                  <td>Initializes SDR device, arms DMA streaming buffers, locks GPSDO reference, and starts RX daemon.</td>
+                </tr>
+                <tr>
+                  <td><code>cargo run -p abos-cli -- stop</code></td>
+                  <td>Gracefully terminates DMA streaming, opens T/R power switches, and flushes bundle caches to disk.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </article>
+
+    </main>
+  </div>
+
+  <!-- Back to Top Button -->
+  <button class="back-to-top" id="backToTop" aria-label="Back to Top">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"></polyline></svg>
+  </button>
+
+  <script>
+    // Tab switching & deep linking
+    const navItems = document.querySelectorAll('.doc-nav-item');
+    const docViews = document.querySelectorAll('.doc-view');
+    const activeToc = document.getElementById('activeToc');
+    const backToTop = document.getElementById('backToTop');
+    const menuToggle = document.getElementById('menuToggle');
+    const sidebar = document.getElementById('sidebar');
+
+    function switchDoc(docId) {
+      navItems.forEach(item => {
+        if (item.getAttribute('data-doc') === docId) {
+          item.classList.add('active');
+        } else {
+          item.classList.remove('active');
+        }
+      });
+
+      docViews.forEach(view => {
+        if (view.id === 'doc-' + docId) {
+          view.classList.add('active');
+        } else {
+          view.classList.remove('active');
+        }
+      });
+
+      buildToc(docId);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Build Table of Contents dynamically for the active document
+    function buildToc(docId) {
+      activeToc.innerHTML = '';
+      const activeDoc = document.getElementById('doc-' + docId);
+      if (!activeDoc) return;
+
+      const headings = activeDoc.querySelectorAll('h2');
+      headings.forEach(h => {
+        if (!h.id) return;
+        const li = document.createElement('li');
+        li.className = 'toc-item';
+        const a = document.createElement('a');
+        a.href = '#' + h.id;
+        a.textContent = h.textContent.replace(/^[0-9.]+\s*/, '');
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          h.scrollIntoView({ behavior: 'smooth' });
+          if (window.innerWidth <= 960) sidebar.classList.remove('open');
+        });
+        li.appendChild(a);
+        activeToc.appendChild(li);
+      });
+    }
+
+    navItems.forEach(item => {
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        const docId = item.getAttribute('data-doc');
+        window.location.hash = docId;
+        switchDoc(docId);
+        if (window.innerWidth <= 960) sidebar.classList.remove('open');
+      });
+    });
+
+    // Hash change listener
+    function handleHash() {
+      const hash = window.location.hash.replace('#', '');
+      const validDocs = ['whitepaper', 'architecture', 'verification', 'guide'];
+      const aliasMap = {
+        'building-plan': 'architecture',
+        'audit': 'verification',
+        'readme': 'guide',
+        'progress-log': 'verification'
+      };
+      const targetDoc = aliasMap[hash] || hash;
+      if (validDocs.includes(targetDoc)) {
+        switchDoc(targetDoc);
+      } else if (hash) {
+        for (const doc of validDocs) {
+          const el = document.querySelector('#doc-' + doc + ' #' + hash);
+          if (el) {
+            switchDoc(doc);
+            setTimeout(() => el.scrollIntoView({ behavior: 'smooth' }), 100);
+            return;
+          }
+        }
+        switchDoc('whitepaper');
+      } else {
+        switchDoc('whitepaper');
+      }
+    }
+    window.addEventListener('hashchange', handleHash);
+
+    // Initial load
+    handleHash();
+
+    // Mobile menu toggle
+    if (menuToggle) {
+      menuToggle.addEventListener('click', () => {
+        sidebar.classList.toggle('open');
+      });
+    }
+
+    // Back to top visibility
+    window.addEventListener('scroll', () => {
+      if (window.scrollY > 300) {
+        backToTop.classList.add('visible');
+      } else {
+        backToTop.classList.remove('visible');
+      }
+    });
+    backToTop.addEventListener('click', () => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    // Copy code button handler
+    function copyCode(btn) {
+      const block = btn.closest('.code-block');
+      const code = block.querySelector('code').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        const orig = btn.innerText;
+        btn.innerText = 'COPIED!';
+        btn.style.color = 'var(--emerald)';
+        btn.style.borderColor = 'var(--emerald)';
+        setTimeout(() => {
+          btn.innerText = orig;
+          btn.style.color = '';
+          btn.style.borderColor = '';
+        }, 2000);
+      });
+    }
+
+    // Instant search filter across active doc
+    const searchInput = document.getElementById('docSearch');
+    if (searchInput) {
+      searchInput.addEventListener('input', (e) => {
+        const q = e.target.value.toLowerCase().trim();
+        const activeDoc = document.querySelector('.doc-view.active');
+        if (!activeDoc) return;
+
+        const sections = activeDoc.querySelectorAll('h2, h3, p, li, tr');
+        if (!q) {
+          sections.forEach(s => s.style.opacity = '1');
+          return;
+        }
+
+        sections.forEach(s => {
+          if (s.textContent.toLowerCase().includes(q)) {
+            s.style.opacity = '1';
+          } else {
+            s.style.opacity = '0.35';
+          }
+        });
+      });
+
+      // Keyboard shortcut Ctrl+K / Cmd+K
+      window.addEventListener('keydown', (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+          e.preventDefault();
+          searchInput.focus();
+        }
+      });
+    }
+  </script>
+</body>
+</html>

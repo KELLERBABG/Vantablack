@@ -1,0 +1,37 @@
+[package]
+name = "abos"
+version = "0.1.0"
+edition = "2021"
+description = "Atmospheric Broadcast OS - Covert, resilient, long-range SDR communication system"
+
+[workspace]
+members = [
+    "abos-hal",
+    "abos-dsp",
+    "abos-phy",
+    "abos-fec",
+    "abos-protocol",
+    "abos-cognitive",
+    "abos-iono",
+    "abos-stealth",
+    "abos-storage",
+    "abos-common",
+    "abos-cli",
+    "abos-gui",
+    "abos-tests",
+]
+
+[dependencies]
+abos-hal = { path = "abos-hal" }
+abos-dsp = { path = "abos-dsp" }
+abos-phy = { path = "abos-phy" }
+abos-fec = { path = "abos-fec" }
+abos-protocol = { path = "abos-protocol" }
+abos-cognitive = { path = "abos-cognitive" }
+abos-iono = { path = "abos-iono" }
+abos-stealth = { path = "abos-stealth" }
+abos-storage = { path = "abos-storage" }
+abos-common = { path = "abos-common" }
+num-complex = "0.4"
+tokio = { version = "1", features = ["full"] }
+bincode = "1"

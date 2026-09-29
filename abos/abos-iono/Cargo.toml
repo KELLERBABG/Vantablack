@@ -1,0 +1,11 @@
+[package]
+name = "abos-iono"
+version = "0.1.0"
+edition = "2021"
+description = "ABOS Ionospheric Sounding - Chirp sounder, foF2 estimation, NVIS, meteor scatter"
+
+[dependencies]
+abos-common = { path = "../abos-common" }
+abos-hal = { path = "../abos-hal" }
+num-complex = "0.4"
+thiserror = "1"

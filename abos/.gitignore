@@ -1,0 +1,21 @@
+target/
+node_modules/
+.venv/
+__pycache__/
+.pytest_cache/
+*.tmp
+*.exe
+*.dll
+*.pdb
+*.rlib
+.reasonix/
+*reasonix*
+
+# Runtime artifacts created by CLI smoke tests
+/data/
+
+# Obsidian / dev scratchpads
+*.canvas
+
+# Workflows requiring elevated PAT workflow scope
+.github/

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400">
+  <defs>
+    <linearGradient id="bgrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <radialGradient id="bamb" cx="28%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#02050b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="400" fill="#02050b"/>
+  <rect width="1200" height="400" fill="url(#bamb)"/>
+
+  <!-- Clean Subtle Engineering Grid -->
+  <g stroke="#1e293b" stroke-opacity="0.25" stroke-width="1">
+    <line x1="0" y1="100" x2="1200" y2="100"/>
+    <line x1="0" y1="200" x2="1200" y2="200"/>
+    <line x1="0" y1="300" x2="1200" y2="300"/>
+    <line x1="300" y1="0" x2="300" y2="400"/>
+    <line x1="600" y1="0" x2="600" y2="400"/>
+    <line x1="900" y1="0" x2="900" y2="400"/>
+  </g>
+
+  <!-- Large Stylized Background Skywave Graphic on the Right -->
+  <g transform="translate(860, 60) scale(2.2)" opacity="0.12">
+    <path d="M 48 22 Q 64 14 80 22" fill="none" stroke="#2dd4bf" stroke-width="3" stroke-linecap="round"/>
+    <path d="M 38 32 Q 64 20 90 32" fill="none" stroke="#38bdf8" stroke-width="4.5" stroke-linecap="round"/>
+    <path d="M 34 100 L 58 44 C 60 39, 68 39, 70 44 L 94 100" fill="none" stroke="#38bdf8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="44" y1="78" x2="84" y2="78" stroke="#38bdf8" stroke-width="5.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Left Icon Emblem (Exact Scaled ABOS Mark) -->
+  <g transform="translate(90, 110)">
+    <rect width="180" height="180" rx="42" fill="#071329" stroke="#1d2d4a" stroke-width="2"/>
+    <g transform="translate(18, 18) scale(1.125)">
+      <!-- Upper Outer Arc -->
+      <path d="M 48 22 Q 64 14 80 22" fill="none" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" opacity="0.6"/>
+      <!-- Inner Arc -->
+      <path d="M 38 32 Q 64 20 90 32" fill="none" stroke="#38bdf8" stroke-width="4.2" stroke-linecap="round"/>
+      <!-- Skywave Ribbon A -->
+      <path d="M 34 100 L 58 44 C 60 39, 68 39, 70 44 L 94 100" fill="none" stroke="url(#bgrad)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Crossbar Horizon -->
+      <line x1="44" y1="78" x2="84" y2="78" stroke="url(#bgrad)" stroke-width="5.5" stroke-linecap="round"/>
+      <!-- Zenith Node -->
+      <circle cx="64" cy="78" r="3.5" fill="#f8fafc"/>
+    </g>
+  </g>
+
+  <!-- Typography -->
+  <text x="315" y="195" font-family="'Space Grotesk', -apple-system, sans-serif" font-size="64" font-weight="700" fill="#f8fafc" letter-spacing="-1.5">ABOS</text>
+  <text x="317" y="240" font-family="'Space Grotesk', -apple-system, sans-serif" font-size="20" font-weight="500" fill="#38bdf8" letter-spacing="1">Atmospheric Broadcast OS</text>
+  <text x="317" y="272" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="400" fill="#64748b" letter-spacing="1">DECENTRALIZED NVIS SDR MESH &bull; RUST WORKSPACE</text>
+
+  <!-- Border -->
+  <rect x="1" y="1" width="1198" height="398" fill="none" stroke="#1e293b" stroke-width="1"/>
+</svg>
