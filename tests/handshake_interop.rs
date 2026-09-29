@@ -21,16 +21,17 @@
 
 use ml_kem::kem::KeyExport;
 use vantablack::ghost::layers::l0_identity::{
-    create_identity_binding, verify_hybrid_binding, GhostIdentity,
+    create_identity_binding, verify_hybrid_binding, verify_peer_signature, GhostIdentity,
 };
 use vantablack::ghost::layers::l1_kem::{
     build_negotiated_handshake_pdu, build_negotiated_response_pdu,
     derive_hybrid_master_key_with_suite, derive_hybrid_master_key_with_transcript,
     generate_kyber768_keypair, generate_kyber_keypair, generate_x25519_keypair,
-    kyber768_decapsulate, kyber768_encapsulate, negotiate_cipher_suite, parse_handshake_pdu,
-    parse_handshake_pdu_suite, parse_negotiated_handshake_pdu, parse_negotiated_response_pdu,
-    HybridCipherSuite,
+    kyber768_decapsulate, kyber768_encapsulate, negotiate_cipher_suite, negotiated_response_len,
+    parse_handshake_pdu, parse_handshake_pdu_suite, parse_negotiated_handshake_pdu,
+    parse_negotiated_response_pdu, HybridCipherSuite,
 };
+use vantablack::ghost::layers::l4_rs;
 use vantablack::ghost::session::Session;
 use x25519_dalek::PublicKey as XPublicKey;
 
@@ -159,6 +160,111 @@ fn two_nodes_reach_one_session_key_through_the_negotiated_transcript() {
         "two nodes must derive one session key through the negotiated transcript"
     );
     assert_ne!(alice_key, [0u8; 32]);
+}
+
+/// The response has to survive the transport that actually carries it.
+///
+/// A handshake PDU is split into two equal Reed-Solomon halves, so an odd-length
+/// payload is padded with one zero byte (`l4_rs::encode`). That makes the length
+/// the initiator receives a function of the *suite*: the ML-KEM-768 response is
+/// 1265 bytes (odd — it always arrives padded) and the ML-KEM-512 one is 945
+/// (even). A parser that demanded an exact length rejected every 768 response,
+/// and even a parser that accepted it would have verified the signature over
+/// `datagram[..len-64]`, which with the pad in place is the wrong bytes. Since
+/// two current nodes negotiate 768, the responder held the session and the
+/// initiator never did — a handshake could be answered but not completed.
+#[test]
+fn a_signed_response_survives_the_shard_transport_padding() {
+    let bob = GhostIdentity::generate_fresh();
+
+    for suite in [SUITE_768, SUITE_512] {
+        let ct_len = match suite {
+            SUITE_768 => 1088,
+            SUITE_512 => 768,
+        };
+        let response = build_negotiated_response_pdu(
+            suite,
+            &bob.public_key_bytes(),
+            &bob.pq_commitment(),
+            |d| bob.sign(d).to_bytes(),
+            &[7u8; 32],
+            &vec![0x5Au8; ct_len],
+        )
+        .expect("a well-formed response");
+        assert_eq!(response.len(), negotiated_response_len(suite));
+
+        // Through the transport: split into the two halves the shard encoder
+        // makes, then fold them back the way the receiver does.
+        let mut payload = response.clone();
+        let shards = l4_rs::encode(&mut payload);
+        let received = [shards[0].as_slice(), shards[1].as_slice()].concat();
+        assert_eq!(
+            received.len(),
+            response.len() + (response.len() % 2),
+            "the transport pads an odd payload — {suite:?} is {}",
+            if response.len() % 2 == 0 {
+                "already even"
+            } else {
+                "odd, so this is the case that used to be rejected"
+            }
+        );
+
+        let answer = parse_negotiated_response_pdu(&received).unwrap_or_else(|| {
+            panic!(
+                "the transported {suite:?} response must parse: {} bytes carried, {} expected, suite byte {}",
+                received.len(),
+                negotiated_response_len(suite),
+                received[16]
+            )
+        });
+        assert_eq!(answer.suite, suite);
+        assert_eq!(answer.identity_pk, bob.public_key_bytes());
+        assert_eq!(answer.pq_commitment, bob.pq_commitment());
+
+        // The signature covers the PDU, not whatever else the datagram carries.
+        let signed = &received[..negotiated_response_len(suite) - 64];
+        assert!(
+            verify_peer_signature(&answer.identity_pk, signed, &answer.signature),
+            "{suite:?}: the response signature must verify over the PDU"
+        );
+        if received.len() != response.len() {
+            assert!(
+                !verify_peer_signature(
+                    &answer.identity_pk,
+                    &received[..received.len() - 64],
+                    &answer.signature
+                ),
+                "the transport's pad byte must not be treated as signed material"
+            );
+        }
+    }
+
+    // The offer travels the same way, and its parser already tolerates the pad.
+    // What the *responder* must not do is verify the signature over the
+    // datagram's last 64 bytes: the material is the PDU as built, whatever the
+    // transport appended after it.
+    let alice = GhostIdentity::generate_fresh();
+    let (offer_pdu, _, _) = offer(&alice, &[SUITE_768, SUITE_512]);
+    let mut payload = offer_pdu.clone();
+    let shards = l4_rs::encode(&mut payload);
+    let received = [shards[0].as_slice(), shards[1].as_slice()].concat();
+    let parsed = parse_negotiated_handshake_pdu(&received).expect("the transported offer parses");
+    assert_eq!(parsed.identity_pk, alice.public_key_bytes());
+    assert!(
+        verify_peer_signature(
+            &parsed.identity_pk,
+            &offer_pdu[..offer_pdu.len() - 64],
+            &parsed.signature
+        ),
+        "the offer signature covers the offer, not the datagram"
+    );
+    assert_eq!(
+        received.len(),
+        offer_pdu.len(),
+        "the offer carries a reserved byte that makes it even-length, so nothing is \
+         appended — which is why the responder's datagram-tail signature slice is correct \
+         for it and was wrong for the response"
+    );
 }
 
 #[test]

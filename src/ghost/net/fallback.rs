@@ -8,8 +8,9 @@
 //!
 //! This module is that join. It has three parts:
 //!
-//! 1. **The ladder** ([`choose_fallback`]): direct → a mesh peer that advertises
-//!    relay capability → a TURN allocation. Ordered by cost, and deterministic so
+//! 1. **The ladder** ([`choose_fallback_with_skywave`]): direct → a mesh peer that
+//!    advertises relay capability → a TURN allocation → the ABOS skywave carrier
+//!    (only when the SDR bridge is active). Ordered by cost, and deterministic so
 //!    two runs of the same topology pick the same path.
 //! 2. **The route table** ([`FallbackRoutes`]): which path each unreachable peer is
 //!    currently using, read by the shard egress and written when a punch fails or a
@@ -87,7 +88,6 @@ impl FallbackPath {
     }
 }
 
-
 /// Choose the cheapest fallback that can actually carry traffic to `target_fp`.
 ///
 /// The order is deliberate. A mesh peer is tried before TURN because it is
@@ -109,16 +109,42 @@ fn is_lan_addr(addr: &SocketAddr) -> bool {
     }
 }
 
-/// Choose the fallback path for a peer.
+/// Choose the fallback path for a peer (no skywave carrier configured).
 ///
-/// Prefers external WAN relays over local LAN peers so that outbound WAN traffic
-/// goes directly to the destination or external relay rather than bouncing through
-/// other LAN nodes.
+/// Thin wrapper over [`choose_fallback_with_skywave`] for callers that do not
+/// operate an SDR bridge.
 pub fn choose_fallback(
     our_fp: &str,
     target_fp: &str,
     relay_candidates: &[(String, SocketAddr)],
     turn: Option<SocketAddr>,
+) -> Option<FallbackPath> {
+    choose_fallback_with_skywave(our_fp, target_fp, relay_candidates, turn, None)
+}
+
+/// Choose the fallback path for a peer, with the skywave carrier available.
+///
+/// Prefers external WAN relays over local LAN peers so that outbound WAN traffic
+/// goes directly to the destination or external relay rather than bouncing through
+/// other LAN nodes.
+///
+/// The full ladder is:
+///
+/// 1. **Mesh relay** — a mesh peer that advertised relay capability (WAN first);
+/// 2. **TURN** — the operator's own relay allocation;
+/// 3. **Skywave** — the ABOS SDR bridge, *only* when `skywave` reports the
+///    bridge active with the NVIS frequency it is tuned to.
+///
+/// Skywave is the last resort because it is slow (100 bps – 12 kbps) and
+/// half-duplex: it beats silence, but anything faster beats it. `skywave` is
+/// `Some(nvis_freq_khz)` exactly when the daemon runs with an active skywave
+/// bridge (feature `sdr`, or the synthetic loopback carrier for tests).
+pub fn choose_fallback_with_skywave(
+    our_fp: &str,
+    target_fp: &str,
+    relay_candidates: &[(String, SocketAddr)],
+    turn: Option<SocketAddr>,
+    skywave: Option<u32>,
 ) -> Option<FallbackPath> {
     let candidate = relay_candidates
         .iter()
@@ -135,7 +161,10 @@ pub fn choose_fallback(
             relay_addr: *relay_addr,
         });
     }
-    turn.map(|peer_relayed| FallbackPath::Turn { peer_relayed })
+    if let Some(peer_relayed) = turn {
+        return Some(FallbackPath::Turn { peer_relayed });
+    }
+    skywave.map(|nvis_freq_khz| FallbackPath::Skywave { nvis_freq_khz })
 }
 
 /// The per-peer fallback route table.

@@ -10,6 +10,21 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
     if args.len() < 2 {
         return None;
     }
+    // Anchor activation flags. The daemon reads the resolved environment
+    // (`GHOST_QUANTUM` / `GHOST_SKYWAVE`), so both `--quantum` and the env var
+    // work, and a flag set here survives into `run_node` unchanged.
+    for (i, a) in args.iter().enumerate() {
+        match a.as_str() {
+            "--quantum" => {
+                std::env::set_var("GHOST_QUANTUM", "1");
+                let _ = i;
+            }
+            "--skywave" => {
+                std::env::set_var("GHOST_SKYWAVE", "1");
+            }
+            _ => {}
+        }
+    }
     match args[1].as_str() {
         "split-key" | "split_key" => {
             let secret = if args.len() >= 3 {
@@ -67,7 +82,14 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!("  Carrier Band: 2–10 MHz (NVIS Skywave)");
             println!("  Propagation: 70°–90° Near-Vertical Incidence (Zero Skip Zone)");
             println!("  Modulation: DSSS below-noise + LDPC(256/512)");
-            println!("  Status: {}", if cfg!(feature = "sdr") { "Enabled (compiled with --features sdr)" } else { "Disabled (compile with --features sdr)" });
+            println!(
+                "  Status: {}",
+                if cfg!(feature = "sdr") {
+                    "Enabled (compiled with --features sdr)"
+                } else {
+                    "Disabled (compile with --features sdr)"
+                }
+            );
             Some(Ok(()))
         }
         "--version" | "-v" | "version" => {
@@ -82,7 +104,11 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!(
                 "  ggn join-key <SHARE1> <SHARE2>  Reconstruct secret from any 2 Shamir shares"
             );
-            println!("  ggn sdr-status                  Show atmospheric skywave (ABOS) carrier status");
+            println!(
+                "  ggn sdr-status                  Show atmospheric skywave (ABOS) carrier status"
+            );
+            println!("  --skywave                       Activate the ABOS skywave fallback carrier (GHOST_SKYWAVE=1)");
+            println!("  --quantum                       Activate the QEL quantum anchor (GHOST_QUANTUM=1)");
             println!("  ggn --version                   Show version information");
             println!("  ggn --help                      Show this help");
             Some(Ok(()))

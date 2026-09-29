@@ -51,6 +51,12 @@ quic = ["dep:quinn", "dep:rcgen"]
 # Atmospheric Broadcast OS (ABOS) SDR ionospheric skywave carrier:
 # Enables NVIS 2–10 MHz beyond-line-of-sight and meteor-burst physical fallback.
 sdr = ["dep:abos"]
+# TLS for the ETSI GS QKD 014 key-delivery client (`ghost::layers::l10_qel_etsi`).
+# The standard mandates HTTPS with mutual certificate authentication, so a real
+# QKD appliance cannot be reached without this. It is opt-in to keep the default
+# binary free of a TLS stack — and a build without it *refuses* an https:// KME
+# URL rather than falling back to plaintext key delivery.
+qkd-tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile"]
 
 
 # Embeds the application icon and version block into the Windows binaries
@@ -85,7 +91,7 @@ strip = "symbols"
 jni = { version = "0.21", default-features = false }
 
 [dependencies]
-tokio = { version = "1.44", features = ["rt-multi-thread", "io-util", "net", "sync", "time", "macros"] }
+tokio = { version = "1.44", features = ["rt-multi-thread", "io-util", "net", "sync", "time", "macros", "process"] }
 reed-solomon-erasure = "6.0.0"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
@@ -141,5 +147,22 @@ smoltcp = { version = "0.14.0", default-features = false, features = ["std", "me
 # installed first.
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"], optional = true }
-abos = { git = "https://github.com/KELLERBABG/ABOS.git", optional = true }
+# Atmospheric Broadcast OS (ABOS) SDR ionospheric skywave carrier:
+# Enables NVIS 2–10 MHz beyond-line-of-sight and meteor-burst physical fallback.
+# The ABOS workspace is vendored in-repo (`abos/`) — Physical Anchor 1 — so the
+# `sdr` build needs no network access. See docs/ANCHORS_CODEBASE_INTEGRATION.md.
+abos = { path = "abos", optional = true }
+# ETSI GS QKD 014 client (feature `qkd-tls`). `ring` is the provider, matching
+# the QUIC transport's choice, so the build has one crypto backend rather than
+# two; `tls12` keeps appliances that still cap out at TLS 1.2 reachable.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+rustls-pemfile = { version = "2", optional = true }
+
+[dev-dependencies]
+# TLS test harness for the QKD 014 client: generates the self-signed appliance
+# certificate the client then has to verify. Already in the dependency graph via
+# the `quic` feature, so it adds no new crate to the lockfile.
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 

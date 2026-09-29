@@ -7,10 +7,12 @@
 use super::*;
 use crate::vpn::daemon::{vpn_export, VpnMode};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use vantablack::ghost::layers::l10_qel::{self, QelAnchorState, QuantumRouteResult};
 use vantablack::ghost::net::consumer::{self, ConsumerSettings};
 use vantablack::ghost::GhostNode;
 
@@ -185,6 +187,8 @@ pub fn spawn_control_center(
     pending_hs: PendingHandshakes,
     scan_notify: Arc<tokio::sync::Notify>,
     scan_interval_secs: Arc<AtomicU32>,
+    qel_state_ref: Arc<parking_lot::RwLock<QelAnchorState>>,
+    qel_last_route: Arc<parking_lot::RwLock<Option<QuantumRouteResult>>>,
 ) {
     let nc_m = Arc::clone(&nc);
     let addrs_m = Arc::clone(&addrs);
@@ -201,6 +205,8 @@ pub fn spawn_control_center(
     let phs_m = Arc::clone(&pending_hs);
     let scan_notify_m = Arc::clone(&scan_notify);
     let scan_interval_m = Arc::clone(&scan_interval_secs);
+    let qel_state_m = Arc::clone(&qel_state_ref);
+    let qel_route_m = Arc::clone(&qel_last_route);
 
     tokio::spawn(async move {
         let bind_addr = format!("0.0.0.0:{}", mp);
@@ -244,11 +250,74 @@ pub fn spawn_control_center(
                         let phs_ref = Arc::clone(&phs_m);
                         let scan_notify_ref = Arc::clone(&scan_notify_m);
                         let scan_interval_ref = Arc::clone(&scan_interval_m);
+                        let qel_state_ref = Arc::clone(&qel_state_m);
+                        let qel_last_route = Arc::clone(&qel_route_m);
                         tokio::spawn(async move {
-                            let mut buf = [0u8; 4096];
-                            if let Ok(n) = stream.read(&mut buf).await {
-                                let req = String::from_utf8_lossy(&buf[..n]);
+                            // Read the whole request. A single `read` races the client's
+                            // TCP segmentation: a POST whose body lands in a later segment
+                            // would be parsed as body-less and rejected. Clients here do
+                            // NOT half-close their write side before reading the response
+                            // (every browser does the same), so we cannot read to EOF;
+                            // instead read until the headers are complete and then until
+                            // `Content-Length` body bytes have arrived (bounded).
+                            let mut buf: Vec<u8> = Vec::with_capacity(4096);
+                            {
+                                let mut chunk = [0u8; 4096];
+                                let _guard = tokio::time::timeout(
+                                    tokio::time::Duration::from_secs(10),
+                                    async {
+                                        loop {
+                                            // Headers complete?
+                                            let header_end =
+                                                buf.windows(4).position(|w| w == b"\r\n\r\n");
+                                            let need_body = match header_end {
+                                                Some(h) => {
+                                                    let headers =
+                                                        String::from_utf8_lossy(&buf[..h]);
+                                                    headers
+                                                        .lines()
+                                                        .find_map(|l| {
+                                                            let (k, v) = l.split_once(':')?;
+                                                            k.trim()
+                                                                .eq_ignore_ascii_case(
+                                                                    "content-length",
+                                                                )
+                                                                .then(|| {
+                                                                    v.trim().parse::<usize>().ok()
+                                                                })
+                                                                .flatten()
+                                                        })
+                                                        .unwrap_or(0)
+                                                }
+                                                None => usize::MAX, // keep reading headers
+                                            };
+                                            let have =
+                                                buf.len() - header_end.map(|h| h + 4).unwrap_or(0);
+                                            if header_end.is_some() && have >= need_body {
+                                                break;
+                                            }
+                                            match stream.read(&mut chunk).await {
+                                                Ok(0) | Err(_) => break,
+                                                Ok(n) => {
+                                                    buf.extend_from_slice(&chunk[..n]);
+                                                    if buf.len() > 1_048_576 {
+                                                        break; // request size cap
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                )
+                                .await;
+                            }
+                            if !buf.is_empty() {
+                                let req = String::from_utf8_lossy(&buf);
                                 let (vpn_role, vpn_prom, vpn_json) = vpn_export(&vpn_ref);
+                                tracing::debug!(
+                                    first = %req.lines().next().unwrap_or(""),
+                                    bytes = buf.len(),
+                                    "control: request received"
+                                );
                                 let vpn_available = vpn_ref.is_some();
                                 let configured_pin = pin_ref.read().clone();
                                 let pin_ok = match configured_pin.as_deref() {
@@ -566,6 +635,113 @@ pub fn spawn_control_center(
                                         "handshake_status": "ML-KEM-512 + X25519 Post-Quantum Hybrid",
                                         "discovery_source": "DNS Seed + Multicast Beacon + peers.cache"
                                     }).to_string();
+                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                } else if req.starts_with("GET /api/v1/anchors/status") {
+                                    // Physical anchors (experimental, in-simulation):
+                                    // ABOS skywave carrier + QEL quantum anchor.
+                                    let sky = net::sdr_bridge::SkywaveBridge::global()
+                                        .map(|b| b.telemetry());
+                                    let qel_state = *qel_state_ref.read();
+                                    let body = serde_json::json!({
+                                        "abos_skywave": match sky {
+                                            Some(t) => serde_json::json!({
+                                                "status": if t.sdr_active { "online" } else { "standby" },
+                                                "synthetic": !cfg!(feature = "sdr"),
+                                                "carrier_freq_hz": t.carrier_freq_hz,
+                                                "estimated_f0f2_hz": t.estimated_f0f2_hz,
+                                                "dsss_processing_gain_db": t.dsss_processing_gain_db,
+                                                "tx_packets": t.tx_packet_count,
+                                                "rx_packets": t.rx_packet_count,
+                                                "tx_dsp_bytes": t.tx_dsp_bytes,
+                                                "meteor_burst_window_open": t.meteor_burst_window_open,
+                                                "virtual_carrier": t.virtual_carrier,
+                                                "virtual_carrier_peer": t.virtual_carrier_peer,
+                                            }),
+                                            None => serde_json::json!({ "status": "offline" }),
+                                        },
+                                        "qel_quantum": {
+                                            "status": qel_state.as_str(),
+                                            "last_route": qel_last_route
+                                                .read()
+                                                .clone()
+                                                .map(|r| serde_json::json!({
+                                                    "path": r.path,
+                                                    "end_to_end_fidelity": r.end_to_end_fidelity,
+                                                    "key_fidelity": r.key_fidelity,
+                                                    "distillation_rounds": r.distillation_rounds,
+                                                    "swap_nodes": r.swap_nodes,
+                                                    "key_derived": r.qkd_key_hex.is_some(),
+                                                })),
+                                            // Which key-delivery backend this node runs, and
+                                            // whether it is a simulation or an appliance.
+                                            // Carries no key material and no token: this
+                                            // document is fetched over loopback HTTP.
+                                            "backend": l10_qel::shared_controller().backend_report(),
+                                            "routes_over_topology":
+                                                l10_qel::shared_controller().routes_over_topology(),
+                                            "note": "experimental — see docs/ANCHORS_CODEBASE_INTEGRATION.md §8 for what is and is not claimed",
+                                        },
+                                    })
+                                    .to_string();
+                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                } else if req.starts_with("POST /api/v1/anchors/qel/route") {
+                                    tracing::debug!("control: qel route endpoint entered");
+                                    // Trigger a real QEL route computation between two
+                                    // live peer fingerprints: {"from": "<fp>", "to": "<fp>"}.
+                                    // PIN-gated like every mutation above.
+                                    let parsed: Option<(String, String)> = req
+                                        .split_once("\r\n\r\n")
+                                        .and_then(|(_, body)| {
+                                            serde_json::from_str(body.trim()).ok()
+                                        })
+                                        .and_then(|v: serde_json::Value| {
+                                            let from = v.get("from")?.as_str()?.to_string();
+                                            let to = v.get("to")?.as_str()?.to_string();
+                                            Some((from, to))
+                                        });
+                                    let Some((from_fp, to_fp)) = parsed else {
+                                        let body = serde_json::json!({
+                                            "success": false,
+                                            "error": "body must be JSON: {\"from\": \"<fingerprint>\", \"to\": \"<fingerprint>\"}"
+                                        })
+                                        .to_string();
+                                        let resp = format!(
+                                            "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            body.len(),
+                                            body
+                                        );
+                                        let _ = stream.write_all(resp.as_bytes()).await;
+                                        return;
+                                    };
+                                    let topo_path = std::env::var("GHOST_QEL_TOPOLOGY")
+                                        .unwrap_or_else(|_| {
+                                            vantablack::ghost::paths::data_file_string(
+                                                "ghost-topology.json",
+                                            )
+                                        });
+                                    let ctrl =
+                                        vantablack::ghost::layers::l10_qel::shared_controller();
+                                    let outcome = ctrl
+                                        .establish_quantum_link(
+                                            Path::new(&topo_path),
+                                            &from_fp,
+                                            &to_fp,
+                                        )
+                                        .await;
+                                    if let Some(route) = &outcome.route {
+                                        if route.success {
+                                            *qel_last_route.write() = Some(route.clone());
+                                        }
+                                    }
+                                    *qel_state_ref.write() = outcome.anchor_state;
+                                    let body = serde_json::json!({
+                                        "anchor_state": outcome.anchor_state.as_str(),
+                                        "success": outcome.route.as_ref().map(|r| r.success).unwrap_or(false),
+                                        "route": outcome.route,
+                                        "key_derived": outcome.key.is_some(),
+                                        "error": outcome.error,
+                                    })
+                                    .to_string();
                                     ("HTTP/1.1 200 OK", body, "application/json")
                                 } else if req.starts_with("GET /dashboard")
                                     || req.starts_with("GET / ")

@@ -5,7 +5,6 @@ version = 4
 [[package]]
 name = "abos"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-cognitive",
  "abos-common",
@@ -25,7 +24,6 @@ dependencies = [
 [[package]]
 name = "abos-cognitive"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "abos-dsp",
@@ -37,7 +35,6 @@ dependencies = [
 [[package]]
 name = "abos-common"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "aes-gcm",
  "bincode",
@@ -55,7 +52,6 @@ dependencies = [
 [[package]]
 name = "abos-dsp"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "num-complex",
@@ -66,7 +62,6 @@ dependencies = [
 [[package]]
 name = "abos-fec"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "num-complex",
@@ -78,7 +73,6 @@ dependencies = [
 [[package]]
 name = "abos-hal"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "num-complex",
@@ -89,7 +83,6 @@ dependencies = [
 [[package]]
 name = "abos-iono"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "abos-hal",
@@ -100,7 +93,6 @@ dependencies = [
 [[package]]
 name = "abos-phy"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "abos-dsp",
@@ -111,7 +103,6 @@ dependencies = [
 [[package]]
 name = "abos-protocol"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "abos-phy",
@@ -125,7 +116,6 @@ dependencies = [
 [[package]]
 name = "abos-stealth"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "abos-phy",
@@ -138,7 +128,6 @@ dependencies = [
 [[package]]
 name = "abos-storage"
 version = "0.1.0"
-source = "git+https://github.com/KELLERBABG/ABOS.git#b717354020205ba6b771693683b05db7243b87e2"
 dependencies = [
  "abos-common",
  "bincode",
@@ -2429,6 +2418,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
+name = "openssl-probe"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2998,12 +2993,34 @@ version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
@@ -3043,10 +3060,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "schannel"
+version = "0.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "security-framework"
+version = "3.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
+dependencies = [
+ "bitflags 2.11.1",
+ "core-foundation",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
+
+[[package]]
+name = "security-framework-sys"
+version = "2.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+]
 
 [[package]]
 name = "selectors"
@@ -3648,6 +3697,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rustls"
+version = "0.26.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
+dependencies = [
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "toml"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3918,6 +3977,9 @@ dependencies = [
  "rand 0.8.6",
  "rcgen",
  "reed-solomon-erasure",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "sha1",
@@ -3928,6 +3990,7 @@ dependencies = [
  "tao",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
  "tray-icon",

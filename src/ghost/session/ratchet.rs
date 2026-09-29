@@ -35,7 +35,7 @@
 
 use crate::ghost::layers::l1_kem::{
     derive_epoch_key, generate_kyber_keypair, generate_x25519_keypair, kdf_ck, kdf_rk_hybrid,
-    seed_ratchet_chains,
+    kdf_rk_quantum_mix, seed_ratchet_chains,
 };
 use crate::ghost::layers::l2_aead::NonceDirection;
 use ml_kem::kem::{Decapsulate, KeyExport};
@@ -573,6 +573,102 @@ impl SessionRatchet {
         self.to_init = ChainState::seed(chain_to_init, next);
 
         next
+    }
+
+    /// Mix out-of-band entropy (a QEL/QKD-derived quantum key) into the ratchet.
+    ///
+    /// Both peers must call this with the **same** quantum key, in the same
+    /// epoch, or their chains diverge — the caller is responsible for delivery
+    /// over the already-authenticated session (the same rule as the ratchet
+    /// step PDU itself). Retired epochs stay openable through the normal grace
+    /// window, so in-flight frames survive the reseed.
+    ///
+    /// Returns the new epoch number.
+    pub fn mix_quantum_entropy(&mut self, quantum_key: &[u8; 32]) -> u64 {
+        self.pending = None;
+        let (new_root, chain_to_resp, chain_to_init) =
+            kdf_rk_quantum_mix(&self.root_key, quantum_key);
+
+        self.retired.push_front(RatchetEpoch {
+            epoch: self.epoch,
+            to_resp: self.to_resp.msg_chain.clone(),
+            to_init: self.to_init.msg_chain.clone(),
+        });
+        while self.retired.len() > RATCHET_RETAINED_EPOCHS {
+            self.retired.pop_back();
+        }
+
+        self.root_key.zeroize();
+        self.root_key = new_root;
+
+        self.epoch += 1;
+        self.frames_in_epoch = 0;
+        let next = self.epoch;
+
+        self.to_resp = ChainState::seed(chain_to_resp, next);
+        self.to_init = ChainState::seed(chain_to_init, next);
+        next
+    }
+
+    /// Derive the epoch a quantum mix would produce **without installing it**, and
+    /// return the key the peer will seal in, for the confirmation tag.
+    ///
+    /// The quantum twin of [`Self::prepare_step`]: a different KDF input (a
+    /// QEL/QKD key instead of a DH+KEM secret) over identical epoch bookkeeping.
+    /// Both halves of the exchange must agree on the epoch *and* on the key, so
+    /// this deliberately returns the same `(epoch, key)` shape the step path does.
+    pub fn prepare_quantum_mix(
+        &mut self,
+        quantum_key: &[u8; 32],
+        peer_direction: NonceDirection,
+    ) -> (u64, [u8; 32]) {
+        let (root_key, chain_to_resp, chain_to_init) =
+            kdf_rk_quantum_mix(&self.root_key, quantum_key);
+        let epoch = self.epoch + 1;
+        let to_resp = ChainState::seed(chain_to_resp, epoch);
+        let to_init = ChainState::seed(chain_to_init, epoch);
+        let key = match peer_direction {
+            NonceDirection::InitiatorToResponder => match to_resp.msg_chain.plan(0) {
+                OpenPlan::Forward { key, .. } => key,
+                _ => unreachable!(),
+            },
+            NonceDirection::ResponderToInitiator => match to_init.msg_chain.plan(0) {
+                OpenPlan::Forward { key, .. } => key,
+                _ => unreachable!(),
+            },
+        };
+        self.pending = Some(PreparedEpoch {
+            epoch,
+            root_key,
+            to_resp,
+            to_init,
+        });
+        (epoch, key)
+    }
+
+    /// The message key a quantum mix *would* produce at counter 0, without applying
+    /// it and without touching any state.
+    ///
+    /// This is what lets the answering side check that both peers derived the same
+    /// quantum key **before** it prepares an epoch: if the tags disagree the mix is
+    /// refused and the live epoch is untouched, whereas preparing first would leave a
+    /// divergent epoch installed on one side only.
+    pub fn preview_quantum_mix_key(
+        &self,
+        quantum_key: &[u8; 32],
+        direction: NonceDirection,
+    ) -> (u64, [u8; 32]) {
+        let (_root, chain_to_resp, chain_to_init) = kdf_rk_quantum_mix(&self.root_key, quantum_key);
+        let epoch = self.epoch + 1;
+        let chain = match direction {
+            NonceDirection::InitiatorToResponder => chain_to_resp,
+            NonceDirection::ResponderToInitiator => chain_to_init,
+        };
+        let (next_chain, _) = kdf_ck(&chain);
+        let mut epoch_seed = derive_epoch_key(&next_chain, epoch);
+        let (_, msg_key_0) = kdf_ck(&epoch_seed);
+        epoch_seed.zeroize();
+        (epoch, msg_key_0)
     }
 
     /// Epochs still openable: the sealed one, a prepared one (if a step is mid-
@@ -1238,6 +1334,152 @@ mod tests {
         r.step(&StepSecrets::new([1u8; 32], vec![1u8; 32]));
         assert_eq!(r.frames_in_epoch(), 0);
         assert_eq!(r.epoch_capacity_left(), RATCHET_INTERVAL);
+    }
+
+    #[test]
+    fn quantum_entropy_mix_is_symmetric_and_opens_the_next_epoch() {
+        // Both sides mix the same QEL key: identical epoch keys on both ends,
+        // and the mixed state is one epoch ahead.
+        let quantum_key = [0xA5u8; 32];
+        let mut alice = SessionRatchet::new(master());
+        let mut bob = SessionRatchet::new(master());
+
+        // Epoch 0 keys match before the mix.
+        assert_eq!(
+            alice.seal_key(NonceDirection::InitiatorToResponder),
+            bob.seal_key(NonceDirection::InitiatorToResponder)
+        );
+
+        let ea = alice.mix_quantum_entropy(&quantum_key);
+        let eb = bob.mix_quantum_entropy(&quantum_key);
+        assert_eq!(ea, 1);
+        assert_eq!(eb, 1);
+        assert_eq!(
+            alice.seal_key(NonceDirection::InitiatorToResponder),
+            bob.open_key(1, NonceDirection::InitiatorToResponder, 0)
+                .unwrap(),
+            "both sides derive identical post-mix epoch keys"
+        );
+
+        // Old-epoch frames stay openable through the grace window.
+        let e0 = alice
+            .open_key(0, NonceDirection::InitiatorToResponder, 0)
+            .expect("epoch 0 still openable");
+        assert_ne!(e0, alice.seal_key(NonceDirection::InitiatorToResponder));
+    }
+
+    #[test]
+    fn prepared_quantum_mix_matches_a_direct_mix_and_a_preview() {
+        // The confirmation tag both peers compare is derived from the key at
+        // counter 0 of the new epoch. Preparing, previewing, and mixing directly
+        // must all name that same epoch and that same key, or one side would
+        // commit to an epoch the other never derived.
+        let quantum_key = [0x5Au8; 32];
+        let mut prepared = SessionRatchet::new(master());
+        let mut direct = SessionRatchet::new(master());
+
+        let (epoch, key) =
+            prepared.prepare_quantum_mix(&quantum_key, NonceDirection::InitiatorToResponder);
+        assert_eq!(epoch, 1);
+
+        let preview =
+            direct.preview_quantum_mix_key(&quantum_key, NonceDirection::InitiatorToResponder);
+        assert_eq!(preview.0, epoch, "preview and prepare name the same epoch");
+        assert_eq!(preview.1, key, "and derive the same confirmation key");
+
+        // Preparing must not install: the live epoch is unchanged until activate.
+        assert_eq!(prepared.epoch(), 0);
+        assert_eq!(prepared.prepared_epoch(), Some(epoch));
+        assert_eq!(
+            prepared.seal_key(NonceDirection::InitiatorToResponder),
+            direct.seal_key(NonceDirection::InitiatorToResponder),
+            "a prepared mix seals nothing new yet"
+        );
+
+        assert!(prepared.activate(epoch));
+        direct.mix_quantum_entropy(&quantum_key);
+        assert_eq!(prepared.epoch(), direct.epoch());
+        assert_eq!(
+            prepared.seal_key(NonceDirection::InitiatorToResponder),
+            direct.seal_key(NonceDirection::InitiatorToResponder),
+            "activating a prepared mix equals mixing directly"
+        );
+    }
+
+    #[test]
+    fn a_preview_of_a_different_quantum_key_does_not_match_the_mix() {
+        // What the answering side checks before it prepares anything: the tags
+        // only agree when both peers derived the same key. A peer that computed
+        // a different key must be refused rather than half-committing an epoch.
+        let r = SessionRatchet::new(master());
+        let (_, honest) =
+            r.preview_quantum_mix_key(&[0x01u8; 32], NonceDirection::InitiatorToResponder);
+        let (_, other) =
+            r.preview_quantum_mix_key(&[0x02u8; 32], NonceDirection::InitiatorToResponder);
+        assert_ne!(honest, other);
+
+        let mut other_side = SessionRatchet::new(master());
+        let (_, derived) =
+            other_side.prepare_quantum_mix(&[0x02u8; 32], NonceDirection::InitiatorToResponder);
+        assert_ne!(derived, honest, "divergent derivations must not confirm");
+    }
+
+    #[test]
+    fn a_quantum_mix_previews_the_key_for_the_starter_sealing_direction() {
+        // Both halves must agree on *which* chain the confirmation tag covers,
+        // no matter which session role started the mix: the starter's own sealing
+        // direction, which the answerer reaches via `peer_direction()`.
+        for starter_dir in [
+            NonceDirection::InitiatorToResponder,
+            NonceDirection::ResponderToInitiator,
+        ] {
+            let quantum_key = [0x77u8; 32];
+            let mut from_starter = SessionRatchet::new(master());
+            let from_answerer = SessionRatchet::new(master());
+
+            // The answerer sits in the complementary role, so its own sealing
+            // direction is the starter's opposite -- and mapping back through
+            // `peer_direction()` lands on the chain the starter used.
+            let answerer_dir = starter_dir.peer_direction();
+            assert_eq!(answerer_dir.peer_direction(), starter_dir);
+
+            let (_, starter_key) = from_starter.prepare_quantum_mix(&quantum_key, starter_dir);
+            let (_, answerer_key) =
+                from_answerer.preview_quantum_mix_key(&quantum_key, answerer_dir.peer_direction());
+            assert_eq!(
+                starter_key, answerer_key,
+                "the answerer reaches the same chain from the other side"
+            );
+        }
+    }
+
+    #[test]
+    fn quantum_mix_changes_the_key_and_is_one_way() {
+        // A different quantum key must derive a different epoch (it is entropy,
+        // not a no-op) — and knowing the quantum key alone must not reproduce
+        // the mixed keys without the prior root.
+        let mut r = SessionRatchet::new(master());
+        let before = r.seal_key(NonceDirection::InitiatorToResponder);
+        r.mix_quantum_entropy(&[0x11u8; 32]);
+        let after_a = r.seal_key(NonceDirection::InitiatorToResponder);
+        assert_ne!(before, after_a, "the mix must move the key");
+
+        let mut r2 = SessionRatchet::new(master());
+        r2.mix_quantum_entropy(&[0x22u8; 32]);
+        assert_ne!(
+            after_a,
+            r2.seal_key(NonceDirection::InitiatorToResponder),
+            "different quantum keys must diverge"
+        );
+
+        // An attacker holding ONLY the quantum key derives nothing.
+        let mut attacker = SessionRatchet::new([0u8; 32]);
+        attacker.mix_quantum_entropy(&[0x11u8; 32]);
+        assert_ne!(
+            attacker.seal_key(NonceDirection::InitiatorToResponder),
+            after_a,
+            "quantum key without the prior root is useless"
+        );
     }
 
     #[test]

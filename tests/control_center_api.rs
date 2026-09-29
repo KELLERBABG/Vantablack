@@ -68,13 +68,41 @@ fn http_request(
     path: &str,
     body: Option<&serde_json::Value>,
 ) -> (u16, serde_json::Value) {
+    http_request_timeout(port, method, path, body, Duration::from_secs(5))
+}
+
+/// True once `buf` holds a whole HTTP response: the headers, plus the number
+/// of body bytes its `Content-Length` promised.
+fn http_response_complete(buf: &[u8]) -> bool {
+    let Some(headers_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&buf[..headers_end]);
+    let declared: usize = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    buf.len() - (headers_end + 4) >= declared
+}
+
+/// Same as [`http_request`] with an explicit socket timeout — needed for
+/// endpoints that run a real subprocess (the QEL bridge spawns Python).
+fn http_request_timeout(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+    timeout: Duration,
+) -> (u16, serde_json::Value) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to control center");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .unwrap();
+    stream.set_read_timeout(Some(timeout)).unwrap();
+    stream.set_write_timeout(Some(timeout)).unwrap();
 
     let body_str = body.map(|b| b.to_string()).unwrap_or_default();
     let content_len = body_str.len();
@@ -85,8 +113,27 @@ fn http_request(
 
     stream.write_all(req.as_bytes()).expect("write request");
 
+    // Read until the response is complete rather than until EOF: a handler
+    // that takes seconds (the QEL anchor spawns a real subprocess) can make
+    // Windows deliver a connection reset when the server closes right after
+    // writing, and `read_to_end` would surface that as a failure even though
+    // every response byte arrived.
     let mut response = Vec::new();
-    stream.read_to_end(&mut response).expect("read response");
+    let mut chunk = [0u8; 8192];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                response.extend_from_slice(&chunk[..n]);
+                if http_response_complete(&response) {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
+            Err(e) => panic!("read response: {e}"),
+        }
+    }
+    assert!(!response.is_empty(), "server closed without a response");
     let resp_str = String::from_utf8_lossy(&response);
 
     let mut lines = resp_str.split("\r\n");
@@ -352,5 +399,222 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
     println!("PASS: SOCKS5 end-to-end data flow verified successfully");
 
     // Cleanup temp dir
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Physical anchors surface: `GET /api/v1/anchors/status` reports both anchors
+/// (skywave telemetry + QEL state), and `POST /api/v1/anchors/qel/route`
+/// degrades honestly to an error JSON (never a 5xx) when the anchor cannot run.
+#[test]
+fn test_anchors_api_surface() {
+    let bin_path = find_binary();
+    let web_port = get_free_port();
+    let udp_port = get_free_port();
+
+    let temp_dir = std::env::temp_dir().join(format!("vanta_anchors_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    let mut cmd = Command::new(&bin_path);
+    cmd.env("GHOST_NO_GUI", "1")
+        .env("GHOST_WEB_PORT", web_port.to_string())
+        .env("GHOST_UDP_PORT", udp_port.to_string())
+        .env("GHOST_DATA_DIR", &temp_dir)
+        .env("GHOST_SKYWAVE", "1")
+        .env("GHOST_QUANTUM", "1")
+        .env("GHOST_MODE", "public");
+
+    let child = cmd.spawn().expect("failed to spawn daemon");
+    let _guard = NodeProcessGuard { child };
+
+    // Wait for the API to come up.
+    let start_wait = Instant::now();
+    let mut healthy = false;
+    while start_wait.elapsed() < Duration::from_secs(12) {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", web_port)) {
+            let req = b"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(req);
+            let mut buf = [0u8; 64];
+            if let Ok(n) = stream.read(&mut buf) {
+                if n > 0 && String::from_utf8_lossy(&buf[..n]).contains("200 OK") {
+                    healthy = true;
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(healthy, "control center failed to start on port {web_port}");
+
+    // ── Anchors status: both anchors present with honest states ──────────
+    let (code, anchors) = http_request(web_port, "GET", "/api/v1/anchors/status", None);
+    assert_eq!(code, 200);
+
+    let sky = &anchors["abos_skywave"];
+    assert!(sky.is_object(), "skywave anchor must be reported");
+    assert_eq!(
+        sky["status"], "online",
+        "opted-in synthetic carrier is online"
+    );
+    assert_eq!(
+        sky["synthetic"], true,
+        "this build has no --features sdr: the carrier must self-report as synthetic"
+    );
+    assert_eq!(sky["carrier_freq_hz"], 5_350_000);
+
+    let qel = &anchors["qel_quantum"];
+    assert!(qel.is_object(), "qel anchor must be reported");
+    let qel_status = qel["status"].as_str().expect("qel status string");
+    assert!(
+        ["available", "degraded", "unavailable"].contains(&qel_status),
+        "probed anchor state, got {qel_status}"
+    );
+    println!("PASS: GET /api/v1/anchors/status — skywave online (synthetic), qel={qel_status}");
+
+    // ── QEL route endpoint: degrades to a JSON error, never a 5xx ────────
+    // No topology export exists in this temp data dir, so the anchor answers
+    // from its preflight without spawning python at all.
+    let payload = serde_json::json!({ "from": "deadbeefdeadbeef", "to": "0000000000000000" });
+    let (code, route) = http_request_timeout(
+        web_port,
+        "POST",
+        "/api/v1/anchors/qel/route",
+        Some(&payload),
+        Duration::from_secs(30),
+    );
+    assert_eq!(code, 200, "degraded QEL results are 200 with success=false");
+    assert_eq!(route["success"], false, "no such fingerprints: no route");
+    assert!(route["error"].is_string() || route["route"].is_object());
+
+    // A malformed body is a clean 400.
+    let (code, _) = http_request(web_port, "POST", "/api/v1/anchors/qel/route", None);
+    assert_eq!(code, 400, "missing body must be rejected");
+
+    println!("PASS: POST /api/v1/anchors/qel/route degrades honestly");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// The QEL anchor's *success* path through the daemon: a real route over a real
+/// mesh export, distilled far enough to yield key material, with the distilled
+/// fidelity — not the route's — naming the key.
+///
+/// This is the contract the live session mix depends on, so it is checked where
+/// the daemon actually parses it rather than only in the Python test suite: the
+/// two new fields must round-trip, and `key_fidelity` must be the figure above
+/// the BB84 cutoff while `end_to_end_fidelity` is below it.
+#[test]
+fn test_qel_anchor_routes_a_real_key_over_a_mesh_export() {
+    let bin_path = find_binary();
+    let web_port = get_free_port();
+    let udp_port = get_free_port();
+
+    let temp_dir = std::env::temp_dir().join(format!("vanta_qel_key_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    // Two nodes one 10 km hop apart, with the length the quantum layer needs to
+    // derive a link's attenuation. Fingerprints are arbitrary here: the
+    // endpoint routes between whatever pair it is given.
+    let topology = temp_dir.join("qel-topology.json");
+    std::fs::write(
+        &topology,
+        r#"{
+          "schema_version": 1,
+          "generator": "vantablack",
+          "exported_at": 0,
+          "nodes": [
+            {"fingerprint": "qelfrom00000000", "addr": "10.0.0.1:2270"},
+            {"fingerprint": "qelto0000000000", "addr": "10.0.0.2:2270"}
+          ],
+          "links": [{"a": "qelfrom00000000", "b": "qelto0000000000", "length_km": 10.0}]
+        }"#,
+    )
+    .expect("write topology export");
+
+    let mut cmd = Command::new(&bin_path);
+    cmd.env("GHOST_NO_GUI", "1")
+        .env("GHOST_WEB_PORT", web_port.to_string())
+        .env("GHOST_UDP_PORT", udp_port.to_string())
+        .env("GHOST_DATA_DIR", &temp_dir)
+        .env("GHOST_QEL_TOPOLOGY", &topology)
+        .env("GHOST_QUANTUM", "1")
+        .env("GHOST_MODE", "public");
+
+    let child = cmd.spawn().expect("failed to spawn daemon");
+    let _guard = NodeProcessGuard { child };
+
+    let start_wait = Instant::now();
+    let mut healthy = false;
+    while start_wait.elapsed() < Duration::from_secs(12) {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", web_port)) {
+            let req = b"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(req);
+            let mut buf = [0u8; 64];
+            if let Ok(n) = stream.read(&mut buf) {
+                if n > 0 && String::from_utf8_lossy(&buf[..n]).contains("200 OK") {
+                    healthy = true;
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(healthy, "control center failed to start on port {web_port}");
+
+    let (_, anchors) = http_request(web_port, "GET", "/api/v1/anchors/status", None);
+    let qel_status = anchors["qel_quantum"]["status"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    if qel_status != "available" {
+        // No python or no quantumnet package here. The anchor says so, which is
+        // the honest answer, and the Python suite covers this path directly.
+        println!("SKIP: qel anchor is {qel_status} — install with pip install -e \"Quantum Entanglement Link\"");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return;
+    }
+
+    let payload = serde_json::json!({"from": "qelfrom00000000", "to": "qelto0000000000"});
+    let (code, resp) = http_request_timeout(
+        web_port,
+        "POST",
+        "/api/v1/anchors/qel/route",
+        Some(&payload),
+        Duration::from_secs(60),
+    );
+    assert_eq!(code, 200);
+    assert_eq!(
+        resp["success"], true,
+        "a two-node export with a length routes"
+    );
+    assert_eq!(
+        resp["key_derived"], true,
+        "distillation must carry the route over the BB84 cutoff: {resp}"
+    );
+
+    let route = &resp["route"];
+    let route_fid = route["end_to_end_fidelity"]
+        .as_f64()
+        .expect("route fidelity");
+    let key_fid = route["key_fidelity"].as_f64().expect("key fidelity");
+    assert!(
+        route_fid < 0.88,
+        "the route's own fidelity is below the cutoff ({route_fid}) — that is why distillation exists"
+    );
+    assert!(
+        key_fid >= 0.88 && key_fid > route_fid,
+        "the key is derived at the distilled fidelity ({key_fid} vs route {route_fid})"
+    );
+    assert!(
+        route["distillation_rounds"].as_u64().unwrap_or(0) >= 1,
+        "reaching the cutoff took at least one round"
+    );
+    let key_hex = route["qkd_key_hex"].as_str().expect("key material");
+    assert_eq!(key_hex.len(), 64, "32 bytes of key material as hex");
+
+    println!(
+        "PASS: QEL anchor routed a key — route_fid={route_fid:.4}, key_fid={key_fid:.4}, rounds={}",
+        route["distillation_rounds"]
+    );
+
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

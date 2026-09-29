@@ -29,7 +29,7 @@ A v1 file is upgraded **in place** on first load: the Ed25519 key is read from t
   - **Epochs.** An epoch key seals at most `RATCHET_INTERVAL` = 1,000,000 datagrams before a step is due; the session keeps the current epoch plus `RATCHET_RETAINED_EPOCHS` = 2 retired epochs so frames in flight across a step still open, and every frame names the epoch that sealed it (GTF v2 field `18..25`). A step is a fresh hybrid exchange; the responder returns a **confirmation tag** derived from the new epoch key (never the key itself), and the initiator verifies it before the epoch advances — X25519 returns a shared secret for a wrong or low-order peer key rather than an error, so without that check a step could "succeed" on both sides with different keys and only surface later as traffic nobody can open.
   - The v1 construction (`nonce = session_hash[0..2] \| direction \| counter`, 32-bit counter, seed key) is still **accepted** on receive and still used by the non-VPN inner layers; §2.1 documents both formats.
 - **Threshold Secret Sharing (L3):** Shamir's Secret Sharing over $\text{GF}(256)$ with a $(2,3)$ threshold scheme (`src/ghost/layers/l3_shamir.rs`). Generates 3 shares from a 32-byte secret (e.g., `GHOST_PSK` or identity backup keys); any 2 shares reconstruct the exact secret, while any single share reveals mathematically zero information (Shannon perfect secrecy). Distinct from L4 transport erasure coding: L3 shares provide threshold confidentiality for root secrets and key escrow, whereas L4 RS(2,1) provides packet-level availability and multipath diversity across lossy links while datagram confidentiality rests on L2 AEAD encryption.
-- **Erasure Coding (L4):** Reed-Solomon RS(2,1) over Galois Field $\text{GF}(2^8)$. Plaintexts are split into two primary data shards and one parity shard. Any 2 of 3 shards reconstruct the original payload.
+- **Erasure Coding (L4):** Reed-Solomon RS(2,1) over Galois Field $\text{GF}(2^8)$. Plaintexts are split into two primary data shards and one parity shard. Any 2 of 3 shards reconstruct the original payload. Because the split is into two *equal* halves, an odd-length payload is padded with a single zero byte before encoding: a receiver of an odd-sized PDU therefore sees it with one trailing byte, and any parser that demands an exact length — or that assumes the last 64 bytes of a datagram are a signature — has to account for that pad. The asymmetry is not hypothetical: the negotiated handshake *offer* carries an explicit reserved byte that makes it even-length, while its *response* is odd for ML-KEM-768 (1265) and even for ML-KEM-512 (945). The response parser now tolerates the pad, and the signature is checked over the PDU rather than over the datagram's tail, because at an odd length those are not the same bytes (`tests/handshake_interop.rs`).
 - **Memory Hardening (L8):** Ephemeral session keys and decrypted memory buffers are wiped using volatile zeroization on drop and protected with AES-256-XTS memory encryption.
 
 ---
@@ -635,6 +635,24 @@ A frame with `0x02` set carries **one whole message in one datagram**: its paylo
 `[len u16][ciphertext][tag]`, not one third of a Reed-Solomon group. The receive path therefore
 delivers it straight to the handler and never puts it in the 2-of-3 shard spool — where a lone
 shard can never assemble and would be dropped without a trace.
+
+**How a shard group is identified.** The spool cannot be keyed by the packet counter alone, because
+the counter is not a message identity: every handshake is sent with session hash `[0, 0, 0, 0]` and
+counter `0` (offer) or `1` (response), since no session exists yet to number the message with. A
+boot LAN sweep that reaches several seeds at once would then drop every peer's shards into one
+bucket, and any interleaving of their arrivals reconstructs a single PDU out of two messages that
+authenticates as neither — an outage no tag or signature can catch, because every shard was genuine
+and only the grouping was wrong. The same failure hits ordinary traffic from the other side: a
+counter is a *per-session* sequence number, so two sessions both sending counter 5 shared a bucket.
+
+A bucket is keyed by the frame's own **generation** — its session hash, the ratchet epoch that
+sealed it, and its counter — which is what the shards of one message share and what no two messages
+do. A frame that has no session hash yet (a handshake) has no generation to name, so the source
+address `recv_from` reported stands in for it, and that is what keeps two peers' simultaneous
+handshakes apart. The address is deliberately *not* part of the key for a session frame: the
+multi-hop shard router sends the three shards of one message through different peers, so they
+arrive from different addresses and must still meet in one bucket. `spool_key_tests` and the
+interleaved-handshake case in `ratchet_live_tests` pin all of this.
 
 That bypass is **not** feature-gated, and that is a correction rather than a detail: it used to sit
 behind `#[cfg(feature = "vpn")]`, which was wrong twice over. The bit describes *framing*, so it has

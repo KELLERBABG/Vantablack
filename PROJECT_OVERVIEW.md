@@ -26,13 +26,13 @@ Most user devices reside behind complex network address translators, firewalls, 
 Global Ghost Net contains a full virtual private network system. On Windows, macOS, Linux, and Android, the daemon binds to native virtual network adapters (such as Wintun or kernel TUN interfaces) and injects a complete userspace TCP/IP stack. This allows users to assign static private IP addresses to their devices and access remote resources, files, and services as if all devices were physically connected to the same local Ethernet switch.
 
 ### 6. Built-in Local Control Center and System Tray
-Every node runs a lightweight local dashboard accessible via a desktop window, system tray menu, or local web browser at localhost port 8231. The dashboard displays real-time telemetry, connection latency, peer discovery state, cryptographic fingerprint verification, and routing health without exposing any administrative endpoints to the outside internet.
+Every node runs a lightweight local dashboard accessible via a desktop window, system tray menu, or local web browser at localhost port 2270 (override with `GHOST_WEB_PORT`). The dashboard displays real-time telemetry, connection latency, peer discovery state, cryptographic fingerprint verification, and routing health without exposing any administrative endpoints to the outside internet.
 
 ---
 
-## The Nine-Layer Architecture
+## The Layered Architecture (L0–L10)
 
-The core cryptographic and transport pipeline is structured into nine distinct layers:
+The core cryptographic and transport pipeline is structured into ten layers, plus one optional experimental anchor:
 
 1. **Layer 0: Sovereign Identity (`l0_identity.rs`)**
    Generates, serializes, and verifies dual-key identity pairs. It binds classical Ed25519 keys with quantum-resistant ML-DSA keys to form permanent node fingerprints.
@@ -54,6 +54,20 @@ The core cryptographic and transport pipeline is structured into nine distinct l
    Enforces secure memory allocation, page locking to prevent sensitive keys from being swapped to disk, and immediate zeroization of memory upon key disposal.
 10. **Layer 9: Autonomous Infrastructure (`l9_infra.rs`)**
     Coordinates hardware security module integration, platform attestation, and physical security anchoring.
+11. **Layer 10: Quantum Entropy Anchor (`l10_qel.rs`)** *(optional, experimental)*
+    Obtains key material from one of two selectable backends and contracts a connected peer's session
+    ratchet into its next epoch from the resulting 32 bytes (`kdf_rk_quantum_mix`). The default backend
+    probes the local quantum-entanglement simulation engine (`Quantum Entanglement Link/`) and runs
+    fidelity-constrained route, distillation and QKD computations over a live mesh export. The second
+    (`GHOST_QEL_BACKEND=etsi014`, `--features qkd-tls`) speaks **ETSI GS QKD 014** to a real QKD
+    appliance over mutually-authenticated TLS. Either way, both peers agree on the epoch through a
+    confirmation tag before either moves, and the answering side resolves the *label* the starter
+    signed, so only one side needs a route and no key material crosses the link. It fails soft: an
+    unavailable anchor degrades to a reported state and a session continues on its current epoch. The
+    simulation is in-simulation only — no photons, no optical hardware — and its mix contributes
+    structural entropy rather than a secret; the appliance backend is what makes the key secret, and
+    it is built but has not been tested against hardware. See
+    [`docs/ANCHORS_CODEBASE_INTEGRATION.md`](docs/ANCHORS_CODEBASE_INTEGRATION.md).
 
 ---
 
@@ -68,7 +82,7 @@ The core cryptographic and transport pipeline is structured into nine distinct l
 - **`src/cli.rs`**
   Defines the command-line options and arguments. It handles commands for starting the background daemon, setting node roles (client, relay, exit node, or VPN hub), binding ports, and overriding data directories.
 - **`src/control.rs`**
-  Implements the local HTTP and WebSocket management server running on localhost port 8231. It provides administrative REST endpoints for querying network status, viewing discovered peers, adjusting routing policies, and driving the graphical interface.
+  Implements the local HTTP and WebSocket management server running on localhost port 2270 (`GHOST_WEB_PORT`). It provides administrative REST endpoints for querying network status, viewing discovered peers, adjusting routing policies, driving the graphical interface, and reporting the physical anchors (`/api/v1/anchors/status`, `/api/v1/anchors/qel/route`).
 - **`src/socks.rs`**
   A high-performance SOCKS5 proxy server built directly into the daemon. It allows web browsers and third-party desktop applications to route generic TCP connections privately through the mesh.
 - **`src/tray.rs`**
@@ -226,7 +240,18 @@ The core cryptographic and transport pipeline is structured into nine distinct l
 - **`scripts/install.ps1` & `scripts/install.sh`**
   One-line automated installer scripts for Windows PowerShell and Unix bash environments.
 - **`docs/`**
-  Detailed cryptographic deep-dives, protocol specifications, NAT traversal matrices, and whitepapers.
+  Detailed cryptographic deep-dives, protocol specifications, NAT traversal matrices, and whitepapers,
+  including every physical-anchor document: `ANCHORS_CODEBASE_INTEGRATION.md`,
+  `SKYWAVE_CARRIER.md`, `QUANTUM_ENTANGLEMENT_LINK*.md`, and `ABOS_*.md`. Anchor documentation lives
+  here and nowhere else — `abos/` and `Quantum Entanglement Link/` ship code, not docs.
+- **`abos/`**
+  Physical Anchor 1: the vendored Atmospheric Broadcast OS — a Rust SDR/skywave workspace (DSP, PHY,
+  FEC, protocol, ionospheric sounding, DTN mesh) consumed as an optional path dependency behind the
+  `sdr` cargo feature. Builds and tests standalone; its SDR drivers are simulation stubs and the
+  daemon's shipped transport is a virtual loopback carrier. See
+  [`docs/ABOS_README.md`](docs/ABOS_README.md) and [`docs/SKYWAVE_CARRIER.md`](docs/SKYWAVE_CARRIER.md).
+- **`Quantum Entanglement Link/`**
+  Physical Anchor 2: Modular quantum communication and simulation stack in Python. Implements Bell State Analysis, BB84/E91 QKD, entanglement swapping, teleportation, superdense coding, Shor/Steane error correction, distillation, and Ghost-Net topology routing bridged directly to the Vantablack daemon via `EXPORTTOPOLOGY`. See [`docs/QUANTUM_ENTANGLEMENT_LINK.md`](docs/QUANTUM_ENTANGLEMENT_LINK.md).
 
 ---
 

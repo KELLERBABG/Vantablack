@@ -40,6 +40,33 @@ pub const REKEY_THRESHOLD: u64 = 0xFFFF_FFFF_C000_0000; // 75% of u64::MAX
 pub const REKEY_MAGIC: &[u8; 16] = b"GHOST_REKEY____!";
 pub const REKEY_RESPONSE_MAGIC: &[u8; 16] = b"GHOST_REKEY_RSP!";
 
+/// Magic for the L10 quantum-anchor mix PDU.
+///
+/// The initiator names the epoch it prepared and the **label** of the key it is
+/// using; the peer turns that label back into the *same* 32 bytes instead of being
+/// sent them, so key material never crosses the link it protects. The label is
+/// opaque here on purpose, because the two backends name their keys differently:
+/// the simulated one writes a versioned `qkd-sim/1/…` derivation label, and a real
+/// ETSI GS QKD 014 appliance supplies a key ID that the peer redeems with
+/// `dec_keys`. Either way exactly one non-secret value travels.
+pub const QEL_MIX_MAGIC: &[u8; 16] = b"GHOST_QEL_MIX___";
+/// The peer's acceptance of a quantum mix, carrying the tag that proves agreement.
+pub const QEL_MIX_RESPONSE_MAGIC: &[u8; 16] = b"GHOST_QEL_MIX_OK";
+
+/// Longest key label the mix PDU can carry.
+///
+/// Generous for both backends: a simulated label is 45 bytes, and a UUID key ID is
+/// 36. A fixed field (rather than a length-followed-by-more-bytes layout) keeps the
+/// PDU one frame long, and the signer covers the length as well as the bytes so a
+/// truncated label cannot be re-framed into a different one.
+pub const QEL_MIX_MAX_LABEL: usize = 128;
+
+/// Size of the quantum-mix PDU: 16 magic + 8 epoch + 2 label length
+/// + 128 label + 32 confirmation tag + 64 Ed25519 signature = 250.
+pub const QEL_MIX_BLOB_LEN: usize = 250;
+/// Size of the quantum-mix answer: 16 magic + 8 epoch + 32 tag + 64 signature = 120.
+pub const QEL_MIX_RESPONSE_BLOB_LEN: usize = 120;
+
 pub const REKEY_BLOB_LEN: usize = 912;
 /// Size of the re-key response PDU: 16 magic + 32 X25519 + 768 ct + 32 confirm + 64 sig = 912.
 ///
@@ -103,6 +130,42 @@ pub struct Session {
     /// Received chunks of the peer's hybrid identity binding.
     pq_incoming_chunks: Mutex<std::collections::HashMap<u8, Vec<u8>>>,
     pub pq_auth_requested_at: Instant,
+
+    // ── L10 Quantum-Anchor Mix State ─────────────────────
+    /// The quantum mix we started and are waiting on an answer for. Held outside
+    /// the ratchet so a mix that is never answered can be dropped without
+    /// disturbing the live epoch (the same split as `pending_step`).
+    pending_quantum_mix: Mutex<Option<PendingQuantumMix>>,
+    /// When the in-flight mix started, so an unanswered one is abandoned rather
+    /// than wedging the session against a later attempt.
+    quantum_mix_at: Mutex<Option<Instant>>,
+    /// When this session last *tried* to start a mix, successful or not. This is
+    /// the throttle: deriving a key costs a python subprocess (seconds), so a
+    /// peer whose route never resolves must not be retried on every maintenance
+    /// tick. See [`Session::quantum_mix_due`].
+    quantum_mix_attempt_at: Mutex<Option<Instant>>,
+    /// Whether a quantum mix is mid-exchange. A mix and a DH ratchet step both
+    /// consume the prepared-epoch slot and both advance the generation, so at most
+    /// one of them may be in flight at a time.
+    pub quantum_mix_in_progress: AtomicBool,
+    /// Whether this session has completed a quantum mix. The anchor is applied
+    /// once per session, so this is what the maintenance task checks before it
+    /// starts one (a *failed* attempt leaves it clear, so a retry can follow).
+    pub quantum_mixed: AtomicBool,
+}
+
+/// A quantum mix we started and are waiting on an answer for.
+#[derive(Debug, Clone)]
+pub struct PendingQuantumMix {
+    /// The epoch the mix prepared (one ahead of the live generation).
+    pub epoch: u64,
+    /// Tag over the key we will seal in the new epoch. The peer computes the same
+    /// bytes from the same quantum key, so equality is the proof that both sides
+    /// derived one key and are safe to advance together.
+    pub confirm: [u8; 32],
+    /// The opaque name of the key this mix uses. Travels in the PDU; never
+    /// key material.
+    pub label: String,
 }
 
 /// A responder's reply to a ratchet step.
@@ -220,6 +283,11 @@ impl Session {
             peer_pq_pk: Mutex::new(None),
             pq_incoming_chunks: Mutex::new(std::collections::HashMap::new()),
             pq_auth_requested_at: Instant::now(),
+            pending_quantum_mix: Mutex::new(None),
+            quantum_mix_at: Mutex::new(None),
+            quantum_mix_attempt_at: Mutex::new(None),
+            quantum_mix_in_progress: AtomicBool::new(false),
+            quantum_mixed: AtomicBool::new(false),
         }
     }
 
@@ -494,6 +562,35 @@ impl Session {
         if activated {
             self.ratchet_steps.fetch_add(1, Ordering::Relaxed);
             self.guard.lock().unwrap_or_else(|e| e.into_inner()).reset();
+            // A *quantum-prepared* epoch landing here is the L10 mix completing.
+            // On the answering side that happens when the starter's first frame in
+            // the new epoch authenticates; on the starting side `finish_quantum_mix`
+            // calls this directly once the answer confirmed the derivation.
+            let was_quantum_mix = {
+                let mut pending = self
+                    .pending_quantum_mix
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if pending.as_ref().map(|p| p.epoch) == Some(epoch) {
+                    *pending = None;
+                    true
+                } else {
+                    false
+                }
+            };
+            if was_quantum_mix {
+                self.quantum_mix_in_progress.store(false, Ordering::Relaxed);
+                *self
+                    .quantum_mix_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
+                self.quantum_mixed.store(true, Ordering::Relaxed);
+                tracing::info!(
+                    peer = %self.peer_fingerprint,
+                    epoch,
+                    "quantum entropy mixed into the session ratchet"
+                );
+            }
             tracing::debug!(
                 peer = %self.peer_fingerprint,
                 epoch,
@@ -568,6 +665,11 @@ impl Session {
     /// The step is *not* applied here. Nothing about the live epoch changes until
     /// the answer arrives, so an unanswered step costs a PDU and nothing else.
     pub fn begin_ratchet_step(&self) -> Option<([u8; 32], Vec<u8>)> {
+        if self.quantum_mix_in_progress.load(Ordering::Relaxed) {
+            // The quantum mix owns the next epoch; a DH step now would prepare a
+            // second one over different inputs.
+            return None;
+        }
         if self.ratchet_in_progress.swap(true, Ordering::SeqCst) {
             return None;
         }
@@ -704,6 +806,289 @@ impl Session {
         );
         self.abandon_ratchet_step();
         true
+    }
+
+    /// Start a quantum-anchor mix: derive the next epoch from a QEL/QKD key
+    /// **without installing it**, and hand back what the mix PDU must carry.
+    ///
+    /// `label` is the backend's opaque name for the key. It is carried in the mix
+    /// PDU so the answering peer can fetch the *same* material from the same
+    /// source — a simulated derivation label, or an appliance's key ID.
+    ///
+    /// Refuses when a DH ratchet step or another quantum mix is already in flight.
+    /// Both advance the generation and both consume the prepared-epoch slot, so two
+    /// in flight at once would each prepare an epoch `n+1` over different inputs.
+    pub fn begin_quantum_mix(
+        &self,
+        quantum_key: &[u8; 32],
+        label: &str,
+    ) -> Option<PendingQuantumMix> {
+        if self.ratchet_in_progress.load(Ordering::Relaxed) {
+            tracing::debug!(
+                peer = %self.peer_fingerprint,
+                "quantum mix deferred: a ratchet step owns the next epoch"
+            );
+            return None;
+        }
+        if self.quantum_mix_in_progress.swap(true, Ordering::SeqCst) {
+            return None; // one attempt at a time
+        }
+        let direction = self.seal_direction();
+        let (epoch, key) = self
+            .ratchet
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prepare_quantum_mix(quantum_key, direction);
+        let pending = PendingQuantumMix {
+            epoch,
+            confirm: crate::ghost::layers::l1_kem::ratchet_confirm(&key),
+            label: label.to_string(),
+        };
+        *self
+            .pending_quantum_mix
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(pending.clone());
+        *self
+            .quantum_mix_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        Some(pending)
+    }
+
+    /// Answer a peer's quantum mix: install the key the peer's label names,
+    /// confirm that our key reproduces *its* tag, and prepare the same epoch.
+    ///
+    /// The caller has already resolved the label into `quantum_key` (a derivation
+    /// on the simulated backend, `dec_keys` on an appliance); this method does not
+    /// know or care which. It records the label so a re-answer after a stall
+    /// carries the same one.
+    ///
+    /// Returns the tag to send back, or `None` when the mix must be refused — the
+    /// peer named an epoch that is not the next one, or the two sides hold
+    /// different keys. Checking *before* preparing is the point of the tag: an epoch
+    /// prepared over a key the peer does not share would move this side's generation
+    /// alone, and nothing on the link would open from then on.
+    pub fn answer_quantum_mix(
+        &self,
+        quantum_key: &[u8; 32],
+        peer_epoch: u64,
+        peer_confirm: &[u8; 32],
+        label: &str,
+    ) -> Option<[u8; 32]> {
+        if self.ratchet_in_progress.load(Ordering::Relaxed) {
+            tracing::debug!(
+                peer = %self.peer_fingerprint,
+                "quantum mix refused: a ratchet step is in flight"
+            );
+            return None;
+        }
+        // The peer started the mix, so it seals in the direction complementary to
+        // ours — which is the chain its tag is over (the same mapping the rekey
+        // step's answer uses).
+        let starter_direction = self.seal_direction().peer_direction();
+        let (epoch, key) = self
+            .ratchet
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .preview_quantum_mix_key(quantum_key, starter_direction);
+        if epoch != peer_epoch {
+            tracing::warn!(
+                peer = %self.peer_fingerprint,
+                peer_epoch,
+                expected = epoch,
+                "quantum mix names the wrong epoch — refused"
+            );
+            return None;
+        }
+        let confirm = crate::ghost::layers::l1_kem::ratchet_confirm(&key);
+        use subtle::ConstantTimeEq;
+        if !bool::from(confirm.ct_eq(peer_confirm)) {
+            tracing::warn!(
+                peer = %self.peer_fingerprint,
+                epoch,
+                "quantum mix confirmation failed — the peers derived different keys; \
+                 refusing to advance the epoch"
+            );
+            return None;
+        }
+        // Both sides derived one key. Preparing (not installing) means a lost
+        // answer cannot leave this side sealing a generation ahead of the peer.
+        let (prepared_epoch, prepared_key) = self
+            .ratchet
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prepare_quantum_mix(quantum_key, starter_direction);
+        *self
+            .pending_quantum_mix
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(PendingQuantumMix {
+            epoch: prepared_epoch,
+            // The tag *we* send is over the same chain, so it is the value we just
+            // verified -- returning it lets the starter check the round trip.
+            confirm: crate::ghost::layers::l1_kem::ratchet_confirm(&prepared_key),
+            label: label.to_string(),
+        });
+        *self
+            .quantum_mix_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        Some(confirm)
+    }
+
+    /// Complete a mix we started, from the peer's answer.
+    ///
+    /// The answer's epoch *and* confirmation tag are both checked; either mismatch
+    /// drops the attempt and leaves the live epoch exactly as it was.
+    pub fn finish_quantum_mix(&self, epoch: u64, confirm: &[u8; 32]) -> Option<u64> {
+        let pending = self
+            .pending_quantum_mix
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        if pending.epoch != epoch {
+            tracing::warn!(
+                peer = %self.peer_fingerprint,
+                answer_epoch = epoch,
+                expected = pending.epoch,
+                "quantum mix answer names the wrong epoch — refused"
+            );
+            self.abandon_quantum_mix();
+            return None;
+        }
+        use subtle::ConstantTimeEq;
+        if !bool::from(pending.confirm.ct_eq(confirm)) {
+            tracing::warn!(
+                peer = %self.peer_fingerprint,
+                "quantum mix answer did not confirm the derivation — \
+                 refusing to advance the epoch"
+            );
+            self.abandon_quantum_mix();
+            return None;
+        }
+        if !self.activate_epoch(epoch) {
+            tracing::warn!(
+                peer = %self.peer_fingerprint,
+                epoch,
+                "quantum mix prepared epoch is gone — refused"
+            );
+            self.abandon_quantum_mix();
+            return None;
+        }
+        Some(epoch)
+    }
+
+    /// Whether an arriving quantum mix should be **answered**, resolving a*both
+    /// sides started one* the way [`Session::admit_peer_step`] resolves a crossed
+    /// DH step.
+    ///
+    /// The quantum mix is what the *starter* drives, so the ordinary case is that
+    /// only one side is in flight and this returns `true`. It still has to be
+    /// asked, because the two sides do not start from a shared clock: the
+    /// initiator rule is the fingerprint order (the lower-fingerprint peer drives
+    /// the mix), but a session that started a mix while the peer's rule still had
+    /// *it* as the driver can see a mix arrive while its own is in flight — for
+    /// instance when a peer's fingerprint is repinned by a re-handshake.
+    ///
+    /// A crossed pair here is the same hazard as a crossed step: both sides would
+    /// install epoch `n+1` from *different* quantum keys, so every frame after
+    /// that fails to open and no later exchange can repair it. The tie-break is
+    /// identical to the step's — lowest fingerprint wins — and it needs no extra
+    /// round trip, because both sides compute it from public data with the labels
+    /// swapped.
+    ///
+    /// Returns `true` to answer the arriving mix (`false` means ours wins and the
+    /// arriving one is dropped).
+    pub fn admit_peer_quantum_mix(&self, our_fingerprint: &str) -> bool {
+        if !self.quantum_mix_in_progress.load(Ordering::Relaxed) {
+            return true; // nothing crossed — the ordinary case
+        }
+        if our_fingerprint < self.peer_fingerprint.as_str() {
+            tracing::debug!(
+                peer = %self.peer_fingerprint,
+                "crossed quantum mixes — our mix wins, the arriving one is dropped"
+            );
+            return false;
+        }
+        tracing::debug!(
+            peer = %self.peer_fingerprint,
+            "crossed quantum mixes — yielding our mix to answer the peer's"
+        );
+        self.abandon_quantum_mix();
+        true
+    }
+
+    /// Whether this session is due to *start* a quantum mix.
+    ///
+    /// Deliberately conservative: never while a mix or a DH step is in flight
+    /// (both own the prepared-epoch slot), never once one has been applied, and
+    /// never more often than `interval` — deriving a key costs a python
+    /// subprocess, so a peer whose route does not resolve is retried on the
+    /// interval, not on every tick.
+    pub fn quantum_mix_due(&self, interval: Duration) -> bool {
+        if self.quantum_mixed.load(Ordering::Relaxed)
+            || self.quantum_mix_in_progress.load(Ordering::Relaxed)
+            || self.ratchet_in_progress.load(Ordering::Relaxed)
+        {
+            return false;
+        }
+        self.quantum_mix_attempt_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|t| t.elapsed() >= interval)
+            .unwrap_or(true)
+    }
+
+    /// Record that a mix attempt was made, so the throttle above can measure it.
+    pub fn note_quantum_mix_attempt(&self) {
+        *self
+            .quantum_mix_attempt_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    /// Whether a quantum mix is mid-exchange on this session.
+    pub fn quantum_mix_in_progress(&self) -> bool {
+        self.quantum_mix_in_progress.load(Ordering::Relaxed)
+    }
+
+    /// Whether this session has already applied a quantum mix.
+    pub fn quantum_mixed(&self) -> bool {
+        self.quantum_mixed.load(Ordering::Relaxed)
+    }
+
+    /// Whether a quantum mix has been waiting on an answer for longer than `timeout`.
+    pub fn quantum_mix_stalled(&self, timeout: Duration) -> bool {
+        if !self.quantum_mix_in_progress.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.quantum_mix_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|t| t.elapsed() > timeout)
+            .unwrap_or(false)
+    }
+
+    /// Drop an in-flight quantum mix (the answer never came). The live epoch is
+    /// untouched, and a later attempt starts from the same root and the same
+    /// parameters, so the retry derives the same key.
+    ///
+    /// What this deliberately does **not** do is discard the epoch the ratchet
+    /// already prepared. That is the same choice the DH step makes, and it is the
+    /// forgiving one: an answer that arrives after the stall bound — a slow route
+    /// computation on the peer, not a lost peer — still opens under the prepared
+    /// epoch and completes the exchange, instead of being dropped and leaving the
+    /// peer sealing on a generation this side cannot open. A retry prepares the
+    /// identical epoch anyway, so nothing is at risk by keeping it.
+    pub fn abandon_quantum_mix(&self) {
+        *self
+            .pending_quantum_mix
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .quantum_mix_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        self.quantum_mix_in_progress.store(false, Ordering::Relaxed);
     }
 
     /// Drop an in-flight step (the answer never came). The live epoch is untouched.
@@ -972,6 +1357,170 @@ pub fn rekey_answer_signed_material(
     let mut m = Vec::with_capacity(832);
     m.extend_from_slice(x_pub);
     m.extend_from_slice(kyber_ct);
+    m.extend_from_slice(confirm);
+    m
+}
+
+// ── L10 Quantum-Anchor Mix PDUs ───────────────────────────────────────
+
+/// Field offsets inside the mix PDU, named so the builder and the parser cannot
+/// drift apart.
+const QEL_MIX_EPOCH_AT: usize = 16;
+const QEL_MIX_LABEL_LEN_AT: usize = 24;
+const QEL_MIX_LABEL_AT: usize = 26;
+const QEL_MIX_CONFIRM_AT: usize = QEL_MIX_LABEL_AT + QEL_MIX_MAX_LABEL; // 154
+const QEL_MIX_SIG_AT: usize = QEL_MIX_CONFIRM_AT + 32; // 186
+
+/// Build the quantum-mix PDU: the epoch prepared and the *label* naming the key.
+///
+/// Layout:
+///   [0..16]    "GHOST_QEL_MIX___"
+///   [16..24]   Epoch the mix is prepared for (u64 BE)
+///   [24..26]   Label length in bytes (u16 BE), ≤ [`QEL_MIX_MAX_LABEL`]
+///   [26..154]  Label, zero-padded to a fixed field
+///   [154..186] Confirmation tag over the starter's new-epoch sealing key
+///   [186..250] Ed25519 signature over `[16..186]`
+///
+/// The label, not the key: the answering peer resolves it against the same
+/// backend and arrives at the same material, so nothing secret crosses the link
+/// the key protects. Opaque here because the two backends name keys differently.
+///
+/// The length is carried *and* signed, so a label that filled its field could not
+/// be extended by a trailing byte, nor a shorter one re-framed as a longer one.
+/// The signature covers the confirmation tag too: a tag outside the signed region
+/// could be rewritten in flight, and the initiator would then commit to an epoch
+/// the responder never derived.
+pub fn build_qel_mix_pdu(
+    identity_sign: impl Fn(&[u8]) -> [u8; 64],
+    epoch: u64,
+    label: &str,
+    confirm: &[u8; 32],
+) -> Vec<u8> {
+    let mut pdu = vec![0u8; QEL_MIX_BLOB_LEN];
+    pdu[0..16].copy_from_slice(QEL_MIX_MAGIC);
+    pdu[QEL_MIX_EPOCH_AT..QEL_MIX_LABEL_LEN_AT].copy_from_slice(&epoch.to_be_bytes());
+    // Callers are contract-bound to `QEL_MIX_MAX_LABEL` (the controller's own test
+    // pins that), but truncating here would silently point the peer at a different
+    // key, so refuse to build a PDU the peer could not decode identically.
+    let bytes = label.as_bytes();
+    assert!(
+        bytes.len() <= QEL_MIX_MAX_LABEL,
+        "quantum key label is {} bytes, over the {QEL_MIX_MAX_LABEL}-byte PDU field",
+        bytes.len()
+    );
+    pdu[QEL_MIX_LABEL_LEN_AT..QEL_MIX_LABEL_AT]
+        .copy_from_slice(&(bytes.len() as u16).to_be_bytes());
+    pdu[QEL_MIX_LABEL_AT..QEL_MIX_LABEL_AT + bytes.len()].copy_from_slice(bytes);
+    pdu[QEL_MIX_CONFIRM_AT..QEL_MIX_SIG_AT].copy_from_slice(confirm);
+    let sig = identity_sign(&qel_mix_signed_material(epoch, label, confirm));
+    pdu[QEL_MIX_SIG_AT..QEL_MIX_BLOB_LEN].copy_from_slice(&sig);
+    pdu
+}
+
+/// A parsed quantum-mix PDU.
+pub struct QelMixBlob {
+    pub epoch: u64,
+    /// The name of the key, not the key itself. Resolve it against the backend
+    /// that produced it; an unrecognised label is refused by that backend.
+    pub label: String,
+    pub confirm: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+pub fn parse_qel_mix_pdu(data: &[u8]) -> Option<QelMixBlob> {
+    if data.len() < QEL_MIX_BLOB_LEN || !data.starts_with(QEL_MIX_MAGIC) {
+        return None;
+    }
+    let epoch = u64::from_be_bytes(
+        data[QEL_MIX_EPOCH_AT..QEL_MIX_LABEL_LEN_AT]
+            .try_into()
+            .ok()?,
+    );
+    let label_len = u16::from_be_bytes(
+        data[QEL_MIX_LABEL_LEN_AT..QEL_MIX_LABEL_AT]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    // Out-of-range length is a malformed or hostile PDU: the field is fixed-size,
+    // so a length past it would either read the padding or the tag as label bytes.
+    if label_len == 0 || label_len > QEL_MIX_MAX_LABEL {
+        return None;
+    }
+    let label_bytes = &data[QEL_MIX_LABEL_AT..QEL_MIX_LABEL_AT + label_len];
+    let label = std::str::from_utf8(label_bytes).ok()?.to_string();
+    let mut confirm = [0u8; 32];
+    confirm.copy_from_slice(&data[QEL_MIX_CONFIRM_AT..QEL_MIX_SIG_AT]);
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&data[QEL_MIX_SIG_AT..QEL_MIX_BLOB_LEN]);
+    Some(QelMixBlob {
+        epoch,
+        label,
+        confirm,
+        signature,
+    })
+}
+
+/// The bytes a quantum-mix PDU's signature covers: epoch, label length, label and
+/// the confirmation tag.
+pub fn qel_mix_signed_material(epoch: u64, label: &str, confirm: &[u8; 32]) -> Vec<u8> {
+    let bytes = label.as_bytes();
+    let mut m = Vec::with_capacity(8 + 2 + bytes.len() + 32);
+    m.extend_from_slice(&epoch.to_be_bytes());
+    // The length is inside the signed region so a label cannot be re-framed.
+    m.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+    m.extend_from_slice(bytes);
+    m.extend_from_slice(confirm);
+    m
+}
+
+/// Build the peer's answer to a quantum mix.
+///
+/// Layout:
+///   [0..16]   "GHOST_QEL_MIX_OK"
+///   [16..24]  Epoch the mix prepared (u64 BE)
+///   [24..56]  Confirmation tag over the same new-epoch key
+///   [56..120] Ed25519 signature over `[16..56]`
+pub fn build_qel_mix_response_pdu(
+    identity_sign: impl Fn(&[u8]) -> [u8; 64],
+    epoch: u64,
+    confirm: &[u8; 32],
+) -> Vec<u8> {
+    let mut pdu = vec![0u8; QEL_MIX_RESPONSE_BLOB_LEN];
+    pdu[0..16].copy_from_slice(QEL_MIX_RESPONSE_MAGIC);
+    pdu[16..24].copy_from_slice(&epoch.to_be_bytes());
+    pdu[24..56].copy_from_slice(confirm);
+    let sig = identity_sign(&qel_mix_response_signed_material(epoch, confirm));
+    pdu[56..120].copy_from_slice(&sig);
+    pdu
+}
+
+/// A parsed quantum-mix answer.
+pub struct QelMixResponseBlob {
+    pub epoch: u64,
+    pub confirm: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+pub fn parse_qel_mix_response_pdu(data: &[u8]) -> Option<QelMixResponseBlob> {
+    if data.len() < QEL_MIX_RESPONSE_BLOB_LEN || !data.starts_with(QEL_MIX_RESPONSE_MAGIC) {
+        return None;
+    }
+    let epoch = u64::from_be_bytes(data[16..24].try_into().ok()?);
+    let mut confirm = [0u8; 32];
+    confirm.copy_from_slice(&data[24..56]);
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&data[56..120]);
+    Some(QelMixResponseBlob {
+        epoch,
+        confirm,
+        signature,
+    })
+}
+
+/// The bytes a quantum-mix answer's signature covers.
+pub fn qel_mix_response_signed_material(epoch: u64, confirm: &[u8; 32]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(40);
+    m.extend_from_slice(&epoch.to_be_bytes());
     m.extend_from_slice(confirm);
     m
 }
@@ -1324,5 +1873,153 @@ mod tests {
         }
         assert!(!session.note_sealed_frame(), "not due one frame early");
         assert!(session.note_sealed_frame(), "due at the interval");
+    }
+
+    // ── L10 quantum-anchor mix: the session half ────────────────────────────
+    //
+    // What the maintenance tick has to get right before it spends a python
+    // subprocess: one mix at a time, never alongside a DH step, and no more
+    // often than the retry interval.
+
+    /// A session that has a peer, so the mix methods have somewhere to put state.
+    fn mixable_session(seed: u8, peer: &str) -> Session {
+        Session::new_with_role([seed; 32], peer.to_string(), SessionRole::Initiator)
+    }
+
+    /// Some backend's key label. These tests only care that the same string comes
+    /// back out, so the shape is arbitrary — the simulated backend's own test pins
+    /// the real format, and one that is too long for the PDU is refused by
+    /// [`build_qel_mix_pdu`].
+    const LABEL: &str = "qkd-sim/1/f=3feccccc00000000/s=00000000000051ee";
+
+    #[test]
+    fn a_mix_and_a_dh_step_are_mutually_exclusive() {
+        // Both advance the generation and both take the prepared-epoch slot, so
+        // two in flight would each prepare an epoch `n+1` from different inputs.
+        let session = mixable_session(0x31, "peer_a");
+        assert!(session.begin_quantum_mix(&[0x11u8; 32], LABEL).is_some());
+        assert!(
+            session.begin_ratchet_step().is_none(),
+            "a DH step must not start while a quantum mix owns the next epoch"
+        );
+        session.abandon_quantum_mix();
+        assert!(
+            session.begin_ratchet_step().is_some(),
+            "once abandoned, the slot is free again"
+        );
+        session.abandon_ratchet_step();
+
+        // And the other way round.
+        assert!(session.begin_ratchet_step().is_some());
+        assert!(
+            session.begin_quantum_mix(&[0x11u8; 32], LABEL).is_none(),
+            "and a mix must not start over an in-flight DH step"
+        );
+        session.abandon_ratchet_step();
+        assert!(session.begin_quantum_mix(&[0x11u8; 32], LABEL).is_some());
+    }
+
+    #[test]
+    fn a_crossed_mix_is_resolved_by_the_fingerprint_order() {
+        // Both sides started one. Each computes the same comparison with the
+        // labels swapped, so exactly one yields — and the yielding side must
+        // *drop* its own mix, not answer on top of it.
+        let interval = Duration::from_secs(60);
+
+        let ours_wins = mixable_session(0x41, "zzz_peer");
+        assert!(ours_wins.begin_quantum_mix(&[0x11u8; 32], LABEL).is_some());
+        assert!(
+            !ours_wins.admit_peer_quantum_mix("aaa_us"),
+            "the lower-fingerprint peer keeps its own mix"
+        );
+        assert!(
+            ours_wins.quantum_mix_in_progress(),
+            "and the arriving one is dropped rather than replacing it"
+        );
+
+        let theirs_wins = mixable_session(0x42, "aaa_peer");
+        assert!(theirs_wins
+            .begin_quantum_mix(&[0x11u8; 32], LABEL)
+            .is_some());
+        assert!(
+            theirs_wins.admit_peer_quantum_mix("zzz_us"),
+            "the higher-fingerprint peer answers instead"
+        );
+        assert!(
+            !theirs_wins.quantum_mix_in_progress(),
+            "yielding means our own mix is abandoned"
+        );
+        assert_eq!(
+            theirs_wins.epoch(),
+            0,
+            "an abandoned mix never moved the live epoch"
+        );
+        assert!(
+            theirs_wins.quantum_mix_due(interval),
+            "and the arriving mix is free to prepare the epoch instead"
+        );
+
+        // With nothing in flight there is nothing to resolve.
+        assert!(mixable_session(0x43, "free_peer").admit_peer_quantum_mix("any_us"));
+    }
+
+    #[test]
+    fn the_mix_attempt_is_throttled_by_the_retry_interval() {
+        // An attempt can cost a python subprocess, so a peer whose route never
+        // resolves must not be retried on every tick.
+        let session = mixable_session(0x51, "peer_t");
+        let interval = Duration::from_secs(60);
+        assert!(session.quantum_mix_due(interval), "a fresh session is due");
+        session.note_quantum_mix_attempt();
+        assert!(
+            !session.quantum_mix_due(interval),
+            "a recorded attempt suppresses the next one"
+        );
+        assert_eq!(session.epoch(), 0, "and nothing was advanced by trying");
+
+        // A mix in flight is never re-attempted, however long ago the attempt
+        // was recorded: the stall path owns that case.
+        let in_flight = mixable_session(0x52, "peer_f");
+        assert!(in_flight.begin_quantum_mix(&[0x11u8; 32], LABEL).is_some());
+        assert!(!in_flight.quantum_mix_due(Duration::ZERO));
+        in_flight.abandon_quantum_mix();
+        assert!(
+            in_flight.quantum_mix_due(interval),
+            "an abandoned attempt does not block the retry forever"
+        );
+
+        // A completed mix is applied once per session and never revisited.
+        let mixed = mixable_session(0x53, "peer_m");
+        assert!(mixed.begin_quantum_mix(&[0x11u8; 32], LABEL).is_some());
+        assert!(mixed.activate_epoch(1));
+        assert!(mixed.quantum_mixed());
+        assert!(!mixed.quantum_mix_due(Duration::ZERO));
+    }
+
+    #[test]
+    fn an_unanswered_mix_stalls_without_touching_the_epoch() {
+        let session = mixable_session(0x61, "peer_s");
+        let first_confirm = session
+            .begin_quantum_mix(&[0x11u8; 32], LABEL)
+            .expect("a mix to stall on")
+            .confirm;
+        // Not stalled yet — the bound is what stops a wedged session, not a clock
+        // tick, so a zero-length window is the only way to observe it here.
+        assert!(!session.quantum_mix_stalled(Duration::from_secs(90)));
+        assert!(session.quantum_mix_stalled(Duration::ZERO));
+        session.abandon_quantum_mix();
+        assert!(!session.quantum_mix_stalled(Duration::ZERO));
+        assert_eq!(session.epoch(), 0, "the live epoch was never touched");
+
+        // The retry is not just allowed, it is *identical*: same root, same
+        // quantum key, so the same epoch and the same confirmation tag. That is
+        // what makes abandoning a mix safe — a slow peer and a lost peer look the
+        // same here, and neither costs the session its place in the generation.
+        let retry = session
+            .begin_quantum_mix(&[0x11u8; 32], LABEL)
+            .expect("a retry after a stall");
+        assert_eq!(retry.epoch, 1);
+        assert_eq!(retry.confirm, first_confirm);
+        assert_eq!(session.epoch(), 0);
     }
 }

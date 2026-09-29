@@ -428,6 +428,53 @@ fn the_ladder_is_walked_in_order_and_only_records_paths_that_can_carry_traffic()
 }
 
 #[test]
+fn skywave_is_the_last_rung_of_the_fallback_ladder() {
+    // The ladder must never offer the slow carrier while anything faster is
+    // available — and must not offer it at all when no bridge is active.
+    let candidates = vec![("relay".to_string(), addr(TARGET_PUB))];
+
+    // 1. A healthy mesh relay beats everything, skywave present or not.
+    assert_eq!(
+        fallback::choose_fallback_with_skywave("alice", "bob", &candidates, None, Some(5350)),
+        Some(FallbackPath::MeshRelay {
+            relay_fp: "relay".to_string(),
+            relay_addr: addr(TARGET_PUB),
+        }),
+        "a relay candidate always outranks the skywave"
+    );
+
+    // 2. TURN outranks skywave, and skywave never substitutes for it.
+    let turn = Some(addr("198.51.100.9:49152"));
+    assert_eq!(
+        fallback::choose_fallback_with_skywave("alice", "bob", &[], turn, Some(5350)),
+        Some(FallbackPath::Turn {
+            peer_relayed: turn.unwrap()
+        }),
+        "TURN outranks the skywave rung"
+    );
+
+    // 3. Nothing else works and no bridge is active: the ladder says unreachable
+    //    rather than inventing a radio out of thin air.
+    assert_eq!(
+        fallback::choose_fallback_with_skywave("alice", "bob", &[], None, None),
+        None,
+        "no active bridge, no skywave rung"
+    );
+
+    // 4. Only when the bridge reports active does the rung appear.
+    assert_eq!(
+        fallback::choose_fallback_with_skywave("alice", "bob", &[], None, Some(5350)),
+        Some(FallbackPath::Skywave {
+            nvis_freq_khz: 5350
+        }),
+        "active bridge as the last resort — after direct, relay and TURN"
+    );
+
+    // The old entry point keeps its meaning: no skywave rung without opt-in.
+    assert_eq!(fallback::choose_fallback("alice", "bob", &[], None), None);
+}
+
+#[test]
 fn a_relay_refuses_the_requests_that_would_make_it_an_amplifier() {
     // The relay's admission rules, asserted through the same entry point the
     // receive path uses. An open relay is a reflection and amplification vector,

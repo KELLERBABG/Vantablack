@@ -1,0 +1,31 @@
+{
+	"nodes":[
+		{"id":"distill","type":"text","text":"### High-Fidelity Entanglement Distillation\nBBPSSW- und Deutsch-Protokolle reinigen schwache Verschränkung. Aus N schwach verschränkten Paaren → 1 hochreines Paar für kritische Links.","x":-50,"y":-330,"width":300,"height":225},
+		{"id":"title","type":"text","text":"# Quantum Entanglement Link","x":-200,"y":-1120,"width":600,"height":60},
+		{"id":"noclon","type":"text","text":"### No-Cloning Theorem\nQuantenzustände können nicht perfekt kopiert werden. Grundlage der kryptographischen Sicherheit von QKD – jeder Abhörversuch hinterlässt Spuren.","x":-450,"y":-940,"width":300,"height":198},
+		{"id":"bsa","type":"text","text":"### Bell State Analysis\nMathematische Bestimmung der vier Bell-Zustände (|Φ⁺⟩, |Φ⁻⟩, |Ψ⁺⟩, |Ψ⁻⟩) mittles Bell-Messung. Fundamentale Operation für Verschränkungsaustausch, Teleportation und Superdense Coding.","x":-50,"y":-940,"width":300,"height":246},
+		{"id":"swap","type":"text","text":"### Entanglement Swapping\nErzeugt Verschränkung zwischen Knoten ohne direkte Interaktion. Mittlerer Knoten führt Bell-Messung durch – Kernstück der Quanten-Repeater.","x":350,"y":-940,"width":300,"height":198},
+		{"id":"superdense","type":"text","text":"### Superdense Coding\nVerdoppelt Informationskapazität: 2 klassische Bits gesendet als 1 Qubit durch Bell-Zustands-Kodierung.","x":350,"y":-641,"width":300,"height":140},
+		{"id":"teleport","type":"text","text":"### Quantum Teleportation\nÜberträgt unbekannte Quantenzustände via Bell-Paar + 2 klassische Bits. Ermöglicht Kommunikation über beliebige Distanzen mit Repeatern.","x":-50,"y":-641,"width":300,"height":198},
+		{"id":"qkd","type":"text","text":"### Quantum Key Distribution (BB84/E91)\nErzeugung manipulationssicherer Schlüssel durch Quantenzustände. BB84: einzelne Qubits. E91: verschränkte Paare. Angriffserkennung via QBER.","x":-450,"y":-641,"width":300,"height":225},
+		{"id":"qec","type":"text","text":"### Quantum Error Correction (Shor/Steane)\nLogische Qubits über mehrere physische Qubits verteilt. Korrigiert Dekohärenz und Rauschen durch Stabilisator-Messungen und Fehlersyndrom.","x":-450,"y":-330,"width":300,"height":225},
+		{"id":"memory","type":"text","text":"### Quantum Memory Buffering\nKurzzeitspeicher in photonischen Kristallen / Ionenfallen. Synchronisiert Zeitunterschiede bei Verschränkungserzeugung über Distanzen.","x":350,"y":-330,"width":300,"height":225},
+		{"id":"ghostnet","type":"text","text":"### Ghost-Net Topology\nQuanten-eigenes Parallelnetzwerk: Graph optimierter Repeater-Platzierung für maximale Verschränkungsabdeckung. Überlagert klassische Netzwerke.","x":-200,"y":60,"width":600,"height":110}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"bsa","fromSide":"bottom","toNode":"qkd","toSide":"top"},
+		{"id":"e2","fromNode":"bsa","fromSide":"bottom","toNode":"teleport","toSide":"top"},
+		{"id":"e3","fromNode":"bsa","fromSide":"bottom","toNode":"superdense","toSide":"top"},
+		{"id":"e4","fromNode":"bsa","fromSide":"top","toNode":"swap","toSide":"left"},
+		{"id":"e5","fromNode":"noclon","fromSide":"bottom","toNode":"qkd","toSide":"top"},
+		{"id":"e6","fromNode":"noclon","fromSide":"bottom","toNode":"teleport","toSide":"top"},
+		{"id":"e7","fromNode":"swap","fromSide":"bottom","toNode":"ghostnet","toSide":"top"},
+		{"id":"e8","fromNode":"swap","fromSide":"left","toNode":"distill","toSide":"top"},
+		{"id":"e9","fromNode":"distill","fromSide":"top","toNode":"qkd","toSide":"right"},
+		{"id":"e10","fromNode":"qec","fromSide":"bottom","toNode":"teleport","toSide":"top"},
+		{"id":"e11","fromNode":"qec","fromSide":"bottom","toNode":"memory","toSide":"top"},
+		{"id":"e12","fromNode":"memory","fromSide":"top","toNode":"swap","toSide":"right"},
+		{"id":"e13","fromNode":"distill","fromSide":"bottom","toNode":"ghostnet","toSide":"top"},
+		{"id":"e14","fromNode":"memory","fromSide":"bottom","toNode":"ghostnet","toSide":"top"}
+	]
+}

@@ -1009,6 +1009,19 @@ pub fn build_negotiated_response_pdu(
     Some(out)
 }
 
+/// How long a negotiated response PDU is for `suite`, as
+/// [`build_negotiated_response_pdu`] writes it — before the shard transport
+/// pads it.
+///
+/// Named and public because the *signature* covers exactly this many bytes: a
+/// receiver that assumes the last 64 bytes of the datagram are the signature
+/// verifies the wrong thing whenever the transport added its pad, and the
+/// ML-KEM-768 response is an odd length, so it always does.
+pub fn negotiated_response_len(suite: HybridCipherSuite) -> usize {
+    let ct_len = suite_ct_len(suite);
+    16 + 1 + 32 + ct_len + 32 + 32 + 64
+}
+
 pub fn parse_negotiated_response_pdu(data: &[u8]) -> Option<NegotiatedResponseBlob> {
     if data.len() < 16 + 1 + 32 + 32 + 32 + 64 || !data.starts_with(RESPONSE_NEGOTIATION_MAGIC) {
         return None;
@@ -1018,15 +1031,23 @@ pub fn parse_negotiated_response_pdu(data: &[u8]) -> Option<NegotiatedResponseBl
     let ct_len = suite_ct_len(suite);
     let identity_start = ct_start + ct_len;
     let pq_start = identity_start + 32;
-    let total = pq_start + 32 + 64;
-    if data.len() != total {
+    let total = negotiated_response_len(suite);
+    // The shard transport splits a payload into two equal halves, so it pads an
+    // odd one with a single zero byte (see `l4_rs::encode`). A datagram that
+    // arrived through it is therefore the PDU, or the PDU plus that pad, and
+    // both have to parse: whether the pad is there is decided by the suite's
+    // ciphertext length, not by anything the sender chose. Only the PDU itself
+    // is read — the trailing pad is ignored, never parsed as content.
+    if data.len() < total || data.len() > total + 1 {
         return None;
     }
     let x25519_pub: [u8; 32] = data[17..49].try_into().ok()?;
     let kyber_ct = data[ct_start..identity_start].to_vec();
     let identity_pk: [u8; 32] = data[identity_start..pq_start].try_into().ok()?;
     let pq_commitment: [u8; 32] = data[pq_start..pq_start + 32].try_into().ok()?;
-    let signature: [u8; 64] = data[pq_start + 32..].try_into().ok()?;
+    // Exactly 64 bytes, not "everything left": the transport's pad follows the
+    // signature, and taking the tail would make a 65-byte slice.
+    let signature: [u8; 64] = data[pq_start + 32..pq_start + 32 + 64].try_into().ok()?;
     Some(NegotiatedResponseBlob {
         suite,
         x25519_pub,
@@ -1059,6 +1080,11 @@ pub const CHAIN_STEP_NEXT: u8 = 0x01;
 /// Domain separator for the message/epoch key produced by a `kdf_ck` step.
 pub const CHAIN_STEP_KEY: u8 = 0x02;
 
+/// HKDF info for mixing out-of-band (QEL/QKD) entropy into the ratchet root.
+/// Domain-separated from every other KDF use so a quantum key can never stand
+/// in for a ratchet root or an epoch key.
+pub const RATCHET_QUANTUM_MIX_INFO: &[u8] = b"GHOST_NET_RATCHET_QEL_ENTROPY_v1";
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// DH-ratchet step: mix a fresh hybrid shared secret into the root key
@@ -1089,6 +1115,36 @@ pub fn kdf_rk_hybrid(
     let hk = Hkdf::<Sha256>::new(Some(&root_key[..]), &ikm);
     let mut out = [0u8; 96];
     hk.expand(RATCHET_ROOT_INFO, &mut out)
+        .expect("96 bytes is a valid HKDF-SHA256 output length");
+
+    let mut new_root = [0u8; 32];
+    new_root.copy_from_slice(&out[..32]);
+    let mut chain_to_resp = [0u8; 32];
+    chain_to_resp.copy_from_slice(&out[32..64]);
+    let mut chain_to_init = [0u8; 32];
+    chain_to_init.copy_from_slice(&out[64..96]);
+    (new_root, chain_to_resp, chain_to_init)
+}
+
+/// Mix out-of-band entropy (a QEL/QKD-derived key) into a ratchet root key.
+///
+/// Returns `(next_root_key, chain_initiator_to_responder, chain_responder_to_initiator)`
+/// in the same shape as [`kdf_rk_hybrid`], so the caller reseeds the chains
+/// exactly as a DH step would. The mixing is one-way: learning the *output*
+/// reveals nothing about the quantum key, and learning the quantum key alone
+/// recovers nothing without the prior root.
+///
+/// This is the L10 anchor's contribution to a session: extra entropy whose
+/// provenance is a channel whose noise model the peer cannot cheaply bias. It
+/// is *additive* — a session without it is exactly as secure as before; one
+/// with it is at least as secure as the stronger of the two inputs.
+pub fn kdf_rk_quantum_mix(
+    root_key: &[u8; 32],
+    quantum_key: &[u8; 32],
+) -> ([u8; 32], [u8; 32], [u8; 32]) {
+    let hk = Hkdf::<Sha256>::new(Some(&root_key[..]), quantum_key);
+    let mut out = [0u8; 96];
+    hk.expand(RATCHET_QUANTUM_MIX_INFO, &mut out)
         .expect("96 bytes is a valid HKDF-SHA256 output length");
 
     let mut new_root = [0u8; 32];
