@@ -5,13 +5,12 @@
 //! - Any 2 of the 3 shards reconstruct original data with zero packet retransmission
 //! - Global static matrix encoder caching to eliminate per-packet heap allocations
 
-use std::sync::LazyLock;
 use reed_solomon_erasure::galois_8::ReedSolomon;
+use std::sync::LazyLock;
 
 /// Statically initialized RS(2,1) encoder instance (thread-safe, zero per-packet setup cost).
-static RS_2_1: LazyLock<ReedSolomon> = LazyLock::new(|| {
-    ReedSolomon::new(2, 1).expect("Failed to initialize static RS(2,1) encoder")
-});
+static RS_2_1: LazyLock<ReedSolomon> =
+    LazyLock::new(|| ReedSolomon::new(2, 1).expect("Failed to initialize static RS(2,1) encoder"));
 
 /// Split data into 3 shards using (2,1) Reed-Solomon encoding.
 /// If data length is odd, a padding zero byte is appended.
@@ -27,13 +26,11 @@ pub fn encode(data: &mut Vec<u8>) -> Vec<Vec<u8>> {
     }
 
     let mid = data.len() / 2;
-    let mut shards = vec![
-        data[0..mid].to_vec(),
-        data[mid..].to_vec(),
-        vec![0u8; mid],
-    ];
+    let mut shards = vec![data[0..mid].to_vec(), data[mid..].to_vec(), vec![0u8; mid]];
 
-    RS_2_1.encode(&mut shards).expect("RS(2,1) static encoding cannot fail");
+    RS_2_1
+        .encode(&mut shards)
+        .expect("RS(2,1) static encoding cannot fail");
     shards
 }
 

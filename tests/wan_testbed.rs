@@ -199,6 +199,8 @@ async fn test_wan_multi_region_relay_failover() {
     // Wait for transatlantic + transpacific propagation (~250-300ms)
     tokio::time::sleep(Duration::from_millis(450)).await;
 
-    let received = tokyo_out.try_recv().expect("Packet arrived at destination in Tokyo");
+    let received = tokyo_out
+        .try_recv()
+        .expect("Packet arrived at destination in Tokyo");
     assert_eq!(received, test_packet);
 }

@@ -228,7 +228,7 @@ fn dns_second_query_reuses_flow_and_reader() {
     let deadline = Instant::now() + Duration::from_secs(5);
     while got.len() < 2 && Instant::now() < deadline {
         let mut buf = [0u8; 1500];
-        if let Ok((amt, src)) = server.recv_from(&mut buf) {
+        if let Ok((_amt, src)) = server.recv_from(&mut buf) {
             got.push((u16::from_be_bytes([buf[0], buf[1]]), src));
         }
     }

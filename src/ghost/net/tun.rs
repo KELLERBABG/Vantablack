@@ -212,11 +212,16 @@ mod linux_platform {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tracing::info;
-    use crate::ghost::net::vpn::tun::{TunDevice, UnixTun};
+
+    pub trait TunSession: Send {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+        fn write(&self, buf: &[u8]) -> std::io::Result<usize>;
+        fn shutdown(&self);
+    }
 
     pub struct TunAdapter {
         running: Arc<AtomicBool>,
-        device: Option<UnixTun>,
+        session: Option<Box<dyn TunSession>>,
         name: String,
     }
 
@@ -231,27 +236,56 @@ mod linux_platform {
 
         pub fn new(name: &str, _tun_type: &str) -> std::io::Result<Self> {
             info!("Initializing Linux TUN adapter: /dev/net/tun dev={}", name);
-            let dev = UnixTun::new(name)?;
-            Ok(Self {
-                running: Arc::new(AtomicBool::new(true)),
-                device: Some(dev),
-                name: name.to_string(),
-            })
+            #[cfg(feature = "vpn")]
+            {
+                use crate::ghost::net::vpn::tun::{TunDevice, UnixTun};
+                let dev = UnixTun::new(name)?;
+                struct UnixTunSession(UnixTun);
+                impl TunSession for UnixTunSession {
+                    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                        self.0.read_packet(buf)
+                    }
+                    fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+                        self.0.write_packet(buf)
+                    }
+                    fn shutdown(&self) {
+                        self.0.shutdown();
+                    }
+                }
+                Ok(Self {
+                    running: Arc::new(AtomicBool::new(true)),
+                    session: Some(Box::new(UnixTunSession(dev))),
+                    name: name.to_string(),
+                })
+            }
+            #[cfg(not(feature = "vpn"))]
+            {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Compile with --features vpn to enable Linux /dev/net/tun adapter",
+                ))
+            }
         }
 
         pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if let Some(ref mut dev) = self.device {
-                dev.read_packet(buf)
+            if let Some(ref mut session) = self.session {
+                session.read(buf)
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "TUN device closed"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "TUN device closed",
+                ))
             }
         }
 
         pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
-            if let Some(ref dev) = self.device {
-                dev.write_packet(buf)
+            if let Some(ref session) = self.session {
+                session.write(buf)
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "TUN device closed"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "TUN device closed",
+                ))
             }
         }
 
@@ -261,8 +295,8 @@ mod linux_platform {
 
         pub fn shutdown(&self) {
             self.running.store(false, Ordering::Relaxed);
-            if let Some(ref dev) = self.device {
-                dev.shutdown();
+            if let Some(ref session) = self.session {
+                session.shutdown();
             }
         }
 
@@ -282,11 +316,16 @@ mod macos_platform {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tracing::info;
-    use crate::ghost::net::vpn::tun::{TunDevice, MacOSUtun};
+
+    pub trait TunSession: Send {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+        fn write(&self, buf: &[u8]) -> std::io::Result<usize>;
+        fn shutdown(&self);
+    }
 
     pub struct TunAdapter {
         running: Arc<AtomicBool>,
-        device: Option<MacOSUtun>,
+        session: Option<Box<dyn TunSession>>,
         name: String,
     }
 
@@ -301,27 +340,56 @@ mod macos_platform {
 
         pub fn new(name: &str, _tun_type: &str) -> std::io::Result<Self> {
             info!("Initializing macOS utun adapter: dev={}", name);
-            let dev = MacOSUtun::new(name)?;
-            Ok(Self {
-                running: Arc::new(AtomicBool::new(true)),
-                device: Some(dev),
-                name: name.to_string(),
-            })
+            #[cfg(feature = "vpn")]
+            {
+                use crate::ghost::net::vpn::tun::{MacOSUtun, TunDevice};
+                let dev = MacOSUtun::new(name)?;
+                struct MacOSUtunSession(MacOSUtun);
+                impl TunSession for MacOSUtunSession {
+                    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                        self.0.read_packet(buf)
+                    }
+                    fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+                        self.0.write_packet(buf)
+                    }
+                    fn shutdown(&self) {
+                        self.0.shutdown();
+                    }
+                }
+                Ok(Self {
+                    running: Arc::new(AtomicBool::new(true)),
+                    session: Some(Box::new(MacOSUtunSession(dev))),
+                    name: name.to_string(),
+                })
+            }
+            #[cfg(not(feature = "vpn"))]
+            {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Compile with --features vpn to enable macOS utun adapter",
+                ))
+            }
         }
 
         pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if let Some(ref mut dev) = self.device {
-                dev.read_packet(buf)
+            if let Some(ref mut session) = self.session {
+                session.read(buf)
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "utun device closed"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "utun device closed",
+                ))
             }
         }
 
         pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
-            if let Some(ref dev) = self.device {
-                dev.write_packet(buf)
+            if let Some(ref session) = self.session {
+                session.write(buf)
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "utun device closed"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "utun device closed",
+                ))
             }
         }
 
@@ -331,8 +399,8 @@ mod macos_platform {
 
         pub fn shutdown(&self) {
             self.running.store(false, Ordering::Relaxed);
-            if let Some(ref dev) = self.device {
-                dev.shutdown();
+            if let Some(ref session) = self.session {
+                session.shutdown();
             }
         }
 
@@ -345,10 +413,18 @@ mod macos_platform {
 #[cfg(target_os = "macos")]
 pub use macos_platform::TunAdapter;
 
-#[cfg(all(not(target_os = "windows"), not(target_os = "linux"), not(target_os = "macos")))]
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "linux"),
+    not(target_os = "macos")
+))]
 pub struct TunAdapter;
 
-#[cfg(all(not(target_os = "windows"), not(target_os = "linux"), not(target_os = "macos")))]
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "linux"),
+    not(target_os = "macos")
+))]
 impl TunAdapter {
     pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
         None

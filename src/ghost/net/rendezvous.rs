@@ -179,7 +179,12 @@ pub struct PresenceBeacon {
 
 impl PresenceBeacon {
     /// Canonical bytes used for signing or verifying the beacon.
-    pub fn signing_bytes(fingerprint: &str, endpoints: &[SocketAddr], timestamp: u64, nonce: u64) -> Vec<u8> {
+    pub fn signing_bytes(
+        fingerprint: &str,
+        endpoints: &[SocketAddr],
+        timestamp: u64,
+        nonce: u64,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(b"VANTABLACK_PRESENCE_BEACON_V1");
         out.extend_from_slice(fingerprint.as_bytes());
@@ -192,12 +197,7 @@ impl PresenceBeacon {
     }
 
     /// Create a signed presence beacon using an Ed25519 signing closure or key.
-    pub fn create<F>(
-        fingerprint: String,
-        endpoints: Vec<SocketAddr>,
-        nonce: u64,
-        signer: F,
-    ) -> Self
+    pub fn create<F>(fingerprint: String, endpoints: Vec<SocketAddr>, nonce: u64, signer: F) -> Self
     where
         F: FnOnce(&[u8]) -> [u8; 64],
     {
@@ -229,7 +229,12 @@ impl PresenceBeacon {
         }
         let mut sig_arr = [0u8; 64];
         sig_arr.copy_from_slice(&sig_bytes);
-        let msg = Self::signing_bytes(&self.fingerprint, &self.endpoints, self.timestamp, self.nonce);
+        let msg = Self::signing_bytes(
+            &self.fingerprint,
+            &self.endpoints,
+            self.timestamp,
+            self.nonce,
+        );
         verifier(&msg, &sig_arr)
     }
 }
@@ -252,7 +257,10 @@ pub struct NostrRendezvousEvent {
 
 impl NostrRendezvousEvent {
     /// Format a presence beacon into a Nostr ephemeral rendezvous event.
-    pub fn from_beacon(beacon: &PresenceBeacon, nostr_pubkey: String) -> Result<Self, serde_json::Error> {
+    pub fn from_beacon(
+        beacon: &PresenceBeacon,
+        nostr_pubkey: String,
+    ) -> Result<Self, serde_json::Error> {
         let content = serde_json::to_string(beacon)?;
         let mut hasher = Sha256::new();
         hasher.update(&beacon.timestamp.to_be_bytes());

@@ -31,7 +31,12 @@ pub struct BandwidthVoucher {
 
 impl BandwidthVoucher {
     /// Mint a new bandwidth voucher backed by proof of work or erasure repair work.
-    pub fn mint(token_preimage: [u8; 32], epoch_slot: u64, quota_mb: u32, proof_hash: [u8; 32]) -> Self {
+    pub fn mint(
+        token_preimage: [u8; 32],
+        epoch_slot: u64,
+        quota_mb: u32,
+        proof_hash: [u8; 32],
+    ) -> Self {
         Self {
             token_preimage,
             epoch_slot,
@@ -100,7 +105,13 @@ impl RelayBandwidthBank {
                 if *entry == 0 {
                     drop(entry);
                     self.active_vouchers.remove(nullifier);
-                    self.exhausted_nullifiers.insert(*nullifier, SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+                    self.exhausted_nullifiers.insert(
+                        *nullifier,
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs(),
+                    );
                 }
                 true
             } else {
@@ -162,6 +173,9 @@ mod tests {
 
         // 6. Attempting to redeem an exhausted voucher fails
         let post_exhaust_dup = bank.redeem_voucher(&voucher);
-        assert!(post_exhaust_dup.is_err(), "exhausted voucher cannot be re-minted");
+        assert!(
+            post_exhaust_dup.is_err(),
+            "exhausted voucher cannot be re-minted"
+        );
     }
 }

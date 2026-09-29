@@ -105,6 +105,7 @@ fn parse_stack_pkt(pkt: &[u8]) -> Option<(Vec<u8>, u32, u32, u8)> {
 
 const TOTAL: usize = 10 * 1024 * 1024;
 const CLIENT_ISN: u32 = 900;
+#[allow(dead_code)]
 const CLIENT_PORT: u16 = 52000;
 
 #[test]

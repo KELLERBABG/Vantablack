@@ -154,7 +154,7 @@ fn churn_after_full_idle_expiry_new_query_gets_served() {
 
     // ── (3) SAME tuple again (same client port → same FlowKey). ──
     phone_sends_query(&mut tun, &phone, &hub, ep, server_addr, server_ip, 0x22, 4);
-    let (amt2, src2) = server
+    let (_amt2, src2) = server
         .recv_from(&mut buf)
         .expect("query 2 at server AFTER idle expiry");
     let src2_ip: [u8; 4] = match src2.ip() {

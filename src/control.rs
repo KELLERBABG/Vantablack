@@ -580,13 +580,19 @@ pub fn spawn_control_center(
                                     {
                                         s.set_route_mode(r);
                                     }
-                                    if let Some(ll) = val.get("low_latency").and_then(|v| v.as_bool()) {
+                                    if let Some(ll) =
+                                        val.get("low_latency").and_then(|v| v.as_bool())
+                                    {
                                         vantablack::ghost::net::set_low_latency(ll);
                                     }
-                                    if let Some(ms) = val.get("mix_batch_ms").and_then(|v| v.as_u64()) {
+                                    if let Some(ms) =
+                                        val.get("mix_batch_ms").and_then(|v| v.as_u64())
+                                    {
                                         vantablack::ghost::net::set_mix_batch_delay_ms(ms);
                                     }
-                                    if let Some(za) = val.get("zero_admin").and_then(|v| v.as_bool()) {
+                                    if let Some(za) =
+                                        val.get("zero_admin").and_then(|v| v.as_bool())
+                                    {
                                         vantablack::ghost::net::set_zero_admin(za);
                                     }
                                     if let Some(add) =
