@@ -54,6 +54,14 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "Reed-Solomon RS(2,1) encoding, and replay sliding window specifications.",
             ),
             (
+                "formal-spec",
+                "FORMAL_PROTOCOL_SPECIFICATION.md",
+                "Formal Protocol Specification (RFC-Style)",
+                "Formal RFC Specification",
+                "Normative cryptographic constructions, state transitions, wire layouts, "
+                "and ProVerif security invariants for Vantablack v0.7.6.",
+            ),
+            (
                 "sota",
                 "SOTA.md",
                 "State of the Art (SOTA) Architectural Benchmark",
@@ -66,6 +74,14 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
     (
         "Architecture",
         [
+            (
+                "overview",
+                "PROJECT_OVERVIEW.md",
+                "System Overview &amp; Capabilities",
+                "System Overview",
+                "End-to-end architectural tour of the 11-layer post-quantum mesh stack, "
+                "control plane API, and deployment topologies.",
+            ),
             (
                 "whitepaper",
                 "WHITEPAPER.md",
@@ -125,20 +141,20 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
         "Security &amp; Verification",
         [
             (
+                "security",
+                "SECURITY.md",
+                "Security Policy, Threat Model &amp; Disclosure",
+                "Security &amp; Threat Model",
+                "Cryptographic threat boundaries, formal verification scope, side-channel "
+                "hardening, and coordinated vulnerability disclosure.",
+            ),
+            (
                 "dpi-analysis",
                 "DPI_ANALYSIS.md",
                 "DPI &amp; Traffic-Analysis Measurement Report",
                 "DPI &amp; Traffic Analysis",
                 "Empirical traffic analysis measuring zero HTTP/REST keyword leakage, "
                 "Shannon entropy (7.989 bits/B), uniform 576B frames, and Poisson timing jitter.",
-            ),
-            (
-                "wintun-verification",
-                "WINTUN_VERIFICATION.md",
-                "Wintun Real-Device Verification Checklist &amp; Runbook",
-                "Wintun Runbook (Windows)",
-                "Step-by-step verification checklist and runbook for running the production "
-                "Vantablack VPN subsystem against real Windows Wintun driver adapters.",
             ),
         ],
     ),

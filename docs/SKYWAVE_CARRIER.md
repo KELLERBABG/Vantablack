@@ -18,21 +18,11 @@ Under catastrophic circumstances where standard IP routing, cellular data towers
 
 To guarantee unjammable survival, Vantablack implements an out-of-band **Physical Skywave Fallback Carrier** powered by **Atmospheric Broadcast OS (ABOS)**.
 
-```
-┌────────────────────────────────────────────────────────┐
-│               THE REACHABILITY LADDER                  │
-│                                                        │
-│  [Priority 0] Direct P2P (UDP Hole Punching / ICE)     │
-│       │                                                │
-│       ▼ (NAT failure / direct port blocked)            │
-│  [Priority 1] Mesh Multi-Hop Relay (RLY! Onion Router) │
-│       │                                                │
-│       ▼ (Local ISP throttling / egress censorship)     │
-│  [Priority 2] Blinded TURN Relay Pool                  │
-│       │                                                │
-│       ▼ (Total WAN / Terrestrial Internet Blackout)    │
-│  [Priority 3] Atmospheric Skywave (NVIS HF Radio)      │
-└────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    P0["Priority 0 — Direct P2P (UDP Hole Punching / ICE)"] -->|"NAT failure / direct port blocked"| P1["Priority 1 — Mesh Multi-Hop Relay (RLY! Onion Router)"]
+    P1 -->|"Local ISP throttling / egress censorship"| P2["Priority 2 — Blinded TURN Relay Pool"]
+    P2 -->|"Total WAN / Terrestrial Internet Blackout"| P3["Priority 3 — Atmospheric Skywave (NVIS HF Radio 2–10 MHz)"]
 ```
 
 ---
@@ -41,20 +31,10 @@ To guarantee unjammable survival, Vantablack implements an out-of-band **Physica
 
 The Skywave fallback operates on High Frequency (HF) bands between **2 MHz and 10 MHz** utilizing **Near Vertical Incidence Skywave (NVIS)**:
 
-```
-                  +--------------------------------+
-                  |  Ionosphere (F2 Layer Plasma)  |
-                  +--------------------------------+
-                             ^          \
-      Transmitted RF        /            \   Reflected RF
-      Burst (2-10 MHz)     /              \  Burst (0-500 km radius)
-                          /                v
-                  +-------------+    +-------------+
-                  | Vantablack  |    | Vantablack  |
-                  | Node A (TX) |    | Node B (RX) |
-                  +-------------+    +-------------+
-                  ///////////////////////////////////
-                     Mountains, Valleys, Jammed WAN
+```mermaid
+flowchart LR
+    NodeA["Vantablack Node A (TX)<br/>70°–90° High-Angle HF Burst"] -->|"Transmitted RF (2–10 MHz)"| F2["Ionosphere (F2 Layer Plasma)<br/>60–1000 km Altitude Passive Reflector"]
+    F2 -->|"Reflected Downward Wave (0–500 km Radius)"| NodeB["Vantablack Node B (RX)<br/>Bypasses Mountains, Valleys & Jammed WAN"]
 ```
 
 ### Key Physical Guarantees:

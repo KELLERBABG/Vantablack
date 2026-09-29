@@ -23,22 +23,12 @@ In Vantablack, multi-hop routing operates through two synergistic mechanisms:
 1. **End-to-End Cryptographic Peeling (`RLY!`):** Implemented in `src/ghost/net/relay.rs`.
 2. **Level 2 Multi-Hop Wire Forwarding:** Implemented in `src/bin/wan_mesh.rs`.
 
-```
-Initiator (Client)
-   │
-   │ Encrypted with Intermediate Hop Keys & Outer Exit Key
-   ▼
-[Hop 1: Carrier Relay 1] ---- Unwraps outer layer / decrements hops_remaining
-   │                     ---- Learns only: "Forward to Carrier 4"
-   │                     ---- Does NOT see payload or origin identity
-   ▼
-[Hop 2: Carrier Relay 4] ---- Unwraps intermediate layer / decrements hops_remaining
-   │                     ---- Learns only: "Forward to Exit Node"
-   ▼
-[Hop 3: Exit Gateway]    ---- Unwraps final AEAD layer
-   │                     ---- Delivers payload to public destination
-   ▼
-Target WAN Destination (e.g. HTTP Server)
+```mermaid
+flowchart TD
+    Client["Initiator (Client)<br/>Seals payload with Hop 1, Hop 2 & Exit Keys"] --> Hop1["Hop 1: Carrier Relay 1<br/>• Unwraps outer layer / decrements hops_remaining<br/>• Learns only: 'Forward to Carrier 4'<br/>• Blind to payload & origin identity"]
+    Hop1 --> Hop2["Hop 2: Carrier Relay 4<br/>• Unwraps intermediate layer / decrements hops_remaining<br/>• Learns only: 'Forward to Exit Node'"]
+    Hop2 --> Exit["Hop 3: Exit Gateway<br/>• Unwraps final AEAD layer<br/>• Delivers payload to destination"]
+    Exit --> Dest["Target WAN Destination"]
 ```
 
 ### 2.1 Hop Header Decrement & Forwarding
@@ -102,11 +92,15 @@ When routing through anonymous overlay relays (`SENDRELAY <dest_fp> <relay_fp> <
 
 Unlike traditional single-path circuits where a single malicious relay can intercept or drop entire streams, Vantablack integrates **Reed-Solomon RS(2,1) Multi-Path Erasure Sharding**:
 
-```
-                  +--> [Carrier 1 -> Carrier 4] --> Shard 0 (2 hops) --+
-[Client Node] ----+--> [Carrier 2 (Byzantine)]  --> Shard 1 (1 hop)  --+--> [Exit Node] --> WAN
-                  +--> [Carrier 3 / 5 (Failover)]-> Shard 2 (1 hop)  --+
-                     (Completely Disjoint WAN Paths)
+```mermaid
+flowchart LR
+    Client["Client Node"] -->|"Shard 0 (2 Hops)"| PathA["Carrier 1 → Carrier 4"]
+    Client -->|"Shard 1 (1 Hop)"| PathB["Carrier 2 (Byzantine Tamper ✗)"]
+    Client -->|"Shard 2 (1 Hop)"| PathC["Carrier 3 / 5 (Failover)"]
+    PathA --> Exit["Exit Node (RS(2,1) + ShardSec)"]
+    PathB -.->|"Tag Rejected"| Exit
+    PathC --> Exit
+    Exit --> WAN["Target WAN"]
 ```
 
 1. Outbound data is fragmented into two data shards and one parity shard.

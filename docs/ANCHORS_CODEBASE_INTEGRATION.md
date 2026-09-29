@@ -44,40 +44,28 @@ a particular vendor's appliance answers as the standard says it should.
 
 ### 2.1 Shape of the integration
 
+```mermaid
+flowchart TD
+    Daemon["Vantablack Daemon (src/main.rs)"] -->|"GHOST_QUANTUM=1 / --quantum"| Controller["QuantumAnchorController (src/ghost/layers/l10_qel.rs)"]
+
+    subgraph Backends["Configured via GHOST_QEL_BACKEND"]
+        direction LR
+        Sim["Backend: sim (Default)<br/>1. probe(): python -c 'import quantumnet'<br/>2. resolve_topology_path()<br/>3. spawn: python -m quantumnet ghost-net<br/>4. parse JSON → QuantumRouteResult"]
+        Etsi["Backend: etsi014 (Hardware KME)<br/>1. probe(): GET {kme}/{peer_sae}/status<br/>2. acquire: GET {kme}/{peer_sae}/enc_keys<br/>3. redeem: POST {kme}/{peer_sae}/dec_keys<br/>4. label = standard key_ID"]
+    end
+
+    Controller --> Sim
+    Controller --> Etsi
+    Sim -->|"32-byte key + opaque label"| KDF["kdf_rk_quantum_mix (l1_kem.rs)<br/>mix_quantum_entropy (ratchet.rs)"]
+    Etsi -->|"32-byte key + key_ID"| KDF
+    KDF --> Session["Session State Machine (session/mod.rs)<br/>begin / answer / finish_quantum_mix"]
+    Session --> Live["Live Session Exchange (src/main.rs §5.1)"]
 ```
-                       Vantablack daemon (src/main.rs)
-                                  │  GHOST_QUANTUM=1 / --quantum
-                                  ▼
-              src/ghost/layers/l10_qel.rs :: QuantumAnchorController
-    ┌──────────────────────────────────────────────────────────────────┐
-    │ backend = "sim" (default)                                        │
-    │  1. probe():  python -c "import quantumnet"   (cwd = QEL dir)    │
-    │     → QelAnchorState, cached in a OnceLock, logged exactly once  │
-    │  2. resolve_topology_path(): absolutize + refuse to spawn if the │
-    │     mesh export is missing (no wasted interpreter start-up)      │
-    │  3. spawn:  python -m quantumnet ghost-net \                     │
-    │              --topology <abs path> --from <fp> --to <fp> \       │
-    │              --json-output   (stdin null, 45 s cap, kill_on_drop)│
-    │     (the answering peer instead spawns `qkd-derive --fidelity F  │
-    │      --seed S`, which needs no topology export — see 5.1)        │
-    │  4. parse one JSON document → QuantumRouteResult                 │
-    ├──────────────────────────────────────────────────────────────────┤
-    │ backend = "etsi014"                                              │
-    │  1. probe():  GET  {kme}/{peer_sae}/status                       │
-    │  2. acquire:  GET  {kme}/{peer_sae}/enc_keys?number=1&size=256   │
-    │     redeem:   POST {kme}/{peer_sae}/dec_keys  {"key_IDs":[…]}    │
-    │  → the label is the standard's `key_ID`, and it is the only part  │
-    │    that crosses the Vantablack link (see §2.4)                   │
-    └──────────────────────────────────────────────────────────────────┘
-                                  │  32-byte key + opaque label (or None)
-                                  ▼
-                  src/ghost/layers/l1_kem.rs :: kdf_rk_quantum_mix
-                  src/ghost/session/ratchet.rs :: mix_quantum_entropy
-                  src/ghost/session/mod.rs :: begin/answer/finish_quantum_mix
-                                  │
-                                  ▼
-                     src/main.rs :: the live session exchange (§5.1)
-```
+
+| Backend (`GHOST_QEL_BACKEND`) | Probe & Initialization | Key Acquisition (Initiator) | Key Redemption (Responder) | Wire Label Crossed |
+| :--- | :--- | :--- | :--- | :--- |
+| **`sim`** *(default)* | `python -c "import quantumnet"` cached in `OnceLock`; verifies mesh topology export exists | Spawns `python -m quantumnet ghost-net --topology <abs> --from <fp> --to <fp> --json-output` (45s cap) | Spawns `qkd-derive --fidelity F --seed S` (requires no local topology export) | `"qkd-sim/1/f=…/s=…"` |
+| **`etsi014`** *(ETSI GS QKD 014)* | `GET {kme}/{peer_sae}/status` over mTLS (`tokio-rustls`) | `GET {kme}/{peer_sae}/enc_keys?number=1&size=256` | `POST {kme}/{peer_sae}/dec_keys` with `{"key_IDs":[…]}` | Standard `key_ID` UUID |
 
 The controller **fails soft**. `establish_quantum_link` returns a `QelOutcome`
 with an `error` string; it never propagates an error to the daemon. A session
@@ -510,14 +498,17 @@ them.
 
 ## 4. End-to-end flow inside the daemon
 
-```
-GHOST_SKYWAVE=1 ──► SkywaveBridge::with_virtual_carrier(true)
-                    ├── install_global()          (one process-wide bridge)
-                    ├── activate_synthetic(5_350_000)   // no `sdr` feature
-                    └── spawn ingress-drain task  → node receive path
+```mermaid
+flowchart LR
+    subgraph Skywave["GHOST_SKYWAVE=1 (Radio Anchor)"]
+        S1["SkywaveBridge::with_virtual_carrier(true)"] --> S2["install_global()"]
+        S1 --> S3["activate_synthetic(5_350_000)"]
+        S1 --> S4["spawn ingress-drain task → node receive path"]
+    end
 
-GHOST_QUANTUM=1 ───► QuantumAnchorController::autodetect()
-                    └── install_global_controller(...)
+    subgraph Quantum["GHOST_QUANTUM=1 (Quantum Anchor)"]
+        Q1["QuantumAnchorController::autodetect()"] --> Q2["install_global_controller(...)"]
+    end
 ```
 
 Egress sites in `src/main.rs` consult `SkywaveBridge::global()`: a failed NAT
@@ -574,29 +565,18 @@ sending a key. The two halves live next to the DH ratchet step they mirror, and
 use the same prepared-epoch machinery — which is why the answering side can open
 an epoch it has not installed.
 
-```
-  starter (lower fingerprint)                      answerer
-  ───────────────────────────                      ────────
-  quantum_mix_maintenance_once()
-    refresh mesh export (from measured ranges)   [sim backend only]
-    acquire_key(topology, lo → hi)
-      sim    → route, distil, key, label "qkd-sim/1/f=…/s=…"
-      etsi   → GET  {kme}/{peer_sae}/enc_keys, label = key_ID
-    session.begin_quantum_mix(key, label)
-      → prepares epoch n+1, tag = HMAC(key)
-    seal PDU on epoch n ──────────────────────────►  handle_qel_mix_pdu()
-                                                      verify signature (pinned id)
-                                                      admit (crossed-mix tie-break)
-                                                      redeem_key(label)
-                                                      → the same key, by label
-                                                      answer_quantum_mix(...)
-                                                      → tag must match, else refuse
-                                  ◄────────────── seal answer on epoch n
-    verify signature
-    finish_quantum_mix(epoch, tag)
-      → epoch n+1 installed
-                                                     activate n+1 when the first
-                                                     frame in it authenticates
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Starter (Lower Fingerprint)
+    participant A as Answerer (Higher Fingerprint)
+
+    Note over S: quantum_mix_maintenance_once()<br/>1. Refresh mesh export [sim only]<br/>2. acquire_key(topology, lo → hi)<br/>3. session.begin_quantum_mix(key, label)<br/>→ prepares epoch n+1, tag = HMAC(key)
+    S->>A: Seal QEL Mix PDU on Epoch n (carries opaque label + confirm tag)
+    Note over A: handle_qel_mix_pdu()<br/>1. Verify Ed25519 signature (pinned identity)<br/>2. Admit (crossed-mix tie-break)<br/>3. redeem_key(label) → derives same 32B key<br/>4. answer_quantum_mix(...) → verifies confirm tag
+    A-->>S: Seal QEL Mix Answer PDU on Epoch n
+    Note over S: Verify signature<br/>finish_quantum_mix(epoch, tag)<br/>→ Epoch n+1 installed
+    Note over A: Activates Epoch n+1 when first<br/>frame sealed under n+1 authenticates
 ```
 
 Why each piece is the way it is:

@@ -20,26 +20,35 @@ The design goal: a mesh of nodes that communicate **without IP addresses, withou
 
 ## 2. System Architecture (13 Crates)
 
+```mermaid
+flowchart TD
+    Root["ABOSSystem (Root Orchestrator)"]
+    Root --> HAL["abos-hal<br/>SDR Driver, DMA, GPIO, GPSDO"]
+    Root --> DSP["abos-dsp<br/>DDC, SIMD FIR, AGC, OFDM, Costas"]
+    Root --> PHY["abos-phy<br/>DSSS (Gold Codes), FHSS, Scrambler"]
+    Root --> FEC["abos-fec<br/>LDPC (256/512), BICM, Soft LLR, CRC32"]
+    Root --> PROTO["abos-protocol<br/>1.5x Shard Split, DTN Bundle, Phoenix Mesh"]
+    Root --> COG["abos-cognitive<br/>FFT Scanner, Jammer Detect, Adaptive MCS"]
+    Root --> IONO["abos-iono<br/>Chirp Sounder, f₀F2, NVIS & Meteor Burst"]
+    Root --> STL["abos-stealth<br/>Cyclostationary Mask, Phase Noise, Dither"]
+    Root --> STO["abos-storage<br/>Persistent DTN Bundle Store & Dedup"]
 ```
-ABOSSystem (root orchestrator)
-├── abos-hal       SDR driver abstraction, DMA zero-copy streaming, GPIO (T/R, PA), GPSDO
-├── abos-dsp       DDC, SIMD FIR decimation, AGC, I/Q correction, Costas loop, Gardner timing,
-│                  OFDM (256 subcarriers), FFT/IFFT, RRC pulse shaping
-├── abos-phy       DSSS (PN/Gold codes), FHSS, scrambler, burst builder/parser
-├── abos-fec       LDPC (256/512), BICM interleaver, soft-decision LLR (QPSK/BPSK/16-QAM), CRC32
-├── abos-protocol  File→shard split (1.5× redundancy), DTN bundle, buffer-bounce, Phoenix scheduler, dedup routing,
-│                  mesh layer: beacon discovery, ACK aggregation w/ exponential backoff, shard availability,
-│                  forwarding path
-├── abos-cognitive Spectrum scanner (FFT), jammer detection, white-space finder, adaptive MCS controller
-├── abos-iono      Chirp sounder, f₀F2 estimation, NVIS frequency selection, meteor-burst detection, MUF prediction
-├── abos-stealth   Cyclostationary masking (variable symbol rate), artificial phase noise, amplitude dither,
-│                  randomized burst scheduling (<1 ms bursts)
-├── abos-storage   Persistent DTN bundle store (TTL/eviction, dedup, pending listing), config
-├── abos-common    Complex math, PN/Gold code generators, AES/HMAC crypto, node ID from pubkey, key derivation
-├── abos-cli       10 subcommands (clap; provides the `abos` binary)
-├── abos-gui       Headless GuiState + egui dashboard view (unit-tested without a display)
-└── abos-tests     Loopback channel, e2e/mesh/fault-injection harness
-```
+
+| Crate | Subsystem Responsibility |
+| :--- | :--- |
+| **`abos-hal`** | SDR driver abstraction, DMA zero-copy streaming, GPIO (T/R, PA), GPSDO |
+| **`abos-dsp`** | DDC, SIMD FIR decimation, AGC, I/Q correction, Costas loop, Gardner timing, OFDM (256 subcarriers), FFT/IFFT, RRC pulse shaping |
+| **`abos-phy`** | DSSS (PN/Gold codes), FHSS, scrambler, burst builder/parser |
+| **`abos-fec`** | LDPC (256/512), BICM interleaver, soft-decision LLR (QPSK/BPSK/16-QAM), CRC32 |
+| **`abos-protocol`** | File $\rightarrow$ shard split ($1.5\times$ redundancy), DTN bundle, buffer-bounce, Phoenix scheduler, dedup routing, mesh beacon discovery, ACK aggregation |
+| **`abos-cognitive`** | Spectrum scanner (FFT), jammer detection, white-space finder, adaptive MCS controller |
+| **`abos-iono`** | Chirp sounder, $f_0\text{F2}$ estimation, NVIS frequency selection, meteor-burst detection, MUF prediction |
+| **`abos-stealth`** | Cyclostationary masking (variable symbol rate), artificial phase noise, amplitude dither, randomized burst scheduling ($<1\text{ ms}$ bursts) |
+| **`abos-storage`** | Persistent DTN bundle store (TTL/eviction, dedup, pending listing), configuration |
+| **`abos-common`** | Complex math, PN/Gold code generators, AES/HMAC crypto, node ID from pubkey, key derivation |
+| **`abos-cli`** | 10 subcommands (`clap`; provides the `abos` binary) |
+| **`abos-gui`** | Headless `GuiState` + `egui` dashboard view (unit-tested without a display) |
+| **`abos-tests`** | Loopback channel, E2E/mesh/fault-injection harness |
 
 ## 3. Physical Layer
 

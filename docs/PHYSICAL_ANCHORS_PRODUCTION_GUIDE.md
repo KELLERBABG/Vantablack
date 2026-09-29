@@ -15,23 +15,11 @@ Vantablack is designed to remain operational when terrestrial fiber, cellular to
 
 To achieve true physical sovereignty, the system relies on two orthogonal physical transport anchors:
 
-```
-                            ┌───────────────────────────────────────────────┐
-                            │             VANTABLACK ROUTING CORE           │
-                            │   Hybrid Post-Quantum Lattice (ML-KEM-512)    │
-                            │      Layer 2 AEAD (ChaCha20-Poly1305)         │
-                            └───────────────────────┬───────────────────────┘
-                                                    │
-                 ┌──────────────────────────────────┴──────────────────────────────────┐
-                 ▼                                                                     ▼
-      [PHYSICAL ANCHOR 1: RADIO]                                            [PHYSICAL ANCHOR 2: QUANTUM]
-   Atmospheric Broadcast OS (ABOS)                                        Quantum Entanglement Link (QEL)
-   ─────────────────────────────────                                     ───────────────────────────────────
-   • Domain: Radio Frequency (RF)                                        • Domain: Optical & Quantum Photons
-   • Carrier: 2–10 MHz NVIS HF Radio                                     • Carrier: Single-Mode Optical Fiber / Free-Space
-   • Reach: 0–500 km radius (non-line-of-sight)                          • Reach: Metro/Regional QKD (0–120 km per link)
-   • Bandwidth: 100 bps – 12 kbps (High Latency)                         • Keyrate: 1 kbps – 100 kbps true quantum entropy
-   • Role: Total WAN outage fallback & DTN sync                          • Role: Eavesdropper-proof out-of-band key stream
+```mermaid
+flowchart TD
+    Core["VANTABLACK ROUTING CORE<br/>Hybrid Post-Quantum Lattice (ML-KEM-768 + X25519)<br/>Layer 2 AEAD (XChaCha20-Poly1305)"]
+    Core --> ABOS["PHYSICAL ANCHOR 1: RADIO<br/>Atmospheric Broadcast OS (ABOS)<br/>• Domain: Radio Frequency (RF)<br/>• Carrier: 2–10 MHz NVIS HF Radio<br/>• Reach: 0–500 km radius (NLOS)<br/>• Role: Total WAN outage fallback & DTN sync"]
+    Core --> QEL["PHYSICAL ANCHOR 2: QUANTUM<br/>Quantum Entanglement Link (QEL)<br/>• Domain: Optical & Quantum Photons<br/>• Carrier: Single-Mode Optical Fiber / Free-Space<br/>• Reach: Metro/Regional QKD (0–120 km)<br/>• Role: Eavesdropper-proof out-of-band key stream"]
 ```
 
 ---
@@ -64,18 +52,12 @@ To deploy a functional physical ABOS node, assemble:
 ### 2.3 Software & Driver Architecture (`abos/` Crates)
 The existing local `abos/` workspace already contains the crate architecture. To make it communicate with physical hardware:
 
-```
-Vantablack Daemon (src/ghost/net/sdr_bridge.rs)
-        │ (calls)
-        ▼
-   abos::ABOSSystem (abos/src/lib.rs)
-        │
-   ┌────┴──────────────────────────┬────────────────────────────┐
-   ▼                               ▼                            ▼
-abos-phy (Modulation)       abos-dsp (Filtering)         abos-hal (Hardware)
-• DSSS spreading (m-seq)    • Polyphase channelizer      • SoapySDR bindings
-• 4-FSK / QPSK modems       • Doppler shift correction   • Real-time I/Q buffers
-• Reed-Solomon / LDPC FEC   • Ionospheric f0F2 tracker   • USB device enumeration
+```mermaid
+flowchart TD
+    Daemon["Vantablack Daemon (src/ghost/net/sdr_bridge.rs)"] --> System["abos::ABOSSystem (abos/src/lib.rs)"]
+    System --> PHY["abos-phy (Modulation)<br/>• DSSS spreading (m-seq)<br/>• 4-FSK / QPSK modems<br/>• Reed-Solomon / LDPC FEC"]
+    System --> DSP["abos-dsp (Filtering)<br/>• Polyphase channelizer<br/>• Doppler shift correction<br/>• Ionospheric f₀F2 tracker"]
+    System --> HAL["abos-hal (Hardware)<br/>• SoapySDR bindings<br/>• Real-time I/Q buffers<br/>• USB device enumeration"]
 ```
 
 #### Step-by-Step Code Implementation for ABOS Hardware:
@@ -144,21 +126,19 @@ The international standard for connecting production software (VPNs, firewalls, 
 
 Commercial quantum hardware (Toshiba QKD, ID Quantique Clavis/Cerberis, Quside, KETS) exposes this exact standardized REST/gRPC API.
 
-```
-┌──────────────────────────────────────┐          ┌──────────────────────────────────────┐
-│        VANTABLACK NODE "ALICE"       │          │         VANTABLACK NODE "BOB"        │
-│    (Layer 2 ChaCha20-Poly1305)       │          │      (Layer 2 ChaCha20-Poly1305)     │
-└──────────────────┬───────────────────┘          └──────────────────┬───────────────────┘
-                   │ HTTPS Request:                                  │ HTTPS Request:
-                   │ GET /api/v1/keys/bob/enc_keys                   │ GET /api/v1/keys/alice/dec_keys
-                   ▼                                                 ▼
-┌──────────────────────────────────────┐          ┌──────────────────────────────────────┐
-│           QKD HARDWARE APPLIANCE     │          │         QKD HARDWARE APPLIANCE       │
-│        (Physical Laser & SPAD)       │          │        (Physical Receiver & SPAD)    │
-└──────────────────┬───────────────────┘          └──────────────────┬───────────────────┘
-                   │                                                 │
-                   └═══════════════ Dedicated Quantum Fiber ═════════┘
-                                     (1550 nm Entangled Photons)
+```mermaid
+flowchart LR
+    subgraph AliceSide["Alice Endpoint"]
+        direction TB
+        NodeA["Vantablack Node 'Alice'<br/>(Layer 2 XChaCha20-Poly1305)"] -->|"mTLS GET /api/v1/keys/bob/enc_keys"| QkdA["QKD Hardware Appliance<br/>(Physical Laser & SPAD)"]
+    end
+
+    QkdA <==>|"Dedicated Quantum Fiber (1550 nm Entangled Photons)"| QkdB
+
+    subgraph BobSide["Bob Endpoint"]
+        direction TB
+        NodeB["Vantablack Node 'Bob'<br/>(Layer 2 XChaCha20-Poly1305)"] -->|"mTLS POST /api/v1/keys/alice/dec_keys"| QkdB["QKD Hardware Appliance<br/>(Physical Receiver & SPAD)"]
+    end
 ```
 
 #### Status: shipped as a client, unverified against hardware
@@ -212,17 +192,13 @@ If building direct benchtop quantum hardware without commercial appliances:
 
 #### What to Build in Rust:
 Create a C-FFI / USB driver that reads raw time-tag events from the physical TDC hardware:
-```
-Physical Detectors (SPAD 1 & SPAD 2)
-        │ (Pulse signals)
-        ▼
-Hardware Time-Tagger (USB/PCIe)
-        │ (C API / DLL: libtimetag.so / TimeTagger.dll)
-        ▼
-Vantablack Native Quantum Driver (`src/ghost/layers/l10_timetag_ffi.rs`)
-        ├── Coincidence Analyzer (Window: τ < 2.0 ns)
-        ├── Bell State Analyzer (BSA Projection)
-        └── Real-Time QBER Calculation Engine
+```mermaid
+flowchart TD
+    SPAD["Physical Detectors (SPAD 1 & SPAD 2)"] -->|"Pulse signals"| TDC["Hardware Time-Tagger (USB / PCIe)<br/>C API: libtimetag.so / TimeTagger.dll"]
+    TDC --> Driver["Vantablack Native Quantum Driver<br/>(src/ghost/layers/l10_timetag_ffi.rs)"]
+    Driver --> C1["Coincidence Analyzer (Window: τ &lt; 2.0 ns)"]
+    Driver --> C2["Bell State Analyzer (BSA Projection)"]
+    Driver --> C3["Real-Time QBER Calculation Engine"]
 ```
 
 When coincidence pulses arrive simultaneously on detectors A and B within a 2-nanosecond window, the driver registers a verified Bell detection event. If error rate $	ext{QBER} < 11\%$, the bits are distilled and loaded into Vantablack.
@@ -240,24 +216,16 @@ When coincidence pulses arrive simultaneously on detectors A and B within a 2-na
 
 To make both ABOS and QEL live operational anchors in the running Vantablack engine, wire them into **`src/ghost/session/ratchet.rs`**. The quantum half of that wiring is already built:
 
-```
-                               ┌───────────────────────────────────────────────┐
-                               │           HYBRID KEY DERIVATION (KDF)         │
-                               └───────────────────────┬───────────────────────┘
-                                                       │
-         ┌─────────────────────────────────────────────┼─────────────────────────────────────────────┐
-         ▼                                             ▼                                             ▼
-[CLASSICAL / PQ CORE]                       [PHYSICAL ANCHOR 1: ABOS]                     [PHYSICAL ANCHOR 2: QEL]
-X25519 + ML-KEM-512 Handshake             Out-of-band HF Skywave Seed                   Physical ETSI QKD 014 Key
-        │                                              │                                             │
-        └──────────────────────────────────────┬───────┴─────────────────────────────────────────────┘
-                                               │
-                                               ▼
-                              HKDF-SHA256 (Extract + Expand)
-                                               │
-                                               ▼
-                                256-bit Session Ratchet Key
-                            (ChaCha20-Poly1305 Payload Cipher)
+```mermaid
+flowchart TD
+    KDF["HYBRID KEY DERIVATION (KDF)"]
+    KDF --> Core["CLASSICAL / PQ CORE<br/>X25519 + ML-KEM-768 Handshake"]
+    KDF --> A1["PHYSICAL ANCHOR 1: ABOS<br/>Out-of-Band HF Skywave Seed"]
+    KDF --> A2["PHYSICAL ANCHOR 2: QEL<br/>Physical ETSI QKD 014 Key"]
+    Core --> Extract["HKDF-SHA256 (Extract + Expand)"]
+    A1 --> Extract
+    A2 --> Extract
+    Extract --> Key["256-bit Session Ratchet Key<br/>(XChaCha20-Poly1305 Payload Cipher)"]
 ```
 
 ### Concrete Code as Shipped

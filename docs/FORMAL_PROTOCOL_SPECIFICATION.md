@@ -36,33 +36,17 @@ This specification defines the cryptographic foundations, wire formats, state tr
 
 The handshake executes a dual-KEM exchange combining classical Elliptic Curve Diffie-Hellman (X25519) with module lattice encapsulation (ML-KEM-768).
 
-```
-Initiator (A)                                                     Responder (B)
-Identity: (ed_sk_A, ml_sk_A)                                      Identity: (ed_sk_B, ml_sk_B)
-───────────────────────────────────────────────────────────────────────────────
-1. Generate ephemeral:
-   (e_x25519_sk, e_x25519_pk)
-   (ct_kem, ss_kem) = ML-KEM-768.Encaps(ml_pk_B)
-   payload = (e_x25519_pk || ct_kem || timestamp || nonce)
-   sig_A = HybridSign(A, payload)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Initiator A (ed_sk_A, ml_sk_A)
+    participant B as Responder B (ed_sk_B, ml_sk_B)
 
-                         HANDSHAKE_INIT (944 B)
-             ───────────────────────────────────────────────>
-                                                      2. Verify sig_A against A
-                                                         ss_kem = ML-KEM-768.Decaps(ml_sk_B, ct_kem)
-                                                         Generate ephemeral (e_x25519_sk_B, e_x25519_pk_B)
-                                                         ss_ecdh = X25519(e_x25519_sk_B, e_x25519_pk)
-                                                         ss_master = HKDF-Extract(ss_kem, ss_ecdh)
-                                                         payload_B = (e_x25519_pk_B || timestamp || confirmation_tag)
-                                                         sig_B = HybridSign(B, payload_B)
-
-                         HANDSHAKE_RESP (912 B)
-             <───────────────────────────────────────────────
-3. Verify sig_B against B
-   ss_ecdh = X25519(e_x25519_sk, e_x25519_pk_B)
-   ss_master = HKDF-Extract(ss_kem, ss_ecdh)
-   Verify confirmation_tag
-   Derive root key (RK) and directional chain keys (CK_send, CK_recv)
+    Note over A: 1. Generate ephemeral (e_x25519_sk, e_x25519_pk)<br/>(ct_kem, ss_kem) = ML-KEM-768.Encaps(ml_pk_B)<br/>payload = (e_x25519_pk || ct_kem || timestamp || nonce)<br/>sig_A = HybridSign(A, payload)
+    A->>B: HANDSHAKE_INIT (944 B)
+    Note over B: 2. Verify sig_A against A<br/>ss_kem = ML-KEM-768.Decaps(ml_sk_B, ct_kem)<br/>Generate ephemeral (e_x25519_sk_B, e_x25519_pk_B)<br/>ss_ecdh = X25519(e_x25519_sk_B, e_x25519_pk)<br/>ss_master = HKDF-Extract(ss_kem, ss_ecdh)<br/>sig_B = HybridSign(B, payload_B)
+    B-->>A: HANDSHAKE_RESP (912 B)
+    Note over A: 3. Verify sig_B against B<br/>ss_ecdh = X25519(e_x25519_sk, e_x25519_pk_B)<br/>ss_master = HKDF-Extract(ss_kem, ss_ecdh)<br/>Verify confirmation_tag → Derive RK, CK_send, CK_recv
 ```
 
 ### 3.1 Master Secret Composition

@@ -67,15 +67,16 @@ When operating over untrusted carrier networks, adversarial nodes may alter encr
 
 Underneath, Reed-Solomon RS(2,1) erasure coding mathematically enables payload recovery from any 2 of 3 shards, while Poly1305 provides cryptographic integrity verification:
 
-```text
-Outbound Payload
-       │
-       ▼ [RS(2,1) Split + ChaCha20-Poly1305 Encrypt]
- ┌─────┴─────┬───────────┐
- ▼           ▼           ▼
-Shard 0   Shard 1     Shard 2
- (Path A)  (Carrier B: (Path C)
-            Corrupted!)
+```mermaid
+flowchart TD
+    Payload["Outbound Plaintext Payload"] --> Encrypt["RS(2,1) Erasure Split + XChaCha20-Poly1305 AEAD + ShardSec Tags"]
+    Encrypt --> S0["Shard 0 — Data Low<br/>(Path A: Intact ✓)"]
+    Encrypt --> S1["Shard 1 — Data High<br/>(Carrier B: Byzantine Corrupted ✗)"]
+    Encrypt --> S2["Shard 2 — GF(2⁸) Parity<br/>(Path C: Intact ✓)"]
+    S0 --> Rec["Receiver Combinatorial / ShardSec Verifier"]
+    S1 -.->|"Rejected by Poly1305 Tag"| Rec
+    S2 --> Rec
+    Rec --> Out["Reconstructed Plaintext (Zero Retransmission)"]
 ```
 
 ### Pairwise Combinatorial Verification Algorithm (Level 2 simulation mechanism)

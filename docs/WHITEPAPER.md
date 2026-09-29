@@ -40,19 +40,18 @@ Vantablack is an autonomous, post-quantum WAN mesh routing daemon. Operating ent
 
 Packets in privacy mode are structured as follows:
 
-```
-+---------------+-------------------+---------------+-----------------------+
-| Offset (Byte) | Field             | Size          | Description           |
-+---------------+-------------------+---------------+-----------------------+
-| 0 - 3         | Session Hash      | 4 Bytes       | Truncated session ID  |
-| 4 - 7         | Packet Counter    | 4 Bytes       | Monotonic sequence    |
-| 8             | Shard Index       | 1 Byte        | Shard position (0..2) |
-| 9             | Flags             | 1 Byte        | Stream control flags  |
-| 10 - 495      | Payload           | 486 Bytes     | Encrypted ciphertext  |
-| 496 - 511     | Authentication Tag| 16 Bytes      | Poly1305 MAC tag      |
-| 512+          | Jitter Padding    | 0 - 64 Bytes  | Pseudorandom noise    |
-+---------------+-------------------+---------------+-----------------------+
-```
+| Offset (Byte) | Field | Size | Description |
+| :--- | :--- | :--- | :--- |
+| `00..03` | **Session Hash** | 4 Bytes | Truncated session identifier for fast lookup |
+| `04..07` | **Reserved** | 4 Bytes | Zero-filled header alignment |
+| `08` | **Shard Index** | 1 Byte | Reed-Solomon shard position (`0`, `1`, or `2`) |
+| `09` | **Flags** | 1 Byte | Wire version (`0x80` v2) and stream control flags |
+| `10..17` | **Packet Counter** | 8 Bytes | Monotonic 64-bit replay sequence counter |
+| `18..25` | **Ratchet Epoch** | 8 Bytes | Active forward-secrecy ratchet generation |
+| `26..37` | **Wire Nonce** | 12 Bytes | 96-bit random per-frame AEAD nonce |
+| `38..495` | **Payload** | 458 Bytes | Encrypted XChaCha20-Poly1305 shard ciphertext |
+| `496..511` | **Authentication Tag** | 16 Bytes | Poly1305 MAC authentication tag |
+| `512..575` | **Jitter Tail** | 64 Bytes | Authenticated HMAC-derived constant-length tail |
 
 ---
 

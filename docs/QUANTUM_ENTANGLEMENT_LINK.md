@@ -19,22 +19,11 @@ Vantablack is built on a multi-tiered resilience model designed to maintain secu
 
 While **ABOS** operates as the out-of-band **radio skywave carrier** (Priority 3 on the reachability ladder, bouncing HF packets off the ionospheric F2 plasma layer between 2–10 MHz during total terrestrial internet blackouts), **Quantum Entanglement Link (QEL)** operates as the **quantum optical transport anchor**.
 
-```
-                          ┌──────────────────────────────────────┐
-                          │         VANTABLACK CORE MESH         │
-                          │   Post-Quantum Hybrid (ML-KEM-512)   │
-                          └──────────────────┬───────────────────┘
-                                             │
-               ┌─────────────────────────────┴─────────────────────────────┐
-               ▼                                                           ▼
-    [PHYSICAL ANCHOR 1: RADIO]                                  [PHYSICAL ANCHOR 2: QUANTUM]
- Atmospheric Broadcast OS (ABOS)                              Quantum Entanglement Link (QEL)
- ────────────────────────────────                              ───────────────────────────────
- • 2–10 MHz NVIS HF Radio Skywave                              • Optical fiber & quantum repeaters
- • Feature flag: `--features sdr`                              • Density matrix formalism: ρ ∈ ℂ^(2ⁿ×2ⁿ)
- • Non-line-of-sight RF survival                               • QKD, Teleportation, Superdense Coding
- • DTN bundle store-and-forward                                • End-to-end fidelity & swap scheduling
- • Active when terrestrial fiber severed                       • Live export bridge: `EXPORTTOPOLOGY`
+```mermaid
+flowchart TD
+    Core["VANTABLACK CORE MESH<br/>Post-Quantum Hybrid (ML-KEM-768 + X25519)"]
+    Core --> ABOS["PHYSICAL ANCHOR 1: RADIO<br/>Atmospheric Broadcast OS (ABOS)<br/>• 2–10 MHz NVIS HF Radio Skywave<br/>• Feature flag: --features sdr<br/>• Non-line-of-sight RF survival<br/>• DTN bundle store-and-forward"]
+    Core --> QEL["PHYSICAL ANCHOR 2: QUANTUM<br/>Quantum Entanglement Link (QEL)<br/>• Optical fiber & quantum repeaters<br/>• Density matrix formalism: ρ ∈ ℂ^(2ⁿ×2ⁿ)<br/>• QKD, Teleportation, Superdense Coding<br/>• Live export bridge: EXPORTTOPOLOGY"]
 ```
 
 QEL provides the theoretical and simulation foundations, protocol state machines, and routing optimizers for distributing quantum entanglement across participating Vantablack nodes.
@@ -104,26 +93,10 @@ QEL implements the ten essential capabilities of quantum-networked systems:
 
 ## 3. Integration Workflow with Vantablack Daemon
 
-```
-1. Vantablack Daemon Running (Rust)
-   ├── Discovers peers via local broadcast & bootstrap seeds
-   ├── Establishes hybrid ML-KEM-512 + X25519 sessions
-   └── Receives CLI command: EXPORTTOPOLOGY <path.json>
-            │
-            ▼
-2. ghost-topology.json
-   ├── schema_version: 1, generator: "vantablack"
-   ├── nodes: [{ fingerprint, addr, x_km, y_km }]
-   └── links: [{ a: fp_A, b: fp_B }]
-            │
-            ▼
-3. QEL Topology Engine (Python / quantumnet)
-   ├── Ingests ghost-topology.json via ghostnet.load_ghost_topology()
-   ├── Evaluates all candidate paths between Source and Destination
-   ├── Applies physical fiber attenuation & memory decay: F_segment = F_transmissivity(L)
-   ├── Computes end-to-end swap fidelity: F_e2e = 1/4 + 3/4 · Π (4/3 · F_i - 1/3)
-   ├── Determines optimal Bell swap sequence across repeater nodes
-   └── Outputs quantum routing plan & ASCII/heatmap topology map
+```mermaid
+flowchart TD
+    Step1["1. Vantablack Daemon Running (Rust)<br/>• Discovers peers via local broadcast & bootstrap seeds<br/>• Establishes hybrid ML-KEM-768 + X25519 sessions<br/>• Executes EXPORTTOPOLOGY &lt;path.json&gt;"] --> Step2["2. ghost-topology.json<br/>• schema_version: 1, generator: 'vantablack'<br/>• nodes: [{ fingerprint, addr, x_km, y_km }]<br/>• links: [{ a: fp_A, b: fp_B }]"]
+    Step2 --> Step3["3. QEL Topology Engine (Python / quantumnet)<br/>• Ingests ghost-topology.json via load_ghost_topology()<br/>• Applies fiber attenuation & memory decay: F_segment = F_transmissivity(L)<br/>• Computes end-to-end swap fidelity & optimal Bell swap sequence<br/>• Outputs quantum routing plan & distilled 256-bit key"]
 ```
 
 ---

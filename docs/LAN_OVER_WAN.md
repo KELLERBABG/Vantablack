@@ -8,17 +8,21 @@ The subsystem is compiled behind the `vpn` cargo feature. Without it, the binary
 
 ## 1. Architecture
 
-```
-Phone (LTE/Wi-Fi)                      Home Hub (always-on PC/NAS in LAN)
-┌─────────────────┐                   ┌──────────────────────────────┐
-│ Apps            │                   │  Home LAN devices            │
-│  ↓              │                   │   192.168.1.0/24             │
-│ TUN: 10.66.0.x  │                   │        ↑                     │
-│ route 192.168.1/24,                 │  smoltcp netstack + UDP/ICMP │
-│   DNS=192.168.1.1                   │  proxying (userspace, no     │
-│  ↓              │    GHOST mesh     │  admin, no OS forwarding)    │
-│ GHOST core ─────┼───UDP/shards──────┼── GHOST core (GHOST_VPN=hub) │
-└─────────────────┘   post-quantum    └──────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Client["Mobile Client (LTE / Wi-Fi)"]
+        direction TB
+        App["OS Applications"] --> TUN["TUN Interface (10.66.0.x)<br/>Route: 192.168.1.0/24 | DNS: 192.168.1.1"]
+        TUN --> CCore["GHOST Core (VPN Client)"]
+    end
+
+    CCore <-->|"Post-Quantum GTF Bulk / Shards (UDP)"| HCore
+
+    subgraph Hub["Home Hub (PC / NAS on LAN)"]
+        direction TB
+        HCore["GHOST Core (GHOST_VPN=hub)"] --> Stack["Userspace smoltcp Netstack<br/>+ TCP/UDP/ICMP NAT Proxy (Zero Admin)"]
+        Stack --> LAN["Home LAN Devices (192.168.1.0/24)"]
+    end
 ```
 
 - **Overlay network:** `10.66.0.0/24`. Each client leases one overlay IP bound to its **Ed25519 fingerprint**. Membership is an explicit authorization decision: the hub admits only fingerprints listed in `GHOST_VPN_CLIENTS`.
@@ -67,14 +71,14 @@ Tunnel frames are **unreliable datagrams**: they bypass the shard pool, are neve
 
 When operating across wide-area networks or multi-carrier topologies, the VPN tunnel operates over the **Level 2 Multi-Hop Carrier Mesh**:
 
-```
-[Mobile Device] 
-      │ 
-      ▼
-[Carrier 1 (45ms)] ──► [Carrier 4 (25ms)] ──► [Hub Gateway (Exit)] ──► Local Home LAN
-      ▲
-      │ (Multi-Hop Shard Dispersal / Fallback)
-[Carrier 5 (Hot Standby Reserve - 55ms)]
+```mermaid
+flowchart LR
+    Mobile["Mobile Device"] --> C1["Carrier 1 (45 ms)"]
+    Mobile -.->|"Multi-Hop Shard Dispersal / Failover"| C5["Carrier 5 (Hot Standby — 55 ms)"]
+    C5 --> C1
+    C1 --> C4["Carrier 4 (25 ms)"]
+    C4 --> Exit["Hub Gateway (Exit)"]
+    Exit --> LAN["Local Home LAN"]
 ```
 
 1. **Multi-Hop Traversal:** Tunnel datagrams traverse intermediate carriers using Level 2 hop decrement headers `[hops_remaining][next_addr]`, isolating the physical location of the mobile client from the home hub.

@@ -100,10 +100,9 @@ In the multi-hop WAN carrier network, packets route through intermediary relay n
 #### Hop Routing Header
 Carrier packets carry an outer forwarding header:
 
-```text
-+-----------------------+------------------------+--------------------------+-----------------------+
-| hops_remaining (1 B)  | next_ipv4 (4 Bytes BE) | next_port (2 Bytes BE)   | payload (variable)    |
-+-----------------------+------------------------+--------------------------+-----------------------+
+```mermaid
+flowchart LR
+    H["hops_remaining (1 Byte)"] --- IP["next_ipv4 (4 Bytes BE)"] --- Port["next_port (2 Bytes BE)"] --- Pay["payload (Variable Length)"]
 ```
 
 | Field | Length | Description |
