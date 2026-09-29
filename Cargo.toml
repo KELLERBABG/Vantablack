@@ -3,6 +3,9 @@ name = "vantablack"
 version = "0.7.6"
 edition = "2021"
 description = "Post-quantum, cryptographically layered WAN mesh routing node."
+homepage = "https://vantablack.kellersystems.dev/"
+documentation = "https://vantablack.kellersystems.dev/docs"
+repository = "https://github.com/KELLERBABG/Vantablack"
 
 [[bin]]
 name = "vantablack"
