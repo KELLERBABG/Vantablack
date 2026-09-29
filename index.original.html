@@ -26,7 +26,7 @@
   <meta name="twitter:image" content="https://vantablack.kellersystems.dev/assets/og-image.png?v=3">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@600;800&family=Plus+Jakarta+Sans:wght@500;700;800&family=Rajdhani:wght@600;700&family=Space+Grotesk:wght@400;600;700&family=VT323&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <style>
     :root {
@@ -610,250 +610,6 @@
     footer a { color: var(--text-muted); text-decoration: none; transition: color .15s; }
     footer a:hover { color: var(--text); }
     .footer-right { display: flex; flex-wrap: wrap; gap: 18px; }
-  
-    /* ==========================================================================
-       ALL-IN-ONE THEME ENGINE
-       Instant 1-Click Styles (Obsidian, Cyber HUD, Bento, Monolith, etc.)
-       ========================================================================== */
-
-    /* Theme 1: Cyber HUD */
-    [data-theme="cyber"] {
-      --bg: #020608;
-      --surface: #050d12;
-      --surface-raised: #0a1820;
-      --surface-card: #071217;
-      --border: #102933;
-      --border-glow: #00f0ff;
-      --accent: #00f0ff;
-      --accent-subtle: rgba(0, 240, 255, 0.08);
-      --accent-border: rgba(0, 240, 255, 0.35);
-      --text: #e0f8ff;
-      --text-muted: #7ca4b0;
-      --text-dim: #3d606b;
-      --font-heading: 'Rajdhani', sans-serif;
-      --radius: 2px;
-    }
-    [data-theme="cyber"] .mode-card,
-    [data-theme="cyber"] .feature-row {
-      border-left: 2px solid var(--accent);
-      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
-    }
-    [data-theme="cyber"] .btn-primary {
-      background: var(--accent);
-      color: #000;
-      font-weight: 700;
-      border-radius: 2px;
-      box-shadow: 0 0 16px rgba(0, 240, 255, 0.4);
-    }
-
-    /* Theme 2: Bento Glass */
-    [data-theme="bento"] {
-      --bg: #040813;
-      --surface: rgba(13, 20, 36, 0.65);
-      --surface-card: rgba(15, 23, 42, 0.6);
-      --surface-raised: rgba(22, 34, 60, 0.75);
-      --border: rgba(255, 255, 255, 0.09);
-      --border-glow: rgba(56, 189, 248, 0.4);
-      --accent: #38bdf8;
-      --accent-subtle: rgba(56, 189, 248, 0.1);
-      --accent-border: rgba(56, 189, 248, 0.3);
-      --radius: 18px;
-      --font-heading: 'Plus Jakarta Sans', sans-serif;
-    }
-    [data-theme="bento"] .mode-card,
-    [data-theme="bento"] .feature-row,
-    [data-theme="bento"] .sota-table-wrapper {
-      backdrop-filter: blur(24px);
-      -webkit-backdrop-filter: blur(24px);
-      border-radius: var(--radius);
-    }
-    [data-theme="bento"] .btn-primary {
-      background: linear-gradient(135deg, #38bdf8 0%, #2563eb 100%);
-      border-radius: 999px;
-      box-shadow: 0 8px 24px rgba(37, 99, 235, 0.4);
-    }
-
-    /* Theme 3: Monolith */
-    [data-theme="monolith"] {
-      --bg: #000000;
-      --surface: #0a0a0a;
-      --surface-card: #050505;
-      --surface-raised: #111111;
-      --border: #222222;
-      --border-glow: #ffffff;
-      --accent: #ffffff;
-      --accent-subtle: rgba(255, 255, 255, 0.08);
-      --accent-border: rgba(255, 255, 255, 0.3);
-      --text: #ffffff;
-      --text-muted: #888888;
-      --text-dim: #444444;
-      --radius: 0px;
-      --font-heading: 'JetBrains Mono', monospace;
-    }
-    [data-theme="monolith"] .btn-primary {
-      background: #ffffff;
-      color: #000000;
-      border-radius: 0;
-      font-weight: 700;
-    }
-
-    /* Theme 4: Synthwave */
-    [data-theme="synthwave"] {
-      --bg: #090314;
-      --surface: #120726;
-      --surface-card: #180933;
-      --surface-raised: #230d4a;
-      --border: rgba(255, 0, 127, 0.3);
-      --border-glow: #ff007f;
-      --accent: #ff007f;
-      --accent-subtle: rgba(255, 0, 127, 0.12);
-      --accent-border: rgba(255, 0, 127, 0.45);
-      --text: #fce7f3;
-      --text-muted: #d8b4e2;
-      --text-dim: #7a508f;
-      --radius: 6px;
-      --font-heading: 'Orbitron', sans-serif;
-    }
-    [data-theme="synthwave"] .btn-primary {
-      background: linear-gradient(135deg, #ff007f 0%, #8b00ff 100%);
-      box-shadow: 0 0 20px rgba(255, 0, 127, 0.5);
-    }
-
-    /* Theme 5: Aerospace */
-    [data-theme="aerospace"] {
-      --bg: #030a12;
-      --surface: #061320;
-      --surface-card: #0a1c2e;
-      --surface-raised: #0e273f;
-      --border: #13324d;
-      --border-glow: #38bdf8;
-      --accent: #f59e0b;
-      --accent-subtle: rgba(245, 158, 11, 0.1);
-      --accent-border: rgba(245, 158, 11, 0.35);
-      --text: #e2f1fc;
-      --text-muted: #84a9c9;
-      --text-dim: #436a8d;
-      --radius: 4px;
-      --font-heading: 'Chakra Petch', sans-serif;
-    }
-    [data-theme="aerospace"] .btn-primary {
-      background: #38bdf8;
-      color: #030a12;
-      font-weight: 700;
-    }
-
-    /* Theme 6: Matrix */
-    [data-theme="matrix"] {
-      --bg: #020803;
-      --surface: #041206;
-      --surface-card: #051a08;
-      --surface-raised: #07260c;
-      --border: #0a3810;
-      --border-glow: #00ff41;
-      --accent: #00ff41;
-      --accent-subtle: rgba(0, 255, 65, 0.1);
-      --accent-border: rgba(0, 255, 65, 0.4);
-      --text: #c2ffcb;
-      --text-muted: #5adb6c;
-      --text-dim: #237831;
-      --radius: 2px;
-      --font-heading: 'VT323', monospace;
-      --font-mono: 'VT323', monospace;
-    }
-    [data-theme="matrix"] h1, [data-theme="matrix"] h2, [data-theme="matrix"] h3 {
-      letter-spacing: 0.04em;
-    }
-    [data-theme="matrix"] .btn-primary {
-      background: #00ff41;
-      color: #000;
-      font-weight: 700;
-      box-shadow: 0 0 18px rgba(0, 255, 65, 0.5);
-    }
-
-    /* Theme 7: Swiss Editorial */
-    [data-theme="swiss"] {
-      --bg: #0d0f12;
-      --surface: #14171d;
-      --surface-card: #181c24;
-      --surface-raised: #1f242e;
-      --border: #262b36;
-      --border-glow: #ffffff;
-      --accent: #ef4444;
-      --accent-subtle: rgba(239, 68, 68, 0.1);
-      --accent-border: rgba(239, 68, 68, 0.35);
-      --text: #f1f5f9;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
-      --radius: 4px;
-      --font-heading: 'Inter', sans-serif;
-    }
-    [data-theme="swiss"] .btn-primary {
-      background: #ffffff;
-      color: #000;
-      font-weight: 600;
-    }
-
-    /* —— Floating 1-Click Style Switcher Toolbar ————————————————————— */
-    .theme-toolbar {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      z-index: 99999;
-      font-family: var(--font-mono, monospace);
-      font-size: 12px;
-    }
-    .theme-toolbar-inner {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      background: rgba(10, 15, 24, 0.94);
-      border: 1px solid var(--accent-border);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      padding: 6px 12px;
-      border-radius: 999px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7), 0 0 16px var(--accent-subtle);
-      max-width: 92vw;
-      overflow-x: auto;
-    }
-    .theme-label {
-      color: var(--text-dim);
-      font-weight: 600;
-      padding-right: 4px;
-      white-space: nowrap;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .theme-btn {
-      background: transparent;
-      border: 1px solid transparent;
-      color: var(--text-muted);
-      cursor: pointer;
-      padding: 5px 11px;
-      border-radius: 999px;
-      font-family: inherit;
-      font-size: 11.5px;
-      font-weight: 500;
-      transition: all 0.2s ease;
-      white-space: nowrap;
-    }
-    .theme-btn:hover {
-      color: var(--text);
-      background: rgba(255, 255, 255, 0.08);
-    }
-    .theme-btn.active {
-      color: #000000;
-      background: var(--accent);
-      font-weight: 700;
-      box-shadow: 0 0 12px var(--accent-subtle);
-    }
-    @media (max-width: 768px) {
-      .theme-toolbar { left: 10px; right: 10px; bottom: 10px; }
-      .theme-label { display: none; }
-      .theme-btn { font-size: 10.5px; padding: 4px 8px; }
-    }
-
   </style>
 </head>
 <body>
@@ -920,6 +676,7 @@
 
       <div class="cta-row">
         <a class="btn btn-primary" href="#deploy">Download App &darr;</a>
+        <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Vantablack" target="_blank" rel="noopener">Source Code &nearr;</a>
       </div>
     </header>
 
@@ -1263,8 +1020,7 @@
         size: 1.75, vertexColors: true, transparent: true, opacity: 0.55,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
-            scene.add(globe);
-      window._vbGlobePoints = globe;
+      scene.add(globe);
 
       var segs = [], LIMIT = 34;
       for (var a = 0; a < N; a++) {
@@ -1284,8 +1040,7 @@
         color: 0x22d3ee, transparent: true, opacity: 0.08,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
-            scene.add(lines);
-      window._vbGlobeLines = lines;
+      scene.add(lines);
 
       scene.position.set(96, -34, 0);
 
@@ -1309,57 +1064,6 @@
         renderer.render(scene, camera);
       })();
     })();
-  
-    /* —— 1-Click Interactive Theme Switcher Controller ——————————————— */
-    var currentTheme = localStorage.getItem('vb-theme') || 'default';
-    function setTheme(theme, btn) {
-      currentTheme = theme;
-      if (theme === 'default') {
-        document.documentElement.removeAttribute('data-theme');
-      } else {
-        document.documentElement.setAttribute('data-theme', theme);
-      }
-      localStorage.setItem('vb-theme', theme);
-
-      // Update button active state
-      var btns = document.querySelectorAll('.theme-btn');
-      btns.forEach(function (b) { b.classList.remove('active'); });
-      if (btn) {
-        btn.classList.add('active');
-      } else {
-        btns.forEach(function (b) {
-          if (b.getAttribute('onclick') && b.getAttribute('onclick').indexOf("'" + theme + "'") !== -1) {
-            b.classList.add('active');
-          }
-        });
-      }
-
-      // Update OG globe colors dynamically to harmonize with the selected theme!
-      if (window._vbGlobeLines && window._vbGlobePoints) {
-        var lineCol = 0x22d3ee;
-        var ptCol = [0.13, 0.83, 0.93];
-        if (theme === 'cyber') { lineCol = 0x00f0ff; ptCol = [0.0, 0.95, 0.65]; }
-        else if (theme === 'bento') { lineCol = 0x38bdf8; ptCol = [0.22, 0.74, 0.97]; }
-        else if (theme === 'monolith') { lineCol = 0x666666; ptCol = [0.9, 0.9, 0.9]; }
-        else if (theme === 'synthwave') { lineCol = 0xff007f; ptCol = [1.0, 0.0, 0.5]; }
-        else if (theme === 'aerospace') { lineCol = 0xf59e0b; ptCol = [0.96, 0.62, 0.07]; }
-        else if (theme === 'matrix') { lineCol = 0x00ff41; ptCol = [0.0, 1.0, 0.25]; }
-        else if (theme === 'swiss') { lineCol = 0xef4444; ptCol = [0.94, 0.27, 0.27]; }
-
-        window._vbGlobeLines.material.color.setHex(lineCol);
-        var cols = window._vbGlobePoints.geometry.attributes.color.array;
-        for (var k = 0; k < cols.length; k += 3) {
-          cols[k] = ptCol[0]; cols[k+1] = ptCol[1]; cols[k+2] = ptCol[2];
-        }
-        window._vbGlobePoints.geometry.attributes.color.needsUpdate = true;
-      }
-    }
-
-    // Auto-restore theme on load
-    if (currentTheme !== 'default') {
-      setTheme(currentTheme);
-    }
-
   </script>
 
   <!-- Floating Style Switcher Dock -->
@@ -1372,25 +1076,6 @@
       <a href="index.html" class="style-dock-btn">Obsidian Pro</a><a href="style-cyber-mesh.html" class="style-dock-btn">Cyber HUD</a><a href="style-bento-glass.html" class="style-dock-btn">Bento Glass</a><a href="style-monolith-brutalist.html" class="style-dock-btn">Monolith</a><a href="style-neon-synthwave.html" class="style-dock-btn">Cyberpunk</a><a href="style-aerospace-telemetry.html" class="style-dock-btn">Mission Control</a><a href="style-matrix-terminal.html" class="style-dock-btn">Matrix CRT</a><a href="style-swiss-international.html" class="style-dock-btn">Swiss Editorial</a><a href="index.original.html" class="style-dock-btn active original">Original</a>
     </div>
   </nav>
-
-
-  <!-- Interactive 1-Click Theme Switcher -->
-  <aside class="theme-toolbar" aria-label="Style Switcher">
-    <div class="theme-toolbar-inner">
-      <span class="theme-label">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
-        Theme:
-      </span>
-      <button class="theme-btn active" onclick="setTheme('default', this)">Obsidian Pro</button>
-      <button class="theme-btn" onclick="setTheme('cyber', this)">Cyber HUD</button>
-      <button class="theme-btn" onclick="setTheme('bento', this)">Bento Glass</button>
-      <button class="theme-btn" onclick="setTheme('monolith', this)">Monolith</button>
-      <button class="theme-btn" onclick="setTheme('synthwave', this)">Synthwave</button>
-      <button class="theme-btn" onclick="setTheme('aerospace', this)">Aerospace</button>
-      <button class="theme-btn" onclick="setTheme('matrix', this)">Matrix CRT</button>
-      <button class="theme-btn" onclick="setTheme('swiss', this)">Swiss</button>
-    </div>
-  </aside>
 
 </body>
 </html>
