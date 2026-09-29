@@ -1,44 +1,7 @@
-//! Windows TUN Virtual Network Interface (Full System VPN).
+//! Cross-Platform TUN Virtual Network Interface (Full System VPN).
 //!
-//! Provides a Wintun-based virtual network adapter enabling GhostNet to operate
-//! as an OS-level VPN, intercepting IP datagrams, applying Reed-Solomon erasure coding,
-//! and routing them across mesh exit nodes.
-
-///
-/// # Architecture
-///
-/// 1. **wintun.dll** — The official WireGuard® TUN driver for Windows.
-///    Download from: https://www.wintun.net/
-///    Place `wintun.dll` next to the `vantablack` executable at runtime,
-///    or embed it as a resource in the binary.
-///
-/// 2. **Adapter creation** — On startup, create a virtual adapter named
-///    "VantablackMesh" with a "Tunnel" type.
-///
-/// 3. **Frame capture** — Raw IPv4/IPv6 frames written by the OS kernel
-///    to the TUN device are read as byte buffers, fed through
-///    `l4_rs::encode()` for erasure coding, and dispatched to the mesh
-///    via `send_gtf()`.
-///
-/// # Usage
-/// ```ignore
-/// // On Windows with admin privileges:
-/// use vantablack::ghost::net::tun::VantablackTun;
-///
-/// let tun = VantablackTun::new("VantablackMesh", "Tunnel").expect("wintun init failed");
-/// let mut frame_buf = vec![0u8; 65536];
-/// loop {
-///     let n = tun.read(&mut frame_buf).expect("read TUN frame");
-///     let frame = &frame_buf[..n];
-///     // Encrypt & shard frame across mesh:
-///     // l4_rs::encode(frame) -> send_gtf(...) -> exit node pool
-/// }
-/// ```
-///
-/// # Feature Gate
-/// This module is only compiled on `target_os = "windows"`.
-/// On Linux/macOS, the standard TUN/TAP interface (`/dev/net/tun`) would
-/// be used instead via a separate implementation.
+//! Provides virtual network adapter backends (Windows Wintun, Linux /dev/net/tun, macOS utun)
+//! enabling GhostNet to operate as an OS-level VPN.
 
 #[cfg(target_os = "windows")]
 mod platform {
@@ -227,30 +190,165 @@ mod platform {
     }
 }
 
-// ── Cross-platform stubs ─────────────────────────────────────────
+// ── Cross-platform stubs & adapters ──────────────────────────────
 
-/// Re-export the platform-specific TUN adapter.
 #[cfg(target_os = "windows")]
 pub use platform::TunAdapter;
 
-/// Query whether wintun.dll driver is installed and accessible on this machine.
 #[cfg(target_os = "windows")]
 pub fn is_wintun_installed() -> bool {
     platform::TunAdapter::is_wintun_installed()
 }
 
-/// Locate wintun.dll path if present on the system.
 #[cfg(target_os = "windows")]
 pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
     platform::TunAdapter::find_wintun_dll()
 }
 
-/// On non-Windows platforms, provide a stub that returns an error
-/// explaining that TUN mode is Windows-only for now.
-#[cfg(not(target_os = "windows"))]
+// ── Linux: /dev/net/tun kernel driver ─────────────────────────────
+
+#[cfg(target_os = "linux")]
+mod linux_platform {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tracing::info;
+    use crate::ghost::net::vpn::tun::{TunDevice, UnixTun};
+
+    pub struct TunAdapter {
+        running: Arc<AtomicBool>,
+        device: Option<UnixTun>,
+        name: String,
+    }
+
+    impl TunAdapter {
+        pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
+            None
+        }
+
+        pub fn is_wintun_installed() -> bool {
+            false
+        }
+
+        pub fn new(name: &str, _tun_type: &str) -> std::io::Result<Self> {
+            info!("Initializing Linux TUN adapter: /dev/net/tun dev={}", name);
+            let dev = UnixTun::new(name)?;
+            Ok(Self {
+                running: Arc::new(AtomicBool::new(true)),
+                device: Some(dev),
+                name: name.to_string(),
+            })
+        }
+
+        pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(ref mut dev) = self.device {
+                dev.read_packet(buf)
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "TUN device closed"))
+            }
+        }
+
+        pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Some(ref dev) = self.device {
+                dev.write_packet(buf)
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "TUN device closed"))
+            }
+        }
+
+        pub fn is_running(&self) -> bool {
+            self.running.load(Ordering::Relaxed)
+        }
+
+        pub fn shutdown(&self) {
+            self.running.store(false, Ordering::Relaxed);
+            if let Some(ref dev) = self.device {
+                dev.shutdown();
+            }
+        }
+
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub use linux_platform::TunAdapter;
+
+// ── macOS: utun kernel control socket ──────────────────────────────
+
+#[cfg(target_os = "macos")]
+mod macos_platform {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tracing::info;
+    use crate::ghost::net::vpn::tun::{TunDevice, MacOSUtun};
+
+    pub struct TunAdapter {
+        running: Arc<AtomicBool>,
+        device: Option<MacOSUtun>,
+        name: String,
+    }
+
+    impl TunAdapter {
+        pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
+            None
+        }
+
+        pub fn is_wintun_installed() -> bool {
+            false
+        }
+
+        pub fn new(name: &str, _tun_type: &str) -> std::io::Result<Self> {
+            info!("Initializing macOS utun adapter: dev={}", name);
+            let dev = MacOSUtun::new(name)?;
+            Ok(Self {
+                running: Arc::new(AtomicBool::new(true)),
+                device: Some(dev),
+                name: name.to_string(),
+            })
+        }
+
+        pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(ref mut dev) = self.device {
+                dev.read_packet(buf)
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "utun device closed"))
+            }
+        }
+
+        pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Some(ref dev) = self.device {
+                dev.write_packet(buf)
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "utun device closed"))
+            }
+        }
+
+        pub fn is_running(&self) -> bool {
+            self.running.load(Ordering::Relaxed)
+        }
+
+        pub fn shutdown(&self) {
+            self.running.store(false, Ordering::Relaxed);
+            if let Some(ref dev) = self.device {
+                dev.shutdown();
+            }
+        }
+
+        pub fn name(&self) -> &str {
+            &self.name
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub use macos_platform::TunAdapter;
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux"), not(target_os = "macos")))]
 pub struct TunAdapter;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "linux"), not(target_os = "macos")))]
 impl TunAdapter {
     pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
         None

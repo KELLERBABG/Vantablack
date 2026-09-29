@@ -38,18 +38,19 @@ cargo build --release --manifest-path "$repoDir\Cargo.toml"
 
 $bin = "$repoDir\target\release\ggn.exe"
 Write-Host "`n[+] Build complete: $bin" -ForegroundColor Green
-Write-Host "[+] The program takes no command-line arguments. Configure it with env vars:" -ForegroundColor Cyan
+Write-Host "[+] Quick Launch Options:" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "    # Desktop app: opens its own window; closing it hides to the tray." -ForegroundColor White
-Write-Host "    # The control center also answers at http://127.0.0.1:2270 and the log" -ForegroundColor White
-Write-Host "    # is mirrored to ghost.log next to the executable." -ForegroundColor White
+Write-Host "    # Desktop app: opens native window (tray icon, control center on :2270)" -ForegroundColor White
 Write-Host "    & '$bin'" -ForegroundColor White
 Write-Host ""
-Write-Host "    # Server / headless node, no window (control center in a browser tab)" -ForegroundColor White
+Write-Host "    # Low-Latency Mode (1ms micro-jitter for gaming/VoIP)" -ForegroundColor White
+Write-Host "    & '$bin' --low-latency" -ForegroundColor White
+Write-Host ""
+Write-Host "    # Zero-Admin Mode (Userspace SOCKS5 on :1080 & DNS on :1053, no elevation)" -ForegroundColor White
+Write-Host "    & '$bin' --zero-admin" -ForegroundColor White
+Write-Host ""
+Write-Host "    # Server / headless node (no window, web dashboard on http://127.0.0.1:2270)" -ForegroundColor White
 Write-Host "    `$env:GHOST_NO_GUI='1'; & '$bin'" -ForegroundColor White
 Write-Host ""
-Write-Host "    # SOCKS5 client node (proxy on 127.0.0.1:1080)" -ForegroundColor White
-Write-Host "    `$env:GHOST_SOCKS5='1'; & '$bin'" -ForegroundColor White
-Write-Host ""
-Write-Host "    # Exit node (peers reach it on 2271 - 2270/UDP is the discovery beacon)" -ForegroundColor White
-Write-Host "    `$env:GHOST_EXIT_ALLOWLIST='any'; `$env:GHOST_BIND='0.0.0.0:2271'; & '$bin'" -ForegroundColor White
+Write-Host "    # CLI Help & Shamir Secret Sharing Tools" -ForegroundColor White
+Write-Host "    & '$bin' --help" -ForegroundColor White

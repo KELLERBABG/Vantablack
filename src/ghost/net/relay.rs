@@ -765,9 +765,14 @@ impl<T> MixBatch<T> {
     }
 
     pub fn flush_due(&self) -> bool {
+        let deadline = if self.max_delay == Duration::ZERO {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(crate::ghost::net::mix_batch_delay_ms())
+        };
         self.items
             .first()
-            .map(|(created, _)| created.elapsed() >= self.max_delay)
+            .map(|(created, _)| created.elapsed() >= deadline)
             .unwrap_or(false)
     }
 

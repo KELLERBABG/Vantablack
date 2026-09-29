@@ -175,11 +175,22 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
                 let fake_tun = std::env::var("GHOST_VPN_FAKE_TUN")
                     .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
                     .unwrap_or(false);
-                let tun = if fake_tun {
-                    tracing::warn!(
-                        "VPN client: GHOST_VPN_FAKE_TUN is set — in-memory TUN, no OS interface \
-                         is created and no traffic can leave this machine. Self-test mode only."
-                    );
+                let zero_admin = std::env::var("GHOST_ZERO_ADMIN")
+                    .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                    .unwrap_or(false);
+                let tun = if fake_tun || zero_admin {
+                    if zero_admin {
+                        let zt = crate::vpn::userspace::ZeroAdminTunnel::new(
+                            crate::vpn::userspace::DEFAULT_ZERO_ADMIN_SOCKS_PORT,
+                            crate::vpn::userspace::DEFAULT_ZERO_ADMIN_DNS_PORT,
+                        );
+                        zt.start();
+                    } else {
+                        tracing::warn!(
+                            "VPN client: GHOST_VPN_FAKE_TUN is set — in-memory TUN, no OS interface \
+                             is created and no traffic can leave this machine. Self-test mode only."
+                        );
+                    }
                     let (dev, handle) = open_fake_tun();
                     let hub_overlay = std::net::Ipv4Addr::new(
                         OVERLAY_PREFIX,
@@ -221,12 +232,23 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
                     });
                     Arc::new(std::sync::Mutex::new(dev))
                 } else {
-                    open_tun("ggn0", local_ip, std::net::Ipv4Addr::new(255, 255, 255, 0))
-                        .map(|t| Arc::new(std::sync::Mutex::new(t)))
-                        .map_err(|e| anyhow::anyhow!(
-                            "VPN client: TUN unavailable ({e}) — run as Administrator with wintun.dll \
-                             present, or set GHOST_VPN_FAKE_TUN=1 for the zero-elevation loopback self-test"
-                        ))?
+                    match open_tun("ggn0", local_ip, std::net::Ipv4Addr::new(255, 255, 255, 0)) {
+                        Ok(t) => Arc::new(std::sync::Mutex::new(t)),
+                        Err(e) => {
+                            tracing::warn!(
+                                "VPN client: OS TUN adapter unavailable ({e}). Automatically activating \
+                                 Zero-Admin Userspace Mode (no Administrator or root elevation required). \
+                                 Traffic is routed via local SOCKS5 proxy on 127.0.0.1:1080."
+                            );
+                            let zt = crate::vpn::userspace::ZeroAdminTunnel::new(
+                                crate::vpn::userspace::DEFAULT_ZERO_ADMIN_SOCKS_PORT,
+                                crate::vpn::userspace::DEFAULT_ZERO_ADMIN_DNS_PORT,
+                            );
+                            zt.start();
+                            let (dev, _) = open_fake_tun();
+                            Arc::new(std::sync::Mutex::new(dev))
+                        }
+                    }
                 };
                 tracing::info!("VPN: client mode — hub {hub_fp}, TUN {local_ip}");
                 Ok(Some(VpnMode::Client(

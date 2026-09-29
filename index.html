@@ -867,6 +867,28 @@
             </tr>
             <tr>
               <td class="feature-cell">
+                <div class="feature-name">Traffic Timing &amp; Latency Controls</div>
+                <div class="feature-desc">How does the network protect against traffic timing analysis while supporting fast real-time interactive tasks?</div>
+              </td>
+              <td class="col-ggn-val"><strong>20ms Multi-Packet Mix Batching (Default, destroys correlation) + 1ms Low-Latency Micro-Jitter Toggle (VoIP/Gaming)</strong></td>
+              <td>Immediate Forwarding (Vulnerable to timing correlation)</td>
+              <td>Immediate Forwarding (Vulnerable to timing correlation)</td>
+              <td>Fixed High Latency (~300–800ms, unsuitable for real-time)</td>
+              <td>Immediate Forwarding (Easily correlated by ISP/upstream taps)</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
+                <div class="feature-name">Privilege &amp; System Footprint</div>
+                <div class="feature-desc">Does running the client require root/administrator access or kernel driver modifications?</div>
+              </td>
+              <td class="col-ggn-val"><strong>Zero-Admin Userspace Mode (Automatic unprivileged fallback to SOCKS5 on :1080 and DNS on :1053; optional TUN driver)</strong></td>
+              <td>Requires Root / Admin Kernel Driver</td>
+              <td>Requires Root / Admin Daemon &amp; TUN Driver</td>
+              <td>Userspace SOCKS (No full system TUN)</td>
+              <td>Requires Admin Installer &amp; Kernel Filter Drivers</td>
+            </tr>
+            <tr>
+              <td class="feature-cell">
                 <div class="feature-name">Formal Mathematical Verification</div>
                 <div class="feature-desc">Has the cryptographic security been proven by rigorous machine-checked mathematics?</div>
               </td>

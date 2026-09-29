@@ -66,12 +66,12 @@ qkd-tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:rus
 embed-resource = "2.5"
 
 [profile.release]
-opt-level = "z"     # Optimize for size
-lto = "fat"         # Full link-time optimization
-codegen-units = 1   # Maximize optimization surface
-strip = "symbols"   # Remove symbols from binary
-panic = "abort"     # Skip unwind tables
-debug = false       # No debug info
+opt-level = 3         # Maximize execution throughput and enable auto-vectorization
+lto = false           # Keep false on MSVC to avoid cdylib/bin symbol resolution conflict
+codegen-units = 1     # Maximize optimization surface
+strip = "symbols"     # Remove symbols from binary
+panic = "abort"       # Skip unwind tables
+debug = false         # No debug info
 
 # A transport benchmark must not run under the profile above: it optimizes for the
 # size of the shipped installer, which is both slow to build and a poor measure of
@@ -165,4 +165,6 @@ rustls-pemfile = { version = "2", optional = true }
 # certificate the client then has to verify. Already in the dependency graph via
 # the `quic` feature, so it adds no new crate to the lockfile.
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+
+
 

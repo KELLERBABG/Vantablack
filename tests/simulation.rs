@@ -15,7 +15,6 @@
 /// - Deletes identity.key before each test to avoid cross-test identity conflict
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
@@ -23,7 +22,6 @@ use vantablack::ghost::layers::l0_identity;
 use vantablack::ghost::layers::l1_kem;
 use vantablack::ghost::layers::l2_aead;
 use vantablack::ghost::layers::l4_rs;
-use vantablack::ghost::net::routing::ReputationMatrix;
 use vantablack::ghost::net::{frame_shard, unframe, OFFSET_PAYLOAD_START};
 use vantablack::ghost::session::{Session, SessionRole};
 

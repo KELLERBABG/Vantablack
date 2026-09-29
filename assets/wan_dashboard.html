@@ -935,6 +935,39 @@
 
         <div class="setting-item">
           <div class="setting-text">
+            <span class="setting-title">Low-Latency Mode (Micro-Jitter)</span>
+            <span class="setting-desc">Flushes packet mix batches within 1ms with micro-jitter (ideal for VoIP, gaming, and real-time interactive terminals). <em>Trade-off:</em> Slightly reduces temporal batch mixing entropy compared to standard 20ms mix batching against global passive network observers.</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-low-latency" onchange="toggleLowLatency(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-text">
+            <span class="setting-title">Timing Batch Mix Window</span>
+            <span class="setting-desc">Accumulates and shuffles outbound packet shards across a randomized time window. Breaks temporal correlation between incoming and outgoing packets to defeat statistical timing analysis.</span>
+          </div>
+          <select id="select-mix-batch" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px;" onchange="updateMixBatch(this.value)">
+            <option value="1">1 ms (Ultra-Low Latency / Gaming)</option>
+            <option value="5">5 ms (Fast Interactive)</option>
+            <option value="10">10 ms (Balanced Interactive)</option>
+            <option value="20" selected>20 ms (Standard Privacy Mix — Default)</option>
+            <option value="50">50 ms (High-Entropy Mix)</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-text">
+            <span class="setting-title">Zero-Admin Userspace Mode</span>
+            <span class="setting-desc">Operates entirely in userspace without requiring root permissions, administrative elevation, or virtual TUN kernel drivers. Local traffic routes via SOCKS5 proxy on <code>127.0.0.1:1080</code> and DNS on <code>1053</code>.</span>
+          </div>
+          <span id="badge-zero-admin" class="peer-badge" style="color: var(--emerald);">DETECTING...</span>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-text">
             <span class="setting-title">Local SOCKS5 Proxy</span>
             <span class="setting-desc">Provides an anonymous SOCKS5 proxy endpoint for web browsers and apps on <code>127.0.0.1:1080</code>.</span>
           </div>
@@ -1108,9 +1141,10 @@
         document.getElementById('stat-session-count').innerText = `${sessions} Active Sessions`;
 
         // Throughput & Speed
-        if (data.throughput) {
-          const sent = data.throughput.bytes_sent || 0;
-          const recv = data.throughput.bytes_recv || 0;
+        const tp = data.throughput || data.traffic;
+        if (tp) {
+          const sent = tp.bytes_sent || 0;
+          const recv = tp.bytes_recv || 0;
           document.getElementById('stat-total-down').innerText = `${formatBytes(recv)} total`;
           document.getElementById('stat-total-up').innerText = `${formatBytes(sent)} total`;
 
@@ -1126,8 +1160,8 @@
           prevBytesRecv = recv;
           prevTimestamp = now;
 
-          document.getElementById('diag-pkts-sent').innerText = (data.throughput.packets_sent || 0).toLocaleString() + ' pkts';
-          document.getElementById('diag-pkts-recv').innerText = (data.throughput.packets_recv || 0).toLocaleString() + ' pkts';
+          document.getElementById('diag-pkts-sent').innerText = (tp.packets_sent || 0).toLocaleString() + ' pkts';
+          document.getElementById('diag-pkts-recv').innerText = (tp.packets_recv || 0).toLocaleString() + ' pkts';
         }
 
         // Uptime
@@ -1153,10 +1187,62 @@
           }
         }
 
+        if (data.low_latency !== undefined) {
+          const toggle = document.getElementById('toggle-low-latency');
+          if (toggle && !toggle.matches(':focus')) toggle.checked = Boolean(data.low_latency);
+        }
+        if (data.mix_batch_ms !== undefined) {
+          const sel = document.getElementById('select-mix-batch');
+          if (sel && !sel.matches(':focus')) sel.value = String(data.mix_batch_ms);
+        }
+        if (data.zero_admin !== undefined) {
+          const badge = document.getElementById('badge-zero-admin');
+          if (badge) {
+            if (data.zero_admin) {
+              badge.innerText = 'USERSPACE SOCKS5 (ACTIVE)';
+              badge.style.color = 'var(--accent)';
+            } else {
+              badge.innerText = data.vpn_available ? 'KERNEL TUN (ACTIVE)' : 'STANDALONE';
+              badge.style.color = 'var(--emerald)';
+            }
+          }
+        }
+
         renderPeers(data.peers || []);
 
       } catch (e) {
         // Node starting up
+      }
+    }
+
+    async function toggleLowLatency(enabled) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ low_latency: enabled, mix_batch_ms: enabled ? 1 : 20 })
+        });
+        const sel = document.getElementById('select-mix-batch');
+        if (sel) sel.value = enabled ? "1" : "20";
+        refreshStatus();
+      } catch (e) {
+        console.warn('Low latency toggle error', e);
+      }
+    }
+
+    async function updateMixBatch(val) {
+      const ms = parseInt(val, 10);
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mix_batch_ms: ms, low_latency: ms <= 1 })
+        });
+        const toggle = document.getElementById('toggle-low-latency');
+        if (toggle) toggle.checked = (ms <= 1);
+        refreshStatus();
+      } catch (e) {
+        console.warn('Mix batch update error', e);
       }
     }
 

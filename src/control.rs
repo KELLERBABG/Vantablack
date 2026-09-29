@@ -420,7 +420,6 @@ pub fn spawn_control_center(
                                             "propagation": "Near-Vertical Incidence Skywave (Zero Skip Zone)",
                                         }),
                                         "traffic": {
-
                                             "bytes_sent": sent_bytes,
                                             "bytes_recv": recv_bytes,
                                             "packets_sent": sent_pkts,
@@ -428,6 +427,15 @@ pub fn spawn_control_center(
                                             "cover_traffic_rate_hz": 2.0,
                                             "cover_traffic_active": sessions_count > 0,
                                         },
+                                        "throughput": {
+                                            "bytes_sent": sent_bytes,
+                                            "bytes_recv": recv_bytes,
+                                            "packets_sent": sent_pkts,
+                                            "packets_recv": recv_pkts,
+                                        },
+                                        "low_latency": vantablack::ghost::net::is_low_latency(),
+                                        "mix_batch_ms": vantablack::ghost::net::mix_batch_delay_ms(),
+                                        "zero_admin": vantablack::ghost::net::is_zero_admin(),
                                         "vpn": vpn_role,
                                         "vpn_stats": vpn_json,
                                         "peers": peer_entries,
@@ -559,6 +567,9 @@ pub fn spawn_control_center(
                                         "bypass": s.bypass,
                                         "bypass_count": s.bypass.len(),
                                         "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
+                                        "low_latency": vantablack::ghost::net::is_low_latency(),
+                                        "mix_batch_ms": vantablack::ghost::net::mix_batch_delay_ms(),
+                                        "zero_admin": vantablack::ghost::net::is_zero_admin(),
                                     })
                                     .to_string();
                                     ("HTTP/1.1 200 OK", body, "application/json")
@@ -568,6 +579,15 @@ pub fn spawn_control_center(
                                     if let Some(r) = val.get("route_mode").and_then(|v| v.as_str())
                                     {
                                         s.set_route_mode(r);
+                                    }
+                                    if let Some(ll) = val.get("low_latency").and_then(|v| v.as_bool()) {
+                                        vantablack::ghost::net::set_low_latency(ll);
+                                    }
+                                    if let Some(ms) = val.get("mix_batch_ms").and_then(|v| v.as_u64()) {
+                                        vantablack::ghost::net::set_mix_batch_delay_ms(ms);
+                                    }
+                                    if let Some(za) = val.get("zero_admin").and_then(|v| v.as_bool()) {
+                                        vantablack::ghost::net::set_zero_admin(za);
                                     }
                                     if let Some(add) =
                                         val.get("bypass_add").and_then(|v| v.as_str())

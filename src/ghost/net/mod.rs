@@ -9,6 +9,7 @@
 pub mod carrier;
 pub mod cc;
 
+pub mod bandwidth_voucher;
 pub mod collective_defense;
 pub mod consumer;
 pub mod dead_drop;
@@ -27,6 +28,7 @@ pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod relay;
+pub mod rendezvous;
 pub mod sdr_bridge;
 pub mod sharded_compute;
 pub mod shardsec;
@@ -126,10 +128,48 @@ use bytes::Bytes;
 use rand::Rng;
 use std::{
     net::SocketAddr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 use tokio::net::UdpSocket;
+
+// ── Global Runtime Controls & Mix Telemetry ───────────────────────
+
+/// Global runtime configuration for mix-batch flush delay in milliseconds (default: 20 ms).
+pub static MIX_BATCH_DELAY_MS: AtomicU64 = AtomicU64::new(20);
+
+/// Global runtime flag for low-latency micro-jitter mode.
+pub static LOW_LATENCY_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Global runtime flag indicating zero-admin userspace mode is active.
+pub static ZERO_ADMIN_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_low_latency() -> bool {
+    LOW_LATENCY_MODE.load(Ordering::Relaxed)
+}
+
+pub fn set_low_latency(enabled: bool) {
+    LOW_LATENCY_MODE.store(enabled, Ordering::Relaxed);
+    MIX_BATCH_DELAY_MS.store(if enabled { 1 } else { 20 }, Ordering::Relaxed);
+}
+
+pub fn mix_batch_delay_ms() -> u64 {
+    MIX_BATCH_DELAY_MS.load(Ordering::Relaxed)
+}
+
+pub fn set_mix_batch_delay_ms(ms: u64) {
+    let bounded = ms.clamp(1, 500);
+    MIX_BATCH_DELAY_MS.store(bounded, Ordering::Relaxed);
+    LOW_LATENCY_MODE.store(bounded <= 1, Ordering::Relaxed);
+}
+
+pub fn is_zero_admin() -> bool {
+    ZERO_ADMIN_MODE.load(Ordering::Relaxed)
+}
+
+pub fn set_zero_admin(enabled: bool) {
+    ZERO_ADMIN_MODE.store(enabled, Ordering::Relaxed);
+}
 
 // ── Multicast Discovery Constants ─────────────────────────────────
 
@@ -820,7 +860,13 @@ pub fn try_build_gtf_v2_frame(
         return Err("payload exceeds GTF v2 capacity");
     }
 
-    let mut packet = vec![0u8; total];
+    let full_cap = if h.bulk {
+        GTF_BULK_SIZE
+    } else {
+        GTF_BASE_SIZE + JITTER_MAX
+    };
+    let mut packet = Vec::with_capacity(full_cap);
+    packet.resize(total, 0u8);
     packet[V2_OFFSET_SESSION_HASH..V2_OFFSET_SESSION_HASH + 4].copy_from_slice(&h.session_hash);
     packet[V2_OFFSET_RESERVED..V2_OFFSET_RESERVED + 4].copy_from_slice(&[0u8; 4]);
     packet[V2_OFFSET_SHARD_INDEX] = h.shard_index;

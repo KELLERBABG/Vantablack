@@ -10,20 +10,39 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
     if args.len() < 2 {
         return None;
     }
-    // Anchor activation flags. The daemon reads the resolved environment
-    // (`GHOST_QUANTUM` / `GHOST_SKYWAVE`), so both `--quantum` and the env var
-    // work, and a flag set here survives into `run_node` unchanged.
-    for (i, a) in args.iter().enumerate() {
+    // Global runtime flags. The daemon reads the resolved environment variables,
+    // so flags set here survive into `run_node` and subsystem daemons unchanged.
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
         match a.as_str() {
             "--quantum" => {
                 std::env::set_var("GHOST_QUANTUM", "1");
-                let _ = i;
             }
             "--skywave" => {
                 std::env::set_var("GHOST_SKYWAVE", "1");
             }
+            "--zero-admin" | "--userspace" => {
+                std::env::set_var("GHOST_ZERO_ADMIN", "1");
+                std::env::set_var("GHOST_SOCKS5", "1");
+                vantablack::ghost::net::set_zero_admin(true);
+            }
+            "--low-latency" | "--turbo" => {
+                std::env::set_var("GHOST_LOW_LATENCY", "1");
+                vantablack::ghost::net::set_low_latency(true);
+            }
+            "--mix-batch-ms" => {
+                if i + 1 < args.len() {
+                    std::env::set_var("GHOST_MIX_BATCH_MS", &args[i + 1]);
+                    if let Ok(ms) = args[i + 1].parse::<u64>() {
+                        vantablack::ghost::net::set_mix_batch_delay_ms(ms);
+                    }
+                    i += 1;
+                }
+            }
             _ => {}
         }
+        i += 1;
     }
     match args[1].as_str() {
         "split-key" | "split_key" => {

@@ -608,7 +608,7 @@ fn test_l4_odd_length_data() {
 
 #[test]
 fn test_l6_session_guard_initial_state() {
-    let mut guard = SessionGuard::new();
+    let guard = SessionGuard::new();
     assert!(guard.is_valid(), "Fresh guard should be valid");
     assert_eq!(guard.v_max, 0);
     assert_eq!(guard.bitmask, 0);
@@ -727,7 +727,7 @@ fn test_l6_session_guard_rejects_counter_below_when_window_skipped() {
 
 #[test]
 fn test_l6_session_guard_hard_timeout() {
-    let mut guard = SessionGuard::new();
+    let guard = SessionGuard::new();
     assert!(guard.is_valid());
 }
 

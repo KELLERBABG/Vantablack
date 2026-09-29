@@ -445,7 +445,8 @@ fn open_received_frame(
 pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
     if shardsec_default_enabled() {
         let pay_len = pay.len() as u16;
-        let mut framed = pay_len.to_be_bytes().to_vec();
+        let mut framed = Vec::with_capacity(pay.len() + 3);
+        framed.extend_from_slice(&pay_len.to_be_bytes());
         framed.extend_from_slice(pay);
         if framed.len() % 2 != 0 {
             framed.push(0);
@@ -473,7 +474,8 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
         return (frames, [0u8; 16]);
     }
     let pay_len = pay.len() as u16;
-    let mut framed = pay_len.to_be_bytes().to_vec();
+    let mut framed = Vec::with_capacity(pay.len() + 3);
+    framed.extend_from_slice(&pay_len.to_be_bytes());
     framed.extend_from_slice(pay);
     if framed.len() % 2 != 0 {
         framed.push(0);
@@ -538,9 +540,20 @@ fn enqueue_mixed_frame(
     let (done, receiver) = oneshot::channel();
     let queue = MIX_WIRE_QUEUE
         .get_or_init(|| {
+            let delay_ms = if std::env::var("GHOST_LOW_LATENCY")
+                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+                .unwrap_or(false)
+            {
+                1
+            } else {
+                std::env::var("GHOST_MIX_BATCH_MS")
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(20)
+            };
             Arc::new(std::sync::Mutex::new(MixBatch::new(
                 9,
-                Duration::from_millis(20),
+                Duration::from_millis(delay_ms),
             )))
         })
         .clone();
@@ -793,7 +806,8 @@ enum Routed {
 /// unrecoverable shard and dropped them. Any new caller of this function depends
 /// on that bypass staying unconditional.
 fn seal_single(ctx: &SealCtx, payload: &[u8]) -> Vec<u8> {
-    let mut framed = (payload.len() as u16).to_be_bytes().to_vec();
+    let mut framed = Vec::with_capacity(2 + payload.len() + 1 + 16);
+    framed.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     framed.extend_from_slice(payload);
     if framed.len() % 2 != 0 {
         framed.push(0);
@@ -1530,7 +1544,8 @@ async fn send_tunnel_frame(
     }
     let mut payload = VPN_PAYLOAD_MAGIC.to_vec();
     payload.extend_from_slice(tunnel_wire);
-    let mut framed = (payload.len() as u16).to_be_bytes().to_vec();
+    let mut framed = Vec::with_capacity(2 + payload.len() + 1 + 16);
+    framed.extend_from_slice(&(payload.len() as u16).to_be_bytes());
     framed.extend_from_slice(&payload);
     if framed.len() % 2 != 0 {
         framed.push(0);

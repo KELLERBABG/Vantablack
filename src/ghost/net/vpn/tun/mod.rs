@@ -42,16 +42,7 @@ mod wintun {
         fn FreeLibrary(lib: Handle) -> i32;
     }
 
-    // wintun.dll exports (wintun 0.14) are resolved at runtime via
-    // GetProcAddress in WintunTun::new — no import-table linkage, so there is
-    // deliberately no extern block here. Signatures (wintun.h):
-    //   WintunCreateAdapter(*const u16, *const u16, *const u8, *mut Handle) -> BOOL
-    //   WintunDeleteAdapter(Handle) -> BOOL
-    //   WintunStartSession(Handle, u32) -> Handle / WintunEndSession(Handle)
-    //   WintunGetReadWaitEvent(Handle) -> Handle
-    //   WintunReceivePacket(Handle, *mut u32) -> *mut u8 / WintunReleaseReceivePacket(Handle, *mut u8)
-    //   WintunSendPacket(Handle, *const u8, u32) -> BOOL
-    //   WintunOpenAdapter(*const u16) -> Handle
+    // wintun.dll exports are dynamically resolved at runtime.
 
     pub struct WintunTun {
         lib: Handle,
@@ -385,15 +376,166 @@ mod unixtun {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub use unixtun::UnixTun;
+
+// ── macOS: utun kernel control socket ──────────────────────────────
+
+#[cfg(target_os = "macos")]
+mod macostun {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    extern "C" {
+        fn socket(domain: i32, ty: i32, protocol: i32) -> i32;
+        fn ioctl(fd: i32, req: u64, ...) -> i32;
+        fn connect(fd: i32, addr: *const std::ffi::c_void, len: u32) -> i32;
+        fn close(fd: i32) -> i32;
+        fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
+        fn write(fd: i32, buf: *const std::ffi::c_void, count: usize) -> isize;
+    }
+
+    const PF_SYSTEM: i32 = 32;
+    const SYSPROTO_CONTROL: i32 = 2;
+    const AF_SYS_CONTROL: u16 = 2;
+    const CTLIOCGINFO: u64 = 0xc0644e03;
+
+    #[repr(C)]
+    struct CtlInfo {
+        ctl_id: u32,
+        ctl_name: [u8; 96],
+    }
+
+    #[repr(C)]
+    struct SockAddrCtl {
+        sc_len: u8,
+        sc_family: u8,
+        ss_sysaddr: u16,
+        sc_id: u32,
+        sc_unit: u32,
+        sc_reserved: [u32; 5],
+    }
+
+    pub struct MacOSUtun {
+        fd: i32,
+        name: String,
+        running: Arc<AtomicBool>,
+    }
+
+    unsafe impl Send for MacOSUtun {}
+    unsafe impl Sync for MacOSUtun {}
+
+    impl MacOSUtun {
+        pub fn new(name: &str) -> std::io::Result<Self> {
+            let fd = unsafe { socket(PF_SYSTEM, 2, SYSPROTO_CONTROL) };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            let mut info = CtlInfo {
+                ctl_id: 0,
+                ctl_name: [0u8; 96],
+            };
+            let ctl_name = b"com.apple.net.utun_control";
+            info.ctl_name[..ctl_name.len()].copy_from_slice(ctl_name);
+
+            if unsafe { ioctl(fd, CTLIOCGINFO, &mut info) } < 0 {
+                unsafe { close(fd) };
+                return Err(std::io::Error::last_os_error());
+            }
+
+            let addr = SockAddrCtl {
+                sc_len: std::mem::size_of::<SockAddrCtl>() as u8,
+                sc_family: PF_SYSTEM as u8,
+                ss_sysaddr: AF_SYS_CONTROL,
+                sc_id: info.ctl_id,
+                sc_unit: 0,
+                sc_reserved: [0; 5],
+            };
+
+            if unsafe {
+                connect(
+                    fd,
+                    &addr as *const _ as *const _,
+                    std::mem::size_of::<SockAddrCtl>() as u32,
+                )
+            } < 0
+            {
+                unsafe { close(fd) };
+                return Err(std::io::Error::last_os_error());
+            }
+
+            // Assign overlay address
+            let _ = std::process::Command::new("ifconfig")
+                .args([name, "10.66.0.10", "10.66.0.1", "up"])
+                .status();
+
+            Ok(Self {
+                fd,
+                name: name.to_string(),
+                running: Arc::new(AtomicBool::new(true)),
+            })
+        }
+    }
+
+    impl TunDevice for MacOSUtun {
+        fn read_packet(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let mut raw = vec![0u8; buf.len() + 4];
+            let n = unsafe { read(self.fd, raw.as_mut_ptr() as *mut _, raw.len()) };
+            if n < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if n <= 4 {
+                return Ok(0);
+            }
+            let payload_len = (n as usize) - 4;
+            buf[..payload_len].copy_from_slice(&raw[4..n as usize]);
+            Ok(payload_len)
+        }
+
+        fn write_packet(&self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut raw = Vec::with_capacity(buf.len() + 4);
+            raw.extend_from_slice(&2u32.to_be_bytes()); // AF_INET
+            raw.extend_from_slice(buf);
+            let n = unsafe { write(self.fd, raw.as_ptr() as *const _, raw.len()) };
+            if n < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(buf.len())
+        }
+
+        fn mtu(&self) -> u16 {
+            DEFAULT_MTU
+        }
+
+        fn shutdown(&self) {
+            self.running.store(false, Ordering::Relaxed);
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+    }
+
+    impl Drop for MacOSUtun {
+        fn drop(&mut self) {
+            unsafe { close(self.fd) };
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub use macostun::MacOSUtun;
 
 // ── Platform TUN + the zero-elevation fake backend ──────────────────
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 pub type RealTun = WintunTun;
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub type RealTun = UnixTun;
+#[cfg(target_os = "macos")]
+pub type RealTun = MacOSUtun;
 
 #[cfg(not(any(windows, unix)))]
 compile_error!("VPN client requires windows or unix");

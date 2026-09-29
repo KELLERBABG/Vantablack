@@ -48,3 +48,23 @@ android/.idea/
 *.apk
 *.so
 
+# Fuzzing local artifacts & corpora
+fuzz/artifacts/
+fuzz/corpus/
+
+# Local temporary test files & logs
+.tmp*
+*.out
+
+# IDE & Editor local state
+.vscode/
+.idea/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Local Wintun download packages
+wintun-pkg/
+wintun.zip
+

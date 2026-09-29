@@ -186,7 +186,7 @@ mod tests {
         let mut hub = VirtualNetHub::new();
 
         // Create two endpoints
-        let (ep_a, tx_a) = VirtualEndpoint::new("virt://alice:1".to_string());
+        let (_ep_a, tx_a) = VirtualEndpoint::new("virt://alice:1".to_string());
         let (mut ep_b, tx_b) = VirtualEndpoint::new("virt://bob:1".to_string());
 
         hub.register("virt://alice:1", tx_a);
@@ -213,7 +213,7 @@ mod tests {
         let mut hub = VirtualNetHub::new();
         hub.drop_probability = 1.0; // Drop everything
 
-        let (ep_a, tx_a) = VirtualEndpoint::new("virt://alice:1".to_string());
+        let (_ep_a, tx_a) = VirtualEndpoint::new("virt://alice:1".to_string());
         let (mut ep_b, tx_b) = VirtualEndpoint::new("virt://bob:1".to_string());
 
         hub.register("virt://alice:1", tx_a);

@@ -56,13 +56,14 @@ cargo build --release $BUILD_ARGS --manifest-path "$REPO_DIR/Cargo.toml"
 
 BIN="$REPO_DIR/target/release/ggn"
 printf '\033[1;32m[+] Built: %s\033[0m\n\n' "$BIN"
-printf 'The program takes no command-line arguments. Configure it with env vars:\n\n'
-printf '  # Desktop app: opens its own window; the control center also answers at\n'
-printf '  # http://127.0.0.1:2270 . Logs are mirrored to ghost.log next to it.\n'
+printf 'Quick Launch Options:\n\n'
+printf '  # Desktop app: opens native window (control center on http://127.0.0.1:2270)\n'
 printf '  %s\n\n' "$BIN"
+printf '  # Low-Latency Mode (1ms micro-jitter for gaming/VoIP)\n'
+printf '  %s --low-latency\n\n' "$BIN"
+printf '  # Zero-Admin Mode (Userspace SOCKS5 on :1080 & DNS on :1053, no root needed)\n'
+printf '  %s --zero-admin\n\n' "$BIN"
 printf '  # Server / headless node, no window (control center in a browser tab)\n'
 printf '  GHOST_NO_GUI=1 %s\n\n' "$BIN"
-printf '  # SOCKS5 client node (proxy on 127.0.0.1:1080)\n'
-printf '  GHOST_SOCKS5=1 %s\n\n' "$BIN"
-printf '  # Exit node (peers reach it on 2271 - 2270/UDP is the discovery beacon)\n'
-printf '  GHOST_EXIT_ALLOWLIST=any GHOST_BIND=0.0.0.0:2271 %s\n' "$BIN"
+printf '  # CLI Help & Options\n'
+printf '  %s --help\n' "$BIN"

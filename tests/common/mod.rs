@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// Shared test utilities for GhostNet integration tests.
 ///
 /// This module exports:
