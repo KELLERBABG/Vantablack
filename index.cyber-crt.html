@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vantablack — Cyber HUD &amp; CRT Terminal Edition</title>
-  <meta name="description" content="Decentralized sovereign mesh network with post-quantum lattice cryptography. Combined Cyber HUD and CRT retro terminal testbed.">
+  <title>Product Name — Primary Value Proposition and Headline</title>
+  <meta name="description" content="This is where a brief summary of your product or service goes for social embeds and search engines.">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -91,7 +91,7 @@
       z-index: 1;
     }
 
-    /* Sleek Unified Cyber HUD Header (No double-stack, clean & modern) */
+    /* Sleek Unified Header */
     .top-header {
       background: rgba(2, 7, 9, 0.92);
       border-bottom: 1px solid rgba(0, 240, 255, 0.22);
@@ -212,7 +212,7 @@
     }
     .hero p.lead strong { color: var(--text); }
 
-    /* Tactical Mode Cards with Corner Brackets */
+    /* Tactical Cards with Corner Brackets */
     .mode-spec-box {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -286,7 +286,7 @@
     }
     .hud-card p strong { color: var(--text); }
 
-    /* Single CTA Button (Source Code Removed) */
+    /* Single CTA Button */
     .cta-row {
       display: flex;
       gap: 16px;
@@ -512,7 +512,7 @@
       margin-bottom: 12px;
     }
 
-    /* Terminal instructions block */
+    /* Route Grid */
     .route-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -606,16 +606,16 @@
         <a href="index.html" class="brand">
           <span style="color: var(--cyan); font-weight: 400;">[</span>
           <span class="pulse-dot"></span>
-          <span>VANTABLACK</span>
+          <span>YOUR PRODUCT</span>
           <span style="color: var(--cyan); font-weight: 400;">]</span>
         </a>
         <span class="hud-tag">CYBER-CRT</span>
       </div>
       <nav class="nav-links">
-        <a href="#capabilities">CAPABILITIES</a>
+        <a href="#capabilities">FEATURES</a>
         <a href="#sota">COMPARISON</a>
-        <a href="#deploy">DEPLOYMENT</a>
-        <a href="#deploy" class="btn-hud-cta">DOWNLOAD APP &darr;</a>
+        <a href="#deploy">GET STARTED</a>
+        <a href="#deploy" class="btn-hud-cta">DOWNLOAD ↓</a>
       </nav>
     </div>
   </header>
@@ -627,33 +627,33 @@
   <div class="shell">
     <!-- HERO SECTION -->
     <section class="hero">
-      <h1>Connect your computers <span class="cyan">directly.</span> Zero middleman. Fully decentralized.</h1>
+      <h1>This would be the main headline. <span class="cyan">Clear, direct, and engaging.</span></h1>
       <p class="lead">
-        Vantablack links your <strong>home server, laptop, and cloud machines</strong> into one sovereign private
-        network that works from anywhere. There is no account to create, no subscription, and no middleman
-        such as Tailscale or Cloudflare sitting in the path &mdash; your devices talk to each other, encrypted end to end.
+        This is where the brief introductory paragraph goes. It explains what your product or application does
+        in two or three clear sentences, highlighting how it connects your devices and solves user pain points
+        without unnecessary complexity or technical jargon.
       </p>
 
       <div class="mode-spec-box">
         <div class="hud-card">
           <div class="hud-card-header">
-            <span class="hud-card-title">Private Network</span>
-            <span class="hud-badge green">YOUR DEVICES ONLY</span>
+            <span class="hud-card-title">Primary Feature Mode</span>
+            <span class="hud-badge green">KEY HIGHLIGHT</span>
           </div>
-          <p>A closed network for your own machines, protected by your private key. <strong>Only devices you approve can join</strong> &mdash; everyone else is ignored.</p>
+          <p>A concise explanation of the primary mode or main capability. <strong>This explains who it is built for and what benefit they get</strong> &mdash; straightforward and easy to understand.</p>
         </div>
 
         <div class="hud-card">
           <div class="hud-card-header">
-            <span class="hud-card-title">Public Swarm</span>
-            <span class="hud-badge cyan">OPEN MESH</span>
+            <span class="hud-card-title">Secondary Feature Mode</span>
+            <span class="hud-badge cyan">CORE BENEFIT</span>
           </div>
-          <p>An open mesh where devices help bounce encrypted traffic for each other. <strong>More participants make it harder to block</strong> &mdash; a practical way around censorship.</p>
+          <p>A concise explanation of an alternative mode, collaborative setup, or secondary capability. <strong>Highlights flexibility and seamless user experience</strong> across any device.</p>
         </div>
       </div>
 
       <div class="cta-row">
-        <a class="btn-download-tactical" href="#deploy">Download App &darr;</a>
+        <a class="btn-download-tactical" href="#deploy">Call to Action Button &darr;</a>
       </div>
     </section>
 
@@ -665,77 +665,77 @@
           <div class="term-dot yellow"></div>
           <div class="term-dot green"></div>
         </div>
-        <span>vantablack-daemon // live-status-monitor</span>
-        <span>PORT: 2270 (SOCKS5: 1080)</span>
+        <span>application-daemon // live-status-monitor</span>
+        <span>STATUS: ACTIVE &bull; PORT: 8080</span>
       </div>
       <div class="term-content" id="termOutput">
-        <div><span class="term-prompt">root@vantablack:~$</span> <span class="term-cmd">vantablack status --verbose</span></div>
-        <div style="color: #00ff66; margin-top: 6px;">[✓] Quantum KEM: ML-KEM-768 initialized (Kyber-768 FIPS 203)</div>
-        <div>[✓] Transport: Multipath Reed-Solomon RS(2,1) erasure sharding active</div>
-        <div>[✓] NAT Traversal: Direct hole-punching established (0 router ports exposed)</div>
-        <div style="color: #00f0ff;">[✓] Memory Protection: AES-256-XTS zeroization guards active in volatile RAM</div>
-        <div style="color: #7ca4b0; margin-top: 6px;"><span class="term-prompt">root@vantablack:~$</span> <span class="term-cmd">vantablack route --peers</span></div>
-        <div style="color: #e0f8ff;">PEER [us-east-srv01] &bull; 100.64.0.12 &bull; LATENCY: 14ms &bull; CRYPTO: ML-KEM-768/X25519 &bull; MULTIPATH ACTIVE</div>
-        <div style="color: #e0f8ff;">PEER [eu-central-box] &bull; 100.64.0.18 &bull; LATENCY: 22ms &bull; CRYPTO: ML-KEM-768/X25519 &bull; SHARD RECONSTRUCTION OK</div>
+        <div><span class="term-prompt">user@system:~$</span> <span class="term-cmd">app status --verbose</span></div>
+        <div style="color: #00ff66; margin-top: 6px;">[✓] Core Engine: Running and initialized successfully</div>
+        <div>[✓] Data Synchronization: Connected to local cluster with 0 errors</div>
+        <div>[✓] Network Handshake: Direct peer-to-peer verification complete</div>
+        <div style="color: #00f0ff;">[✓] Security Layer: Encryption and integrity checks passed</div>
+        <div style="color: #7ca4b0; margin-top: 6px;"><span class="term-prompt">user@system:~$</span> <span class="term-cmd">app test-connection --peers</span></div>
+        <div style="color: #e0f8ff;">NODE [primary-server] &bull; 100.64.0.10 &bull; LATENCY: 12ms &bull; STATUS: CONNECTED</div>
+        <div style="color: #e0f8ff;">NODE [remote-worker]  &bull; 100.64.0.15 &bull; LATENCY: 19ms &bull; STATUS: CONNECTED</div>
       </div>
       <div class="term-btn-row">
-        <button class="term-btn" onclick="runTermCmd('peers')">&gt; Check Peers</button>
-        <button class="term-btn" onclick="runTermCmd('crypto')">&gt; Verify Quantum Keys</button>
-        <button class="term-btn" onclick="runTermCmd('loss')">&gt; Test RS(2,1) Loss Resilience</button>
-        <button class="term-btn" onclick="runTermCmd('clear')">&gt; Clear Terminal</button>
+        <button class="term-btn" onclick="runTermCmd('peers')">&gt; Check Status</button>
+        <button class="term-btn" onclick="runTermCmd('crypto')">&gt; Run Diagnostics</button>
+        <button class="term-btn" onclick="runTermCmd('loss')">&gt; Test Connection</button>
+        <button class="term-btn" onclick="runTermCmd('clear')">&gt; Clear Output</button>
       </div>
     </div>
 
     <!-- CAPABILITIES -->
     <section id="capabilities">
       <div class="section-head">
-        <span class="section-tag">Architecture</span>
-        <h2>Designed for sovereignty, privacy, and durability</h2>
-        <p>A resilient foundation for personal infrastructure, remote operations, and secure networking.</p>
+        <span class="section-tag">Key Capabilities</span>
+        <h2>Designed for Simplicity, Reliability, and Speed</h2>
+        <p>A clear summary sentence introducing the core features and architectural benefits detailed below.</p>
       </div>
 
       <div class="feature-list">
         <div class="feature-row">
           <div class="feature-meta">
-            <span class="feature-tag">Infrastructure</span>
-            <h3>Universal private interconnect</h3>
+            <span class="feature-tag">Capability 01</span>
+            <h3>Primary Feature Title</h3>
           </div>
           <div class="feature-body">
-            <p>Connect home servers, workstations, edge hardware, and cloud VPS instances into a single flat private network. Devices find each other automatically across NAT firewalls, home routers, and changing IP addresses without opening router ports or exposing services to the public internet.</p>
-            <div class="feature-detail">Works across any carrier or provider &bull; Zero firewall reconfiguration required</div>
+            <p>This is where you explain the first major feature in detail. Describe how it functions, what user friction it eliminates, and why it provides a superior experience compared to existing traditional tools.</p>
+            <div class="feature-detail">Key performance metric or technical advantage goes here &bull; Zero configuration required</div>
           </div>
         </div>
 
         <div class="feature-row">
           <div class="feature-meta">
-            <span class="feature-tag">Resilience</span>
-            <h3>Multipath route dispersion</h3>
+            <span class="feature-tag">Capability 02</span>
+            <h3>Secondary Feature Title</h3>
           </div>
           <div class="feature-body">
-            <p>Outbound traffic is mathematically divided across multiple independent carrier paths simultaneously. A listener observing any single network link or tap sees only undecipherable random slices. Even if a link is completely severed or drops out mid-stream, remaining paths deliver the full message intact with zero retransmission delay.</p>
-            <div class="feature-detail">Survives carrier drops and transit failures automatically via Reed-Solomon RS(2,1)</div>
+            <p>This paragraph covers the second key capability, focusing on reliability, throughput, and fault tolerance. Explain how the system remains resilient even under unstable conditions or unexpected carrier drops.</p>
+            <div class="feature-detail">Automatic failover &bull; Continuous uninterrupted delivery</div>
           </div>
         </div>
 
         <div class="feature-row">
           <div class="feature-meta">
-            <span class="feature-tag">Cryptography</span>
-            <h3>Post-quantum security by default</h3>
+            <span class="feature-tag">Capability 03</span>
+            <h3>Security &amp; Data Protection</h3>
           </div>
           <div class="feature-body">
-            <p>All sessions negotiate keys using hybrid post-quantum lattice cryptography (ML-KEM-768, FIPS 203) combined with classical X25519 curve algorithms, picking the strongest suite both peers support. Traffic captured today remains protected against future quantum decryption. Session master keys exist only in volatile RAM while active and are never written to disk or swap storage.</p>
-            <div class="feature-detail">Formally verified via ProVerif 2.05 &bull; Volatile Zeroization on Drop</div>
+            <p>Here you outline the privacy and security guarantees. Explain the encryption methods employed, how sensitive user data is handled, and why users can rely on the system without worrying about third-party interception.</p>
+            <div class="feature-detail">End-to-end encrypted &bull; Zero third-party telemetry &bull; Peer-verified</div>
           </div>
         </div>
 
         <div class="feature-row">
           <div class="feature-meta">
-            <span class="feature-tag">Decentralized Storage</span>
-            <h3>Serverless blind storage</h3>
+            <span class="feature-tag">Capability 04</span>
+            <h3>Data Management &amp; Storage</h3>
           </div>
           <div class="feature-body">
-            <p>Store and exchange encrypted data asynchronously without central servers or rendezvous points. Destinations are addressed by cryptographic hash commitments; hosts store blind ciphertext with zero knowledge of content or recipients, while adaptive Poisson decay and Merkle anti-entropy reconcile partitions automatically.</p>
-            <div class="feature-detail">Serverless blind storage &bull; Merkle blackout reconciliation &bull; Zero metadata at rest</div>
+            <p>Describe data persistence, synchronization, and storage options. Clarify how state is preserved across reboots and how multiple devices reconcile updates smoothly without centralized bottlenecks.</p>
+            <div class="feature-detail">Lightweight footprint &bull; Automatic conflict resolution &bull; Local-first</div>
           </div>
         </div>
       </div>
@@ -744,89 +744,62 @@
     <!-- SOTA TABLE -->
     <section id="sota" style="margin-top: 80px;">
       <div class="section-head">
-        <span class="section-tag">Competitive Architecture &bull; SOTA</span>
-        <h2>How Vantablack Compares</h2>
-        <p>Engineered from first principles to exceed WireGuard, Tailscale, Tor, and commercial VPNs simultaneously across post-quantum defense, loss resilience, and zero-trust decentralization.</p>
+        <span class="section-tag">Feature Comparison</span>
+        <h2>How This Solution Compares</h2>
+        <p>An objective breakdown comparing your product with typical alternatives across key criteria.</p>
       </div>
 
       <div class="sota-table-wrapper">
         <table class="sota-table">
           <thead>
             <tr>
-              <th>Capability &amp; Plain English Purpose</th>
-              <th class="col-ggn">Vantablack (SOTA)</th>
-              <th>WireGuard</th>
-              <th>Tailscale</th>
-              <th>Tor Network</th>
-              <th>Commercial VPN</th>
+              <th>Evaluation Criteria &amp; Metric</th>
+              <th class="col-ggn">Your Product (Recommended)</th>
+              <th>Alternative A</th>
+              <th>Alternative B</th>
+              <th>Alternative C</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td>
-                <div class="feature-name">Post-Quantum Cryptography</div>
-                <div class="feature-desc">Protection against future quantum supercomputers decrypting traffic.</div>
+                <div class="feature-name">Security &amp; Encryption Standard</div>
+                <div class="feature-desc">How sensitive communications and user data are protected.</div>
               </td>
-              <td class="col-ggn-val"><strong>Hybrid ML-KEM-768 + ML-DSA-65 + X25519 (FIPS 203 / 204)</strong></td>
-              <td>Classical Only (Curve25519)</td>
-              <td>Classical Only (Curve25519)</td>
-              <td>Classical Only (Curve25519 / RSA)</td>
-              <td>Classical Only (RSA / ECDH)</td>
+              <td class="col-ggn-val"><strong>Modern End-to-End Cryptography by Default</strong></td>
+              <td>Basic Encryption Only</td>
+              <td>Basic Encryption Only</td>
+              <td>Optional or Manual Setup</td>
             </tr>
             <tr>
               <td>
-                <div class="feature-name">Network Architecture</div>
-                <div class="feature-desc">Can the network be shut down by attacking a central company or login server?</div>
+                <div class="feature-name">Architecture &amp; Hosting Model</div>
+                <div class="feature-desc">Whether the system requires accounts, logins, or centralized servers.</div>
               </td>
-              <td class="col-ggn-val"><strong>100% Serverless Autonomous Mesh (No coordinator, zero accounts)</strong></td>
-              <td>Point-to-Point (Manual configuration)</td>
-              <td>Centralized (Requires Tailscale / Google / MS login)</td>
-              <td>Semi-Centralized (Relies on 9 Directory Authorities)</td>
-              <td>Centralized (Provider servers &amp; billing accounts)</td>
+              <td class="col-ggn-val"><strong>100% Direct Peer-to-Peer (No account or coordinator required)</strong></td>
+              <td>Manual Point-to-Point</td>
+              <td>Centralized Cloud Login</td>
+              <td>Third-Party Server Hosting</td>
             </tr>
             <tr>
               <td>
-                <div class="feature-name">Packet Loss &amp; Jitter</div>
-                <div class="feature-desc">What happens during carrier drops, jitter, or transit congestion?</div>
+                <div class="feature-name">Reliability &amp; Drop Tolerance</div>
+                <div class="feature-desc">How connections recover from latency spikes and dropped packets.</div>
               </td>
-              <td class="col-ggn-val"><strong>Reed-Solomon RS(2,1) Erasure (Any 2 of 3 shards reconstruct with 0ms delay)</strong></td>
-              <td>Single Path (Retransmits dropped packets)</td>
-              <td>Single Path (Retransmits dropped packets)</td>
-              <td>Single TCP Circuit (Head-of-line blocking stalls stream)</td>
-              <td>Single Tunnel (Connection latency stalls)</td>
+              <td class="col-ggn-val"><strong>Seamless Recovery with Zero Retransmit Delays</strong></td>
+              <td>Standard Retransmit Delay</td>
+              <td>Connection Stalls on Drop</td>
+              <td>Manual Reconnect Required</td>
             </tr>
             <tr>
               <td>
-                <div class="feature-name">Mobile Roaming Handover</div>
-                <div class="feature-desc">Does your connection freeze or disconnect when switching Wi-Fi to LTE?</div>
+                <div class="feature-name">Ease of Setup &amp; Onboarding</div>
+                <div class="feature-desc">Time required from installation to an active running connection.</div>
               </td>
-              <td class="col-ggn-val"><strong>Zero-RST Silent Re-Anchor (Seamless live session migration; 0 dropped frames)</strong></td>
-              <td>Endpoint Roaming (Requires packet exchange)</td>
-              <td>DERP Relay Switch (Session stalls or re-handshakes)</td>
-              <td>Circuit Breaks (Must negotiate brand new 3-hop circuit)</td>
-              <td>Tunnel Drops (10–30 second disconnection &amp; leak)</td>
-            </tr>
-            <tr>
-              <td>
-                <div class="feature-name">Censorship &amp; DPI Disguise</div>
-                <div class="feature-desc">Can an ISP or national firewall detect that you are running a mesh/VPN?</div>
-              </td>
-              <td class="col-ggn-val"><strong>Uniform 576B Frames + Authenticated Jitter + Poisson Cover (Noise)</strong></td>
-              <td>Known Packet Lengths &amp; Handshake Headers</td>
-              <td>WireGuard Fingerprints (Easily throttled)</td>
-              <td>Obfs4 transports (Base Tor easily blocked)</td>
-              <td>Standard OpenVPN / WireGuard / IPsec headers</td>
-            </tr>
-            <tr>
-              <td>
-                <div class="feature-name">In-Memory Hardware Defense</div>
-                <div class="feature-desc">Are keys protected against RAM dump attacks if physical device is seized?</div>
-              </td>
-              <td class="col-ggn-val"><strong>AES-256-XTS Memory Hardening + Volatile Zeroization on Drop</strong></td>
-              <td>Kernel memory zeroing (Plaintext in RAM)</td>
-              <td>Standard user-space memory</td>
-              <td>Standard user-space memory</td>
-              <td>Standard user-space memory</td>
+              <td class="col-ggn-val"><strong>Instant 1-Click Launch (Zero configuration needed)</strong></td>
+              <td>Complex Terminal Commands</td>
+              <td>Multi-Step Registration Wizard</td>
+              <td>Manual Config File Editing</td>
             </tr>
           </tbody>
         </table>
@@ -836,34 +809,33 @@
     <!-- DEPLOY -->
     <section id="deploy">
       <div class="app-download-box">
-        <h3>Download Vantablack</h3>
-        <p style="color: var(--text-muted); max-width: 640px; margin: 0 auto 24px;">Vantablack is a native desktop app with a built-in control window and system tray icon. Download the installer, run it, and flip the connect switch &mdash; no terminal, no account, and no setup wizard required.</p>
+        <h3>Get Started with the Application</h3>
+        <p style="color: var(--text-muted); max-width: 640px; margin: 0 auto 24px;">The application runs as a lightweight native utility in your system tray. Download the installer, launch it, and activate your connection with a single click &mdash; no complicated wizard or signup forms.</p>
         <div style="display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;">
-          <a class="btn-download-tactical" href="https://github.com/KELLERBABG/Vantablack/releases/latest" target="_blank" rel="noopener">
-            Download for Windows (.exe) &darr;
+          <a class="btn-download-tactical" href="#deploy">
+            Download for Desktop (.exe) &darr;
           </a>
         </div>
       </div>
 
       <div class="route-grid">
         <div class="route-card">
-          <h4>01. Build from Cargo Source</h4>
-          <p>Compiles in seconds with zero external dependencies:</p>
-          <pre>git clone https://github.com/KELLERBABG/Vantablack.git
-cd Vantablack
+          <h4>01. Simple Installation</h4>
+          <p>Download the pre-compiled binary or clone the source:</p>
+          <pre>git clone https://example.com/project.git
+cd project
 cargo run --release</pre>
         </div>
         <div class="route-card">
-          <h4>02. Isolated Private Network</h4>
-          <p>Generate a 256-bit isolation token for your devices only:</p>
-          <pre>openssl rand -hex 32
-export GHOST_PSK=&lt;token&gt;
-ggn</pre>
+          <h4>02. Quick Configuration</h4>
+          <p>Optionally specify private network credentials or run with defaults:</p>
+          <pre>export APP_TOKEN=&lt;your-token&gt;
+app start</pre>
         </div>
         <div class="route-card">
-          <h4>03. Local SOCKS5 Proxy</h4>
-          <p>Route encrypted traffic immediately through port 1080:</p>
-          <pre>curl --socks5 127.0.0.1:1080 https://checkip.amazonaws.com
+          <h4>03. Verification &amp; Control</h4>
+          <p>Access the control panel or test local proxy connectivity:</p>
+          <pre>curl http://localhost:8080/health
 open http://localhost:2270</pre>
         </div>
       </div>
@@ -871,11 +843,11 @@ open http://localhost:2270</pre>
 
     <!-- FOOTER -->
     <footer>
-      <div>&copy; 2026 Keller Systems &bull; Vantablack Cyber-CRT Testing Suite</div>
+      <div>&copy; 2026 Your Company Name &bull; Product Name</div>
       <div>
-        <a href="/docs" style="margin-right: 18px;">Documentation</a>
-        <a href="https://kellersystems.dev" target="_blank" rel="noopener" style="margin-right: 18px;">kellersystems.dev</a>
-        <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" rel="noopener">GitHub</a>
+        <a href="#capabilities" style="margin-right: 18px;">Features</a>
+        <a href="#sota" style="margin-right: 18px;">Comparison</a>
+        <a href="#deploy">Get Started</a>
       </div>
     </footer>
   </div>
@@ -894,26 +866,23 @@ open http://localhost:2270</pre>
       var out = document.getElementById('termOutput');
       if (!out) return;
       if (cmd === 'clear') {
-        out.innerHTML = '<div><span class="term-prompt">root@vantablack:~$</span> <span class="term-cmd">clear</span></div>';
+        out.innerHTML = '<div><span class="term-prompt">user@system:~$</span> <span class="term-cmd">clear</span></div>';
         return;
       }
       var block = document.createElement('div');
       block.style.marginTop = '10px';
       if (cmd === 'peers') {
-        block.innerHTML = '<div><span class="term-prompt">root@vantablack:~$</span> <span class="term-cmd">vantablack route --peers</span></div>' +
-          '<div style="color: #00ff66;">[OK] Active mesh peers: 6 nodes online (0 dropouts)</div>' +
-          '<div style="color: #e0f8ff;">  -> [srv-tokyo-01]  35.67N 139.65E  RTT: 18.2ms  CRYPTO: ML-KEM-768/X25519</div>' +
-          '<div style="color: #e0f8ff;">  -> [srv-frankfurt] 50.11N 8.68E    RTT: 12.1ms  CRYPTO: ML-KEM-768/X25519</div>' +
-          '<div style="color: #e0f8ff;">  -> [vps-nyc-east]  40.71N -74.00W  RTT: 15.4ms  CRYPTO: ML-KEM-768/X25519</div>';
+        block.innerHTML = '<div><span class="term-prompt">user@system:~$</span> <span class="term-cmd">app test-connection</span></div>' +
+          '<div style="color: #00ff66;">[OK] Active services: 3 nodes online and healthy</div>' +
+          '<div style="color: #e0f8ff;">  -> [primary-srv]  RTT: 12.4ms  STATUS: CONNECTED</div>' +
+          '<div style="color: #e0f8ff;">  -> [backup-srv]   RTT: 18.1ms  STATUS: CONNECTED</div>';
       } else if (cmd === 'crypto') {
-        block.innerHTML = '<div><span class="term-prompt">root@vantablack:~$</span> <span class="term-cmd">vantablack crypto audit</span></div>' +
-          '<div style="color: #00f0ff;">[✓] FIPS 203 ML-KEM-768: Active (Key encapsulation verified)</div>' +
-          '<div style="color: #00f0ff;">[✓] FIPS 204 ML-DSA-65: Active (Signatures valid)</div>' +
-          '<div style="color: #00ff66;">[✓] RAM Hardening: AES-256-XTS zeroization guards engaged</div>';
+        block.innerHTML = '<div><span class="term-prompt">user@system:~$</span> <span class="term-cmd">app run-diagnostics</span></div>' +
+          '<div style="color: #00f0ff;">[✓] Core Verification: Passed (Integrity 100%)</div>' +
+          '<div style="color: #00ff66;">[✓] Service Status: Ready for requests</div>';
       } else if (cmd === 'loss') {
-        block.innerHTML = '<div><span class="term-prompt">root@vantablack:~$</span> <span class="term-cmd">vantablack test-loss --drop 33%</span></div>' +
-          '<div style="color: #f59e0b;">[!] Simulating 33% packet drop on Transit Carrier 2...</div>' +
-          '<div style="color: #00ff66;">[✓] Reed-Solomon RS(2,1): Payload reconstructed 100% intact from remaining 2 shards. Retransmits: 0. Delay: 0ms.</div>';
+        block.innerHTML = '<div><span class="term-prompt">user@system:~$</span> <span class="term-cmd">app ping-cluster</span></div>' +
+          '<div style="color: #00ff66;">[✓] Round-trip latency: 14ms (0% packet drop)</div>';
       }
       out.appendChild(block);
       out.scrollTop = out.scrollHeight;
@@ -947,7 +916,7 @@ open http://localhost:2270</pre>
         pos[i * 3]     = Math.cos(phi) * r * R;
         pos[i * 3 + 1] = y * R;
         pos[i * 3 + 2] = Math.sin(phi) * r * R;
-        col[i * 3] = 0.0; col[i * 3 + 1] = 0.95; col[i * 3 + 2] = 0.65; // Phosphor green & cyan
+        col[i * 3] = 0.0; col[i * 3 + 1] = 0.95; col[i * 3 + 2] = 0.65;
       }
       var geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
