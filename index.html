@@ -24,7 +24,7 @@
   <meta name="twitter:title" content="Vantablack — Connect your computers directly.">
   <meta name="twitter:description" content="One private network for your home server, laptop, and cloud machines. No accounts, no central servers, no surveillance.">
   <meta name="twitter:image" content="https://vantablack.kellersystems.dev/assets/og-image.png?v=3">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -94,7 +94,7 @@
     .vignette {
       position: fixed;
       inset: 0;
-      background: radial-gradient(circle at 65% 38%, transparent 25%, rgba(5, 7, 10, 0.68) 65%, var(--bg) 95%);
+      background: radial-gradient(ellipse at 50% 38%, transparent 30%, rgba(5, 7, 10, 0.72) 62%, var(--bg) 92%);
       pointer-events: none;
       z-index: 1;
     }
@@ -610,8 +610,7 @@
     footer a { color: var(--text-muted); text-decoration: none; transition: color .15s; }
     footer a:hover { color: var(--text); }
     .footer-right { display: flex; flex-wrap: wrap; gap: 18px; }
-  
-    </style>
+  </style>
 </head>
 <body>
 
@@ -677,6 +676,7 @@
 
       <div class="cta-row">
         <a class="btn btn-primary" href="#deploy">Download App &darr;</a>
+        <a class="btn btn-ghost" href="https://github.com/KELLERBABG/Vantablack" target="_blank" rel="noopener">Source Code &nearr;</a>
       </div>
     </header>
 
@@ -1017,11 +1017,10 @@
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
       var globe = new THREE.Points(geo, new THREE.PointsMaterial({
-        size: 2.4, vertexColors: true, transparent: true, opacity: 0.85,
+        size: 1.75, vertexColors: true, transparent: true, opacity: 0.55,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
-            scene.add(globe);
-      window._vbGlobePoints = globe;
+      scene.add(globe);
 
       var segs = [], LIMIT = 34;
       for (var a = 0; a < N; a++) {
@@ -1038,11 +1037,10 @@
       var lgeo = new THREE.BufferGeometry();
       lgeo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
       var lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({
-        color: 0x22d3ee, transparent: true, opacity: 0.18,
+        color: 0x22d3ee, transparent: true, opacity: 0.08,
         blending: THREE.AdditiveBlending, depthWrite: false
       }));
-            scene.add(lines);
-      window._vbGlobeLines = lines;
+      scene.add(lines);
 
       scene.position.set(96, -34, 0);
 
@@ -1050,33 +1048,22 @@
         var w = window.innerWidth, h = window.innerHeight;
         renderer.setSize(w, h, false);
         camera.aspect = w / h;
-        camera.position.z = w < 820 ? 380 : 300;
-        if (scene) {
-          scene.position.x = w < 960 ? 0 : 96;
-          scene.position.y = w < 960 ? -15 : -34;
-        }
+        camera.position.z = w < 820 ? 400 : 300;
         camera.updateProjectionMatrix();
       }
       resize();
       window.addEventListener('resize', resize);
 
-      // Always animate hero globe (prevent Windows reduced-motion hard stop)
+      if (reduce) { renderer.render(scene, camera); return; }
 
       (function frame() {
         requestAnimationFrame(frame);
-        globe.rotation.y += 0.0016;
+        globe.rotation.y += 0.0006;
         globe.rotation.x = Math.sin(Date.now() * 0.0001) * 0.05;
         lines.rotation.copy(globe.rotation);
         renderer.render(scene, camera);
       })();
     })();
-  
-    </script>
-
-  
-
-
-  
-
+  </script>
 </body>
 </html>
