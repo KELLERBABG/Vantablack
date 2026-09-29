@@ -3,8 +3,8 @@ version: '3.8'
 services:
   mesh-carrier-1:
     build:
-      context: .
-      dockerfile: Dockerfile.wan
+      context: ..
+      dockerfile: docker/Dockerfile.wan
     container_name: vantablack-carrier-1
     cap_add:
       - NET_ADMIN
@@ -18,8 +18,8 @@ services:
 
   mesh-carrier-2:
     build:
-      context: .
-      dockerfile: Dockerfile.wan
+      context: ..
+      dockerfile: docker/Dockerfile.wan
     container_name: vantablack-carrier-2
     cap_add:
       - NET_ADMIN
@@ -34,8 +34,8 @@ services:
 
   mesh-carrier-3:
     build:
-      context: .
-      dockerfile: Dockerfile.wan
+      context: ..
+      dockerfile: docker/Dockerfile.wan
     container_name: vantablack-carrier-3
     cap_add:
       - NET_ADMIN
@@ -49,8 +49,8 @@ services:
 
   mesh-carrier-4:
     build:
-      context: .
-      dockerfile: Dockerfile.wan
+      context: ..
+      dockerfile: docker/Dockerfile.wan
     container_name: vantablack-carrier-4
     cap_add:
       - NET_ADMIN
@@ -64,8 +64,8 @@ services:
 
   mesh-carrier-5:
     build:
-      context: .
-      dockerfile: Dockerfile.wan
+      context: ..
+      dockerfile: docker/Dockerfile.wan
     container_name: vantablack-carrier-5
     cap_add:
       - NET_ADMIN
@@ -79,8 +79,8 @@ services:
 
   mesh-exit:
     build:
-      context: .
-      dockerfile: Dockerfile.wan
+      context: ..
+      dockerfile: docker/Dockerfile.wan
     container_name: vantablack-exit
     cap_add:
       - NET_ADMIN
@@ -99,8 +99,8 @@ services:
 
   mesh-client:
     build:
-      context: .
-      dockerfile: Dockerfile.wan
+      context: ..
+      dockerfile: docker/Dockerfile.wan
     container_name: vantablack-client
     cap_add:
       - NET_ADMIN
