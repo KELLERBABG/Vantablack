@@ -548,13 +548,19 @@ impl Session {
     /// Install a prepared epoch. Called on the responder side once a frame has
     /// actually authenticated under it.
     pub fn activate_epoch(&self, epoch: u64) -> bool {
-        let activated = self
-            .ratchet
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .activate(epoch);
+        // Increment `ratchet_steps` *inside* the ratchet lock so that any
+        // observer who acquires the lock and sees `epoch() == N` is guaranteed
+        // to also see the updated counter (mutex release establishes
+        // happens-before for all writes done before the unlock).
+        let activated = {
+            let mut g = self.ratchet.lock().unwrap_or_else(|e| e.into_inner());
+            let a = g.activate(epoch);
+            if a {
+                self.ratchet_steps.fetch_add(1, Ordering::Relaxed);
+            }
+            a
+        };
         if activated {
-            self.ratchet_steps.fetch_add(1, Ordering::Relaxed);
             self.guard.lock().unwrap_or_else(|e| e.into_inner()).reset();
             // A *quantum-prepared* epoch landing here is the L10 mix completing.
             // On the answering side that happens when the starter's first frame in
@@ -636,13 +642,20 @@ impl Session {
 
     /// Apply a completed ratchet step. Returns the new epoch.
     pub fn apply_ratchet_step(&self, secrets: &StepSecrets) -> u64 {
-        let epoch = self
-            .ratchet
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .step(secrets);
-        self.ratchet_steps.fetch_add(1, Ordering::Relaxed);
-        self.ratchet_in_progress.store(false, Ordering::Relaxed);
+        // Publish the new epoch and the bookkeeping that describes it under one
+        // lock, for the same reason `activate_epoch` does: a reader who acquires
+        // the ratchet lock and sees `epoch() == N` must also see `ratchet_steps`
+        // counted and the step no longer in flight. Incrementing *after* the
+        // guard was dropped let an observer watch the epoch turn while the
+        // counter was still a step behind — there is no other way for the live
+        // epoch to advance, so a reader could see epoch 1 with zero steps.
+        let epoch = {
+            let mut g = self.ratchet.lock().unwrap_or_else(|e| e.into_inner());
+            let epoch = g.step(secrets);
+            self.ratchet_steps.fetch_add(1, Ordering::Relaxed);
+            self.ratchet_in_progress.store(false, Ordering::Relaxed);
+            epoch
+        };
         *self.pending_step.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self
             .ratchet_step_at
