@@ -1,6 +1,6 @@
 <div align="center">
 
-# &#128420; Vantablack
+# Vantablack
 
 **Autonomous Post-Quantum WAN Mesh Routing & Serverless Traffic Sharding**
 
