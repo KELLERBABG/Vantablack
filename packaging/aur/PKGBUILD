@@ -1,0 +1,40 @@
+# Maintainer: Keller Systems <security@kellersystems.dev>
+pkgname=vantablack-bin
+pkgver=0.8.0
+pkgrel=1
+pkgdesc="Autonomous Post-Quantum WAN Mesh Routing Daemon & Serverless Sharding VPN"
+arch=('x86_64')
+url="https://vantablack.kellersystems.dev"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator')
+optdepends=(
+    'wireguard-tools: kernel wireguard interop'
+)
+provides=('vantablack' 'ggn')
+conflicts=('vantablack')
+source=("https://github.com/KELLERBABG/Vantablack/releases/download/v${pkgver}/ggn-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz"
+        "vantablack.service"
+        "vantablack.desktop")
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
+
+package() {
+    install -Dm755 "${srcdir}/ggn" "${pkgdir}/usr/bin/ggn"
+    ln -s "/usr/bin/ggn" "${pkgdir}/usr/bin/vantablack"
+
+    if [ -f "${srcdir}/ggn-headless" ]; then
+        install -Dm755 "${srcdir}/ggn-headless" "${pkgdir}/usr/bin/ggn-headless"
+    fi
+
+    # Systemd Service
+    install -Dm644 "${srcdir}/vantablack.service" "${pkgdir}/usr/lib/systemd/system/vantablack.service"
+
+    # Desktop Launcher
+    install -Dm644 "${srcdir}/vantablack.desktop" "${pkgdir}/usr/share/applications/vantablack.desktop"
+
+    # License
+    if [ -f "${srcdir}/LICENSE" ]; then
+        install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    fi
+}

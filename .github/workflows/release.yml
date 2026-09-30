@@ -120,6 +120,15 @@ jobs:
           cp LICENSE staging/ 2>/dev/null || true
           tar -czvf ggn-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C staging .
 
+      - name: Build Debian package (.deb)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo install cargo-deb --locked
+          mkdir -p target/release
+          cp target/${{ matrix.target }}/release/ggn target/release/ggn
+          cargo deb --no-build
+          cp target/debian/*.deb ./
+
       - name: Upload artifact to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -127,6 +136,7 @@ jobs:
             ggn-*.zip
             ggn-*.tar.gz
             dist/*.exe
+            *.deb
           generate_release_notes: true
           draft: false
           prerelease: false

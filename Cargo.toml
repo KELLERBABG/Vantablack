@@ -169,5 +169,24 @@ rustls-pemfile = { version = "2", optional = true }
 # the `quic` feature, so it adds no new crate to the lockfile.
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 
-
-
+[package.metadata.deb]
+name = "vantablack"
+maintainer = "Keller Systems <security@kellersystems.dev>"
+copyright = "2026 Keller Systems <security@kellersystems.dev>"
+license-file = ["LICENSE", "4"]
+extended-description = """
+Vantablack is an autonomous peer-to-peer mesh routing daemon written in pure Rust.
+Featuring hybrid ML-KEM-768 / X25519 cryptography, Reed-Solomon RS(2,1) multi-path sharding,
+ShardSec per-shard authentication, SessionGuard anti-replay sliding window, and instant local SOCKS5 proxy.
+"""
+depends = "$auto, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/ggn", "usr/bin/ggn", "755"],
+    ["target/release/ggn", "usr/bin/vantablack", "755"],
+    ["packaging/debian/vantablack.desktop", "usr/share/applications/vantablack.desktop", "644"],
+    ["packaging/debian/vantablack.service", "lib/systemd/system/vantablack.service", "644"],
+    ["assets/icon.svg", "usr/share/icons/hicolor/scalable/apps/vantablack.svg", "644"],
+    ["README.md", "usr/share/doc/vantablack/README.md", "644"],
+]

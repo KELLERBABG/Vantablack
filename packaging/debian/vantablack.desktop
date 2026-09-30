@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Vantablack
+Comment=Autonomous Post-Quantum WAN Mesh Routing Daemon
+Exec=/usr/bin/ggn
+Icon=vantablack
+Terminal=false
+Type=Application
+Categories=Network;Security;VPN;
+StartupWMClass=Vantablack

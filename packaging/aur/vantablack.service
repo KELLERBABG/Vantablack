@@ -1,0 +1,15 @@
+[Unit]
+Description=Vantablack Post-Quantum WAN Mesh Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/ggn-headless
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
