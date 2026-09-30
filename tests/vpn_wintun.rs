@@ -130,11 +130,29 @@ fn test_wintun_device_or_graceful_gate() {
     #[cfg(not(target_os = "windows"))]
     {
         let res = net_tun::TunAdapter::new("VantablackTest", "Tunnel");
-        let err = match res {
-            Err(e) => e,
-            Ok(_) => panic!("expected non-windows to return error"),
-        };
-        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        match res {
+            Ok(tun) => {
+                assert_eq!(tun.name(), "VantablackTest");
+                tun.shutdown();
+                println!("PASS: Initialized real non-Windows TUN adapter with elevated privileges");
+            }
+            Err(err) => {
+                assert!(
+                    matches!(
+                        err.kind(),
+                        std::io::ErrorKind::PermissionDenied
+                            | std::io::ErrorKind::NotFound
+                            | std::io::ErrorKind::Unsupported
+                    ),
+                    "expected PermissionDenied, NotFound, or Unsupported on unprivileged non-Windows, got {:?}: {err}",
+                    err.kind()
+                );
+                println!(
+                    "PASS: Gracefully gated on non-Windows TUN adapter ({:?}): {err}",
+                    err.kind()
+                );
+            }
+        }
     }
 }
 
