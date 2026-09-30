@@ -355,9 +355,9 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 
 ---
 
-## Technical Architecture (L0-L9)
+## Technical Architecture (L0-L10)
 
-Vantablack implements the 10-layer GHOST protocol stack:
+Vantablack implements the GHOST protocol stack (L0–L9 core + L10 opt-in physical anchors):
 
 | Layer | Component | Specification |
 | :---: | :--- | :--- |
@@ -371,6 +371,7 @@ Vantablack implements the 10-layer GHOST protocol stack:
 | **L7** | Forward Error Correction | LDPC belief-propagation codec (compiled library primitive for high-BER links) |
 | **L8** | Memory Defense | Volatile key zeroization on drop + AES-256-XTS RAM-region protection |
 | **L9** | Infrastructure Trust | Hardware security / TPM / NTS time-sync abstraction layer |
+| **L10** | Physical Anchors *(Opt-In)* | **QEL** quantum ratchet entropy (`l10_qel` / ETSI GS QKD 014) + **ABOS** NVIS HF skywave carrier (`sdr_bridge`) |
 
 ---
 
@@ -414,9 +415,18 @@ cargo run --bin wan_mesh --no-default-features
 
 ---
 
-## Experimental Research Modules (not on the wire path)
+## Experimental Research Modules & Opt-In Physical Anchors
 
-The `src/ghost/net/` tree ships a set of compiled, unit-tested research modules that are **not invoked by the node's data path**. They are retained as available primitives and direction-of-travel, not as active behavior; auditors should treat them as dormant surface:
+### Opt-In Physical Anchors (wired into the daemon, disabled by default)
+
+Two research subsystems are fully wired into the daemon's live fallback ladder and session ratchet, but remain **strictly opt-in** so default IP deployments carry zero extra active surface:
+
+* **ABOS (Atmospheric Broadcast OS — Skywave Carrier):** Shipped in `abos/` and bridged via `src/ghost/net/sdr_bridge.rs`. When armed (`--skywave` / `GHOST_SKYWAVE=1`), it activates rung 4 of the connectivity fallback ladder (Direct UDP $\rightarrow$ Mesh Relay $\rightarrow$ TURN $\rightarrow$ **Skywave NVIS HF**), routing sealed GTF shards through the 2–10 MHz NVIS OFDM/DSSS/LDPC DSP pipeline (`--features sdr`) or a virtual UDP carrier (`GHOST_SKYWAVE_UDP`).
+* **QEL (Quantum Entanglement Link — L10 Entropy Anchor):** Shipped in `Quantum Entanglement Link/` and `src/ghost/layers/l10_qel.rs` (`l10_qel_etsi.rs`). When armed (`--quantum` / `GHOST_QUANTUM=1`), live sessions mix out-of-band quantum key material into the hybrid session ratchet (`HKDF-SHA256(root_key, qkd_key, "GHOST-L10-QUANTUM-ENTROPY-MIX-V1")`) using either the local BB84 fiber/decoherence simulator (`quantumnet`) or a hardware QKD appliance speaking **ETSI GS QKD 014** (`GHOST_QEL_BACKEND=etsi014` with mTLS).
+
+### Dormant Research Primitives (not on the wire path)
+
+The `src/ghost/net/` tree also ships a set of compiled, unit-tested research modules that are **not invoked by the node's data path**. They are retained as available primitives and direction-of-travel, not as active behavior; auditors should treat them as dormant surface:
 
 `sovereign_cloud` (jurisdiction-tagged storage placement), `energy_currency` (signed erasure-repair credit proofs), `stego_physics` (physical side-channel shard carriage: acoustic/thermal/optical — modulation math only, no device I/O), `sharded_compute` (RS-sharded inference with ASN diversity), `model_gossip` (federated cover-traffic parameter learning), `dead_drop` (blind commitment-addressed storage with Poisson decay), `mesh_archive` (content-hashed public RS(2,1) archives), `diffusion` (epidemic emergency shard dispersal), `collective_defense` (k-anonymous regional threat aggregation), `entropy_beacon` (threshold public randomness), `dtn_reconcile` (Merkle anti-entropy after partitions).
 

@@ -2555,20 +2555,42 @@ async fn handle_pq_auth_pdu(
         }
         let chunk_data = payload[data_start..data_start + chunk_len].to_vec();
 
+        let (ctx, already_authed, role, full_binding, pinned_pk, pinned_pq_comm, master_key) = {
+            let ctx = SealCtx::from_session(&sess);
+            let already_authed = sess.is_pq_authenticated();
+            let role = sess.role;
+            let full_binding = if already_authed {
+                None
+            } else {
+                sess.store_pq_chunk(chunk_idx, total_chunks, chunk_data)
+            };
+            let pinned_pk = sess.peer_identity_pk();
+            let pinned_pq_comm = sess.peer_pq_commitment();
+            let master_key = sess.master_key;
+            (
+                ctx,
+                already_authed,
+                role,
+                full_binding,
+                pinned_pk,
+                pinned_pq_comm,
+                master_key,
+            )
+        };
+        drop(sess);
+
         // Send ACK back to peer
         let mut ack_pdu = Vec::with_capacity(PQ_AUTH_ACK_MAGIC.len() + 1);
         ack_pdu.extend_from_slice(PQ_AUTH_ACK_MAGIC);
         ack_pdu.push(chunk_idx);
-        let ctx = SealCtx::from_session(&sess);
         let ack_frame = seal_single(&ctx, &ack_pdu);
         send_frame_to_peer(node, sock, src, fallback, peer_fp, ack_frame).await;
 
-        if let Some(full_binding) = sess.store_pq_chunk(chunk_idx, total_chunks, chunk_data) {
-            let pinned_pk = sess.peer_identity_pk();
-            let pinned_pq_comm = sess.peer_pq_commitment();
-            let master_key = sess.master_key;
-            drop(sess);
+        if already_authed {
+            return true;
+        }
 
+        if let Some(full_binding) = full_binding {
             if let Some(pk) = pinned_pk {
                 match l0_identity::verify_hybrid_binding(
                     &pk,
@@ -2585,6 +2607,15 @@ async fn handle_pq_auth_pdu(
                             peer = %peer_fp,
                             "Post-quantum hybrid authentication SUCCEEDED (ML-DSA-65) — session elevated to active"
                         );
+                        // The responder's initial PQ-auth burst leaves at ctr=0 immediately
+                        // after RESPONSE_NEGOTIATION_MAGIC (ctr=1), so on a fast carrier or
+                        // multi-core host its self-contained chunks can reach the initiator
+                        // before the initiator finishes ML-KEM-768 decapsulation and inserts
+                        // the session. Once the initiator's own proof authenticates here, the
+                        // initiator's session is guaranteed to be installed.
+                        if role == SessionRole::Responder {
+                            send_pq_auth_proof(node, sock, src, fallback, peer_fp).await;
+                        }
                     }
                     Err(err) => {
                         tracing::warn!(

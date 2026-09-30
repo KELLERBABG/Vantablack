@@ -447,13 +447,18 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
             "/api/peers/add",
             Some(&serde_json::json!({ "address": format!("127.0.0.1:{mesh_b}") })),
         );
+        for _ in 0..20 {
+            if a.sessions() >= 1 && b.sessions() >= 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
         if a.sessions() >= 1 && b.sessions() >= 1 {
             break;
         }
         if Instant::now() >= deadline {
             fail_with_logs(&a, &b, "no session formed between the two daemons".into());
         }
-        std::thread::sleep(Duration::from_secs(2));
     }
     println!("Session established on both nodes");
 
