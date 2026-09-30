@@ -162,6 +162,8 @@ The recommended way to install on Windows is the setup file attached to every
 ggn-<version>-windows-setup.exe
 ```
 
+> Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
 It installs **for the current user only**, so it never asks for administrator
 rights:
 
