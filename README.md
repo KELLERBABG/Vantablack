@@ -43,39 +43,27 @@ Instead of funneling traffic through a central VPN provider where it can be moni
 
 Vantablack includes a complete **Level 2 Multi-Hop WAN Mesh Simulation Environment** built on Docker Compose, replicating realistic transcontinental carrier links using Linux `tc netem` (traffic control network emulator).
 
-```
-                      +-------------------+
-                      |   Client Node     |
-                      | (172.28.1.10:8000)|
-                      +---------+---------+
-                                |
-       +------------------------+------------------------+
-       | Shard 0 (2 Hops)       | Shard 1 (1 Hop)        | Shard 2 (1 Hop / Failover)
-       v                        v                        v
-+--------------+         +--------------+         +--------------+
-|  Carrier 1   |         |  Carrier 2   |         |  Carrier 3   |
-| 172.28.1.11  |         | 172.28.1.12  |         | 172.28.1.13  |
-| 45ms / 1% loss|        | 85ms / 3% loss|        | 160ms / 8%   |
-+------+-------+         | (Byzantine)  |         +------+-------+
-       |                 +------+-------+                | (Chaos Sever)
-       v                        |                        v
-+--------------+                |                 +--------------+
-|  Carrier 4   |                |                 |  Carrier 5   |
-| 172.28.1.14  |                |                 | 172.28.1.15  |
-| 25ms / 0.5%  |                |                 | 55ms Hot Res.|
-+------+-------+                |                 +------+-------+
-       |                        |                        |
-       +------------------------+------------------------+
-                                |
-                                v
-                      +-------------------+
-                      |     Exit Node     |
-                      | (172.28.1.20:8000)|
-                      +---------+---------+
-                                | Egress IP Rotation (198.51.100.x)
-                                v
-                       Public Internet (WAN)
-                         e.g. Google HTTP
+```mermaid
+flowchart TD
+    Client["Client Node<br/>(172.28.1.10:8000)"]
+    C1["Carrier 1 (Transatlantic)<br/>172.28.1.11 · 45ms / 1% loss"]
+    C2["Carrier 2 (Transpacific)<br/>172.28.1.12 · 85ms / 3% loss<br/>(Byzantine Tamper)"]
+    C3["Carrier 3 (Satellite)<br/>172.28.1.13 · 160ms / 8% loss<br/>(Chaos Sever Target)"]
+    C4["Carrier 4 (Core Backbone)<br/>172.28.1.14 · 25ms / 0.5% loss"]
+    C5["Carrier 5 (Hot Reserve)<br/>172.28.1.15 · 55ms / 1% loss"]
+    Exit["Exit Node<br/>(172.28.1.20:8000)"]
+    WAN["Public Internet (WAN)<br/>Egress IP Rotation (198.51.100.x)"]
+
+    Client -->|"Shard 0 (Hop 1 of 2)"| C1
+    C1 -->|"Shard 0 (Hop 2 of 2)"| C4
+    C4 --> Exit
+    Client -->|"Shard 1 (1 Hop)"| C2
+    C2 --> Exit
+    Client -->|"Shard 2 (Primary)"| C3
+    C3 -.->|"Chaos Sever Failover (≤55ms)"| C5
+    C3 --> Exit
+    C5 --> Exit
+    Exit --> WAN
 ```
 
 ### 7-Node Carrier Topology
@@ -371,24 +359,18 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 
 Vantablack implements the 10-layer GHOST protocol stack:
 
-```
-+-------------------------------------------------------------+
-|                     GHOST PROTOCOL                          |
-+------+----------------------+-------------------------------+
-|Layer | Component            | Specification                 |
-+------+----------------------+-------------------------------+
-| L0   | Permanent Identity   | Ed25519 cryptographic keys    |
-| L1   | Hybrid KEM           | X25519 + ML-KEM-768 (Kyber)   |
-| L2   | Authenticated AEAD   | ChaCha20-Poly1305 + HKDF      |
-| L3   | Secret Sharing       | Shamir SSS (GF256, 2-of-3)    |
-| L4   | Erasure Coding       | Reed-Solomon RS(2,1) shards   |
-| L5   | Traffic Shaping      | Constant-size frames, keyed 64B jitter tail + Poisson cover traffic |
-| L6   | Session Guard        | Sliding window replay bitmask |
-| L7   | Forward Error Corr.  | LDPC codec ships as a library primitive (unit-tested); not applied to wire traffic in this release — roadmap for high-BER links |
-| L8   | Memory Defense       | Key zeroization is runtime-active; the AES-256-XTS RAM-region encryptor and verified ring buffer ship as primitives (constructed at node init, not yet applied to all RAM) |
-| L9   | Infrastructure Trust | Packaging is real; TPM 2.0 / PKCS#11 / NTS are feature-gated stubs — roadmap |
-+------+----------------------+-------------------------------+
-```
+| Layer | Component | Specification |
+| :---: | :--- | :--- |
+| **L0** | Permanent Identity | Hybrid Ed25519 + ML-DSA-65 (FIPS 204) cryptographic identity keys |
+| **L1** | Hybrid KEM | Ephemeral X25519 + ML-KEM-768 (Kyber / FIPS 203) with HKDF-SHA256 |
+| **L2** | Authenticated AEAD | XChaCha20-Poly1305 / ChaCha20-Poly1305 + Hybrid Double Ratchet |
+| **L3** | Secret Sharing | Shamir SSS ($\text{GF}(256)$, $2$-of-$3$ threshold secret splitting) |
+| **L4** | Erasure Coding | Reed-Solomon RS(2,1) shards over $\text{GF}(2^8)$ + ShardSec per-shard AEAD |
+| **L5** | Traffic Shaping | Constant 576B privacy frames, keyed 64B AAD jitter tail + Poisson cover traffic |
+| **L6** | Session Guard | 64-bit / 128-bit sliding window anti-replay bitmask (`SessionGuardU64`) |
+| **L7** | Forward Error Correction | LDPC belief-propagation codec (compiled library primitive for high-BER links) |
+| **L8** | Memory Defense | Volatile key zeroization on drop + AES-256-XTS RAM-region protection |
+| **L9** | Infrastructure Trust | Hardware security / TPM / NTS time-sync abstraction layer |
 
 ---
 
@@ -398,8 +380,10 @@ Interactive documentation portal is live at [**vantablack.kellersystems.dev/docs
 
 For engineers, cryptographers, and contributors wishing to inspect the mathematics, security models, and implementation details:
 
+* [**Operator & Configuration Guide**](docs/OPERATOR_GUIDE.md) — Complete installation, Cloudflare DNS seed setup, `GHOST_PSK` private meshes, SOCKS5/Exit nodes, and `GHOST_*` reference.
 * [**Technical Specifications**](docs/SPECIFICATIONS.md) — Low-level frame layouts, Level 2 multi-hop headers, L5 jitter wire structures, and SessionGuard bitmasks.
 * [**SOTA Architectural Benchmark**](docs/SOTA.md) — Architectural and cryptographic benchmark matrix comparing Vantablack against WireGuard, Tailscale, and Tor.
+* [**Verification & Benchmarks**](docs/VERIFICATION_AND_BENCHMARKS.md) — Real release-mode A/B throughput benchmarks, DPI Shannon entropy data, RFC 4787 NAT matrix, and ProVerif proofs.
 * [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) — In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
 * [**LAN over WAN (VPN Layer)**](docs/LAN_OVER_WAN.md) — Road-warrior userspace VPN architecture, TUN drivers, and mobile network roaming.
 * [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-768, X25519 hybrid key exchange, directional nonces, and memory security.

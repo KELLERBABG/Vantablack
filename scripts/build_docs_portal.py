@@ -43,7 +43,28 @@ CONTENT_END = "/* END GENERATED DOCS_CONTENT */"
 # keep them honest about what is shipped versus planned.
 DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
     (
-        "Specifications",
+        "Getting Started",
+        [
+            (
+                "readme",
+                "../README.md",
+                "Vantablack — Project Overview",
+                "Project Overview (README)",
+                "Autonomous post-quantum WAN mesh routing daemon, Level 2 carrier "
+                "simulation topology, quick-start installation, and architecture summary.",
+            ),
+            (
+                "operator-guide",
+                "OPERATOR_GUIDE.md",
+                "Operator &amp; Configuration Guide",
+                "Operator &amp; Config Guide",
+                "Complete operational manual covering installation, Cloudflare DNS seeds, "
+                "GHOST_PSK private meshes, SOCKS5/Exit nodes, console commands, and GHOST_* variables.",
+            ),
+        ],
+    ),
+    (
+        "Specifications &amp; Benchmarks",
         [
             (
                 "specifications",
@@ -61,10 +82,18 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "Definitive architectural and cryptographic benchmark matrix comparing "
                 "Vantablack against WireGuard, Tailscale, Tor, and commercial VPN systems.",
             ),
+            (
+                "verification",
+                "VERIFICATION_AND_BENCHMARKS.md",
+                "Verification, Throughput Benchmarks &amp; Empirical Analysis",
+                "Verification &amp; Benchmarks",
+                "Release-mode A/B throughput benchmarks (204 MiB/s pipeline), DPI Shannon "
+                "entropy proofs (7.989 bits/B), RFC 4787 NAT matrix, and ProVerif reproduction.",
+            ),
         ],
     ),
     (
-        "Architecture",
+        "Architecture &amp; VPN",
         [
             (
                 "crypto",
@@ -82,11 +111,6 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "Datagram-native onion encapsulation over UDP without TCP circuit stalls "
                 "or centralized directory authority bottlenecks.",
             ),
-        ],
-    ),
-    (
-        "Networking &amp; VPN",
-        [
             (
                 "lan-over-wan",
                 "LAN_OVER_WAN.md",
@@ -130,7 +154,7 @@ def build_sidebar() -> str:
         lines.append(f'          <div class="sidebar-title">{category}</div>')
         lines.append('          <ul class="sidebar-menu">')
         for i, (doc_id, _file, _title, label, _desc) in enumerate(entries):
-            active = " active" if (category, i) == ("Specifications", 0) else ""
+            active = " active" if (category, i) == ("Getting Started", 0) else ""
             lines.append("            <li>")
             lines.append(
                 f'              <a href="#{doc_id}" class="doc-link{active}" '
