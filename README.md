@@ -6,6 +6,8 @@
 
 <br>
 
+[![Release](https://img.shields.io/github/v/release/KELLERBABG/Vantablack?color=22d3ee&style=flat-square)](https://github.com/KELLERBABG/Vantablack/releases)
+[![Downloads](https://img.shields.io/github/downloads/KELLERBABG/Vantablack/total?color=0284c7&style=flat-square)](https://github.com/KELLERBABG/Vantablack/releases)
 [![License](https://img.shields.io/badge/License-MIT-059669?style=flat-square)](LICENSE)
 [![Language](https://img.shields.io/badge/Language-Rust%20(Pure)-orange?style=flat-square)](https://www.rust-lang.org/)
 [![Runtime](https://img.shields.io/badge/Runtime-Tokio%20Async-blue?style=flat-square)](https://tokio.rs/)
