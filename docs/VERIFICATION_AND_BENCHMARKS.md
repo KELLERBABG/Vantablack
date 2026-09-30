@@ -10,7 +10,7 @@ All data-plane benchmarks were executed in `--release` mode (`rustc` opt-level 3
 
 ### 1.1 Per-Stage Microbenchmark Comparison (Before vs. After Vectorized Pipeline)
 
-| Pipeline Stage | Legacy Baseline | Current (`v0.7.6+`) | Latency per Packet | Speedup |
+| Pipeline Stage | Legacy Baseline | Current (`v0.8.0`) | Latency per Packet | Speedup |
 | :--- | :---: | :---: | :---: | :---: |
 | **L4 RS(2,1) Encode (900 B payload)** | 56.50 MiB/s | **141.32 MiB/s** | $6.07\,\mu\text{s}$ | **2.50x faster** |
 | **L4 RS(2,1) Encode (1400 B bulk MTU)** | 56.21 MiB/s | **258.13 MiB/s** | $5.17\,\mu\text{s}$ | **4.59x faster** |

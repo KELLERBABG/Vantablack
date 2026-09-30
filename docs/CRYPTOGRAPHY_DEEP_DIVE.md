@@ -63,7 +63,7 @@ Payload frames are authenticated and encrypted using **ChaCha20-Poly1305** (RFC 
 
 ## 4. Byzantine Tamper Isolation: ShardSec + Combinatorial RS(2,1) / Poly1305
 
-When operating over untrusted carrier networks, adversarial nodes may alter encrypted bytes in flight without knowledge of the decryption key. The production daemon's defense is **ShardSec (default-on since 0.7.7)**: after RS(2,1) encoding, each shard is sealed under its own HKDF-derived key (session secret, epoch, message nonce, shard index) with its own Poly1305 tag (`ghost::net::shardsec`). A tampered shard therefore fails *its own* tag during receive — before reconstruction — and is discarded; the remaining pristine shards (any 2 of 3) rebuild the message. Tampering is rejected at the shard and never propagates.
+When operating over untrusted carrier networks, adversarial nodes may alter encrypted bytes in flight without knowledge of the decryption key. The production daemon's defense is **ShardSec (default-on since 0.8.0)**: after RS(2,1) encoding, each shard is sealed under its own HKDF-derived key (session secret, epoch, message nonce, shard index) with its own Poly1305 tag (`ghost::net::shardsec`). A tampered shard therefore fails *its own* tag during receive — before reconstruction — and is discarded; the remaining pristine shards (any 2 of 3) rebuild the message. Tampering is rejected at the shard and never propagates.
 
 Underneath, Reed-Solomon RS(2,1) erasure coding mathematically enables payload recovery from any 2 of 3 shards, while Poly1305 provides cryptographic integrity verification:
 
