@@ -15,7 +15,7 @@ conflicts=('vantablack')
 source=("https://github.com/KELLERBABG/Vantablack/releases/download/v${pkgver}/ggn-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz"
         "vantablack.service"
         "vantablack.desktop")
-sha256sums=('SKIP'
+sha256sums=('933d303adb38eef4f687d7a5dc18d593c22eb70ff485f4a2a575155ccc454986'
             'SKIP'
             'SKIP')
 

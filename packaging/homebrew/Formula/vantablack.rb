@@ -7,7 +7,7 @@ class Vantablack < Formula
   if OS.mac?
     if Hardware::CPU.arm?
       url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.0/ggn-v0.8.0-aarch64-apple-darwin.tar.gz"
-      # sha256 will be updated once release assets are finalized
+      sha256 "e6bb76cbb15909790a033fc879df9429ed9b7d03b30c3a4e40d0b8d71e0fee2f"
     else
       url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.0/ggn-v0.8.0-x86_64-apple-darwin.tar.gz"
     end
