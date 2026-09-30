@@ -403,7 +403,6 @@ For engineers, cryptographers, and contributors wishing to inspect the mathemati
 * [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) — In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
 * [**LAN over WAN (VPN Layer)**](docs/LAN_OVER_WAN.md) — Road-warrior userspace VPN architecture, TUN drivers, and mobile network roaming.
 * [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-768, X25519 hybrid key exchange, directional nonces, and memory security.
-* [**Security Policy & Audit Scope**](docs/SECURITY.md) — Threat boundaries, verification scope, and vulnerability disclosure policy.
 * [**Configuration Reference**](docs/config.env.example) — Parameter reference for network ports, transit rate limits, and egress allowlists.
 
 ---

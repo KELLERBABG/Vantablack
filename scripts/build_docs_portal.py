@@ -85,7 +85,7 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
         ],
     ),
     (
-        "Networking &amp; Security",
+        "Networking &amp; VPN",
         [
             (
                 "lan-over-wan",
@@ -94,14 +94,6 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "LAN over WAN (VPN Layer)",
                 "Cross-datacenter virtual Ethernet and L2/L3 tunneling across heterogeneous "
                 "public internet connections with transparent packet sharding.",
-            ),
-            (
-                "security",
-                "SECURITY.md",
-                "Security Policy, Threat Model &amp; Disclosure",
-                "Security &amp; Threat Model",
-                "Cryptographic threat boundaries, formal verification scope, side-channel "
-                "hardening, and coordinated vulnerability disclosure.",
             ),
         ],
     ),
