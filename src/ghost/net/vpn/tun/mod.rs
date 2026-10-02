@@ -265,19 +265,19 @@ pub fn is_wintun_installed() -> bool {
 
 // ── Unix: /dev/net/tun ──────────────────────────────────────────────
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 mod unixtun {
     use super::*;
     use std::ffi::CString;
 
     // ioctl numbers (Linux)
-    const TUNSETIFF: u64 = 0x400454ca;
+    const TUNSETIFF: std::ffi::c_ulong = 0x400454ca;
     const IFF_TUN: u16 = 0x0001;
     const IFF_NO_PI: u16 = 0x1000;
 
     extern "C" {
-        fn ioctl(fd: i32, req: u64, ...) -> i32;
-        fn open(path: *const std::ffi::c_char, flags: i32) -> i32;
+        fn ioctl(fd: i32, req: std::ffi::c_ulong, ...) -> i32;
+        fn open(path: *const std::ffi::c_char, flags: i32, ...) -> i32;
         fn close(fd: i32) -> i32;
     }
 
@@ -593,10 +593,15 @@ pub fn open_tun(name: &str, addr: Ipv4Addr, mask: Ipv4Addr) -> std::io::Result<P
         let _ = mask;
         WintunTun::new(name, addr, mask).map(PlatformTun::Real)
     }
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = (addr, mask);
         UnixTun::new(name).map(PlatformTun::Real)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (addr, mask);
+        MacOSUtun::new(name).map(PlatformTun::Real)
     }
 }
 
