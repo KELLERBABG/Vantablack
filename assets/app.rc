@@ -46,6 +46,7 @@ BEGIN
             VALUE "OriginalFilename", "ggn.exe"
             VALUE "ProductName", "Vantablack"
             VALUE "ProductVersion", "0.8.0"
+            VALUE "Comments", "https://github.com/KELLERBABG/Vantablack"
         END
     END
     BLOCK "VarFileInfo"

@@ -113,6 +113,7 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
         }
         "--version" | "-v" | "version" => {
             println!("vantablack {}", env!("CARGO_PKG_VERSION"));
+            println!("https://github.com/KELLERBABG/Vantablack");
             Some(Ok(()))
         }
         "--help" | "-h" | "help" => {
@@ -130,6 +131,8 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!("  --quantum                       Activate the QEL quantum anchor (GHOST_QUANTUM=1)");
             println!("  ggn --version                   Show version information");
             println!("  ggn --help                      Show this help");
+            println!();
+            println!("Source & releases: https://github.com/KELLERBABG/Vantablack");
             Some(Ok(()))
         }
 
