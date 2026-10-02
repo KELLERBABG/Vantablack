@@ -369,6 +369,9 @@ fn perform_lan_discovery(
     // 2. Active subnet unicast probe: send handshake shards directly to hosts on LAN
     for sn in &subnets {
         for host in 1..=254 {
+            if host % 16 == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
             let target_sa: std::net::SocketAddr = std::net::SocketAddr::new(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(sn[0], sn[1], sn[2], host)),
                 55225,
@@ -523,6 +526,26 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     {
         Ok((n, src)) => {
             if Some(src) != core.hub_addr {
+                // If we receive a handshake from an unknown IP, fire a unicast probe back
+                // so we can discover and connect to it if we don't have a hub yet.
+                if n >= 16 && (&buf[..16] == b"GHOST_HANDSHAKE_" || &buf[..9] == b"GHOST_HS_") {
+                    let xs = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
+                    let xp = x25519_dalek::PublicKey::from(&xs);
+                    let (kp, _ks) = generate_kyber_keypair();
+                    let mut pdu = build_handshake_pdu(
+                        &core.identity.public_key_bytes(),
+                        |d| core.identity.sign(d).to_bytes(),
+                        &xp,
+                        &kp,
+                    );
+                    let raw = l4_rs::encode(&mut pdu);
+                    let tag = [0u8; 16];
+                    for i in 0..3 {
+                        let framed = frame_shard(&raw[i]);
+                        let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, true);
+                        let _ = sock.send_to(&gtf, src);
+                    }
+                }
                 return false;
             }
             if n < MIN_FRAME_SIZE {

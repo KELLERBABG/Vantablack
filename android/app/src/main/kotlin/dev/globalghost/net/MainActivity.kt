@@ -366,12 +366,13 @@ class MainActivity : Activity() {
             }
             GhostVpnService.isRunning = true
             updateUiState(true)
-            handler.postDelayed({
-                GhostVpnService.triggerScan {
-                    handler.post { updateStatus() }
-                }
-                updateStatus()
-            }, 1000)
+            // Removed duplicate delayed triggerScan race since GhostCore.start() already performs the initial scan.
+            // handler.postDelayed({
+            //     GhostVpnService.triggerScan {
+            //         handler.post { updateStatus() }
+            //     }
+            //     updateStatus()
+            // }, 1000)
         } else {
             Toast.makeText(this, "VPN permission rejected", Toast.LENGTH_SHORT).show()
         }

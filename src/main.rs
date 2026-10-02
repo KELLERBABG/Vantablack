@@ -208,6 +208,11 @@ const MAX_SESSIONS: usize = 512;
 /// Hard cap on in-flight pending handshakes per node.
 const MAX_PENDING_HANDSHAKES: usize = 512;
 
+/// Peer Exchange gossip frame magic — encrypted payload prefix.
+const GHOST_PEX_MAGIC: &[u8] = b"GHOST_PEX_____";
+/// Maximum peers to advertise per PEX message.
+const MAX_PEX_PEERS: usize = 32;
+
 /// Embedded bootstrap seeds (public VPS rendezvous nodes). Override at runtime
 /// via `GHOST_SEEDS=ip:port,ip:port,...`. When empty and no env var is set,
 /// the node starts in listen-only mode (beacon + accept incoming handshakes).
@@ -2740,9 +2745,13 @@ pub(crate) async fn initiate_handshake(
         )
         .await;
     }
-    if pending_hs.len() >= MAX_PENDING_HANDSHAKES {
-        tracing::warn!("Pending-handshake table full — handshake skipped");
-        return;
+    // Prune stale entries aggressively: if the table is more than half-full,
+    // clear it entirely so subnet sweeps never permanently block new handshakes.
+    // Entries that were answered are already removed; only unanswered (dead host)
+    // entries accumulate, so clearing them is safe.
+    if pending_hs.len() >= MAX_PENDING_HANDSHAKES / 2 {
+        pending_hs.clear();
+        tracing::debug!("Pending-handshake table pruned to make room");
     }
     pending_hs.insert(
         t.to_string(),
@@ -3070,6 +3079,10 @@ async fn handle_pkt(
             .await;
         }
         let fp = hex::encode(&hs.identity_pk[..8]);
+        if fp == node.fingerprint() {
+            tracing::debug!(peer = %src, "Handshake from self ignored");
+            return;
+        }
         peers.insert(fp.clone(), *src);
         record_active_peer(*src);
         let mut session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
@@ -3147,9 +3160,13 @@ async fn handle_pkt(
             )
             .await;
         }
-        peers.insert(hex::encode(&hs.identity_pk[..8]), *src);
-        record_active_peer(*src);
         let fp = hex::encode(&hs.identity_pk[..8]);
+        if fp == node.fingerprint() {
+            tracing::debug!(peer = %src, "Handshake from self ignored");
+            return;
+        }
+        peers.insert(fp.clone(), *src);
+        record_active_peer(*src);
         let mut session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
         session.set_cipher_suite(hs.suite);
         session.pin_peer_identity(hs.identity_pk);
@@ -3263,9 +3280,15 @@ async fn handle_pkt(
             }
         };
         let fp = hex::encode(&hs.identity_pk[..8]);
-        if node.sessions.contains_key(&fp) {
-            tracing::warn!(peer = %src, fingerprint = %fp, "Duplicate session — handshake replay rejected");
+        if fp == node.fingerprint() {
+            tracing::debug!(peer = %src, "Handshake from self ignored");
             return;
+        }
+        // Allow re-handshake: if a peer reconnects or rescans, evict the stale
+        // session so the fresh handshake can complete cleanly.
+        if node.sessions.contains_key(&fp) {
+            tracing::info!(peer = %src, fingerprint = %fp, "Re-handshake from known peer — evicting stale session");
+            node.sessions.remove(&fp);
         }
 
         // VPN hub: gate the MESH session the same way the VPN tunnel already is.
@@ -3823,6 +3846,52 @@ async fn handle_pkt(
         let text = String::from_utf8_lossy(pt).into_owned();
         let trimmed = text.trim_end_matches('\0').to_string();
         tracing::info!(peer = %peer_fp, counter = ctr, "Decrypted: {trimmed}");
+
+        // Peer Exchange gossip: learn new peers from connected nodes
+        if let Some(payload) = frame_payload(pt) {
+            if payload.starts_with(GHOST_PEX_MAGIC) {
+                let body = &payload[GHOST_PEX_MAGIC.len()..];
+                if !body.is_empty() {
+                    let count = body[0] as usize;
+                    let mut pos = 1usize;
+                    for _ in 0..count {
+                        if pos + 16 > body.len() {
+                            break;
+                        }
+                        let fp_bytes = &body[pos..pos + 16];
+                        let fp = String::from_utf8_lossy(fp_bytes)
+                            .trim_end_matches('\0')
+                            .to_string();
+                        pos += 16;
+                        // Read null-terminated addr string
+                        let nul = body[pos..].iter().position(|&b| b == 0);
+                        let addr_end = pos + nul.unwrap_or(body.len() - pos);
+                        if addr_end > body.len() {
+                            break;
+                        }
+                        let addr_str = String::from_utf8_lossy(&body[pos..addr_end]).to_string();
+                        pos = addr_end + 1;
+                        // Skip self and already-known peers
+                        if fp == node.fingerprint() {
+                            continue;
+                        }
+                        if peers.contains_key(&fp) {
+                            continue;
+                        }
+                        if let Ok(addr) = addr_str.parse::<SocketAddr>() {
+                            tracing::info!(
+                                via = %peer_fp,
+                                peer = %fp,
+                                addr = %addr,
+                                "PEX: learned new peer — initiating handshake"
+                            );
+                            initiate_handshake(&node, sock, addr, pending_hs).await;
+                        }
+                    }
+                }
+                return;
+            }
+        }
 
         // Direct chat message (CHAT command): [CHAT!][message]
         // Must run before relay/CONNECT dispatch so a message like
@@ -4503,6 +4572,47 @@ fn record_active_peer(sa: SocketAddr) {
     }
 }
 
+/// Send a Peer Exchange (PEX) gossip message to `dest_fp` over their session,
+/// advertising our currently known active peer endpoints.
+async fn send_pex(
+    node: &Arc<GhostNode>,
+    sock: &Arc<UdpSocket>,
+    dest_fp: &str,
+    peers: &Arc<DashMap<String, SocketAddr>>,
+) {
+    let Some(sess) = node.sessions.get(dest_fp) else {
+        return;
+    };
+    let dest_addr = match peers.get(dest_fp).map(|v| *v) {
+        Some(a) => a,
+        None => return,
+    };
+    // Build PEX payload: [GHOST_PEX_____][count u8][fp_hex 16B + addr_str + NUL ...]
+    let mut payload = GHOST_PEX_MAGIC.to_vec();
+    let peer_list: Vec<(String, SocketAddr)> = peers
+        .iter()
+        .filter(|e| e.key() != dest_fp)
+        .take(MAX_PEX_PEERS)
+        .map(|e| (e.key().clone(), *e.value()))
+        .collect();
+    payload.push(peer_list.len() as u8);
+    for (fp, addr) in &peer_list {
+        let fp_bytes = fp.as_bytes();
+        let fp_len = fp_bytes.len().min(16);
+        let mut fp_buf = [0u8; 16];
+        fp_buf[..fp_len].copy_from_slice(&fp_bytes[..fp_len]);
+        payload.extend_from_slice(&fp_buf);
+        let addr_str = addr.to_string();
+        payload.extend_from_slice(addr_str.as_bytes());
+        payload.push(0u8);
+    }
+    let ctx = SealCtx::from_session(&sess);
+    drop(sess);
+    let (f, tag) = enc_split(&ctx, &payload);
+    send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
+    tracing::debug!(to = %dest_fp, peers = peer_list.len(), "PEX: sent peer list");
+}
+
 /// Autonomous LAN discovery sweep: broadcasts beacons to 255.255.255.255 on 2270 and mesh_port,
 /// and actively probes all hosts in the local /24 subnet (and common home subnets).
 async fn sweep_lan_subnet(
@@ -4511,6 +4621,34 @@ async fn sweep_lan_subnet(
     mesh_port: u16,
 ) {
     let local_ip_str = detect_lan_ip();
+
+    // Collect all local IPv4 addresses so we never probe ourselves.
+    let local_ips: std::collections::HashSet<std::net::Ipv4Addr> = {
+        let mut set = std::collections::HashSet::new();
+        if let Ok(ip) = local_ip_str.parse::<std::net::Ipv4Addr>() {
+            set.insert(ip);
+        }
+        // Probe common gateways to discover additional local interface IPs
+        for target in &[
+            "192.168.178.1:80",
+            "192.168.1.1:80",
+            "192.168.0.1:80",
+            "10.0.0.1:80",
+            "1.1.1.1:80",
+        ] {
+            if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                if sock.connect(target).is_ok() {
+                    if let Ok(la) = sock.local_addr() {
+                        if let std::net::IpAddr::V4(v4) = la.ip() {
+                            set.insert(v4);
+                        }
+                    }
+                }
+            }
+        }
+        set
+    };
+
     let mut subnets_to_sweep: Vec<[u8; 3]> = Vec::new();
 
     if let Ok(local_ip) = local_ip_str.parse::<std::net::Ipv4Addr>() {
@@ -4546,9 +4684,9 @@ async fn sweep_lan_subnet(
         subnets_to_sweep.push([192, 168, 178]);
     }
 
-    // 1. Broadcast signed beacons on both standard beacon port (2270) and mesh port
-    if let Ok(b_sock) = UdpSocket::bind("0.0.0.0:0").await {
-        let _ = b_sock.set_broadcast(true);
+    // 1. Broadcast signed beacons from the main mesh socket so the reply port
+    //    is always the real mesh port (55225) — not an ephemeral port.
+    {
         let pq_commit = nc.identity.pq_commitment();
         let beacon_pkt = build_beacon_packet(
             &nc.identity.public_key_bytes(),
@@ -4558,26 +4696,26 @@ async fn sweep_lan_subnet(
             false,
             Some(&pq_commit),
         );
-        let mut targets = vec![
-            "255.255.255.255:2270".parse::<SocketAddr>().ok(),
-            format!("255.255.255.255:{}", mesh_port)
-                .parse::<SocketAddr>()
-                .ok(),
-        ];
+        let mut targets: Vec<SocketAddr> = Vec::new();
         for s in &subnets_to_sweep {
-            targets.push(
-                format!("{}.{}.{}.255:2270", s[0], s[1], s[2])
-                    .parse::<SocketAddr>()
-                    .ok(),
-            );
-            targets.push(
-                format!("{}.{}.{}.255:{}", s[0], s[1], s[2], mesh_port)
-                    .parse::<SocketAddr>()
-                    .ok(),
-            );
+            if let Ok(t) = format!("{}.{}.{}.255:2270", s[0], s[1], s[2]).parse::<SocketAddr>() {
+                targets.push(t);
+            }
+            if let Ok(t) =
+                format!("{}.{}.{}.255:{}", s[0], s[1], s[2], mesh_port).parse::<SocketAddr>()
+            {
+                targets.push(t);
+            }
         }
-        for t in targets.into_iter().flatten() {
-            let _ = b_sock.send_to(&beacon_pkt, t).await;
+        // Also send to the global broadcast addresses
+        if let Ok(t) = "255.255.255.255:2270".parse::<SocketAddr>() {
+            targets.push(t);
+        }
+        if let Ok(t) = format!("255.255.255.255:{}", mesh_port).parse::<SocketAddr>() {
+            targets.push(t);
+        }
+        for t in targets {
+            let _ = nc.socket.send_to(&beacon_pkt, t).await;
         }
     }
 
@@ -4589,6 +4727,9 @@ async fn sweep_lan_subnet(
         );
         for host in 1..=254 {
             let target_ip = std::net::Ipv4Addr::new(s[0], s[1], s[2], host);
+            if local_ips.contains(&target_ip) {
+                continue;
+            }
             let target_sa = SocketAddr::new(std::net::IpAddr::V4(target_ip), mesh_port);
             initiate_handshake(nc, &nc.socket, target_sa, pending_hs).await;
 
@@ -5469,6 +5610,7 @@ async fn run_node(
         let governor = Arc::clone(&transit_governor);
         let relay_role = relay_role.clone();
         let advertises_relay = relay_role.is_some();
+        let addrs = Arc::clone(&addrs);
         tokio::spawn(async move {
             let beacon_sock = match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,
@@ -5606,6 +5748,12 @@ async fn run_node(
                     );
                     if let Err(e) = beacon_sock.send_to(&beacon, mc_addr).await {
                         tracing::debug!("Beacon send error: {e}");
+                    }
+
+                    // Send PEX gossip to all currently connected peers
+                    let peer_fps: Vec<String> = addrs.iter().map(|e| e.key().clone()).collect();
+                    for dest_fp in peer_fps {
+                        send_pex(&nc, &nc.socket, &dest_fp, &addrs).await;
                     }
                 }
                 sleep(interval).await;
