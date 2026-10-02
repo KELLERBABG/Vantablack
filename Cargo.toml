@@ -1,6 +1,6 @@
 [package]
 name = "vantablack"
-version = "0.8.2"
+version = "0.8.3"
 edition = "2021"
 description = "Post-quantum, cryptographically layered WAN mesh routing node."
 homepage = "https://vantablack.kellersystems.dev/"
@@ -94,6 +94,7 @@ strip = "symbols"
 jni = { version = "0.21", default-features = false }
 
 [dependencies]
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 tokio = { version = "1.44", features = ["rt-multi-thread", "io-util", "net", "sync", "time", "macros", "process"] }
 reed-solomon-erasure = "6.0.0"
 chacha20poly1305 = "0.10"

@@ -218,6 +218,11 @@ const MAX_PEX_PEERS: usize = 32;
 /// the node starts in listen-only mode (beacon + accept incoming handshakes).
 const EMBEDDED_SEEDS: &[&str] = &[];
 
+/// Cloudflare Worker bootstrap URL. Every node hits this on startup to
+/// register its public address and learn about other active nodes.
+/// Override with GHOST_BOOTSTRAP_URL env var.
+const DEFAULT_BOOTSTRAP_URL: &str = "https://red-star-512e.papababg02.workers.dev/peers?port=55225";
+
 async fn assemble(pool: &SpoolPool, key: SpoolKey, idx: usize, data: Vec<u8>) -> Option<Vec<u8>> {
     // Cap the spool so a remote sender cannot grow it without bound with
     // single-shard garbage (entries with <2 shards are unrecoverable).
@@ -4613,6 +4618,47 @@ async fn send_pex(
     tracing::debug!(to = %dest_fp, peers = peer_list.len(), "PEX: sent peer list");
 }
 
+/// HTTP bootstrap: register with the Cloudflare Worker tracker and return
+/// the list of currently known peers so we can initiate handshakes with them.
+async fn http_bootstrap(mesh_port: u16) -> Vec<SocketAddr> {
+    let url = std::env::var("GHOST_BOOTSTRAP_URL").unwrap_or_else(|_| {
+        // Substitute the actual port into the URL
+        DEFAULT_BOOTSTRAP_URL.replace("port=55225", &format!("port={}", mesh_port))
+    });
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("HTTP bootstrap: failed to build client: {e}");
+            return Vec::new();
+        }
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) => match resp.json::<Vec<String>>().await {
+            Ok(addrs) => {
+                let peers: Vec<SocketAddr> = addrs.iter().filter_map(|s| s.parse().ok()).collect();
+                tracing::info!(
+                    count = peers.len(),
+                    "HTTP bootstrap: registered with tracker, learned peers"
+                );
+                peers
+            }
+            Err(e) => {
+                tracing::warn!("HTTP bootstrap: JSON parse error: {e}");
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            tracing::warn!("HTTP bootstrap: request failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// Autonomous LAN discovery sweep: broadcasts beacons to 255.255.255.255 on 2270 and mesh_port,
 /// and actively probes all hosts in the local /24 subnet (and common home subnets).
 async fn sweep_lan_subnet(
@@ -5485,6 +5531,21 @@ async fn run_node(
     let scan_interval_secs = Arc::new(AtomicU32::new(3600)); // Default 1 hour
     let scan_notify = Arc::new(tokio::sync::Notify::new());
 
+    // HTTP bootstrap: register with the global tracker and connect to known peers
+    {
+        let nc_boot = Arc::clone(&nc);
+        let pending_boot = Arc::clone(&pending_hs);
+        let mesh_port_boot = mesh_port;
+        tokio::spawn(async move {
+            // Small delay to let the UDP socket settle
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let bootstrap_peers = http_bootstrap(mesh_port_boot).await;
+            for peer_addr in bootstrap_peers {
+                initiate_handshake(&nc_boot, &nc_boot.socket, peer_addr, &pending_boot).await;
+            }
+        });
+    }
+
     // Autonomous Private Mesh LAN discovery background engine:
     // Immediate sweep on startup, periodic sweep (1h / 4h), and on-demand trigger.
     {
@@ -5611,6 +5672,7 @@ async fn run_node(
         let relay_role = relay_role.clone();
         let advertises_relay = relay_role.is_some();
         let addrs = Arc::clone(&addrs);
+        let pending_hs = Arc::clone(&pending_hs);
         tokio::spawn(async move {
             let beacon_sock = match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,
@@ -5629,7 +5691,20 @@ async fn run_node(
             // delivery rate is a delta and not a lifetime total.
             let mut last_forwarded: std::collections::HashMap<String, u64> =
                 std::collections::HashMap::new();
+            let mut bootstrap_counter: u32 = 0;
             loop {
+                bootstrap_counter = bootstrap_counter.wrapping_add(1);
+                if bootstrap_counter % 10 == 0 {
+                    let nc2 = Arc::clone(&nc);
+                    let pending2 = Arc::clone(&pending_hs);
+                    let port2 = mesh_port;
+                    tokio::spawn(async move {
+                        let peers = http_bootstrap(port2).await;
+                        for addr in peers {
+                            initiate_handshake(&nc2, &nc2.socket, addr, &pending2).await;
+                        }
+                    });
+                }
                 let secs = nc.keepalive_interval_secs.load(Ordering::Relaxed);
                 let interval = Duration::from_secs(secs.clamp(1, 300));
 
