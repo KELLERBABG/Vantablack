@@ -4620,11 +4620,15 @@ async fn send_pex(
 
 /// HTTP bootstrap: register with the Cloudflare Worker tracker and return
 /// the list of currently known peers so we can initiate handshakes with them.
-async fn http_bootstrap(mesh_port: u16) -> Vec<SocketAddr> {
-    let url = std::env::var("GHOST_BOOTSTRAP_URL").unwrap_or_else(|_| {
-        // Substitute the actual port into the URL
-        DEFAULT_BOOTSTRAP_URL.replace("port=55225", &format!("port={}", mesh_port))
-    });
+async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr> {
+    let lan_ip = detect_lan_ip();
+    let base_url =
+        std::env::var("GHOST_BOOTSTRAP_URL").unwrap_or_else(|_| DEFAULT_BOOTSTRAP_URL.to_string());
+    let mut url = base_url.replace("port=55225", &format!("port={}", mesh_port));
+    if let Some(fp) = node_fp {
+        let sep = if url.contains('?') { '&' } else { '?' };
+        url.push_str(&format!("{}id={}&lan={}:{}", sep, fp, lan_ip, mesh_port));
+    }
 
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -5539,7 +5543,8 @@ async fn run_node(
         tokio::spawn(async move {
             // Small delay to let the UDP socket settle
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let bootstrap_peers = http_bootstrap(mesh_port_boot).await;
+            let bootstrap_peers =
+                http_bootstrap(mesh_port_boot, Some(&nc_boot.fingerprint())).await;
             for peer_addr in bootstrap_peers {
                 initiate_handshake(&nc_boot, &nc_boot.socket, peer_addr, &pending_boot).await;
             }
@@ -5699,7 +5704,7 @@ async fn run_node(
                     let pending2 = Arc::clone(&pending_hs);
                     let port2 = mesh_port;
                     tokio::spawn(async move {
-                        let peers = http_bootstrap(port2).await;
+                        let peers = http_bootstrap(port2, Some(&nc2.fingerprint())).await;
                         for addr in peers {
                             initiate_handshake(&nc2, &nc2.socket, addr, &pending2).await;
                         }

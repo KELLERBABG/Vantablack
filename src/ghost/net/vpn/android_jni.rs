@@ -348,7 +348,8 @@ fn perform_lan_discovery(
         subnets.push([192, 168, 178]);
     }
 
-    // 1. Broadcast discovery packets to standard ports and subnet broadcasts
+    // 1. Broadcast standard signed beacons (112B: prefix + pk + sig) to 2270 and 55225
+    // so any PC running Global Ghost Net immediately auto-handshakes this device
     let mut broadcast_targets: Vec<std::net::SocketAddr> = vec![
         "255.255.255.255:55225".parse().unwrap(),
         "255.255.255.255:2270".parse().unwrap(),
@@ -357,13 +358,20 @@ fn perform_lan_discovery(
         if let Ok(sa) = format!("{}.{}.{}.255:55225", sn[0], sn[1], sn[2]).parse() {
             broadcast_targets.push(sa);
         }
-    }
-    for target in &broadcast_targets {
-        for i in 0..3 {
-            let framed = frame_shard(&raw[i]);
-            let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, true);
-            let _ = sock.send_to(&gtf, *target);
+        if let Ok(sa) = format!("{}.{}.{}.255:2270", sn[0], sn[1], sn[2]).parse() {
+            broadcast_targets.push(sa);
         }
+    }
+
+    let pk_bytes = identity.public_key_bytes();
+    let mut beacon_buf = vec![0u8; 112];
+    beacon_buf[0..16].copy_from_slice(b"GHOST_BEACON_V1\0");
+    beacon_buf[16..48].copy_from_slice(&pk_bytes);
+    let sig_bytes = identity.sign(&beacon_buf[16..48]).to_bytes();
+    beacon_buf[48..112].copy_from_slice(&sig_bytes);
+
+    for target in &broadcast_targets {
+        let _ = sock.send_to(&beacon_buf, *target);
     }
 
     // 2. Active subnet unicast probe: send handshake shards directly to hosts on LAN
@@ -378,7 +386,7 @@ fn perform_lan_discovery(
             );
             for i in 0..3 {
                 let framed = frame_shard(&raw[i]);
-                let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, true);
+                let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, false);
                 let _ = sock.send_to(&gtf, target_sa);
             }
         }
@@ -507,66 +515,61 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
 }
 
 /// One mesh→TUN step: recv a GTF datagram from hub, open it, and write the inner
-/// IP packet into the TUN.
+/// IP packet into the TUN. Also processes incoming handshakes from LAN peers.
 pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
-    let (Some(sock), Some(tun), Some(hub)) = (core.sock.as_ref(), core.tun.as_mut(), core.hub_addr)
-    else {
+    let Some(sock) = core.sock.as_ref() else {
         std::thread::sleep(Duration::from_millis(50));
         return false;
     };
-    let Some(session_key) = *core.session_key.lock() else {
-        std::thread::sleep(Duration::from_millis(50));
-        return false;
-    };
-    let session_hash = *core.session_hash.lock();
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
 
-    match sock
-        .recv_from(buf)
-        .or_else(|_| sock.recv(buf).map(|n| (n, hub)))
+    let (n, src) = match sock.recv_from(buf) {
+        Ok(res) => res,
+        Err(_) => return false,
+    };
+    if n < MIN_FRAME_SIZE {
+        return false;
+    }
+    let ctr = parse_packet_counter(&buf[..n]);
+
+    // Inbound handshake initiation from a peer (counter == 0)
+    if ctr == 0 {
+        if !core.known_peers.lock().contains_key(&src) {
+            if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
+                core.known_peers.lock().insert(src, (key, sh));
+                if core.hub_addr.is_none() {
+                    core.hub_addr = Some(src);
+                    core.state.rotate_epoch();
+                    core.state.set_key(key);
+                    *core.session_key.lock() = Some(key);
+                    *core.session_hash.lock() = sh;
+                    core.tx_seq.store(2, Ordering::Relaxed);
+                }
+            }
+        }
+        return false;
+    }
+
+    // Tunnel traffic from established hub
+    let session_key_opt = *core.session_key.lock();
+    let session_hash = *core.session_hash.lock();
+    if let (Some(hub), Some(session_key), Some(tun)) =
+        (core.hub_addr, session_key_opt, core.tun.as_mut())
     {
-        Ok((n, src)) => {
-            if Some(src) != core.hub_addr {
-                // If we receive a handshake from an unknown IP, fire a unicast probe back
-                // so we can discover and connect to it if we don't have a hub yet.
-                if n >= 16 && (&buf[..16] == b"GHOST_HANDSHAKE_" || &buf[..9] == b"GHOST_HS_") {
-                    let xs = x25519_dalek::StaticSecret::random_from_rng(rand::thread_rng());
-                    let xp = x25519_dalek::PublicKey::from(&xs);
-                    let (kp, _ks) = generate_kyber_keypair();
-                    let mut pdu = build_handshake_pdu(
-                        &core.identity.public_key_bytes(),
-                        |d| core.identity.sign(d).to_bytes(),
-                        &xp,
-                        &kp,
-                    );
-                    let raw = l4_rs::encode(&mut pdu);
-                    let tag = [0u8; 16];
-                    for i in 0..3 {
-                        let framed = frame_shard(&raw[i]);
-                        let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, true);
-                        let _ = sock.send_to(&gtf, src);
+        if src == hub {
+            let flags = parse_flags(&buf[..n]);
+            if flags & 0x02 != 0 {
+                if let Some(wire) = receiver_open(&buf[..n], n, &session_key, session_hash, ctr) {
+                    let (accepted, _adv) = open_to_tun(&core.state, &wire, tun);
+                    if accepted {
+                        core.rx_ctr.fetch_add(1, Ordering::Relaxed);
+                        return true;
                     }
                 }
-                return false;
             }
-            if n < MIN_FRAME_SIZE {
-                return false;
-            }
-            let ctr = parse_packet_counter(&buf[..n]);
-            let flags = parse_flags(&buf[..n]);
-            if flags & 0x02 == 0 {
-                return false;
-            }
-            if let Some(wire) = receiver_open(&buf[..n], n, &session_key, session_hash, ctr) {
-                let (accepted, _adv) = open_to_tun(&core.state, &wire, tun);
-                if accepted {
-                    core.rx_ctr.fetch_add(1, Ordering::Relaxed);
-                    return true;
-                }
-            }
-            false
         }
-        Err(_) => false,
     }
+    false
 }
 
 impl Drop for AndroidCore {

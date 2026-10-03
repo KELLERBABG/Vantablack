@@ -171,11 +171,19 @@ class GhostVpnService : VpnService() {
             }
         }.apply { name = "ggn-drain"; start() }
 
-        // 5. Bootstrap sync: continuously register with Cloudflare Worker tracker and connect to known peers
+        // 5. Bootstrap sync: continuously register with Cloudflare Worker tracker, sweep LAN, and connect to known peers
         bootstrapThread = Thread {
             while (running) {
                 try {
-                    val peers = fetchBootstrapPeers(activeNetwork)
+                    // 1. Run local Wi-Fi LAN discovery sweep & broadcast beacons
+                    try {
+                        GhostCore.scanLan(ptr)
+                    } catch (_: Throwable) {}
+
+                    // 2. Sync with Cloudflare Worker tracker
+                    val fp = try { GhostCore.getFingerprint(ptr) } catch (_: Throwable) { "" }
+                    val lanIp = getLocalIpAddress()
+                    val peers = fetchBootstrapPeers(activeNetwork, fp, lanIp)
                     for (peer in peers) {
                         if (!running) break
                         try {
@@ -184,8 +192,8 @@ class GhostVpnService : VpnService() {
                     }
                 } catch (_: Throwable) {}
 
-                // Sync with tracker every 30 seconds
-                for (i in 0 until 30) {
+                // Sync and beacon every 15 seconds
+                for (i in 0 until 15) {
                     if (!running) break
                     try { Thread.sleep(1000) } catch (_: Throwable) { break }
                 }
@@ -274,9 +282,37 @@ class GhostVpnService : VpnService() {
         @Volatile var isRunning = false
         @Volatile var activePtr: Long = 0L
 
-        fun fetchBootstrapPeers(network: Network? = null): List<String> {
+        fun getLocalIpAddress(): String {
+            try {
+                val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+                while (interfaces.hasMoreElements()) {
+                    val iface = interfaces.nextElement()
+                    if (iface.isLoopback || !iface.isUp) continue
+                    val addrs = iface.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val addr = addrs.nextElement()
+                        if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                            val host = addr.hostAddress
+                            if (host != null && !host.startsWith("127.") && !host.startsWith("169.254.")) {
+                                return host
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+            return "127.0.0.1"
+        }
+
+        fun fetchBootstrapPeers(network: Network? = null, fp: String = "", lanIp: String = ""): List<String> {
             return try {
-                val url = java.net.URL(DEFAULT_BOOTSTRAP_URL)
+                val sb = java.lang.StringBuilder(DEFAULT_BOOTSTRAP_URL)
+                if (fp.isNotEmpty()) {
+                    sb.append("&id=").append(fp)
+                }
+                if (lanIp.isNotEmpty() && lanIp != "127.0.0.1") {
+                    sb.append("&lan=").append(lanIp).append(":55225")
+                }
+                val url = java.net.URL(sb.toString())
                 val conn = (network?.openConnection(url) ?: url.openConnection()) as java.net.HttpURLConnection
                 conn.connectTimeout = 4000
                 conn.readTimeout = 4000
@@ -298,9 +334,18 @@ class GhostVpnService : VpnService() {
             val p = activePtr
             if (p != 0L) {
                 Thread {
-                    // 1. Sync with Cloudflare Worker bootstrap tracker
+                    // 1. Run local Wi-Fi LAN discovery
+                    val count = try {
+                        GhostCore.scanLan(p)
+                    } catch (_: Throwable) {
+                        0
+                    }
+
+                    // 2. Sync with Cloudflare Worker bootstrap tracker
                     try {
-                        val peers = fetchBootstrapPeers()
+                        val fp = try { GhostCore.getFingerprint(p) } catch (_: Throwable) { "" }
+                        val lanIp = getLocalIpAddress()
+                        val peers = fetchBootstrapPeers(null, fp, lanIp)
                         for (peer in peers) {
                             try {
                                 GhostCore.connectPeer(p, peer)
@@ -308,12 +353,6 @@ class GhostVpnService : VpnService() {
                         }
                     } catch (_: Throwable) {}
 
-                    // 2. Also run local Wi-Fi LAN discovery
-                    val count = try {
-                        GhostCore.scanLan(p)
-                    } catch (_: Throwable) {
-                        0
-                    }
                     onComplete?.invoke(count)
                 }.start()
             } else {
