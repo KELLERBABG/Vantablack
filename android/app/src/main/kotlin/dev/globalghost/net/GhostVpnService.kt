@@ -163,6 +163,7 @@ class GhostVpnService : VpnService() {
         } else {
             "auto"
         }
+        currentHubAddr = hubAddrStr
         if (!GhostCore.start(ptr, tunFd, sockFd, hubAddrStr)) {
             stopSelf(); return
         }
@@ -195,11 +196,19 @@ class GhostVpnService : VpnService() {
                     val fp = try { GhostCore.getFingerprint(ptr) } catch (_: Throwable) { "" }
                     val lanIp = getLocalIpAddress()
                     val peers = fetchBootstrapPeers(activeNetwork, fp, lanIp)
+                    val activeList = ArrayList<String>()
                     for (peer in peers) {
                         if (!running) break
+                        activeList.add(peer)
                         try {
                             GhostCore.connectPeer(ptr, peer)
                         } catch (_: Throwable) {}
+                    }
+                    if (activeList.isNotEmpty()) {
+                        discoveredPeersList = activeList
+                        if (currentHubAddr == "auto" || currentHubAddr.isEmpty()) {
+                            currentHubAddr = activeList.first()
+                        }
                     }
                 } catch (_: Throwable) {}
 
@@ -292,6 +301,25 @@ class GhostVpnService : VpnService() {
             "https://red-star-512e.papababg02.workers.dev/peers?port=55225"
         @Volatile var isRunning = false
         @Volatile var activePtr: Long = 0L
+        @Volatile var currentHubAddr: String = "auto"
+        @Volatile var discoveredPeersList: List<String> = emptyList()
+
+        fun getStats(): LongArray {
+            val p = activePtr
+            return if (p != 0L) {
+                try { GhostCore.stats(p) } catch (_: Throwable) { LongArray(4) }
+            } else LongArray(4)
+        }
+
+        fun getActiveExitNode(): String {
+            return if (currentHubAddr.isNotEmpty() && currentHubAddr != "auto") currentHubAddr else {
+                discoveredPeersList.firstOrNull() ?: "Auto-Discovering..."
+            }
+        }
+
+        fun getDiscoveredPeers(): List<String> {
+            return discoveredPeersList
+        }
 
         fun getLocalIpAddress(): String {
             try {

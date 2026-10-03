@@ -33,7 +33,7 @@ crate-type = ["rlib", "cdylib"] # cdylib: Android JNI surface (cargo-ndk)
 # center still runs underneath, so the browser page keeps working as a
 # secondary way in — and as the only way in for headless/server nodes built
 # with `--no-default-features`.
-default = ["webview"]
+default = ["webview", "vpn"]
 # Optional system-tray UI: `cargo build --features tray`.
 tray = ["dep:tray-icon", "dep:tao"]
 # Native frameless desktop window hosting the control center (implies `tray`).
