@@ -5610,7 +5610,7 @@ async fn run_node(
                 };
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {
-                        let active_nodes = nc_sweep.sessions.len();
+                        let active_nodes = if nc_sweep.sessions.is_empty() { 1 } else { 1 + nc_sweep.sessions.len() };
                         if active_nodes >= 5 {
                             tracing::info!(
                                 active_nodes,
@@ -5619,7 +5619,8 @@ async fn run_node(
                         } else {
                             tracing::info!(
                                 active_nodes,
-                                "Private mesh has < 5 nodes - WAN mesh assisted mode active"
+                                "Private mesh has {} nodes (need 5 for autonomous local quorum) - WAN mesh assisted mode active",
+                                active_nodes
                             );
                         }
                         sweep_lan_subnet(&nc_sweep, &phs_sweep, mesh_port).await;

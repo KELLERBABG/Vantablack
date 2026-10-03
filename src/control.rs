@@ -395,9 +395,9 @@ pub fn spawn_control_center(
                                         "peers_count": peers_count,
                                         "active_sessions": sessions_count,
                                         "private_mesh": {
-                                            "active_nodes": sessions_count,
-                                            "autonomous_local": sessions_count >= 5,
-                                            "mode": if sessions_count >= 5 { "autonomous_local" } else { "wan_mesh_assisted" },
+                                            "active_nodes": if sessions_count > 0 { 1 + sessions_count } else { 1 },
+                                            "autonomous_local": (sessions_count + 1) >= 5,
+                                            "mode": if (sessions_count + 1) >= 5 { "autonomous_local" } else { "wan_mesh_assisted" },
                                             "scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
                                         },
                                         "latency_ms": serde_json::Value::Null,

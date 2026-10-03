@@ -1176,9 +1176,9 @@
           const badge = document.getElementById('mesh-topology-badge');
           if (badge) {
             if (pm.autonomous_local) {
-              badge.innerHTML = `<span style="color: var(--emerald);">● Autonomous Local Mesh (${pm.active_nodes} Nodes) — Quorum achieved, no WAN needed</span>`;
+              badge.innerHTML = `<span style="color: var(--emerald);">● Autonomous Local Mesh (${pm.active_nodes} Nodes) — Local Quorum Active</span>`;
             } else {
-              badge.innerHTML = `<span style="color: var(--amber);">○ WAN Mesh Assisted (${pm.active_nodes} Nodes) — Needs &lt;5 nodes WAN assistance</span>`;
+              badge.innerHTML = `<span style="color: var(--text-muted);">○ WAN Mesh Assisted (${pm.active_nodes} of 5 Nodes)</span>`;
             }
           }
           const sel = document.getElementById('scan-interval-select');
