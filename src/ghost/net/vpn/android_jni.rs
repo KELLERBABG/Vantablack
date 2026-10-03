@@ -142,7 +142,7 @@ fn receiver_open(
         let tag_start = if h.bulk {
             amt.saturating_sub(16)
         } else {
-            crate::ghost::net::V2_OFFSET_AUTH_TAG
+            crate::ghost::net::V2_OFFSET_AUTH_TAG_START
         };
         if tag_start > crate::ghost::net::V2_OFFSET_PAYLOAD_START {
             let shard_bytes = &frame[crate::ghost::net::V2_OFFSET_PAYLOAD_START..tag_start];

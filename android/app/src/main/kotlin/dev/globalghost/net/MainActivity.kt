@@ -305,9 +305,10 @@ class MainActivity : Activity() {
 
         // ── Manual Target Override (Optional) ──
         val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
+        val savedHub = prefs.getString("hub_addr", null)
         editRemoteAddr = EditText(this).apply {
-            hint = "Custom Gateway (optional host:port)"
-            setText(prefs.getString("hub_addr", ""))
+            hint = "192.168.178.27:55225"
+            setText(savedHub ?: "192.168.178.27:55225")
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#475569"))
             textSize = 12f
