@@ -90,6 +90,7 @@ pub struct Session {
     pub stats: Arc<ThroughputStats>,
     pub use_bulk: bool,
     pub cipher_suite: HybridCipherSuite,
+    pub wire_v1: AtomicBool,
 
     // ── Ratchet State ────────────────────────────────────
     /// The hybrid DH ratchet. It owns every AEAD key this session uses: the
@@ -282,6 +283,7 @@ impl Session {
             quantum_mix_attempt_at: Mutex::new(None),
             quantum_mix_in_progress: AtomicBool::new(false),
             quantum_mixed: AtomicBool::new(false),
+            wire_v1: AtomicBool::new(false),
         }
     }
 
@@ -322,6 +324,16 @@ impl Session {
     pub fn set_pq_authenticated(&self, valid: bool) {
         let state = if valid { 1 } else { 2 };
         self.pq_auth_state.store(state, Ordering::Release);
+    }
+
+    /// Whether this peer is using the legacy GTF v1 wire protocol (e.g. Android client).
+    pub fn is_v1_wire(&self) -> bool {
+        self.wire_v1.load(Ordering::Relaxed)
+    }
+
+    /// Set whether this peer is using the legacy GTF v1 wire protocol.
+    pub fn set_v1_wire(&self, v1: bool) {
+        self.wire_v1.store(v1, Ordering::Relaxed);
     }
 
     /// Pin the peer's post-quantum commitment from the handshake transcript.

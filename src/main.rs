@@ -58,8 +58,9 @@ use vantablack::ghost::{
             RESPONSE_NEGOTIATION_MAGIC, RESPONSE_V3_MAGIC,
         },
         l2_aead::{
-            decrypt_in_place_with_context, random_xnonce, xchacha_open, xchacha_open_with_aad,
-            xchacha_seal_in_place, xchacha_seal_in_place_with_aad, NonceDirection,
+            decrypt_in_place_with_context, encrypt_in_place_with_context, random_xnonce,
+            xchacha_open, xchacha_open_with_aad, xchacha_seal_in_place,
+            xchacha_seal_in_place_with_aad, NonceDirection,
         },
         l4_rs,
         l7_ldpc::LdpcCodec,
@@ -1538,6 +1539,29 @@ async fn send_tunnel_frame(
         tracing::debug!(peer = %peer_fp, "VPN egress: no session yet — dropped");
         return;
     };
+    if sess.is_v1_wire() {
+        let ctr = sess.tx_counter.fetch_add(1, Ordering::Relaxed) as u32;
+        let sh = sess.session_hash;
+        let key = sess.master_key;
+        let dir = sess.role.seal_direction();
+        drop(sess);
+
+        let mut payload = VPN_PAYLOAD_MAGIC.to_vec();
+        payload.extend_from_slice(tunnel_wire);
+        let mut framed = Vec::with_capacity(2 + payload.len() + 1 + 16);
+        framed.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        framed.extend_from_slice(&payload);
+        if framed.len() % 2 != 0 {
+            framed.push(0);
+        }
+        encrypt_in_place_with_context(&key, ctr, &sh, dir, &mut framed);
+        let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
+        let framed = frame_shard(&framed);
+        let mut frame = net::build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
+        frame[net::OFFSET_FLAGS] |= 0x02; // FLAG_TUNNEL
+        let _ = nc.socket.send_to(&frame, endpoint).await;
+        return;
+    }
     // The epoch key and a fresh 96-bit nonce replace the counter-derived
     // nonce, so the counter is now a pure sequence number and there is no u32 wall
     // to warn about — the exhaustion watchdog this function used to carry existed
@@ -3393,6 +3417,8 @@ async fn handle_pkt(
         peers.insert(fp.clone(), *src);
         record_active_peer(*src);
         let responder_session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
+        responder_session.set_v1_wire(true);
+        responder_session.set_pq_authenticated(true);
         // Pin the initiator's identity key: it is what a later ratchet step is
         // verified against, and without it a step is refused rather than trusted.
         responder_session.pin_peer_identity(hs.identity_pk);
@@ -3810,24 +3836,10 @@ async fn handle_pkt(
             }
         }
 
-        // Gate all application traffic on post-quantum identity verification.
-        let is_pq_auth = node
-            .sessions
-            .get(&peer_fp)
-            .map(|s| s.is_pq_authenticated())
-            .unwrap_or(false);
-        if !is_pq_auth {
-            tracing::debug!(
-                peer = %peer_fp,
-                "Application traffic dropped: session post-quantum authentication pending"
-            );
-            return;
-        }
-
         // ── VPN tunnel payload: [len][GVPN1][epoch u32][ctr u32][ct][tag] ──
         // Hub: ingest client datagrams. Client: write hub replies into TUN.
-        // Checked BEFORE all control-channel handling; tunnel traffic never
-        // touches SOCKS5/CHAT/relay logic.
+        // Checked BEFORE all control-channel handling; tunnel traffic has its own
+        // inner AEAD and lease authorization and never touches SOCKS5/CHAT/relay logic.
         #[cfg(feature = "vpn")]
         if let Some(framed) = frame_payload(pt) {
             if framed.len() > VPN_PAYLOAD_MAGIC.len()
@@ -3846,6 +3858,20 @@ async fn handle_pkt(
                 }
                 return;
             }
+        }
+
+        // Gate other application traffic on post-quantum identity verification.
+        let is_pq_auth = node
+            .sessions
+            .get(&peer_fp)
+            .map(|s| s.is_pq_authenticated())
+            .unwrap_or(false);
+        if !is_pq_auth {
+            tracing::debug!(
+                peer = %peer_fp,
+                "Application traffic dropped: session post-quantum authentication pending"
+            );
+            return;
         }
 
         let text = String::from_utf8_lossy(pt).into_owned();

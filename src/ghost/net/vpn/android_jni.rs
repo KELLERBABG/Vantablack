@@ -137,6 +137,47 @@ fn receiver_open(
     sh: [u8; 4],
     ctr: u32,
 ) -> Option<Vec<u8>> {
+    // 1. Support GTF v2 wire format from updated hubs
+    if let Some(h) = crate::ghost::net::parse_gtf_v2_header(&frame[..amt]) {
+        let tag_start = if h.bulk {
+            amt.saturating_sub(16)
+        } else {
+            crate::ghost::net::V2_OFFSET_AUTH_TAG
+        };
+        if tag_start > crate::ghost::net::V2_OFFSET_PAYLOAD_START {
+            let shard_bytes = &frame[crate::ghost::net::V2_OFFSET_PAYLOAD_START..tag_start];
+            if let Some(msg) = unframe(shard_bytes) {
+                let aad: &[u8] = if h.bulk { &[] } else { &h.tail };
+                for dir in [
+                    NonceDirection::ResponderToInitiator,
+                    NonceDirection::InitiatorToResponder,
+                ] {
+                    let mut trial = msg.clone();
+                    if crate::ghost::layers::l2_aead::xchacha_open_with_aad(
+                        key,
+                        &h.nonce,
+                        h.epoch,
+                        dir,
+                        &mut trial,
+                        aad,
+                    )
+                    .is_ok()
+                    {
+                        if trial.len() >= 2 {
+                            let n = u16::from_be_bytes([trial[0], trial[1]]) as usize;
+                            if let Some(payload) = trial.get(2..2 + n) {
+                                if payload.len() > MAGIC.len() && &payload[..MAGIC.len()] == MAGIC.as_slice() {
+                                    return Some(payload[MAGIC.len()..].to_vec());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. GTF v1 fallback
     let pe = BULK_OFFSET_AUTH_TAG_START.min(amt);
     if pe <= BULK_OFFSET_PAYLOAD_START {
         return None;
