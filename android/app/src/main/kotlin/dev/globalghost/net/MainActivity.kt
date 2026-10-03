@@ -303,10 +303,10 @@ class MainActivity : Activity() {
                 txtTopology.text = "Autonomous Local Mesh ($peers Nodes) — Local Quorum Active"
                 txtTopology.setTextColor(Color.parseColor("#10b981"))
             } else if (peers > 0) {
-                txtTopology.text = "WAN Mesh Assisted ($peers Connected Nodes)"
+                txtTopology.text = "Global Ghost Mesh Active ($peers Connected Node(s))"
                 txtTopology.setTextColor(Color.parseColor("#38bdf8"))
             } else {
-                txtTopology.text = "Private Mesh Active — Auto-scanning Wi-Fi for nodes..."
+                txtTopology.text = "Private Mesh Active — Syncing with global mesh tracker..."
                 txtTopology.setTextColor(Color.parseColor("#f59e0b"))
             }
             updateUiState(true)

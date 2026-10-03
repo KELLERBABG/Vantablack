@@ -773,6 +773,49 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     }
 }
 
+/// `fun connectPeer(ptr: Long, peerAddr: String): Boolean`
+/// Connect to a specific peer endpoint discovered via Cloudflare Worker tracker or manual config.
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    peer_addr: JString,
+) -> jboolean {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
+        return 0;
+    };
+    let Some(sock) = core.sock.as_ref() else {
+        return 0;
+    };
+    let addr_str: String = match env.get_string(&peer_addr) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let Ok(peer) = addr_str.parse::<std::net::SocketAddr>() else {
+        return 0;
+    };
+    if core.known_peers.lock().contains_key(&peer) {
+        return 1;
+    }
+    if let Some((key, sh)) = perform_handshake(sock, peer, &core.identity) {
+        core.known_peers.lock().insert(peer, (key, sh));
+        if core.hub_addr.is_none() {
+            core.hub_addr = Some(peer);
+            core.state.rotate_epoch();
+            core.state.set_key(key);
+            *core.session_key.lock() = Some(key);
+            *core.session_hash.lock() = sh;
+            core.tx_seq.store(2, Ordering::Relaxed);
+        }
+        tracing::info!(peer = %peer, "Connected to bootstrap peer");
+        1
+    } else {
+        tracing::debug!(peer = %peer, "Handshake to bootstrap peer failed");
+        0
+    }
+}
+
 /// `fun stats(ptr: Long): LongArray` — [rxPackets, txPackets, epoch, txCounter]
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_stats(

@@ -29,6 +29,7 @@ class GhostVpnService : VpnService() {
     private var channel: DatagramChannel? = null
     private var pumpThread: Thread? = null
     private var drainThread: Thread? = null
+    private var bootstrapThread: Thread? = null
     @Volatile private var running = false
     private var hubFp: String = ""
     private var hubAddr: SocketAddress? = null
@@ -169,6 +170,27 @@ class GhostVpnService : VpnService() {
                 try { GhostCore.drain(ptr) } catch (_: Throwable) { break }
             }
         }.apply { name = "ggn-drain"; start() }
+
+        // 5. Bootstrap sync: continuously register with Cloudflare Worker tracker and connect to known peers
+        bootstrapThread = Thread {
+            while (running) {
+                try {
+                    val peers = fetchBootstrapPeers(activeNetwork)
+                    for (peer in peers) {
+                        if (!running) break
+                        try {
+                            GhostCore.connectPeer(ptr, peer)
+                        } catch (_: Throwable) {}
+                    }
+                } catch (_: Throwable) {}
+
+                // Sync with tracker every 30 seconds
+                for (i in 0 until 30) {
+                    if (!running) break
+                    try { Thread.sleep(1000) } catch (_: Throwable) { break }
+                }
+            }
+        }.apply { name = "ggn-bootstrap"; start() }
     }
 
     private val handoverCallback = object : ConnectivityManager.NetworkCallback() {
@@ -189,10 +211,13 @@ class GhostVpnService : VpnService() {
         running = false
         pumpThread?.interrupt()
         drainThread?.interrupt()
+        bootstrapThread?.interrupt()
         pumpThread?.join(500)
         drainThread?.join(500)
+        bootstrapThread?.join(500)
         pumpThread = null
         drainThread = null
+        bootstrapThread = null
     }
 
     override fun onRevoke() { shutdown(); stopSelf() }
@@ -244,13 +269,46 @@ class GhostVpnService : VpnService() {
         const val EXTRA_HUB_ADDR = "hub_addr"
         const val EXTRA_DNS = "dns_server"
         const val EXTRA_SEARCH_DOMAIN = "search_domain"
+        const val DEFAULT_BOOTSTRAP_URL =
+            "https://red-star-512e.papababg02.workers.dev/peers?port=55225"
         @Volatile var isRunning = false
         @Volatile var activePtr: Long = 0L
+
+        fun fetchBootstrapPeers(network: Network? = null): List<String> {
+            return try {
+                val url = java.net.URL(DEFAULT_BOOTSTRAP_URL)
+                val conn = (network?.openConnection(url) ?: url.openConnection()) as java.net.HttpURLConnection
+                conn.connectTimeout = 4000
+                conn.readTimeout = 4000
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("User-Agent", "Vantablack-Android")
+                if (conn.responseCode in 200..299) {
+                    val text = conn.inputStream.bufferedReader().readText()
+                    val regex = Regex("\"([^\"]+)\"")
+                    regex.findAll(text).map { it.groupValues[1] }.toList()
+                } else {
+                    emptyList()
+                }
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
 
         fun triggerScan(onComplete: ((Int) -> Unit)? = null) {
             val p = activePtr
             if (p != 0L) {
                 Thread {
+                    // 1. Sync with Cloudflare Worker bootstrap tracker
+                    try {
+                        val peers = fetchBootstrapPeers()
+                        for (peer in peers) {
+                            try {
+                                GhostCore.connectPeer(p, peer)
+                            } catch (_: Throwable) {}
+                        }
+                    } catch (_: Throwable) {}
+
+                    // 2. Also run local Wi-Fi LAN discovery
                     val count = try {
                         GhostCore.scanLan(p)
                     } catch (_: Throwable) {

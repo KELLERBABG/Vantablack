@@ -50,4 +50,7 @@ object GhostCore {
 
     /** Triggers autonomous Wi-Fi broadcast discovery sweep */
     external fun scanLan(ptr: Long): Int
+
+    /** Connect to an external peer endpoint (from bootstrap tracker or manual). */
+    external fun connectPeer(ptr: Long, peerAddr: String): Boolean
 }
