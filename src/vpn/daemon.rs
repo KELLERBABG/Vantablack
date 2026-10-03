@@ -107,15 +107,25 @@ pub fn vpn_export(_mode: &Option<VpnMode>) -> (&'static str, String, serde_json:
     ("disabled", String::new(), serde_json::json!({}))
 }
 
-/// Initializes the VPN subsystem based on the `GHOST_VPN` environment variable.
-pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
+/// Initializes the VPN subsystem with optional ExitIpRotator based on environment or exit-node flag.
+pub fn init_vpn_mode_with_rotator(
+    rotator: Option<Arc<vantablack::ghost::net::mesh::ExitIpRotator>>,
+) -> anyhow::Result<Option<VpnMode>> {
     #[cfg(feature = "vpn")]
     {
         use std::time::Duration;
         use tokio::time::sleep;
 
+        let is_exit = std::env::var("GHOST_EXIT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+            || std::env::var("GHOST_EXIT_NODE")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+            || std::env::args().any(|arg| arg == "--exit" || arg == "--exit-node" || arg == "-e");
+
         match std::env::var("GHOST_VPN").as_deref() {
-            Ok("hub") => {
+            Ok("hub") | _ if is_exit => {
                 let (subnet, prefix) = std::env::var("GHOST_VPN_LAN_SUBNET")
                     .ok()
                     .and_then(|s| {
@@ -129,13 +139,15 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
                 let cfg = VpnConfig {
                     role: VpnRole::Hub,
                     lan_subnet: (subnet, prefix),
+                    // Default to Quad9/Cloudflare Privacy DNS (1.1.1.1) to eliminate ISP DNS leaks
                     dns_server: std::env::var("GHOST_VPN_DNS")
                         .ok()
                         .and_then(|v| v.parse().ok())
-                        .unwrap_or(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+                        .unwrap_or(std::net::Ipv4Addr::new(1, 1, 1, 1)),
                     search_domain: std::env::var("GHOST_VPN_SEARCH")
                         .ok()
                         .filter(|x| !x.is_empty()),
+                    // If GHOST_VPN_CLIENTS is not set, allow all authenticated mesh peers (exit mode)
                     allowed_fingerprints: std::env::var("GHOST_VPN_CLIENTS")
                         .ok()
                         .map(|v| {
@@ -144,7 +156,7 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
                                 .filter(|x| !x.is_empty())
                                 .collect()
                         })
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|| vec!["any".to_string()]),
                     lan_bind_addr: std::env::var("GHOST_VPN_BIND")
                         .ok()
                         .and_then(|v| v.parse().ok())
@@ -152,10 +164,11 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
                     ..VpnConfig::default()
                 };
                 tracing::info!(
-                    "VPN: hub mode — allowlisted clients: {}",
-                    cfg.allowed_fingerprints.len()
+                    "VPN Hub: active as Exit Node (privacy DNS: {}, allowlisted clients: {:?})",
+                    cfg.dns_server,
+                    cfg.allowed_fingerprints
                 );
-                Ok(Some(VpnMode::Hub(VpnHub::start(cfg))))
+                Ok(Some(VpnMode::Hub(VpnHub::start_with_rotator(cfg, rotator))))
             }
             Ok("client") => {
                 let hub_fp = std::env::var("GHOST_VPN_HUB_FP").unwrap_or_default();
@@ -261,6 +274,13 @@ pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
     }
     #[cfg(not(feature = "vpn"))]
     {
+        let _ = rotator;
         Ok(None)
     }
+}
+
+/// Backward-compatible wrapper without rotator.
+#[allow(dead_code)]
+pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
+    init_vpn_mode_with_rotator(None)
 }

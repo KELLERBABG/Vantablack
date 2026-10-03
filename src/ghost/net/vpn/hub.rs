@@ -72,8 +72,16 @@ pub struct VpnHub {
 
 impl VpnHub {
     pub fn start(cfg: VpnConfig) -> Arc<Self> {
+        Self::start_with_rotator(cfg, None)
+    }
+
+    /// Start VPN hub with optional ExitIpRotator for round-robin egress IP rotation.
+    pub fn start_with_rotator(
+        cfg: VpnConfig,
+        rotator: Option<Arc<crate::ghost::net::mesh::ExitIpRotator>>,
+    ) -> Arc<Self> {
         let flows = Arc::new(UdpFlowTable::new(cfg.lan_bind_addr));
-        Self::start_with_flows(cfg, flows, Duration::from_secs(10))
+        Self::start_with_flows_and_rotator(cfg, flows, Duration::from_secs(10), rotator)
     }
 
     /// Test constructor: inject the flow table (which carries its own TTLs)
@@ -83,7 +91,16 @@ impl VpnHub {
         flows: Arc<UdpFlowTable>,
         reader_idle_limit: Duration,
     ) -> Arc<Self> {
-        let netstack = Netstack::start();
+        Self::start_with_flows_and_rotator(cfg, flows, reader_idle_limit, None)
+    }
+
+    pub fn start_with_flows_and_rotator(
+        cfg: VpnConfig,
+        flows: Arc<UdpFlowTable>,
+        reader_idle_limit: Duration,
+        rotator: Option<Arc<crate::ghost::net::mesh::ExitIpRotator>>,
+    ) -> Arc<Self> {
+        let netstack = Netstack::start_with_rotator(rotator);
         let (tx, rx) = std::sync::mpsc::sync_channel::<(String, Vec<u8>)>(4096);
         Arc::new(Self {
             cfg,
@@ -219,6 +236,15 @@ impl VpnHub {
                 let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
                 let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
                 let src_ip = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
+                // If client queries the hub overlay directly on port 53 (DNS), redirect to configured privacy DNS
+                let effective_dst = if (dst == super::netstack::HUB_ADDR
+                    || dst == Ipv4Addr::new(10, 66, 0, 1))
+                    && dport == 53
+                {
+                    self.cfg.dns_server
+                } else {
+                    dst
+                };
                 // The client configured its own TUN: adopt its self-chosen
                 // overlay IP as the lease hint (auto-assign only on clash).
                 let (overlay, _) = self.leases.lease_for_hint(fp, Some(src_ip));
@@ -236,7 +262,7 @@ impl VpnHub {
                 let payload_start = ihl + 8;
                 if pkt.len() > payload_start {
                     let udp_payload = pkt[payload_start..].to_vec();
-                    let dst_addr = SocketAddr::from((dst, dport));
+                    let dst_addr = SocketAddr::from((effective_dst, dport));
                     // The query itself is sent from THIS (packet-handling)
                     // context — never a per-packet thread.
                     if let Err(e) = flow.socket.send_to(&udp_payload, dst_addr) {

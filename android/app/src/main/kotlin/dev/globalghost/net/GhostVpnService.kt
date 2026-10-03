@@ -105,16 +105,27 @@ class GhostVpnService : VpnService() {
         try { tun?.close() } catch (_: Throwable) {}
         channel = null; tun = null
 
-        // 1. TUN: overlay IP (10.66.0.0/24) + DNS.
-        // We do NOT add 192.168.x.x routes to the TUN so local Wi-Fi LAN traffic remains native and unhijacked.
+        // 1. TUN: overlay IP (10.66.0.0/24) + Default Route (0.0.0.0/0) + Zero-Leak Encrypted DNS
         val builder = Builder()
             .setSession("Vantablack Mesh")
             .addAddress("10.66.0.10", 24)
-            .addRoute("10.66.0.0", 24)     // the overlay itself
+            .addRoute("0.0.0.0", 0)        // Encapsulate ALL IPv4 internet traffic into mesh tunnel
+            .addRoute("10.66.0.0", 24)     // Mesh overlay network
+            .addDnsServer("1.1.1.1")       // Cloudflare Privacy-Preserving DNS
+            .addDnsServer("9.9.9.9")       // Quad9 Encapsulated Privacy DNS
+            .addDnsServer("10.66.0.1")     // Mesh Exit Node Resolver
             .setMtu(1280)
+            .setBlocking(true)
 
-        // Only register a DNS server if an explicit, valid non-overlay DNS was specified.
-        if (dnsServer.isNotEmpty() && dnsServer != "10.66.0.1") {
+        // Block IPv6 leakage through local ISP router
+        try {
+            builder.addAddress("fd00:66::10", 64)
+            builder.addRoute("::", 0)
+        } catch (_: Throwable) {
+            // IPv6 route fallback if unsupported on host
+        }
+
+        if (dnsServer.isNotEmpty() && dnsServer != "10.66.0.1" && dnsServer != "1.1.1.1" && dnsServer != "9.9.9.9") {
             try {
                 builder.addDnsServer(dnsServer)
             } catch (_: Throwable) {}

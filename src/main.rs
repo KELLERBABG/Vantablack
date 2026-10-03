@@ -94,7 +94,7 @@ use vantablack::ghost::{
 };
 #[cfg(feature = "vpn")]
 use vpn::{hub::VPN_PAYLOAD_MAGIC, tun::TunDevice};
-use vpn::{init_vpn_mode, VpnMode};
+use vpn::{init_vpn_mode_with_rotator, VpnMode};
 
 /// Whether ShardSec (per-shard AEAD) is enabled for outbound frames.
 ///
@@ -4976,24 +4976,81 @@ async fn run_node(
         .as_ref()
         .and_then(|h| hex::decode(h).ok())
         .and_then(|b| b.try_into().ok());
+    // Exit-node determination:
+    let is_exit_node = std::env::var("GHOST_EXIT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        || std::env::var("GHOST_EXIT_NODE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        || std::env::var("GHOST_VPN")
+            .map(|v| v == "hub")
+            .unwrap_or(false)
+        || std::env::args().any(|arg| arg == "--exit" || arg == "--exit-node" || arg == "-e");
+
+    let mut exit_ips: Vec<std::net::IpAddr> = std::env::var("GHOST_EXIT_IPS")
+        .ok()
+        .map(|ips_str| {
+            ips_str
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if exit_ips.is_empty() && is_exit_node {
+        for target in &[
+            "1.1.1.1:80",
+            "8.8.8.8:80",
+            "9.9.9.9:80",
+            "192.168.178.1:80",
+            "192.168.1.1:80",
+            "10.0.0.1:80",
+        ] {
+            if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                if sock.connect(target).is_ok() {
+                    if let Ok(la) = sock.local_addr() {
+                        let ip = la.ip();
+                        if !ip.is_loopback() && !exit_ips.contains(&ip) {
+                            exit_ips.push(ip);
+                        }
+                    }
+                }
+            }
+        }
+        if exit_ips.is_empty() {
+            exit_ips.push(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        }
+    }
+
+    let exit_rotator: Option<Arc<ExitIpRotator>> = if !exit_ips.is_empty() {
+        let rotator = Arc::new(ExitIpRotator::new(exit_ips.clone()));
+        tracing::info!(
+            "Exit IP Rotator initialized with {} egress IP(s): {:?}",
+            rotator.pool_size(),
+            exit_ips
+        );
+        Some(rotator)
+    } else {
+        None
+    };
+
     // Exit-node authorization: peers allowed to use THIS node as a SOCKS5
     // exit. Closed by default (secure) — "any" opens it, or list fingerprints.
     let trusted_exits: Arc<std::sync::RwLock<std::collections::HashSet<String>>> =
-        Arc::new(std::sync::RwLock::new(
-            std::env::var("GHOST_EXIT_ALLOWLIST")
+        Arc::new(std::sync::RwLock::new({
+            let mut set: std::collections::HashSet<String> = std::env::var("GHOST_EXIT_ALLOWLIST")
                 .ok()
                 .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
-                .unwrap_or_default(),
-        ));
+                .unwrap_or_default();
+            if is_exit_node {
+                set.insert("any".to_string());
+            }
+            set
+        }));
 
-    // ── VPN (LAN-over-WAN prototype) configuration ──
-    // GHOST_VPN=hub|client   (absent → VPN off)
-    // hub:  GHOST_VPN_CLIENTS=fp,fp  (allowlist; empty = deny all)
-    //       GHOST_VPN_LAN_SUBNET, GHOST_VPN_DNS, GHOST_VPN_SEARCH,
-    //       GHOST_VPN_BIND (hub LAN IP for UDP flow sockets)
-    // client: GHOST_VPN_HUB_FP (hub fingerprint), GHOST_VPN_KEY (session key
-    // ── VPN (LAN-over-WAN prototype) configuration ──
-    let vpn_mode = init_vpn_mode()?;
+    // ── VPN (LAN-over-WAN / Exit Node) configuration ──
+    let vpn_mode = init_vpn_mode_with_rotator(exit_rotator.clone())?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -5046,24 +5103,6 @@ async fn run_node(
         nc.fingerprint(),
         Arc::clone(&reputation_matrix),
     ));
-
-    // WIRED: Category A - Egress IP rotator
-    let exit_rotator: Option<Arc<ExitIpRotator>> = std::env::var("GHOST_EXIT_IPS")
-        .ok()
-        .map(|ips_str| {
-            let ips: Vec<std::net::IpAddr> = ips_str
-                .split(',')
-                .filter_map(|s| s.trim().parse().ok())
-                .collect();
-            Arc::new(ExitIpRotator::new(ips))
-        })
-        .filter(|r| r.pool_size() > 0);
-    if let Some(ref r) = exit_rotator {
-        tracing::info!(
-            "Exit IP Rotator initialized with {} egress IP(s)",
-            r.pool_size()
-        );
-    }
 
     // Category A — NAT traversal (ICE over STUN).
     //
@@ -6618,6 +6657,26 @@ async fn run_node(
                 }
                 _ => println!("Usage: EXIT <fingerprint>"),
             },
+            "EXITNODE" => match p.get(1).copied().map(str::to_lowercase).as_deref() {
+                Some("on") => {
+                    trusted_exits.write().unwrap().insert("any".to_string());
+                    println!("Exit node service: ACTIVATED (all authenticated peers allowed, round-robin IP egress active)");
+                }
+                Some("off") => {
+                    trusted_exits.write().unwrap().clear();
+                    println!("Exit node service: DEACTIVATED");
+                }
+                _ => {
+                    let allowed = trusted_exits.read().unwrap().contains("any");
+                    let pool = exit_rotator.as_ref().map(|r| r.pool_size()).unwrap_or(0);
+                    println!(
+                        "Exit node status: {}",
+                        if allowed { "ACTIVE" } else { "INACTIVE" }
+                    );
+                    println!("Round-robin egress pool: {} IP(s)", pool);
+                    println!("Usage: EXITNODE <on|off|status>");
+                }
+            },
             "EXITAUTH" => {
                 // Manage the exit-node allowlist for THIS node.
                 match p.get(1).copied() {
@@ -7213,6 +7272,7 @@ async fn run_node(
                     "  TFT [fp]            - Tit-for-Tat fair-share accounting and eviction status"
                 );
                 println!("  EXITS               - Show configured egress IP rotation pool");
+                println!("  EXITNODE <on|off|status> - Toggle this node as active exit node with round-robin IP egress");
                 println!(
                     "  FEC                 - Show Forward Error Correction status (RS + LDPC)"
                 );

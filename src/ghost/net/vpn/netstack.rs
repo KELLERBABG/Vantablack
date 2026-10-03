@@ -178,8 +178,15 @@ pub struct Netstack {
 }
 
 impl Netstack {
-    /// Spawn the driver thread.
+    /// Spawn the driver thread with default routing.
     pub fn start() -> Self {
+        Self::start_with_rotator(None)
+    }
+
+    /// Spawn the driver thread with optional ExitIpRotator for round-robin egress IP rotation.
+    pub fn start_with_rotator(
+        rotator: Option<Arc<crate::ghost::net::mesh::ExitIpRotator>>,
+    ) -> Self {
         let (rx_tx, rx_q) = mpsc::sync_channel::<Vec<u8>>(RX_QUEUE);
         let (tx_q, out_rx) = mpsc::sync_channel::<Vec<u8>>(TX_QUEUE);
         let stats = Arc::new(DriverStats::default());
@@ -189,7 +196,7 @@ impl Netstack {
             .spawn({
                 let stats = Arc::clone(&stats);
                 let stop = Arc::clone(&stop);
-                move || driver_loop(rx_q, tx_q, stats, stop)
+                move || driver_loop(rx_q, tx_q, stats, stop, rotator)
             })
             .expect("spawn netstack thread");
         Self {
@@ -278,6 +285,7 @@ fn driver_loop(
     tx_q: mpsc::SyncSender<Vec<u8>>,
     stats: Arc<DriverStats>,
     stop: Arc<Done>,
+    rotator: Option<Arc<crate::ghost::net::mesh::ExitIpRotator>>,
 ) {
     let reverse: Arc<Mutex<HashMap<u16, Tuple>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut device = VirtualDevice::new(Arc::clone(&reverse));
@@ -364,6 +372,7 @@ fn driver_loop(
                         rx,
                         Arc::clone(&f.headroom),
                         Arc::clone(&f.done),
+                        rotator.clone(),
                     );
                 }
             }
@@ -524,6 +533,38 @@ fn make_listen_socket(sockets: &mut SocketSet<'static>, local_port: u16) -> Opti
     Some(sockets.add(sock))
 }
 
+fn bind_and_connect(
+    target: SocketAddr,
+    rotator: Option<&crate::ghost::net::mesh::ExitIpRotator>,
+) -> std::io::Result<TcpStream> {
+    if let Some(r) = rotator {
+        if r.pool_size() > 0 {
+            let egress_addr = r.get_next_socket_addr(0);
+            let domain = if egress_addr.is_ipv4() {
+                socket2::Domain::IPV4
+            } else {
+                socket2::Domain::IPV6
+            };
+            if let Ok(sock) =
+                socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
+            {
+                let _ = sock.set_reuse_address(true);
+                if sock.bind(&socket2::SockAddr::from(egress_addr)).is_ok() {
+                    if sock
+                        .connect_timeout(&socket2::SockAddr::from(target), Duration::from_secs(10))
+                        .is_ok()
+                    {
+                        let stream: TcpStream = sock.into();
+                        return Ok(stream);
+                    }
+                }
+            }
+        }
+    }
+    TcpStream::connect_timeout(&target, Duration::from_secs(10))
+        .or_else(|_| TcpStream::connect(target))
+}
+
 /// Spawn the LAN proxy thread for an established flow.
 fn spawn_proxy(
     tuple: Tuple,
@@ -531,13 +572,14 @@ fn spawn_proxy(
     stack_out_rx: mpsc::Receiver<Vec<u8>>,
     headroom: Arc<Headroom>,
     done: Arc<Done>,
+    rotator: Option<Arc<crate::ghost::net::mesh::ExitIpRotator>>,
 ) {
     let (_c, _cp, t, tp) = tuple;
     let target = SocketAddr::from((std::net::Ipv4Addr::from(t.octets()), tp));
     let ok = std::thread::Builder::new()
         .name("ggn-flow".into())
         .spawn(move || {
-            let lan = match TcpStream::connect(target) {
+            let lan = match bind_and_connect(target, rotator.as_deref()) {
                 Ok(s) => s,
                 Err(_) => {
                     done.set();
@@ -1042,6 +1084,7 @@ mod tests {
             stack_out_rx,
             Arc::clone(&headroom),
             Arc::clone(&done),
+            None,
         );
         std::thread::sleep(Duration::from_millis(100));
         stack_out_tx.send(b"ping".to_vec()).unwrap();

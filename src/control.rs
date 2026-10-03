@@ -438,6 +438,7 @@ pub fn spawn_control_center(
                                         "zero_admin": vantablack::ghost::net::is_zero_admin(),
                                         "vpn": vpn_role,
                                         "vpn_stats": vpn_json,
+                                        "exit_node": vpn_role == "hub",
                                         "peers": peer_entries,
                                     })
                                     .to_string();

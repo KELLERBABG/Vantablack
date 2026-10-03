@@ -3,7 +3,7 @@
 pub mod daemon;
 pub mod userspace;
 #[allow(unused_imports)]
-pub use daemon::{init_vpn_mode, vpn_export, VpnMode};
+pub use daemon::{init_vpn_mode, init_vpn_mode_with_rotator, vpn_export, VpnMode};
 #[allow(unused_imports)]
 pub use userspace::ZeroAdminTunnel;
 
