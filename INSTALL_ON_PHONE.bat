@@ -41,18 +41,15 @@ if "%APK_FILE%"=="" (
 )
 
 echo.
-echo Installing %APK_FILE% to phone...
-adb install -r "%APK_FILE%"
-if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] adb install failed. If prompted on your phone, tap "Allow from this computer".
-    pause
-    exit /b 1
-)
-
-echo.
-echo Launching Vantablack on phone...
-adb shell am start -n dev.globalghost.net/.MainActivity
+echo Installing %APK_FILE% to all connected devices...
+powershell -NoProfile -Command ^
+    "$devs = (adb devices | Where-Object { $_ -match '\tdevice$' }) -replace '\tdevice',''; ^
+     if (-not $devs) { Write-Host '[ERROR] No devices found.'; exit 1 }; ^
+     foreach ($d in $devs) { ^
+         Write-Host '--> Installing to ' $d '...'; ^
+         adb -s $d install -r '%APK_FILE%'; ^
+         adb -s $d shell am start -n dev.globalghost.net/.MainActivity; ^
+     }"
 
 echo.
 echo ======================================================================
