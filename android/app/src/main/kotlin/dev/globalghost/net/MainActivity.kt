@@ -84,7 +84,7 @@ class MainActivity : Activity() {
         header.addView(title)
 
         val ver = TextView(this).apply {
-            text = "0.8.6"
+            text = "0.8.9"
             textSize = 11f
             setTypeface(Typeface.MONOSPACE)
             setTextColor(Color.parseColor("#64748b"))

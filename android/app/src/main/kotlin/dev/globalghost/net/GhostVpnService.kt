@@ -43,14 +43,14 @@ class GhostVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         startForegroundServiceNotification()
-        // Handover: re-bind + re-protect on any network change. The Rust core
-        // is untouched; only startTunnel runs again with the new socket fd.
-        cm.registerNetworkCallback(
-            android.net.NetworkRequest.Builder()
+        // Handover: listen ONLY for real underlying physical networks (Wi-Fi, Cellular) - NOT VPN.
+        try {
+            val req = android.net.NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build(),
-            handoverCallback
-        )
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build()
+            cm.registerNetworkCallback(req, handoverCallback)
+        } catch (_: Throwable) {}
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -99,7 +99,10 @@ class GhostVpnService : VpnService() {
     }
 
     @Synchronized
-    private fun startTunnel(network: Network? = activeNetwork) {
+    private fun startTunnel(network: Network? = null) {
+        val targetNetwork = network ?: activeNetwork ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) cm.activeNetwork else null
+        activeNetwork = targetNetwork
+
         stopPumps()
         try { channel?.close() } catch (_: Throwable) {}
         try { tun?.close() } catch (_: Throwable) {}
@@ -145,10 +148,13 @@ class GhostVpnService : VpnService() {
         } catch (_: Throwable) {
             ch.socket().bind(null)
         }
-        network?.let {
+        targetNetwork?.let {
             try { it.bindSocket(ch.socket()) } catch (_: Throwable) { /* best effort on older OEMs */ }
         }
         protect(ch.socket()) // protect BEFORE send: no packet may ever leave unprotected
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+            setUnderlyingNetworks(if (targetNetwork != null) arrayOf(targetNetwork) else null)
+        }
         val sockFd = ParcelFileDescriptor.fromDatagramSocket(ch.socket()).detachFd()
         channel = ch
 
@@ -228,11 +234,31 @@ class GhostVpnService : VpnService() {
 
     private val handoverCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            // Prefer the newly available validated network. Rebuild only once
-            // the callback supplies a different network; the TUN, epoch, lease,
-            // and pumps remain alive while the Rust core re-anchors on the first
-            // authenticated window-advancing packet.
-            if (running && activeNetwork != network) startTunnel(network)
+            val caps = cm.getNetworkCapabilities(network) ?: return
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return
+
+            if (activeNetwork == null) {
+                activeNetwork = network
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                    setUnderlyingNetworks(arrayOf(network))
+                }
+                return
+            }
+
+            // Real physical interface handover (e.g. Wi-Fi <-> Cellular transition).
+            // Re-bind and protect the existing UDP socket to the new physical interface.
+            // Do NOT tear down the TUN or reset the session keys.
+            if (running && activeNetwork != network) {
+                activeNetwork = network
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                    setUnderlyingNetworks(arrayOf(network))
+                }
+                channel?.socket()?.let { sock ->
+                    try { network.bindSocket(sock) } catch (_: Throwable) {}
+                    protect(sock)
+                }
+            }
         }
 
         override fun onLost(network: Network) {
