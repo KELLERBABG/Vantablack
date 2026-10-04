@@ -187,10 +187,12 @@ class GhostVpnService : VpnService() {
         bootstrapThread = Thread {
             while (running) {
                 try {
-                    // 1. Run local Wi-Fi LAN discovery sweep & broadcast beacons
-                    try {
-                        GhostCore.scanLan(ptr)
-                    } catch (_: Throwable) {}
+                    // 1. Run local Wi-Fi LAN discovery sweep only if no designated hub is configured
+                    if (currentHubAddr == "auto" || currentHubAddr.isEmpty()) {
+                        try {
+                            GhostCore.scanLan(ptr)
+                        } catch (_: Throwable) {}
+                    }
 
                     // 2. Sync with Cloudflare Worker tracker
                     val fp = try { GhostCore.getFingerprint(ptr) } catch (_: Throwable) { "" }
@@ -200,9 +202,12 @@ class GhostVpnService : VpnService() {
                     for (peer in peers) {
                         if (!running) break
                         activeList.add(peer)
-                        try {
-                            GhostCore.connectPeer(ptr, peer)
-                        } catch (_: Throwable) {}
+                        // Only auto-connect to tracker peers if we don't have a designated hub
+                        if (peer != currentHubAddr && (currentHubAddr == "auto" || currentHubAddr.isEmpty())) {
+                            try {
+                                GhostCore.connectPeer(ptr, peer)
+                            } catch (_: Throwable) {}
+                        }
                     }
                     if (activeList.isNotEmpty()) {
                         discoveredPeersList = activeList

@@ -1559,6 +1559,7 @@ async fn send_tunnel_frame(
         let framed = frame_shard(&framed);
         let mut frame = net::build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
         frame[net::OFFSET_FLAGS] |= 0x02; // FLAG_TUNNEL
+        tracing::info!(peer = %peer_fp, %endpoint, len = frame.len(), ctr, "VPN egress GTF frame sent to client");
         let _ = nc.socket.send_to(&frame, endpoint).await;
         return;
     }

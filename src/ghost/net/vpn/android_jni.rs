@@ -51,6 +51,20 @@ use std::ffi::c_void;
 extern "C" {
     fn read(fd: i32, buf: *mut c_void, len: usize) -> isize;
     fn write(fd: i32, buf: *const c_void, len: usize) -> isize;
+    fn __android_log_print(prio: i32, tag: *const u8, fmt: *const u8, ...) -> i32;
+}
+
+macro_rules! alog {
+    ($($arg:tt)*) => {
+        let msg = format!($($arg)*);
+        let tag = b"GhostCore\0";
+        let fmt = b"%s\0";
+        let mut c_msg = msg.into_bytes();
+        c_msg.push(0);
+        unsafe {
+            __android_log_print(4 /* INFO */, tag.as_ptr(), fmt.as_ptr(), c_msg.as_ptr());
+        }
+    };
 }
 
 /// TUN device backed by the fd returned by `VpnService.Builder.establish()`.
@@ -154,19 +168,16 @@ fn receiver_open(
                 ] {
                     let mut trial = msg.clone();
                     if crate::ghost::layers::l2_aead::xchacha_open_with_aad(
-                        key,
-                        &h.nonce,
-                        h.epoch,
-                        dir,
-                        &mut trial,
-                        aad,
+                        key, &h.nonce, h.epoch, dir, &mut trial, aad,
                     )
                     .is_ok()
                     {
                         if trial.len() >= 2 {
                             let n = u16::from_be_bytes([trial[0], trial[1]]) as usize;
                             if let Some(payload) = trial.get(2..2 + n) {
-                                if payload.len() > MAGIC.len() && &payload[..MAGIC.len()] == MAGIC.as_slice() {
+                                if payload.len() > MAGIC.len()
+                                    && &payload[..MAGIC.len()] == MAGIC.as_slice()
+                                {
                                     return Some(payload[MAGIC.len()..].to_vec());
                                 }
                             }
@@ -190,31 +201,39 @@ fn receiver_open(
     if l == 0 || 2 + l > b.len() {
         return None;
     }
-    let mut msg = b[2..2 + l].to_vec();
-    let ok = decrypt_in_place_with_context(
-        key,
-        ctr,
-        &sh,
+    let msg = b[2..2 + l].to_vec();
+    let mut decrypted = None;
+    for dir in [
+        NonceDirection::ResponderToInitiator,
         NonceDirection::InitiatorToResponder,
-        &mut msg,
-    )
-    .is_ok()
-        || decrypt_in_place_with_context(
-            key,
+    ] {
+        let mut trial = msg.clone();
+        if decrypt_in_place_with_context(key, ctr, &sh, dir, &mut trial).is_ok() {
+            decrypted = Some(trial);
+            break;
+        }
+    }
+    let Some(decrypted_msg) = decrypted else {
+        alog!(
+            "receiver_open: GTF v1 decrypt failed (ctr={}, amt={})",
             ctr,
-            &sh,
-            NonceDirection::ResponderToInitiator,
-            &mut msg,
-        )
-        .is_ok();
-    if !ok {
+            amt
+        );
+        return None;
+    };
+    if decrypted_msg.len() < 2 {
         return None;
     }
-    let n = u16::from_be_bytes([msg[0], msg[1]]) as usize;
-    let payload = msg.get(2..2 + n)?;
-    if payload.len() > MAGIC.len() && &payload[..5] == MAGIC {
-        Some(payload[5..].to_vec())
+    let n = u16::from_be_bytes([decrypted_msg[0], decrypted_msg[1]]) as usize;
+    let payload = decrypted_msg.get(2..2 + n)?;
+    if payload.len() > MAGIC.len() && &payload[..MAGIC.len()] == MAGIC.as_slice() {
+        alog!(
+            "receiver_open: GTF v1 frame decrypted! wire_len={}",
+            payload.len() - MAGIC.len()
+        );
+        Some(payload[MAGIC.len()..].to_vec())
     } else {
+        alog!("receiver_open: bad magic prefix in decrypted payload");
         None
     }
 }
@@ -578,13 +597,20 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         if !core.known_peers.lock().contains_key(&src) {
             if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
                 core.known_peers.lock().insert(src, (key, sh));
-                if core.hub_addr.is_none() {
+                if core.hub_addr.is_none()
+                    || core.hub_addr == Some(src)
+                    || core.hub_addr.map(|h| h.ip()) == Some(src.ip())
+                {
                     core.hub_addr = Some(src);
                     core.state.rotate_epoch();
                     core.state.set_key(key);
                     *core.session_key.lock() = Some(key);
                     *core.session_hash.lock() = sh;
                     core.tx_seq.store(2, Ordering::Relaxed);
+                    alog!(
+                        "drain_once: peer handshake established new session with hub {:?}",
+                        src
+                    );
                 }
             }
         }
@@ -597,14 +623,24 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     if let (Some(hub), Some(session_key), Some(tun)) =
         (core.hub_addr, session_key_opt, core.tun.as_mut())
     {
-        if src == hub {
+        if src == hub || src.ip() == hub.ip() {
+            if src != hub {
+                core.hub_addr = Some(src);
+            }
             let flags = parse_flags(&buf[..n]);
             if flags & 0x02 != 0 {
                 if let Some(wire) = receiver_open(&buf[..n], n, &session_key, session_hash, ctr) {
                     let (accepted, _adv) = open_to_tun(&core.state, &wire, tun);
                     if accepted {
-                        core.rx_ctr.fetch_add(1, Ordering::Relaxed);
+                        let c = core.rx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
+                        if c % 50 == 1 {
+                            alog!("drain_once: accepted from hub! total_rx={}", c);
+                        }
                         return true;
+                    } else {
+                        alog!(
+                            "drain_once: open_to_tun rejected wire datagram (epoch/auth mismatch)"
+                        );
                     }
                 }
             }
@@ -793,6 +829,10 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
         return 0;
     };
+    // If tunnel is already established to a designated hub, do not sweep the LAN over the active tunnel socket!
+    if core.hub_addr.is_some() && core.session_key.lock().is_some() {
+        return core.known_peers.lock().len() as jint;
+    }
     let Some(sock) = core.sock.as_ref() else {
         return 0;
     };
@@ -800,13 +840,14 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     let count = found.len();
     for (peer, key, sh) in found {
         core.known_peers.lock().insert(peer, (key, sh));
-        if core.hub_addr.is_none() {
+        if core.hub_addr.is_none() || core.hub_addr == Some(peer) {
             core.hub_addr = Some(peer);
             core.state.rotate_epoch();
             core.state.set_key(key);
             *core.session_key.lock() = Some(key);
             *core.session_hash.lock() = sh;
             core.tx_seq.store(2, Ordering::Relaxed);
+            alog!("scanLan: adopted hub peer {:?}", peer);
         }
     }
     let total = core.known_peers.lock().len();
@@ -839,18 +880,22 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
     let Ok(peer) = addr_str.parse::<std::net::SocketAddr>() else {
         return 0;
     };
+    if core.hub_addr == Some(peer) && core.session_key.lock().is_some() {
+        return 1;
+    }
     if core.known_peers.lock().contains_key(&peer) {
         return 1;
     }
     if let Some((key, sh)) = perform_handshake(sock, peer, &core.identity) {
         core.known_peers.lock().insert(peer, (key, sh));
-        if core.hub_addr.is_none() {
+        if core.hub_addr.is_none() || core.hub_addr == Some(peer) {
             core.hub_addr = Some(peer);
             core.state.rotate_epoch();
             core.state.set_key(key);
             *core.session_key.lock() = Some(key);
             *core.session_hash.lock() = sh;
             core.tx_seq.store(2, Ordering::Relaxed);
+            alog!("connectPeer: connected and adopted hub {:?}", peer);
         }
         tracing::info!(peer = %peer, "Connected to bootstrap peer");
         1

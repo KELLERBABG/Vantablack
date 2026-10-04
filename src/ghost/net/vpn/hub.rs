@@ -269,6 +269,8 @@ impl VpnHub {
                         if e.kind() != std::io::ErrorKind::WouldBlock {
                             tracing::debug!(error = %e, "UDP flow send failed");
                         }
+                    } else {
+                        tracing::info!(peer = %fp, dst = %dst_addr, bytes = udp_payload.len(), "VPN UDP sent to WAN/LAN");
                     }
                     // One reader thread per live flow; the reader drops its
                     // dedup key on exit so post-idle queries re-spawn.
@@ -315,6 +317,7 @@ impl VpnHub {
                     match flow.socket.recv(&mut buf) {
                         Ok(n) if n > 0 => {
                             quiet = Duration::ZERO;
+                            tracing::info!(peer = %fp, dst = %dst_ip, bytes = n, "VPN UDP flow reply received from WAN/LAN");
                             if let Some(ip) = build_udp_packet(
                                 IpAddr::V4(dst_ip),
                                 dst_port,
@@ -339,7 +342,15 @@ impl VpnHub {
                             }
                             std::thread::sleep(Duration::from_millis(100));
                         }
-                        Err(_) => break,
+                        Err(e) => {
+                            #[cfg(windows)]
+                            if e.raw_os_error() == Some(10054) {
+                                std::thread::sleep(Duration::from_millis(100));
+                                continue;
+                            }
+                            let _ = e;
+                            break;
+                        }
                     }
                 }
                 // Lifecycle agreement: a dead reader must not block a respawn —
@@ -431,6 +442,7 @@ impl VpnHub {
                 self.stats_dropped.fetch_add(1, Ordering::Relaxed);
                 continue;
             };
+            tracing::info!(peer = %fp, endpoint = %info.endpoint, wire_len = wire.len(), "VPN poll_egress: unit dispatched to client");
             return Some(EgressUnit {
                 fingerprint: fp,
                 session_hash: info.session_hash,
