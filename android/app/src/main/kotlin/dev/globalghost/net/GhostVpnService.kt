@@ -144,9 +144,13 @@ class GhostVpnService : VpnService() {
         ch.socket().broadcast = true
         ch.socket().reuseAddress = true
         try {
-            ch.socket().bind(InetSocketAddress(55225))
+            ch.socket().bind(InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), 55225))
         } catch (_: Throwable) {
-            ch.socket().bind(null)
+            try {
+                ch.socket().bind(InetSocketAddress("0.0.0.0", 55225))
+            } catch (_: Throwable) {
+                ch.socket().bind(null)
+            }
         }
         targetNetwork?.let {
             try { it.bindSocket(ch.socket()) } catch (_: Throwable) { /* best effort on older OEMs */ }

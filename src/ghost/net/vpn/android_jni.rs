@@ -44,6 +44,23 @@ use std::sync::Arc;
 use std::time::Duration;
 use x25519_dalek::PublicKey;
 
+/// Normalize an address: if it's an IPv4-mapped IPv6 address (::ffff:a.b.c.d)
+/// produced by dual-stack sockets on Android/Linux, convert it to a standard IPv4 SocketAddr.
+pub(crate) fn canonicalize_addr(addr: std::net::SocketAddr) -> std::net::SocketAddr {
+    match addr {
+        std::net::SocketAddr::V6(v6) => {
+            let oct = v6.ip().octets();
+            if oct[0..10] == [0; 10] && oct[10] == 0xff && oct[11] == 0xff {
+                let v4 = std::net::Ipv4Addr::new(oct[12], oct[13], oct[14], oct[15]);
+                std::net::SocketAddr::new(std::net::IpAddr::V4(v4), v6.port())
+            } else {
+                addr
+            }
+        }
+        std::net::SocketAddr::V4(_) => addr,
+    }
+}
+
 // ── TUN over a VpnService fd ─────────────────────────────────────────
 
 use std::ffi::c_void;
@@ -97,7 +114,14 @@ impl TunDevice for AndroidTun {
     fn write_packet(&self, buf: &[u8]) -> std::io::Result<usize> {
         let n = unsafe { write(self.fd, buf.as_ptr() as *const c_void, buf.len()) };
         if n < 0 {
-            return Err(std::io::Error::last_os_error());
+            let err = std::io::Error::last_os_error();
+            alog!(
+                "AndroidTun::write_packet failed (fd={}, len={}): {}",
+                self.fd,
+                buf.len(),
+                err
+            );
+            return Err(err);
         }
         Ok(n as usize)
     }
@@ -264,6 +288,7 @@ fn perform_handshake(
     hub_addr: std::net::SocketAddr,
     identity: &GhostIdentity,
 ) -> Option<([u8; 32], [u8; 4])> {
+    let hub_addr = canonicalize_addr(hub_addr);
     let _ = sock.set_read_timeout(Some(Duration::from_millis(500)));
 
     for _attempt in 0..4 {
@@ -459,7 +484,8 @@ fn perform_lan_discovery(
     let start = std::time::Instant::now();
 
     while start.elapsed() < Duration::from_millis(2000) {
-        if let Ok((amt, src)) = sock.recv_from(&mut buf) {
+        if let Ok((amt, raw_src)) = sock.recv_from(&mut buf) {
+            let src = canonicalize_addr(raw_src);
             if amt >= MIN_FRAME_SIZE {
                 let ctr = parse_packet_counter(&buf[..amt]);
                 if ctr == 1 {
@@ -583,10 +609,11 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     };
     let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
 
-    let (n, src) = match sock.recv_from(buf) {
+    let (n, raw_src) = match sock.recv_from(buf) {
         Ok(res) => res,
         Err(_) => return false,
     };
+    let src = canonicalize_addr(raw_src);
     if n < MIN_FRAME_SIZE {
         return false;
     }
@@ -594,6 +621,12 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
 
     // Inbound handshake initiation from a peer (counter == 0)
     if ctr == 0 {
+        // If we already have an active tunnel with an established hub, DO NOT rotate/evict it!
+        if let Some(hub) = core.hub_addr {
+            if (src == hub || src.ip() == hub.ip()) && core.session_key.lock().is_some() {
+                return false;
+            }
+        }
         if !core.known_peers.lock().contains_key(&src) {
             if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
                 core.known_peers.lock().insert(src, (key, sh));
@@ -629,20 +662,42 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
             }
             let flags = parse_flags(&buf[..n]);
             if flags & 0x02 != 0 {
-                if let Some(wire) = receiver_open(&buf[..n], n, &session_key, session_hash, ctr) {
-                    let (accepted, _adv) = open_to_tun(&core.state, &wire, tun);
-                    if accepted {
-                        let c = core.rx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
-                        if c % 50 == 1 {
-                            alog!("drain_once: accepted from hub! total_rx={}", c);
+                match receiver_open(&buf[..n], n, &session_key, session_hash, ctr) {
+                    Some(wire) => {
+                        let (accepted, adv) = open_to_tun(&core.state, &wire, tun);
+                        if accepted {
+                            let c = core.rx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
+                            if c % 10 == 1 || c <= 5 {
+                                alog!(
+                                    "drain_once: ACCEPTED packet from hub (len={}, adv={})! total_rx={}",
+                                    wire.len(),
+                                    adv,
+                                    c
+                                );
+                            }
+                            return true;
+                        } else {
+                            alog!(
+                                "drain_once: open_to_tun rejected wire datagram (cur_epoch={}, wire_len={})",
+                                core.state.current_epoch(),
+                                wire.len()
+                            );
                         }
-                        return true;
-                    } else {
+                    }
+                    None => {
                         alog!(
-                            "drain_once: open_to_tun rejected wire datagram (epoch/auth mismatch)"
+                            "drain_once: receiver_open decrypt failed (ctr={}, amt={})",
+                            ctr,
+                            n
                         );
                     }
                 }
+            } else {
+                alog!(
+                    "drain_once: packet from hub missing tunnel flag (flags=0x{:02x}, len={})",
+                    flags,
+                    n
+                );
             }
         }
     }
@@ -758,6 +813,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
         && !addr.starts_with("192.0.2.1")
     {
         if let Ok(hub) = addr.parse::<std::net::SocketAddr>() {
+            let hub = canonicalize_addr(hub);
             core.hub_addr = Some(hub);
             if let Some((key, sh)) = perform_handshake(&sock, hub, &core.identity) {
                 core.known_peers.lock().insert(hub, (key, sh));
@@ -880,6 +936,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
     let Ok(peer) = addr_str.parse::<std::net::SocketAddr>() else {
         return 0;
     };
+    let peer = canonicalize_addr(peer);
     if core.hub_addr == Some(peer) && core.session_key.lock().is_some() {
         return 1;
     }

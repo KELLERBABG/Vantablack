@@ -4695,6 +4695,7 @@ async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr
 async fn sweep_lan_subnet(
     nc: &Arc<GhostNode>,
     pending_hs: &Arc<DashMap<String, PendingHandshake>>,
+    addrs: &Arc<DashMap<String, SocketAddr>>,
     mesh_port: u16,
 ) {
     let local_ip_str = detect_lan_ip();
@@ -4808,6 +4809,13 @@ async fn sweep_lan_subnet(
                 continue;
             }
             let target_sa = SocketAddr::new(std::net::IpAddr::V4(target_ip), mesh_port);
+            // Skip actively connected peers so we don't disrupt their sessions or trigger re-handshake storms
+            if addrs
+                .iter()
+                .any(|p| *p.value() == target_sa || p.value().ip() == target_sa.ip())
+            {
+                continue;
+            }
             initiate_handshake(nc, &nc.socket, target_sa, pending_hs).await;
 
             if host % 32 == 0 {
@@ -5622,11 +5630,12 @@ async fn run_node(
     {
         let nc_sweep = Arc::clone(&nc);
         let phs_sweep = Arc::clone(&pending_hs);
+        let addrs_sweep = Arc::clone(&addrs);
         let scan_notify_sweep = Arc::clone(&scan_notify);
         let interval_atomic = Arc::clone(&scan_interval_secs);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            sweep_lan_subnet(&nc_sweep, &phs_sweep, mesh_port).await;
+            sweep_lan_subnet(&nc_sweep, &phs_sweep, &addrs_sweep, mesh_port).await;
 
             loop {
                 let secs = interval_atomic.load(Ordering::Relaxed);
@@ -5650,11 +5659,11 @@ async fn run_node(
                                 active_nodes
                             );
                         }
-                        sweep_lan_subnet(&nc_sweep, &phs_sweep, mesh_port).await;
+                        sweep_lan_subnet(&nc_sweep, &phs_sweep, &addrs_sweep, mesh_port).await;
                     }
                     _ = scan_notify_sweep.notified() => {
                         tracing::info!("Manual LAN discovery sweep triggered");
-                        sweep_lan_subnet(&nc_sweep, &phs_sweep, mesh_port).await;
+                        sweep_lan_subnet(&nc_sweep, &phs_sweep, &addrs_sweep, mesh_port).await;
                     }
                 }
             }

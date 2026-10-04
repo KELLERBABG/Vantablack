@@ -616,4 +616,91 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn test_vpn_egress_and_receiver_open_roundtrip() {
+        use crate::ghost::net::vpn::client::{open_to_tun, ClientState};
+        use crate::ghost::net::vpn::seal_datagram;
+        use crate::ghost::net::vpn::tun::FakeTun;
+        use crate::ghost::net::{
+            build_gtf_frame, frame_shard, BULK_OFFSET_AUTH_TAG_START, BULK_OFFSET_PAYLOAD_START,
+        };
+
+        let key = [0x42u8; 32];
+        let sh = [0x11, 0x22, 0x33, 0x44];
+        let ctr = 6u32;
+        let dir = NonceDirection::ResponderToInitiator;
+        let ip_packet = vec![0x45; 60];
+        let epoch = 2u32;
+        let slot = 1u64;
+        let tunnel_wire = seal_datagram(&key, epoch, slot, &ip_packet);
+        let magic = crate::ghost::net::vpn::hub::VPN_PAYLOAD_MAGIC;
+
+        // Host side (send_tunnel_frame):
+        let mut payload = magic.to_vec();
+        payload.extend_from_slice(&tunnel_wire);
+        let mut framed = Vec::with_capacity(2 + payload.len() + 1 + 16);
+        framed.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        framed.extend_from_slice(&payload);
+        if framed.len() % 2 != 0 {
+            framed.push(0);
+        }
+        encrypt_in_place_with_context(&key, ctr, &sh, dir, &mut framed);
+        let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
+        let framed = frame_shard(&framed);
+        let mut frame = build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
+        frame[crate::ghost::net::OFFSET_FLAGS] |= 0x02;
+
+        // Client side (receiver_open):
+        let amt = frame.len();
+        let pe = BULK_OFFSET_AUTH_TAG_START.min(amt);
+        assert!(pe > BULK_OFFSET_PAYLOAD_START);
+        let b = &frame[BULK_OFFSET_PAYLOAD_START..pe];
+        assert!(b.len() >= 2);
+        let l = u16::from_be_bytes([b[0], b[1]]) as usize;
+        assert!(l > 0 && 2 + l <= b.len());
+        let msg = b[2..2 + l].to_vec();
+        let mut decrypted = None;
+        for d in [
+            NonceDirection::ResponderToInitiator,
+            NonceDirection::InitiatorToResponder,
+        ] {
+            let mut trial = msg.clone();
+            if decrypt_in_place_with_context(&key, ctr, &sh, d, &mut trial).is_ok() {
+                decrypted = Some(trial);
+                break;
+            }
+        }
+        assert!(
+            decrypted.is_some(),
+            "decrypt_in_place_with_context must succeed"
+        );
+        let decrypted_msg = decrypted.unwrap();
+        assert!(decrypted_msg.len() >= 2);
+        let n = u16::from_be_bytes([decrypted_msg[0], decrypted_msg[1]]) as usize;
+        let decrypted_payload = decrypted_msg.get(2..2 + n).unwrap();
+        assert_eq!(&decrypted_payload[..magic.len()], magic.as_slice());
+        let wire = &decrypted_payload[magic.len()..];
+        assert_eq!(wire, tunnel_wire.as_slice());
+
+        // Client side (open_to_tun):
+        let phone_state = ClientState::new("client_fp", key);
+        let new_epoch = phone_state.rotate_epoch();
+        assert_eq!(new_epoch, 2);
+        let tun = FakeTun::new();
+        let (accepted, adv) = open_to_tun(&phone_state, wire, &tun);
+        assert!(accepted, "open_to_tun must accept packet!");
+        assert!(adv);
+        let out = tun.drain_outbound();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], ip_packet);
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ipv6_inequality() {
+        let v4: std::net::SocketAddr = "192.168.178.27:55225".parse().unwrap();
+        let v6: std::net::SocketAddr = "[::ffff:192.168.178.27]:55225".parse().unwrap();
+        assert_ne!(v4, v6);
+        assert_ne!(v4.ip(), v6.ip());
+    }
 }
