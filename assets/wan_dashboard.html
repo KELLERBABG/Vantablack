@@ -701,7 +701,8 @@
         <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 2.18l7 3.12v4.7c0 4.54-3.05 8.78-7 9.88-3.95-1.1-7-5.34-7-9.88V6.3l7-3.12z"/>
       </svg>
       <span class="brand-name">VANTABLACK</span>
-      <span class="brand-badge">v0.7.5</span>
+      <span class="brand-badge" id="app-version">v0.8.11</span>
+      <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" class="brand-badge" style="text-decoration:none; cursor:pointer; color: var(--accent); border-color: rgba(0,240,255,0.3); pointer-events: auto;" title="Open GitHub Repository">GitHub ↗</a>
       <div class="titlebar-status">
         <span class="status-dot" id="header-status-dot"></span>
         <span id="header-status-text">DISCONNECTED</span>
@@ -984,13 +985,22 @@
             <span class="slider"></span>
           </label>
         </div>
+        <div class="setting-item">
+          <div class="setting-text">
+            <span class="setting-title">Repository & Source Code</span>
+            <span class="setting-desc">Official GitHub repository, documentation, issue tracker, and release binaries.</span>
+          </div>
+          <button class="nav-tab active" style="padding: 6px 14px;" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack')">
+            GitHub Repository ↗
+          </button>
+        </div>
       </div>
 
     </div>
 
     <!-- App Footer -->
     <div class="app-footer">
-      <span>Vantablack • Autonomous Post-Quantum WAN Mesh</span>
+      <span>Vantablack v0.8.11 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a></span>
       <span>Uptime: <span id="footer-uptime">00:00:00</span></span>
     </div>
   </div>
@@ -1015,7 +1025,7 @@
     const dragBar = document.getElementById('drag-handle');
     if (dragBar) {
       dragBar.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.win-btn') || e.target.closest('.titlebar-controls')) return;
+        if (e.target.closest('.win-btn') || e.target.closest('.titlebar-controls') || e.target.closest('a') || e.target.closest('button')) return;
         nativeSend('drag');
       });
     }

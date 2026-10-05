@@ -40,18 +40,22 @@ fn wait_for_control_center(port: u16) -> bool {
     false
 }
 
+/// Open an arbitrary URL in the system's default browser.
+fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
 /// Last-resort fallback when no window can be created at all: open the control
 /// center in the user's normal browser, exactly like a headless build does.
 fn open_in_browser(port: u16) {
-    let url = format!("http://127.0.0.1:{port}");
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", &url])
-        .spawn();
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(&url).spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    open_url(&format!("http://127.0.0.1:{port}"));
 }
 
 /// Build the tray icon. Returns the menu items and channel receivers so the
@@ -201,7 +205,12 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
             WebViewBuilder::new_with_web_context(ctx)
                 .with_url(&url)
                 .with_ipc_handler(move |request: wry::http::Request<String>| {
-                    match request.body().as_str() {
+                    let body = request.body().as_str();
+                    if let Some(target) = body.strip_prefix("open_url:") {
+                        open_url(target);
+                        return;
+                    }
+                    match body {
                         "drag" => {
                             if let Some(win) = slot_clone.borrow().as_ref() {
                                 let _ = win.drag_window();

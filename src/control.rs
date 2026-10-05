@@ -774,10 +774,12 @@ pub fn spawn_control_center(
                                     || req.starts_with("GET / ")
                                     || req.starts_with("GET /?")
                                 {
-                                    let html = include_str!("../assets/wan_dashboard.html");
+                                    let html = include_str!("../assets/wan_dashboard.html")
+                                        .replace("v0.7.5", &format!("v{}", env!("CARGO_PKG_VERSION")))
+                                        .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
                                     (
                                         "HTTP/1.1 200 OK",
-                                        html.to_string(),
+                                        html,
                                         "text/html; charset=utf-8",
                                     )
                                 } else if req.starts_with("GET /metrics") {

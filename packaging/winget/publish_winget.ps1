@@ -3,7 +3,7 @@
     Calculates SHA256 of the release installer and updates or submits the Winget manifest.
 #>
 param(
-    [string]$Version = "0.8.0",
+    [string]$Version = "0.8.11",
     [string]$InstallerUrl,
     [string]$LocalInstallerPath
 )

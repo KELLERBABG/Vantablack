@@ -1,6 +1,6 @@
 # Maintainer: Keller Systems <security@kellersystems.dev>
 pkgname=vantablack-bin
-pkgver=0.8.0
+pkgver=0.8.11
 pkgrel=1
 pkgdesc="Autonomous Post-Quantum WAN Mesh Routing Daemon & Serverless Sharding VPN"
 arch=('x86_64')

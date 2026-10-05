@@ -84,7 +84,12 @@ class MainActivity : Activity() {
         header.addView(title)
 
         val ver = TextView(this).apply {
-            text = "0.8.10"
+            val vName = try {
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.11"
+            } catch (_: Throwable) {
+                "0.8.11"
+            }
+            text = "v$vName"
             textSize = 11f
             setTypeface(Typeface.MONOSPACE)
             setTextColor(Color.parseColor("#64748b"))
@@ -101,9 +106,25 @@ class MainActivity : Activity() {
             text = "Post-Quantum WAN Mesh Router"
             textSize = 12f
             setTextColor(Color.parseColor("#64748b"))
-            setPadding(0, 0, 0, 24)
+            setPadding(0, 0, 0, 4)
         }
         layout.addView(sub)
+
+        val repoLink = TextView(this).apply {
+            text = "github.com/KELLERBABG/Vantablack ↗"
+            textSize = 11f
+            setTypeface(Typeface.MONOSPACE)
+            setTextColor(Color.parseColor("#38bdf8"))
+            setPadding(0, 0, 0, 20)
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/KELLERBABG/Vantablack")))
+                } catch (_: Throwable) {
+                    Toast.makeText(this@MainActivity, "https://github.com/KELLERBABG/Vantablack", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        layout.addView(repoLink)
 
         // ── Status Panel ──
         val cardStatus = createCard().apply {
@@ -375,6 +396,31 @@ class MainActivity : Activity() {
             }
         }
         layout.addView(btnLeakTest)
+
+        val btnRepo = Button(this).apply {
+            text = "GitHub Repository & Source"
+            textSize = 12f
+            setTextColor(Color.parseColor("#38bdf8"))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0e1017"))
+                setStroke(1, Color.parseColor("#1e2330"))
+                cornerRadius = 8f
+            }
+            setPadding(0, 20, 0, 20)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 8, 0, 0) }
+            layoutParams = params
+            setOnClickListener {
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/KELLERBABG/Vantablack")))
+                } catch (_: Throwable) {
+                    Toast.makeText(this@MainActivity, "https://github.com/KELLERBABG/Vantablack", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        layout.addView(btnRepo)
 
         setContentView(scroll)
         updateStatus()

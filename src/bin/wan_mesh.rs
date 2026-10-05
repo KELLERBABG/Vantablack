@@ -767,8 +767,9 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                                 json.len(), json
                             );
                             let _ = stream.write_all(resp.as_bytes()).await;
-                        } else {
-                            let html = include_str!("../../assets/wan_dashboard.html");
+                            let html = include_str!("../../assets/wan_dashboard.html")
+                                .replace("v0.7.5", &format!("v{}", env!("CARGO_PKG_VERSION")))
+                                .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
                             let resp = format!(
                                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
                                 html.len(), html

@@ -1,18 +1,18 @@
 class Vantablack < Formula
   desc "Autonomous Post-Quantum WAN Mesh Routing Daemon & Serverless Sharding VPN"
   homepage "https://vantablack.kellersystems.dev"
-  version "0.8.0"
+  version "0.8.11"
   license "MIT"
 
   if OS.mac?
     if Hardware::CPU.arm?
-      url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.0/ggn-v0.8.0-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.11/ggn-v0.8.11-aarch64-apple-darwin.tar.gz"
       sha256 "e6bb76cbb15909790a033fc879df9429ed9b7d03b30c3a4e40d0b8d71e0fee2f"
     else
-      url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.0/ggn-v0.8.0-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.11/ggn-v0.8.11-x86_64-apple-darwin.tar.gz"
     end
   elsif OS.linux?
-    url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.0/ggn-v0.8.0-x86_64-unknown-linux-gnu.tar.gz"
+    url "https://github.com/KELLERBABG/Vantablack/releases/download/v0.8.11/ggn-v0.8.11-x86_64-unknown-linux-gnu.tar.gz"
   end
 
   def install
