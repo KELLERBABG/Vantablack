@@ -223,7 +223,13 @@ impl VpnHub {
         }
         let ihl = ((pkt[0] & 0x0F) as usize) * 4;
         let proto = pkt[9];
+        let src_ip = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
         let dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
+
+        // The client configured its own TUN: adopt its self-chosen
+        // overlay IP as the lease hint for all protocols (auto-assign only on clash).
+        let (overlay, _) = self.leases.lease_for_hint(fp, Some(src_ip));
+
         match proto {
             6 => {
                 // TCP: feed the netstack (NAT front-end handles addressing).
@@ -235,7 +241,6 @@ impl VpnHub {
                 }
                 let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
                 let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
-                let src_ip = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
                 // If client queries the hub overlay directly on port 53 (DNS), redirect to configured privacy DNS
                 let effective_dst = if (dst == super::netstack::HUB_ADDR
                     || dst == Ipv4Addr::new(10, 66, 0, 1))
@@ -245,9 +250,6 @@ impl VpnHub {
                 } else {
                     dst
                 };
-                // The client configured its own TUN: adopt its self-chosen
-                // overlay IP as the lease hint (auto-assign only on clash).
-                let (overlay, _) = self.leases.lease_for_hint(fp, Some(src_ip));
                 let key = FlowKey {
                     fp: fp.to_string(),
                     overlay_src: overlay,
@@ -460,9 +462,21 @@ impl VpnHub {
             return None;
         }
         let dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
-        let fp = self.leases.fingerprint_for_ip(dst)?;
+        let fp = match self.leases.fingerprint_for_ip(dst) {
+            Some(f) => f,
+            None => {
+                let sessions = self.sessions.lock();
+                if sessions.len() == 1 {
+                    sessions.keys().next().unwrap().clone()
+                } else {
+                    tracing::warn!(dst = %dst, "poll_netstack_egress: no fingerprint for dst IP");
+                    return None;
+                }
+            }
+        };
         let wire = self.seal_for_client(&fp, pkt)?;
         let info = self.sessions.lock().get(&fp).cloned()?;
+        tracing::info!(peer = %fp, dst = %dst, endpoint = %info.endpoint, wire_len = wire.len(), "VPN TCP egress dispatched to client");
         Some(EgressUnit {
             fingerprint: fp.clone(),
             session_hash: info.session_hash,

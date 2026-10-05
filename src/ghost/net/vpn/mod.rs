@@ -225,7 +225,16 @@ impl LeaseTable {
             if Self::is_valid_overlay(h) {
                 let mut fps = self.by_fp.lock();
                 if let Some(l) = fps.get(fingerprint) {
-                    return (l.overlay_ip, false); // already leased
+                    if l.overlay_ip == h {
+                        return (h, false);
+                    }
+                    let old_ip = l.overlay_ip;
+                    self.by_ip.lock().remove(&old_ip);
+                    self.by_ip.lock().insert(h, fingerprint.to_string());
+                    let mut updated_l = l.clone();
+                    updated_l.overlay_ip = h;
+                    fps.insert(fingerprint.to_string(), updated_l);
+                    return (h, true);
                 }
                 let claimed_by_other = fps
                     .values()
@@ -395,7 +404,7 @@ impl LeaseTable {
 
     /// Where return traffic goes for an overlay IP. O(1) lookup via secondary by_ip index.
     pub fn endpoint_for_ip(&self, overlay_ip: Ipv4Addr) -> Option<SocketAddr> {
-        let fp = self.by_ip.lock().get(&overlay_ip).cloned()?;
+        let fp = self.fingerprint_for_ip(overlay_ip)?;
         let fps = self.by_fp.lock();
         let l = fps.get(&fp)?;
         if l.endpoint.port() != 0 {
@@ -405,9 +414,27 @@ impl LeaseTable {
         }
     }
 
-    /// Fingerprint owning an overlay IP. O(1) lookup via secondary by_ip index.
+    /// Fingerprint owning an overlay IP. O(1) lookup via secondary by_ip index,
+    /// with fallback to by_fp scanning or single active lease.
     pub fn fingerprint_for_ip(&self, overlay_ip: Ipv4Addr) -> Option<String> {
-        self.by_ip.lock().get(&overlay_ip).cloned()
+        if let Some(fp) = self.by_ip.lock().get(&overlay_ip).cloned() {
+            return Some(fp);
+        }
+        let fps = self.by_fp.lock();
+        for (fp, lease) in fps.iter() {
+            if lease.overlay_ip == overlay_ip {
+                return Some(fp.clone());
+            }
+        }
+        if fps.len() == 1 {
+            let o = overlay_ip.octets();
+            if o[0] == OVERLAY_PREFIX && o[1] == OVERLAY_SECOND_OCTET && o[2] == 0 {
+                if let Some(fp) = fps.keys().next() {
+                    return Some(fp.clone());
+                }
+            }
+        }
+        None
     }
 
     pub fn lease_count(&self) -> usize {
