@@ -46,23 +46,17 @@ fn transport_phone_to_hub_via_real_gtf_frames() {
     let mut rbuf = [0u8; 1400];
     let mut ctr = 2u32; // session counters live above the handshake range
     let mut sent = 0usize;
-    loop {
-        match TunDevice::read_packet(&mut tun, &mut rbuf) {
-            Ok(n) => {
-                let wire = seal_from_tun(&phone, &rbuf[..n]).unwrap();
-                let frame =
-                    tunnel_frame(&key, sh, ctr, NonceDirection::InitiatorToResponder, &wire);
-                assert!(frame.len() <= GTF_BULK_SIZE);
-                // ── receiver side: the real wire pipeline ──
-                let body = receiver_open(&frame, frame.len(), &key, sh, ctr)
-                    .expect("tunnel frame must survive the real GTF path");
-                assert_eq!(body, wire, "tunnel datagram intact");
-                hub.handle_tunnel_payload(fp, &key, sh, &body, phone_addr);
-                ctr += 1;
-                sent += 1;
-            }
-            Err(_) => break,
-        }
+    while let Ok(n) = TunDevice::read_packet(&mut tun, &mut rbuf) {
+        let wire = seal_from_tun(&phone, &rbuf[..n]).unwrap();
+        let frame = tunnel_frame(&key, sh, ctr, NonceDirection::InitiatorToResponder, &wire);
+        assert!(frame.len() <= GTF_BULK_SIZE);
+        // ── receiver side: the real wire pipeline ──
+        let body = receiver_open(&frame, frame.len(), &key, sh, ctr)
+            .expect("tunnel frame must survive the real GTF path");
+        assert_eq!(body, wire, "tunnel datagram intact");
+        hub.handle_tunnel_payload(fp, &key, sh, &body, phone_addr);
+        ctr += 1;
+        sent += 1;
     }
     assert_eq!(sent, 10);
 

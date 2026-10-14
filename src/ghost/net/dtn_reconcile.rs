@@ -39,9 +39,9 @@ impl DtnBundle {
     pub fn leaf_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_DTN_LEAF_V1");
-        hasher.update(&self.bundle_id);
-        hasher.update(&self.sequence.to_be_bytes());
-        hasher.update(&self.payload_hash);
+        hasher.update(self.bundle_id);
+        hasher.update(self.sequence.to_be_bytes());
+        hasher.update(self.payload_hash);
         hasher.finalize().into()
     }
 
@@ -155,8 +155,8 @@ impl DtnMerkleTree {
     pub fn splice_incoming(&mut self, incoming: Vec<DtnBundle>) -> usize {
         let mut added = 0;
         for b in incoming {
-            if !self.bundles.contains_key(&b.bundle_id) {
-                self.bundles.insert(b.bundle_id, b);
+            if let std::collections::btree_map::Entry::Vacant(e) = self.bundles.entry(b.bundle_id) {
+                e.insert(b);
                 added += 1;
             }
         }

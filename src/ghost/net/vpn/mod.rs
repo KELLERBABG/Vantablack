@@ -350,7 +350,7 @@ impl LeaseTable {
     ///   1. (handled by `rotate_epoch` — never here)
     ///   2. ctr > tunnel_v_max  → accept + re-anchor (monotonic rule)
     ///   3. in-window + silent endpoint >= SILENCE_REANCHOR → re-anchor
-    ///   else: accept as data, endpoint unchanged (late-packet race guard).
+    ///      else: accept as data, endpoint unchanged (late-packet race guard).
     pub fn observe_tunnel_packet(
         &self,
         fingerprint: &str,
@@ -554,10 +554,10 @@ impl UdpFlowTable {
         }
         let per_fp = flows.values().filter(|f| f.key.fp == key.fp).count();
         if per_fp >= UDP_FLOWS_PER_FP {
-            Self::evict_lru_for(&mut *flows, &mut *self.by_port.lock(), Some(&key.fp));
+            Self::evict_lru_for(&mut flows, &mut self.by_port.lock(), Some(&key.fp));
         }
         if flows.len() >= UDP_FLOWS_GLOBAL {
-            Self::evict_lru_for(&mut *flows, &mut *self.by_port.lock(), None);
+            Self::evict_lru_for(&mut flows, &mut self.by_port.lock(), None);
             if flows.len() >= UDP_FLOWS_GLOBAL {
                 return None; // still full: refuse (drop) — bounded
             }
@@ -585,7 +585,7 @@ impl UdpFlowTable {
     ) {
         let victim = flows
             .values()
-            .filter(|f| fp.map_or(true, |p| f.key.fp == p))
+            .filter(|f| fp.is_none_or(|p| f.key.fp == p))
             .min_by_key(|f| f.last_seen)
             .map(|f| (f.key.clone(), f.local_port()));
         if let Some((k, port)) = victim {
@@ -926,7 +926,7 @@ mod tests {
     fn flow_table_caps_enforced() {
         let binder = Box::new(|_a: IpAddr| {
             std::net::UdpSocket::bind("127.0.0.1:0")
-                .map(|s| Arc::new(s))
+                .map(Arc::new)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::AddrInUse, e))
         });
         let t = UdpFlowTable::with_binder(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), binder);
@@ -945,7 +945,7 @@ mod tests {
     fn flow_table_ttl_sweep_and_demux() {
         let binder = Box::new(|_a: IpAddr| {
             std::net::UdpSocket::bind("127.0.0.1:0")
-                .map(|s| Arc::new(s))
+                .map(Arc::new)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::AddrInUse, e))
         });
         let t = UdpFlowTable::with_binder(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), binder);

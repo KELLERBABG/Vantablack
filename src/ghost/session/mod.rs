@@ -381,10 +381,9 @@ impl Session {
         if guard.len() == total_chunks as usize {
             let mut assembled = Vec::new();
             for idx in 0..total_chunks {
-                if let Some(chunk) = guard.get(&idx) {
+                {
+                    let chunk = guard.get(&idx)?;
                     assembled.extend_from_slice(chunk);
-                } else {
-                    return None;
                 }
             }
             Some(assembled)

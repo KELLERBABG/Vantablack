@@ -371,7 +371,7 @@ impl Attribute {
         out.extend_from_slice(&self.kind().to_be_bytes());
         out.extend_from_slice(&(value.len() as u16).to_be_bytes());
         out.extend_from_slice(&value);
-        while out.len() % 4 != 0 {
+        while !out.len().is_multiple_of(4) {
             out.push(0);
         }
     }
@@ -690,7 +690,7 @@ impl Message {
         }
         let typ = MessageType(u16::from_be_bytes([buf[0], buf[1]]));
         let declared = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-        if declared % 4 != 0 {
+        if !declared.is_multiple_of(4) {
             return Err(StunError::UnpaddedLength);
         }
         let cookie = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
@@ -806,12 +806,14 @@ fn decode_attribute(kind: u16, value: &[u8], txid: &TransactionId) -> Result<Att
             Attribute::ChannelNumber(u16::from_be_bytes([value[0], value[1]]))
         }
         attr::UNKNOWN_ATTRIBUTES => {
-            if value.len() % 2 != 0 {
+            if !value.len().is_multiple_of(2) {
                 return Err(StunError::Malformed("UNKNOWN-ATTRIBUTES not even"));
             }
             Attribute::UnknownAttributes(
                 value
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| u16::from_be_bytes([c[0], c[1]]))
                     .collect(),
             )

@@ -62,10 +62,7 @@ pub enum FallbackPath {
 impl FallbackPath {
     /// Whether traffic on this path passes a third party.
     pub fn is_relayed(&self) -> bool {
-        match self {
-            FallbackPath::Direct | FallbackPath::Skywave { .. } => false,
-            _ => true,
-        }
+        !matches!(self, FallbackPath::Direct | FallbackPath::Skywave { .. })
     }
 
     /// The address datagrams for the target must be sent to.
@@ -481,7 +478,7 @@ async fn turn_task(
                     TurnCmd::Send { peer, frame } => {
                         let stale = ready
                             .get(&peer.ip())
-                            .map_or(true, |t| t.elapsed() > turn::DEFAULT_PERMISSION_LIFETIME / 2);
+                            .is_none_or(|t| t.elapsed() > turn::DEFAULT_PERMISSION_LIFETIME / 2);
                         if stale {
                             match client.create_permission(&sock, peer, None).await {
                                 Ok(()) => {

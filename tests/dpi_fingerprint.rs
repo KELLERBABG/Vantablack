@@ -51,7 +51,13 @@ fn normalized_entropy(bytes: &[u8]) -> f64 {
     shannon_entropy(bytes) / max_possible
 }
 
-/// Helper that reproduces the node's `enc_split` + `frame_shard` + GTF v2 wire framing pipeline.
+/// A **copy** of the daemon's legacy wire path: `enc_split` (src/main.rs:455), its
+/// `SealCtx::header` (src/main.rs:311) and the per-shard seal at src/main.rs:486-516.
+/// Those live in the binary crate, so this test cannot call them and a change to
+/// that wiring will not fail this file. The primitives it does call (`l4_rs::encode`,
+/// `xchacha_seal_in_place_with_aad`, `tail_for`, `build_gtf_v2_frame`) are the
+/// library's production ones. The daemon's default branch is ShardSec
+/// (src/main.rs:456-484), which this copy does not measure at all.
 fn produce_wire_frames(
     key: &[u8; 32],
     epoch: u64,
@@ -108,10 +114,17 @@ fn produce_wire_frames(
     wire_frames
 }
 
-/// Exponential inter-arrival generator (matching main.rs:577).
+/// Copy of `cover_gap`, whose source of truth is src/main.rs:666. That function is
+/// private to the binary crate, so this copy cannot be replaced by a call; keep the
+/// two in step by hand.
 fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
     let per_message = frames_per_sec / 3.0;
-    if !(per_message > 0.0) {
+    // `partial_cmp` rather than `<= 0.0`, so a NaN rate still means "no cover"
+    // instead of producing a NaN gap. Mirrors `main.rs::cover_gap`.
+    if !matches!(
+        per_message.partial_cmp(&0.0),
+        Some(std::cmp::Ordering::Greater)
+    ) {
         return Duration::from_secs(3600);
     }
     let u = uniform.clamp(0.0, 1.0 - f64::EPSILON);
@@ -215,7 +228,7 @@ fn dpi_test_shannon_entropy_statistical_indistinguishability() {
             let tail = &frame[GTF_BASE_SIZE..GTF_BASE_SIZE + JITTER_MAX];
 
             let mut crypto_section = payload_raw;
-            crypto_section.extend_from_slice(&tag);
+            crypto_section.extend_from_slice(tag);
             crypto_section.extend_from_slice(tail);
 
             data_norm_entropies.push(normalized_entropy(&crypto_section));
@@ -232,7 +245,7 @@ fn dpi_test_shannon_entropy_statistical_indistinguishability() {
             let tail = &frame[GTF_BASE_SIZE..GTF_BASE_SIZE + JITTER_MAX];
 
             let mut crypto_section = payload_raw;
-            crypto_section.extend_from_slice(&tag);
+            crypto_section.extend_from_slice(tag);
             crypto_section.extend_from_slice(tail);
 
             cover_norm_entropies.push(normalized_entropy(&crypto_section));
@@ -282,7 +295,7 @@ fn dpi_test_packet_size_uniformity_histogram() {
     let expected_frame_size = GTF_BASE_SIZE + JITTER_MAX; // 576 bytes
 
     // Test a wide variety of payload sizes
-    let test_payload_sizes = vec![1, 4, 16, 64, 128, 256, 384, 460];
+    let test_payload_sizes = [1, 4, 16, 64, 128, 256, 384, 460];
     let mut size_histogram: HashMap<usize, usize> = HashMap::new();
 
     for (c, &sz) in test_payload_sizes.iter().enumerate() {
@@ -399,7 +412,7 @@ fn dpi_test_receiver_differentiates_data_and_cover() {
         let ciphertext = unframe(extract_payload(frame)).expect("unframe ciphertext");
 
         let mut buf = ciphertext.to_vec();
-        buf.extend_from_slice(&tag);
+        buf.extend_from_slice(tag);
         let opened = xchacha_open_with_aad(
             &key,
             &header.nonce,
@@ -431,7 +444,7 @@ fn dpi_test_receiver_differentiates_data_and_cover() {
         let ciphertext = unframe(extract_payload(frame)).expect("unframe ciphertext");
 
         let mut buf = ciphertext.to_vec();
-        buf.extend_from_slice(&tag);
+        buf.extend_from_slice(tag);
         let opened = xchacha_open_with_aad(
             &key,
             &header.nonce,

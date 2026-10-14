@@ -36,7 +36,11 @@ jobs:
       - name: Run VPN Subsystem Tests
         run: cargo test --features vpn --verbose
 
-      - name: Run DPI & Traffic-Analysis Measurements
+      # These gates measure the frame shape through the helpers in the test
+      # files, not through the daemon's own sealer: `enc_split` and `SealCtx`
+      # live in the binary crate (src/main.rs), so an integration test cannot
+      # call them. The step names say what runs, not what it proves.
+      - name: Run Frame-Shape & Cover-Traffic Measurements
         run: cargo test --test dpi_fingerprint --verbose
 
       - name: Run Cover Traffic & Traffic-Shaping Tests
@@ -86,8 +90,11 @@ jobs:
       - name: Check Formatting
         run: cargo fmt -- --check
 
+      # `-D warnings` with no `|| true`: a lint gate that cannot fail is not a
+      # gate. The only lints allowed to pass are the three shape lints listed,
+      # with reasons, under `[lints.clippy]` in Cargo.toml.
       - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings || true
+        run: cargo clippy --all-targets -- -D warnings
 
   windows-installer:
     name: Windows Installer (build, install, verify, uninstall)

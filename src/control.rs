@@ -44,6 +44,21 @@ pub fn header_pin(req: &str) -> Option<&str> {
     })
 }
 
+/// Constant-time PIN check. The length difference is folded into the result, so
+/// the compare neither short-circuits on a mismatched byte nor on a mismatched
+/// length, either of which would time the configured PIN out to the caller.
+pub fn pin_matches(expected: &str, supplied: Option<&str>) -> bool {
+    use subtle::ConstantTimeEq;
+    let supplied = supplied.unwrap_or("");
+    let n = expected.len().max(supplied.len());
+    let mut a = vec![0u8; n];
+    let mut b = vec![0u8; n];
+    a[..expected.len()].copy_from_slice(expected.as_bytes());
+    b[..supplied.len()].copy_from_slice(supplied.as_bytes());
+    let same_len = (expected.len() as u64).ct_eq(&(supplied.len() as u64));
+    bool::from(a.as_slice().ct_eq(b.as_slice()) & same_len)
+}
+
 /// Round to `places` decimals for stable JSON output.
 pub fn round(value: f64, places: i32) -> f64 {
     let factor = 10f64.powi(places);
@@ -320,9 +335,12 @@ pub fn spawn_control_center(
                                 );
                                 let vpn_available = vpn_ref.is_some();
                                 let configured_pin = pin_ref.read().clone();
+                                // `true` here means the caller may see identity and
+                                // pairing material: either no PIN is configured, or it
+                                // was supplied correctly.
                                 let pin_ok = match configured_pin.as_deref() {
                                     None => true,
-                                    Some(expected) => header_pin(&req) == Some(expected),
+                                    Some(expected) => pin_matches(expected, header_pin(&req)),
                                 };
                                 let is_mutation = req.starts_with("POST ");
 
@@ -343,6 +361,21 @@ pub fn spawn_control_center(
                                         .to_string(),
                                         "application/json",
                                     )
+                                } else if !pin_ok
+                                    && (req.starts_with("GET /api/peers")
+                                        || req.starts_with("GET /api/wan_telemetry"))
+                                {
+                                    // These reads carry peer or node fingerprints and
+                                    // have no liveness role, so a missing PIN denies
+                                    // them outright. /api/status stays readable and
+                                    // redacts its identity fields instead.
+                                    let body = serde_json::json!({
+                                        "success": false,
+                                        "error": "PIN required",
+                                        "pin_required": true
+                                    })
+                                    .to_string();
+                                    ("HTTP/1.1 401 Unauthorized", body, "application/json")
                                 } else if req.starts_with("GET /api/status") {
                                     let is_conn = conn_ref.load(Ordering::Relaxed);
                                     let current_mode = mode_ref.read().clone();
@@ -379,11 +412,11 @@ pub fn spawn_control_center(
                                     let body = serde_json::json!({
                                         "connected": is_conn,
                                         "mode": current_mode,
-                                        "network_id": nc_ref.fingerprint(),
-                                        "device_name": settings_now.device_name(&nc_ref.fingerprint()),
+                                        "network_id": if pin_ok { serde_json::json!(nc_ref.fingerprint()) } else { serde_json::Value::Null },
+                                        "device_name": if pin_ok { serde_json::json!(settings_now.device_name(&nc_ref.fingerprint())) } else { serde_json::Value::Null },
                                         "device_os": consumer::local_os(),
                                         "host": lan_host_ref,
-                                        "pair_uri": pair_uri_ref,
+                                        "pair_uri": if pin_ok { serde_json::json!(pair_uri_ref) } else { serde_json::Value::Null },
                                         "route_mode": settings_now.route_mode,
                                         "route_mode_active": route_mode_active,
                                         "bypass_count": settings_now.bypass.len(),
@@ -391,6 +424,7 @@ pub fn spawn_control_center(
                                         "socks_port": socks_port,
                                         "vpn_available": vpn_available,
                                         "pin_protected": has_pin,
+                                        "pin_required": has_pin && !pin_ok,
                                         "uptime_seconds": uptime,
                                         "peers_count": peers_count,
                                         "active_sessions": sessions_count,
@@ -439,7 +473,7 @@ pub fn spawn_control_center(
                                         "vpn": vpn_role,
                                         "vpn_stats": vpn_json,
                                         "exit_node": vpn_role == "hub",
-                                        "peers": peer_entries,
+                                        "peers": if pin_ok { serde_json::json!(peer_entries) } else { serde_json::json!([]) },
                                     })
                                     .to_string();
                                     ("HTTP/1.1 200 OK", body, "application/json")
@@ -775,13 +809,12 @@ pub fn spawn_control_center(
                                     || req.starts_with("GET /?")
                                 {
                                     let html = include_str!("../assets/wan_dashboard.html")
-                                        .replace("v0.7.5", &format!("v{}", env!("CARGO_PKG_VERSION")))
+                                        .replace(
+                                            "v0.7.5",
+                                            &format!("v{}", env!("CARGO_PKG_VERSION")),
+                                        )
                                         .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
-                                    (
-                                        "HTTP/1.1 200 OK",
-                                        html,
-                                        "text/html; charset=utf-8",
-                                    )
+                                    ("HTTP/1.1 200 OK", html, "text/html; charset=utf-8")
                                 } else if req.starts_with("GET /metrics") {
                                     let sessions = nc_ref.sessions.len();
                                     let peers = addrs_ref.len();

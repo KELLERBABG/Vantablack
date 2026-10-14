@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(id.pq_commitment(), pq_commitment(&id.pq_public_key_bytes()));
         let other = GhostIdentity::generate_fresh();
         assert_ne!(id.pq_commitment(), other.pq_commitment());
-        let bare = sha2::Sha256::digest(&id.pq_public_key_bytes());
+        let bare = sha2::Sha256::digest(id.pq_public_key_bytes());
         assert_ne!(id.pq_commitment().to_vec(), bare.to_vec());
     }
 

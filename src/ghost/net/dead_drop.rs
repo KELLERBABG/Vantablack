@@ -40,7 +40,7 @@ impl BlindDeadDropBlob {
     pub fn derive_commitment(drop_seed: &[u8], slot_index: u64) -> DropCommitment {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_DEAD_DROP_COMMITMENT_V1");
-        hasher.update(&slot_index.to_be_bytes());
+        hasher.update(slot_index.to_be_bytes());
         hasher.update(drop_seed);
         hasher.finalize().into()
     }
@@ -123,6 +123,7 @@ impl DeadDropVault {
     /// - Normal conditions ($\lambda_{\text{error}} \approx 0.0$): decay is swift, data minimization active.
     /// - Crisis/partition conditions ($\lambda_{\text{error}} > 0.05$): decay multiplier shrinks,
     ///   extending object life so partitions do not cause premature data loss.
+    ///
     /// Returns the number of reclaimed cold shards.
     pub fn collect_self_eating_decay(
         &self,

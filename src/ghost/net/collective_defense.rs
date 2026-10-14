@@ -50,10 +50,10 @@ impl AnomalyObservable {
     pub fn observable_id(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_COLLECTIVE_OBSERVABLE_V1");
-        hasher.update(&self.region_bucket.to_be_bytes());
-        hasher.update(&self.epoch_slot.to_be_bytes());
-        hasher.update(&[self.discretized_loss_pct]);
-        hasher.update(&self.bucketed_peer_drops.to_be_bytes());
+        hasher.update(self.region_bucket.to_be_bytes());
+        hasher.update(self.epoch_slot.to_be_bytes());
+        hasher.update([self.discretized_loss_pct]);
+        hasher.update(self.bucketed_peer_drops.to_be_bytes());
         hasher.finalize().into()
     }
 }

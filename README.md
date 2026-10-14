@@ -15,7 +15,7 @@
 
 <br>
 
-[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**SOTA Benchmark**](docs/SOTA.md) &bull; [**Cryptography Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) &bull; [**Onion Routing Architecture**](docs/ONION_ARCHITECTURE.md) &bull; [**LAN over WAN**](docs/LAN_OVER_WAN.md) &bull; [**Configuration Reference**](docs/config.env.example)
+[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**SOTA Benchmark**](docs/SOTA.md) &bull; [**Cryptography Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) &bull; [**Onion Routing Architecture**](docs/ONION_ARCHITECTURE.md) &bull; [**LAN over WAN**](docs/LAN_OVER_WAN.md) &bull; [**Configuration Reference**](docs/config.env.example) &bull; [**Free Software**](FREE_SOFTWARE.md)
 
 </div>
 
@@ -283,7 +283,7 @@ Vantablack is a desktop application. A plain `cargo build --release` produces it
    - **`GET /api/telemetry`:** Returns full Level 2 WAN carrier simulation metrics.
    - **`GET /healthz` & `GET /metrics`:** Health check and Prometheus metrics exposition.
 
-   Setting `GHOST_PIN=<pin>` now *enforces* the console PIN: every `POST` endpoint rejects requests that do not carry a matching `X-Pin` header with HTTP 401. The control center binds `0.0.0.0`, so set a PIN if the machine is on a shared network.
+   Setting `GHOST_PIN=<pin>` *enforces* the console PIN: every `POST` endpoint rejects a request without a matching `X-Pin` header with HTTP 401, and the read endpoints that carry identity (`GET /api/peers`, `GET /api/wan_telemetry`) are refused outright. `GET /api/status` still answers 200 without a PIN, because health polling needs it, but `network_id`, `device_name`, `pair_uri` and `peers` come back `null`, and `pin_required` tells the caller why. The dashboard prompts for the PIN once per browser session and resends the header. The control center binds `0.0.0.0`, so set a PIN if the machine is on a shared network.
 
    Split tunneling is enforced in the SOCKS5 initiator: destinations matching a bypass rule are dialed directly over the local ISP instead of being tunnelled through the mesh. Set the egress mode with `GHOST_EGRESS_MODE=system_vpn|app_socks` for the first run, then the saved choice wins.
 
@@ -348,7 +348,7 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 
 | Threat / Scenario | Defense Mechanism | Protection Level |
 | :--- | :--- | :---: |
-| **Quantum Computing Decryption** | Hybrid ML-KEM-768 (Kyber) + Ephemeral X25519 ECDH; handshake symbolically modeled in `formal/` (ProVerif) | **Resistant** |
+| **Quantum Computing Decryption** | Hybrid ML-KEM-768 (Kyber) + Ephemeral X25519 ECDH; `formal/` holds ProVerif models of the handshake and of one sealed shard, with their queries and gaps listed in `formal/README.md` | **Resistant** |
 | **Single-Node Eavesdropping** | RS(2,1) Reed-Solomon sharding across divergent paths — no single carrier holds a whole message | **Resistant** |
 | **Byzantine Node Tampering** | ShardSec per-shard AEAD (default-on): a corrupted shard fails its own Poly1305 tag and is discarded before reconstruction | **Detected & isolated** |
 | **Deep Packet Inspection (DPI)** | Constant-size privacy frames + fixed 64-byte keyed jitter tail (AEAD-associated) + Poisson cover traffic. No published traffic-analysis experiments; resistance is by design, not yet by measurement | **Mitigated** |
@@ -388,7 +388,7 @@ For engineers, cryptographers, and contributors wishing to inspect the mathemati
 * [**Operator & Configuration Guide**](docs/OPERATOR_GUIDE.md) — Complete installation, Cloudflare DNS seed setup, `GHOST_PSK` private meshes, SOCKS5/Exit nodes, and `GHOST_*` reference.
 * [**Technical Specifications**](docs/SPECIFICATIONS.md) — Low-level frame layouts, Level 2 multi-hop headers, L5 jitter wire structures, and SessionGuard bitmasks.
 * [**SOTA Architectural Benchmark**](docs/SOTA.md) — Architectural and cryptographic benchmark matrix comparing Vantablack against WireGuard, Tailscale, and Tor.
-* [**Verification & Benchmarks**](docs/VERIFICATION_AND_BENCHMARKS.md) — Real release-mode A/B throughput benchmarks, DPI Shannon entropy data, RFC 4787 NAT matrix, and ProVerif proofs.
+* [**Verification & Benchmarks**](docs/VERIFICATION_AND_BENCHMARKS.md) — Real release-mode A/B throughput benchmarks, DPI Shannon entropy data, RFC 4787 NAT matrix, and ProVerif symbolic models.
 * [**Clean-Room Onion Routing**](docs/ONION_ARCHITECTURE.md) — In-depth breakdown of the multi-hop onion peeling protocol, `RLY!` headers, and zero-legacy design.
 * [**LAN over WAN (VPN Layer)**](docs/LAN_OVER_WAN.md) — Road-warrior userspace VPN architecture, TUN drivers, and mobile network roaming.
 * [**Cryptographic Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) — Formal analysis of ML-KEM-768, X25519 hybrid key exchange, directional nonces, and memory security.
@@ -400,7 +400,14 @@ For engineers, cryptographers, and contributors wishing to inspect the mathemati
 
 Vantablack is written in pure Rust. `cargo build --release` produces the desktop
 application (native window + tray); the headless server build needs no C toolchain,
-no GTK/WebKit and no display:
+no GTK/WebKit and no display.
+
+A Rust toolchain alone is not enough on Windows: `reqwest` pulls in `ring`, which
+compiles C, so the compiler family matters. See [**Building and verifying on
+Windows**](docs/BUILDING.md) for the two supported toolchain paths, the exact
+failure each one produces when the machine is incomplete, and the helper scripts
+(`scripts/cargo-msvc.ps1`, `scripts/build-gate.sh`) that set up the environment
+for you:
 
 ```bash
 # Desktop application (default features)
@@ -437,3 +444,8 @@ The `src/ghost/net/` tree also ships a set of compiled, unit-tested research mod
 ## License
 
 Vantablack is open-source software distributed under the [MIT License](LICENSE).
+
+Every capability a build contains is available to everyone who has that build:
+there is no activation step, no license key, no entitlement check and no payment
+path anywhere in the product — see
+[**Free software — no license gate, no payments**](FREE_SOFTWARE.md).

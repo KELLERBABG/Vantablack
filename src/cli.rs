@@ -31,14 +31,12 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
                 std::env::set_var("GHOST_LOW_LATENCY", "1");
                 vantablack::ghost::net::set_low_latency(true);
             }
-            "--mix-batch-ms" => {
-                if i + 1 < args.len() {
-                    std::env::set_var("GHOST_MIX_BATCH_MS", &args[i + 1]);
-                    if let Ok(ms) = args[i + 1].parse::<u64>() {
-                        vantablack::ghost::net::set_mix_batch_delay_ms(ms);
-                    }
-                    i += 1;
+            "--mix-batch-ms" if i + 1 < args.len() => {
+                std::env::set_var("GHOST_MIX_BATCH_MS", &args[i + 1]);
+                if let Ok(ms) = args[i + 1].parse::<u64>() {
+                    vantablack::ghost::net::set_mix_batch_delay_ms(ms);
                 }
+                i += 1;
             }
             _ => {}
         }

@@ -37,6 +37,12 @@ pub struct SessionGuard {
     pub bitmask: u128,
 }
 
+impl Default for SessionGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionGuard {
     /// Create a fresh session guard with zero state.
     pub fn new() -> Self {

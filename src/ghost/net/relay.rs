@@ -232,7 +232,7 @@ impl SphinxShardOnion {
 
         let mut middle_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + exit_sealed.len());
         let mut exit_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
-        let bytes_to_copy = exit_hop.as_bytes().len().min(SPHINX_MAX_HOP_NAME);
+        let bytes_to_copy = exit_hop.len().min(SPHINX_MAX_HOP_NAME);
         exit_hop_bytes[..bytes_to_copy].copy_from_slice(&exit_hop.as_bytes()[..bytes_to_copy]);
         middle_plaintext.extend_from_slice(&exit_hop_bytes);
         middle_plaintext.extend_from_slice(&exit_sealed);
@@ -245,7 +245,7 @@ impl SphinxShardOnion {
 
         let mut guard_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + middle_sealed.len());
         let mut middle_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
-        let bytes_to_copy_m = middle_hop.as_bytes().len().min(SPHINX_MAX_HOP_NAME);
+        let bytes_to_copy_m = middle_hop.len().min(SPHINX_MAX_HOP_NAME);
         middle_hop_bytes[..bytes_to_copy_m]
             .copy_from_slice(&middle_hop.as_bytes()[..bytes_to_copy_m]);
         guard_plaintext.extend_from_slice(&middle_hop_bytes);
@@ -504,8 +504,8 @@ impl BlindCapabilityToken {
         h.update(b"GGN_BLIND_CAP_AUTH_V1");
         h.update(auth_key);
         h.update(token_id);
-        h.update(&max_bytes.to_be_bytes());
-        h.update(&expires_at.to_be_bytes());
+        h.update(max_bytes.to_be_bytes());
+        h.update(expires_at.to_be_bytes());
         h.finalize().into()
     }
 
@@ -1092,8 +1092,8 @@ pub async fn try_forward_relay(
     let shards = l4_rs::encode(&mut framed);
 
     // Send shards to next hop
-    for i in 0..3 {
-        let shard_data = frame_shard(&shards[i]);
+    for (i, shard) in shards.iter().take(3).enumerate() {
+        let shard_data = frame_shard(shard);
         let header = GtfV2Header {
             session_hash: sh,
             counter: material.counter,
@@ -1645,11 +1645,11 @@ impl AnonymousThresholdVoucher {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_ANONYMOUS_THRESHOLD_VOUCHER_V1");
-        hasher.update(&group_id);
+        hasher.update(group_id);
         hasher.update(reconstructed_group_secret);
-        hasher.update(&voucher_id.to_be_bytes());
-        hasher.update(&max_bytes.to_be_bytes());
-        hasher.update(&expires_at.to_be_bytes());
+        hasher.update(voucher_id.to_be_bytes());
+        hasher.update(max_bytes.to_be_bytes());
+        hasher.update(expires_at.to_be_bytes());
         let group_commitment = hasher.finalize().into();
 
         Self {
@@ -1669,11 +1669,11 @@ impl AnonymousThresholdVoucher {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_ANONYMOUS_THRESHOLD_VOUCHER_V1");
-        hasher.update(&self.group_id);
+        hasher.update(self.group_id);
         hasher.update(expected_group_secret);
-        hasher.update(&self.voucher_id.to_be_bytes());
-        hasher.update(&self.max_bytes.to_be_bytes());
-        hasher.update(&self.expires_at.to_be_bytes());
+        hasher.update(self.voucher_id.to_be_bytes());
+        hasher.update(self.max_bytes.to_be_bytes());
+        hasher.update(self.expires_at.to_be_bytes());
         let expected: [u8; 32] = hasher.finalize().into();
         expected == self.group_commitment
     }
@@ -1715,7 +1715,6 @@ impl AnonymousCapabilityLedger {
 }
 
 #[cfg(test)]
-
 mod derp_tests {
     use super::*;
 

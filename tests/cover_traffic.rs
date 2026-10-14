@@ -22,10 +22,17 @@ use vantablack::ghost::net::{
 const SESSION_HASH: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
 const NOMINAL_COVER_RATE_HZ: f64 = 2.0;
 
-/// Simulates drawing an exponential inter-arrival interval (Poisson cover gap)
+/// Copy of `cover_gap`, whose source of truth is src/main.rs:666. That function is
+/// private to the binary crate, so this copy cannot be replaced by a call; keep the
+/// two in step by hand.
 fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
     let per_message = frames_per_sec / 3.0;
-    if !(per_message > 0.0) {
+    // `partial_cmp` rather than `<= 0.0`, so a NaN rate still means "no cover"
+    // instead of producing a NaN gap. Mirrors `main.rs::cover_gap`.
+    if !matches!(
+        per_message.partial_cmp(&0.0),
+        Some(std::cmp::Ordering::Greater)
+    ) {
         return Duration::from_secs(3600);
     }
     let u = uniform.clamp(0.0, 1.0 - f64::EPSILON);
@@ -33,6 +40,13 @@ fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
     Duration::from_secs_f64(secs.clamp(0.005, 30.0))
 }
 
+/// A **copy** of the daemon's legacy wire path: `enc_split` (src/main.rs:455), its
+/// `SealCtx::header` (src/main.rs:311) and the per-shard seal at src/main.rs:486-516.
+/// Those live in the binary crate, so this test cannot call them and a change to
+/// that wiring will not fail this file. The primitives it does call (`l4_rs::encode`,
+/// `xchacha_seal_in_place_with_aad`, `tail_for`, `build_gtf_v2_frame`) are the
+/// library's production ones. The daemon's default branch is ShardSec
+/// (src/main.rs:456-484), which this copy does not measure at all.
 fn produce_wire_frame(
     key: &[u8; 32],
     epoch: u64,
@@ -149,7 +163,7 @@ fn test_simulated_mesh_100_packets_cover_traffic_ratio_and_jitter() {
             let tag = extract_auth_tag(shard);
             let ciphertext = unframe(extract_payload(shard)).expect("unframe");
             let mut buf = ciphertext.to_vec();
-            buf.extend_from_slice(&tag);
+            buf.extend_from_slice(tag);
             let opened = xchacha_open_with_aad(
                 &session_key,
                 &h.nonce,
@@ -192,7 +206,7 @@ fn test_simulated_mesh_100_packets_cover_traffic_ratio_and_jitter() {
                 let tag = extract_auth_tag(shard);
                 let ciphertext = unframe(extract_payload(shard)).expect("unframe");
                 let mut buf = ciphertext.to_vec();
-                buf.extend_from_slice(&tag);
+                buf.extend_from_slice(tag);
                 let opened = xchacha_open_with_aad(
                     &session_key,
                     &h.nonce,

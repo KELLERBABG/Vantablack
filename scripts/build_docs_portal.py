@@ -61,6 +61,14 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "Complete operational manual covering installation, Cloudflare DNS seeds, "
                 "GHOST_PSK private meshes, SOCKS5/Exit nodes, console commands, and GHOST_* variables.",
             ),
+            (
+                "free-software",
+                "../FREE_SOFTWARE.md",
+                "Free Software — No License Gate",
+                "Free Software",
+                "What a build includes for everyone: no activation step, no license key, "
+                "no vendor server, and no capability gated on entitlement.",
+            ),
         ],
     ),
     (

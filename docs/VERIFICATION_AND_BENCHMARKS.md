@@ -1,6 +1,6 @@
 # Vantablack — Verification, Benchmarks & Empirical Analysis
 
-This document provides the empirical performance benchmarks, statistical traffic-analysis measurements, RFC 4787 NAT traversal matrix, and formal verification proofs for Vantablack, along with exact commands for independent researchers to reproduce every result from source.
+This document provides the empirical performance benchmarks, statistical traffic-analysis measurements, RFC 4787 NAT traversal matrix, and formal symbolic models for Vantablack, along with exact commands for independent researchers to reproduce every result from source.
 
 ---
 
@@ -83,23 +83,15 @@ flowchart TD
 
 ---
 
-## 4. Formal Symbolic Verification (ProVerif)
+## 4. Formal Symbolic Models (ProVerif)
 
-The hybrid post-quantum handshake (`X25519` + `ML-KEM-768` + `Ed25519` + `ML-DSA-65`) and session key derivation are formally modeled in the applied pi-calculus in [`verification/vantablack_handshake.pv`](../verification/vantablack_handshake.pv).
-
-### Verified Security Queries
-1. **Session Key Secrecy under Classical Compromise (Post-Quantum Guarantee):**
-   Even if an adversary possesses a quantum computer capable of inverting `X25519` (` CompromiseClassicalDH `), the derived session key `k_session` remains unreachable as long as `ML-KEM-768` holds.
-2. **Session Key Secrecy under Lattice Compromise (Classical Guarantee):**
-   Even if a catastrophic mathematical break occurs in `ML-KEM-768`, `k_session` remains secret as long as ephemeral `X25519` holds.
-3. **Mutual Authentication & Cross-Step Ratchet Agreement:**
-   Injective correspondence (`inj-event(ResponderAccepts) ==> inj-event(InitiatorStarts)`) proves resistance against unknown-key-share (UKS) and replay substitution attacks.
+Two models ship in applied pi-calculus: [`formal/ghost_session.pv`](../formal/ghost_session.pv) covers the handshake and counter agreement, and [`formal/shardsec_space_time.pv`](../formal/shardsec_space_time.pv) covers one sealed shard against its own key. The queries they contain, and the properties they leave unmodelled, are stated in [`formal/README.md`](../formal/README.md). A claim that is not one of those queries has not been checked by the prover.
 
 ---
 
-## 5. Reproducing All Tests & Benchmarks Locally
+## 5. Reproducing Tests and Models Locally
 
-Researchers can independently verify every cryptographic primitive, NAT state machine, VPN netstack gate, and throughput benchmark directly from the repository:
+Researchers can independently verify every cryptographic primitive, NAT state machine, VPN netstack gate, and symbolic model directly from the repository:
 
 ```bash
 # 1. Run all unit tests across the 10-layer protocol stack (L0–L9, STUN/ICE/TURN, Onion, Ratchet)
@@ -111,12 +103,10 @@ cargo test --test simulation --test handshake_interop --no-default-features
 # 3. Run the VPN netstack, DNS NAT, MSS clamping, and lossy link verification gates
 cargo test --features vpn --test vpn_gates --test vpn_dns --test vpn_mss --test vpn_resilience
 
-# 4. Run Criterion statistical benchmarks (AEAD, Reed-Solomon RS(2,1), Hybrid KEM)
-cargo bench --bench crypto_benchmarks
+# 4. Run the ProVerif formal models (requires proverif installed)
+proverif formal/ghost_session.pv
+proverif formal/shardsec_space_time.pv
 
-# 5. Run the ProVerif formal symbolic model (requires proverif installed)
-proverif verification/vantablack_handshake.pv
-
-# 6. Launch the 7-node Docker WAN Chaos Testbed with Linux tc netem impairments
+# 5. Launch the 7-node Docker WAN Chaos Testbed with Linux tc netem impairments
 docker compose -f docker-compose.wan.yml up --build -d
 ```

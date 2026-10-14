@@ -58,9 +58,8 @@ use vantablack::ghost::{
             RESPONSE_NEGOTIATION_MAGIC, RESPONSE_V3_MAGIC,
         },
         l2_aead::{
-            decrypt_in_place_with_context, encrypt_in_place_with_context, random_xnonce,
-            xchacha_open, xchacha_open_with_aad, xchacha_seal_in_place,
-            xchacha_seal_in_place_with_aad, NonceDirection,
+            decrypt_in_place_with_context, random_xnonce, xchacha_open, xchacha_open_with_aad,
+            xchacha_seal_in_place, xchacha_seal_in_place_with_aad, NonceDirection,
         },
         l4_rs,
         l7_ldpc::LdpcCodec,
@@ -607,8 +606,8 @@ fn enqueue_mixed_frame(
 async fn send3(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx, f: &[Vec<u8>], tag: &[u8; 16]) {
     // Borrowed-socket callers (notably the relay ingress) stay on the direct
     // path because their socket lifetime is owned by the receive task.
-    for i in 0..3 {
-        let _ = send_gtf_v2(sock, dst, &ctx.data_header(i as u8, false, 0), &f[i], tag).await;
+    for (i, shard) in f.iter().take(3).enumerate() {
+        let _ = send_gtf_v2(sock, dst, &ctx.data_header(i as u8, false, 0), shard, tag).await;
     }
 }
 
@@ -622,12 +621,12 @@ pub(crate) async fn send3_mixed(
     tag: &[u8; 16],
 ) {
     let mut pending = Vec::with_capacity(3);
-    for i in 0..3 {
+    for (i, shard) in f.iter().take(3).enumerate() {
         let header = ctx.data_header(i as u8, false, 0);
-        let frame = match net::try_build_gtf_v2_frame(&header, &f[i], tag) {
+        let frame = match net::try_build_gtf_v2_frame(&header, shard, tag) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("GTF v2 frame oversize ({}): {e}", f[i].len());
+                tracing::warn!("GTF v2 frame oversize ({}): {e}", shard.len());
                 continue;
             }
         };
@@ -666,7 +665,12 @@ const COVER_FRAMES_PER_MESSAGE: f64 = 3.0;
 /// distribution is testable without a clock, a spawned task or real waiting.
 fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
     let per_message = frames_per_sec / COVER_FRAMES_PER_MESSAGE;
-    if !(per_message > 0.0) {
+    // `partial_cmp` rather than `<= 0.0`, so a NaN rate still means "no
+    // cover" instead of falling through to a NaN gap.
+    if !matches!(
+        per_message.partial_cmp(&0.0),
+        Some(std::cmp::Ordering::Greater)
+    ) {
         // "No cover" is a gap longer than any session, not a panic.
         return Duration::from_secs(3600);
     }
@@ -693,8 +697,8 @@ async fn send_cover(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx) {
     let (shards, tag) = enc_split(ctx, net::DUMMY_MAGIC);
     let mut batch = MixBatch::new(3, Duration::ZERO);
     let mut ready = None;
-    for i in 0..3 {
-        if let Some(flushed) = batch.push((i as u8, shards[i].clone())) {
+    for (i, shard) in shards.iter().take(3).enumerate() {
+        if let Some(flushed) = batch.push((i as u8, shard.clone())) {
             ready = Some(flushed);
         }
     }
@@ -876,9 +880,9 @@ async fn send_datagram_via_relay(
 
     let (carriers, tag) = enc_split(&ctx, &envelope);
     let mut ok = true;
-    for i in 0..3 {
+    for (i, carrier) in carriers.iter().take(3).enumerate() {
         let header = ctx.data_header(i as u8, true, 0);
-        if let Err(e) = send_gtf_v2(sock, relay_addr, &header, &carriers[i], &tag).await {
+        if let Err(e) = send_gtf_v2(sock, relay_addr, &header, carrier, &tag).await {
             tracing::warn!(relay = %relay_fp, "fallback: relay send failed: {e}");
             ok = false;
         }
@@ -1388,8 +1392,8 @@ pub(crate) async fn send3_via_fallback(
     // Every framing below carries the *same* seal, so a datagram that leaves by
     // one route and a retry that leaves by another are interchangeable: the
     // receiver reassembles shards of one ciphertext, not of two.
-    for i in 0..3 {
-        let datagram = net::build_gtf_v2_frame(&ctx.data_header(i as u8, false, 0), &f[i], tag);
+    for (i, shard) in f.iter().take(3).enumerate() {
+        let datagram = net::build_gtf_v2_frame(&ctx.data_header(i as u8, false, 0), shard, tag);
         let ok = match path {
             // A route entry is only ever written when a direct path failed, so a
             // `Direct` value here would mean the route table contradicted itself.
@@ -1523,6 +1527,13 @@ fn looks_like_dest(p: &[u8]) -> bool {
         None => false,
     }
 }
+
+// The tunnel egress path below is vpn-gated, so its encrypt helper carries the
+// same cfg: to the default feature set the name is unused (an ungated import
+// warns, and fails under `-D warnings`), while the vpn feature set must resolve
+// it. Removing the import to silence the default build breaks the vpn build.
+#[cfg(feature = "vpn")]
+use vantablack::ghost::layers::l2_aead::encrypt_in_place_with_context;
 
 #[cfg(feature = "vpn")]
 /// Outer-wire send of a VPN payload: [len u16][GVPN1][tunnel datagram]
@@ -2707,14 +2718,14 @@ pub(crate) async fn initiate_handshake(
         let mut c = pdu;
         let raw = l4_rs::encode(&mut c);
         let tag = [0u8; 16];
-        for i in 0..3 {
+        for (i, shard) in raw.iter().take(3).enumerate() {
             let _ = send_gtf(
                 sock,
                 &t,
                 [0, 0, 0, 0],
                 0,
                 i as u8,
-                &frame_shard(&raw[i]),
+                &frame_shard(shard),
                 &tag,
                 false,
             )
@@ -2762,14 +2773,14 @@ pub(crate) async fn initiate_handshake(
     let is_bulk = raw
         .iter()
         .any(|s| frame_shard(s).len() > vantablack::ghost::net::MAX_PAYLOAD_LEN);
-    for i in 0..3 {
+    for (i, shard) in raw.iter().take(3).enumerate() {
         let _ = send_gtf(
             sock,
             &t,
             [0, 0, 0, 0],
             0,
             i as u8,
-            &frame_shard(&raw[i]),
+            &frame_shard(shard),
             &tag,
             is_bulk,
         )
@@ -3085,24 +3096,21 @@ async fn handle_pkt(
             &node.identity.public_key_bytes(),
             &node.identity.pq_commitment(),
             |m| node.identity.sign(m).to_bytes(),
-            responder_public
-                .as_bytes()
-                .try_into()
-                .expect("x25519 key length"),
+            responder_public.as_bytes(),
             &ct,
         )
         .expect("valid suite-list response");
         let mut encoded = response;
         let raw = l4_rs::encode(&mut encoded);
         let tag = [0u8; 16];
-        for i in 0..3 {
+        for (i, shard) in raw.iter().take(3).enumerate() {
             let _ = send_gtf(
                 sock,
                 src,
                 [0, 0, 0, 0],
                 1,
                 i as u8,
-                &frame_shard(&raw[i]),
+                &frame_shard(shard),
                 &tag,
                 false,
             )
@@ -3177,14 +3185,14 @@ async fn handle_pkt(
         let is_bulk = raw
             .iter()
             .any(|s| frame_shard(s).len() > vantablack::ghost::net::MAX_PAYLOAD_LEN);
-        for i in 0..3 {
+        for (i, shard) in raw.iter().take(3).enumerate() {
             let _ = send_gtf(
                 sock,
                 src,
                 [0, 0, 0, 0],
                 1,
                 i as u8,
-                &frame_shard(&raw[i]),
+                &frame_shard(shard),
                 &tag,
                 is_bulk,
             )
@@ -3247,14 +3255,14 @@ async fn handle_pkt(
         let mut encoded = resp;
         let raw = l4_rs::encode(&mut encoded);
         let tag = [0u8; 16];
-        for i in 0..3 {
+        for (i, shard) in raw.iter().take(3).enumerate() {
             let _ = send_gtf(
                 sock,
                 src,
                 [0, 0, 0, 0],
                 1,
                 i as u8,
-                &frame_shard(&raw[i]),
+                &frame_shard(shard),
                 &tag,
                 false,
             )
@@ -3402,14 +3410,14 @@ async fn handle_pkt(
         let mut rc = resp_pdu;
         let raw = l4_rs::encode(&mut rc);
         let tag = [0u8; 16];
-        for i in 0..3 {
+        for (i, shard) in raw.iter().take(3).enumerate() {
             let _ = send_gtf(
                 sock,
                 src,
                 [0, 0, 0, 0],
                 1,
                 i as u8,
-                &frame_shard(&raw[i]),
+                &frame_shard(shard),
                 &tag,
                 false,
             )
@@ -5499,14 +5507,14 @@ async fn run_node(
                         );
                         let raw = l4_rs::encode(&mut pdu);
                         let tag = [0u8; 16];
-                        for i in 0..3 {
+                        for (i, shard) in raw.iter().take(3).enumerate() {
                             let _ = send_gtf(
                                 &nc.socket,
                                 t,
                                 [0, 0, 0, 0],
                                 0,
                                 i as u8,
-                                &frame_shard(&raw[i]),
+                                &frame_shard(shard),
                                 &tag,
                                 false,
                             )
@@ -5775,7 +5783,7 @@ async fn run_node(
             let mut bootstrap_counter: u32 = 0;
             loop {
                 bootstrap_counter = bootstrap_counter.wrapping_add(1);
-                if bootstrap_counter % 10 == 0 {
+                if bootstrap_counter.is_multiple_of(10) {
                     let nc2 = Arc::clone(&nc);
                     let pending2 = Arc::clone(&pending_hs);
                     let port2 = mesh_port;
@@ -6011,22 +6019,23 @@ async fn run_node(
                                 carrier_pins.pin_commitment(&beacon_fp, *commitment);
                             }
                             match sections.zk {
-                                Some((context, proof)) => {
-                                    // A Schnorr proof that the sender knows the
-                                    // membership secret for exactly this identity
-                                    // It needs the PSK, because the
-                                    // statement is about the PSK: a node without
-                                    // one cannot verify and does not pretend to.
+                                // A Schnorr proof that the sender knows the
+                                // membership secret for exactly this identity.
+                                // It needs the PSK, because the statement is
+                                // about the PSK: a node without one cannot
+                                // verify and does not pretend to.
+                                Some((context, proof))
                                     if !ZkAuthenticator::verify_proof(
                                         &pk,
                                         psk.as_ref(),
                                         context,
                                         proof,
-                                    ) {
-                                        tracing::warn!(peer = %src, "Beacon membership proof failed — dropped");
-                                        continue;
-                                    }
+                                    ) =>
+                                {
+                                    tracing::warn!(peer = %src, "Beacon membership proof failed — dropped");
+                                    continue;
                                 }
+                                Some(_) => {}
                                 None if zk_required => {
                                     tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a membership proof");
                                     continue;
@@ -6232,14 +6241,14 @@ async fn run_node(
                         let mut c = pdu;
                         let raw = l4_rs::encode(&mut c);
                         let tag = [0u8; 16];
-                        for i in 0..3 {
+                        for (i, shard) in raw.iter().take(3).enumerate() {
                             let _ = send_gtf(
                                 &nc.socket,
                                 &t,
                                 [0, 0, 0, 0],
                                 0,
                                 i as u8,
-                                &frame_shard(&raw[i]),
+                                &frame_shard(shard),
                                 &tag,
                                 false,
                             )
@@ -6899,7 +6908,7 @@ async fn run_node(
                 // End-to-end blob: [len u16][payload][pad][tag]
                 let mut blob = (payload.len() as u16).to_be_bytes().to_vec();
                 blob.extend_from_slice(payload.as_bytes());
-                if blob.len() % 2 != 0 {
+                if !blob.len().is_multiple_of(2) {
                     blob.push(0);
                 }
                 // The onion's inner layer now seals with XChaCha20-Poly1305 and a
@@ -8192,7 +8201,7 @@ mod ratchet_live_tests {
     }
 }
 
-/// The reassembly spool's key, on its own.
+// The reassembly spool's key, on its own.
 #[cfg(test)]
 mod spool_key_tests {
     //! The spool used to bucket by packet counter alone, which is not a message
@@ -8205,7 +8214,7 @@ mod spool_key_tests {
     /// `l4_rs::encode` pads an odd payload with one zero byte before splitting it
     /// into two halves, so a reassembled message is the *padded* input.
     fn padded(mut v: Vec<u8>) -> Vec<u8> {
-        if v.len() % 2 != 0 {
+        if !v.len().is_multiple_of(2) {
             v.push(0);
         }
         v
@@ -8928,12 +8937,9 @@ mod p3_1_cover_tests {
             "cover is an ordinary RS(2,1) group, like data"
         );
 
-        for i in 0..3 {
-            let frame = net::build_gtf_v2_frame(
-                &ctx.header(i as u8, false, net::FLAG_DUMMY),
-                &shards[i],
-                &tag,
-            );
+        for (i, shard) in shards.iter().take(3).enumerate() {
+            let frame =
+                net::build_gtf_v2_frame(&ctx.header(i as u8, false, net::FLAG_DUMMY), shard, &tag);
             let h = parse_gtf_v2_header(&frame).expect("a v2 header");
             assert_ne!(
                 h.flags & net::FLAG_DUMMY,

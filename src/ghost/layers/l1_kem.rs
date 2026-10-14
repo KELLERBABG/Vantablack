@@ -162,7 +162,7 @@ impl PresenceProof {
         use sha2::Digest;
         let mut hasher = Sha256::new();
         hasher.update(Self::PRESENCE_DOMAIN);
-        hasher.update(&epoch_window.to_be_bytes());
+        hasher.update(epoch_window.to_be_bytes());
         hasher.update(beacon_entropy);
         let res = hasher.finalize();
         let mut beacon_entropy_hash = [0u8; 32];
@@ -181,11 +181,7 @@ impl PresenceProof {
         current_epoch_window: u64,
         max_window_skew: u64,
     ) -> Result<(), &'static str> {
-        let diff = if self.epoch_window > current_epoch_window {
-            self.epoch_window - current_epoch_window
-        } else {
-            current_epoch_window - self.epoch_window
-        };
+        let diff = self.epoch_window.abs_diff(current_epoch_window);
         if diff > max_window_skew {
             return Err("presence proof epoch window out of bounds (replay or future claim)");
         }
@@ -962,7 +958,7 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
 
     // Tolerate a single trailing 0x00 parity pad from l4_rs::encode on legacy
     // odd-length PDUs (which become even-length after RS padding).
-    if data.len() % 2 == 0 && data.last() == Some(&0x00) && data.len() > 1 {
+    if data.len().is_multiple_of(2) && data.last() == Some(&0x00) && data.len() > 1 {
         if let Some(blob) = try_parse(data.len() - 1, false) {
             return Some(blob);
         }

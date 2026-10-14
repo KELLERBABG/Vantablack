@@ -65,6 +65,12 @@ pub struct BuildInfo {
     pub verified: AtomicBool,
 }
 
+impl Default for BuildInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BuildInfo {
     /// SHA-256 hash of the binary itself (computed at startup).
     pub fn self_hash(&self) -> Option<Vec<u8>> {
@@ -349,8 +355,10 @@ impl Default for SecureTimeKeeper {
 impl SecureTimeKeeper {
     /// Create a new time keeper with optional atomic clock.
     pub fn new(has_atomic_clock: bool) -> Self {
-        let mut keeper = Self::default();
-        keeper.has_atomic_clock = has_atomic_clock;
+        let keeper = Self {
+            has_atomic_clock,
+            ..Self::default()
+        };
         if has_atomic_clock {
             info!(
                 "SecureTimeKeeper: atomic clock reference available (drift: {}/s)",
@@ -472,7 +480,7 @@ mod tests {
     #[test]
     fn test_build_info() {
         let info = BuildInfo::new();
-        assert!(info.git_commit.len() > 0);
+        assert!(!info.git_commit.is_empty());
     }
 
     #[test]
@@ -543,7 +551,7 @@ mod tests {
         // Should detect the outlier
         let result = keeper.is_time_consistent(&inconsistent);
         // Depends on tolerance — with 1s tolerance and 400s outlier, should be false
-        assert_eq!(result, false);
+        assert!(!result);
     }
 
     #[test]

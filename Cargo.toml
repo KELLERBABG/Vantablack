@@ -8,10 +8,6 @@ documentation = "https://vantablack.kellersystems.dev/docs"
 repository = "https://github.com/KELLERBABG/Vantablack"
 
 [[bin]]
-name = "vantablack"
-path = "src/main.rs"
-
-[[bin]]
 name = "ggn"
 path = "src/main.rs"
 
@@ -68,10 +64,38 @@ qkd-tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:rus
 [build-dependencies]
 embed-resource = "2.5"
 
+# ── Lint policy ───────────────────────────────────────────────────────────────
+#
+# CI runs `cargo clippy --all-targets -- -D warnings`, so every lint that is not
+# listed below is an error and a red build. That gate used to be
+# `... || true`, which meant it could never fail — a lint gate that cannot fail
+# is decoration, and 221 warnings accumulated behind it.
+#
+# The three entries here are the only exceptions, and each is a *shape* lint
+# rather than a correctness one. They are enumerated in one auditable place on
+# purpose: an `#[allow]` scattered across thirty modules is how a lint policy
+# becomes invisible.
+[lints.clippy]
+# The daemon's plumbing functions take their arguments from the node's state
+# literally — a socket, a session map, a peer table, a router, counters. Grouping
+# them into a context struct is a real refactor of the packet path (and of the
+# call sites that currently clone `Arc`s inline); doing it as a lint fix would be
+# a large, untested change to code this project cannot fully exercise on every
+# platform. 8 sites.
+too_many_arguments = "allow"
+# Same story for `HashMap<SocketAddr, Vec<(u64, Arc<Session>)>>`: naming these
+# would be an improvement, but it is a readability refactor of 8 signatures, not
+# a fix. 8 sites.
+type_complexity = "allow"
+# `QelOutcome` is deliberately a rich value — it carries the route, the derived
+# key and the failure reason for the dashboard. Boxing it to shrink `Result`
+# would move an allocation onto a path that is already allocation-heavy. 1 site.
+result_large_err = "allow"
+
 [profile.release]
 opt-level = 3         # Maximize execution throughput and enable auto-vectorization
-lto = false           # Keep false on MSVC to avoid cdylib/bin symbol resolution conflict
-codegen-units = 1     # Maximize optimization surface
+lto = false           # Off because the cdylib and bin targets collide under LTO on MSVC
+codegen-units = 1     # Per-crate CGU count is orthogonal to LTO, so this still applies
 strip = "symbols"     # Remove symbols from binary
 panic = "abort"       # Skip unwind tables
 debug = false         # No debug info

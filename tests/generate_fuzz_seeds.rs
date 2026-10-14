@@ -113,7 +113,7 @@ fn generate_all_fuzz_seed_corpora() {
     relay_packet.push(0x01); // Version
     relay_packet.extend_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]); // Next hop fingerprint
     relay_packet.extend_from_slice(&100u16.to_be_bytes()); // Payload len
-    relay_packet.extend_from_slice(&vec![0xAA; 100]); // Payload
+    relay_packet.extend_from_slice(&[0xAA; 100]); // Payload
     fs::write(dir.join("seed1_relay_packet.bin"), &relay_packet).unwrap();
 
     // ── 6. fuzz_unframe ──

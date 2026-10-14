@@ -153,9 +153,7 @@ fn element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     let mut rest = xml;
     while let Some(start) = rest.find(&open) {
         let after_open = &rest[start + open.len()..];
-        let Some(gt) = after_open.find('>') else {
-            return None;
-        };
+        let gt = after_open.find('>')?;
         let attrs = &after_open[..gt];
         let inner = &after_open[gt + 1..];
         // `<tag>` and `<tag attr=…>` are this element; `<tagOther>` is a
@@ -163,11 +161,9 @@ fn element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
         // the match rather than failing is the point: a document is full of
         // near-misses, and giving up on the first one would miss the real field.
         let is_ours = attrs.is_empty() || attrs.starts_with([' ', '\t', '\n', '\r']);
-        if is_ours {
-            if !attrs.ends_with('/') {
-                if let Some(end) = inner.find(&close) {
-                    return Some(inner[..end].trim());
-                }
+        if is_ours && !attrs.ends_with('/') {
+            if let Some(end) = inner.find(&close) {
+                return Some(inner[..end].trim());
             }
         }
         rest = &rest[start + 1..];

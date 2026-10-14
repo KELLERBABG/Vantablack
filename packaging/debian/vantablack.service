@@ -6,7 +6,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/ggn-headless
+# The .deb installs `ggn` and `vantablack` (Cargo.toml [package.metadata.deb]).
+# `ggn-headless` is not a binary in it; that name only exists inside the release
+# tarball the AUR and Homebrew packages unpack, which is why this unit failed on
+# first start. Skip the GUI at runtime instead of building a second binary.
+Environment=GHOST_NO_GUI=1
+ExecStart=/usr/bin/ggn
 Restart=always
 RestartSec=5
 LimitNOFILE=65536

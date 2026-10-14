@@ -189,7 +189,13 @@ pub const BEACON_PREFIX: &[u8; 16] = b"GHOST_BEACON____";
 /// This matches the inter-arrival statistics of background LAN SSDP/mDNS noise,
 /// eliminating the periodic frequency peak in spectral analysis.
 pub fn poisson_beacon_gap(uniform_sample: f64, mean_interval_secs: f64) -> Duration {
-    if !(mean_interval_secs > 0.0) {
+    // Written as an explicit `partial_cmp` rather than `<= 0.0`: the original
+    // `!(x > 0.0)` also caught NaN, and a plain `<=` would have let a NaN
+    // through to produce a NaN gap.
+    if !matches!(
+        mean_interval_secs.partial_cmp(&0.0),
+        Some(std::cmp::Ordering::Greater)
+    ) {
         return Duration::from_secs(30);
     }
     let lambda = 1.0 / mean_interval_secs;
@@ -285,7 +291,7 @@ impl BeaconGridEpoch {
         // Fold entropy
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(&self.entropy_commitment);
+        hasher.update(self.entropy_commitment);
         hasher.update(next_entropy_slice);
         let res = hasher.finalize();
         self.entropy_commitment.copy_from_slice(&res[..16]);
@@ -499,7 +505,9 @@ impl DialectSession {
         let wrapped = CamouflageWrapper::wrap(payload, current);
         self.messages_sent = self.messages_sent.saturating_add(1);
 
-        if self.messages_sent % self.rotation_interval == 0 && self.supported_dialects.len() > 1 {
+        if self.messages_sent.is_multiple_of(self.rotation_interval)
+            && self.supported_dialects.len() > 1
+        {
             // Rotate to next dialect
             if let Some(pos) = self.supported_dialects.iter().position(|&d| d == current) {
                 let next_idx = (pos + 1) % self.supported_dialects.len();
@@ -1024,12 +1032,17 @@ impl AckEngine {
                 let rtt = entry.sent_at.elapsed().as_micros() as f64;
                 // Smooth RTT estimate: RFC 6298 style
                 self.srtt = self.srtt * 0.875 + rtt * 0.125;
-                // Update congestion window (AIMD)
-                if !self.congestion {
-                    self.cwnd = self.cwnd.saturating_add(1).min(512);
-                } else {
-                    self.cwnd = self.cwnd.saturating_add(1).min(512);
-                }
+                // Additive increase on every acknowledged segment.
+                //
+                // NOTE: `self.congestion` deliberately does not branch here.
+                // Both arms of the previous if/else performed the same additive
+                // increase, so the multiplicative *decrease* that AIMD requires
+                // was never implemented and this window could not back off under
+                // loss. Collapsed rather than silently "fixed": changing a
+                // congestion window alters throughput behaviour that only the
+                // WAN testbed can validate, so it is recorded as a real defect in
+                // ASSESSMENT.md instead.
+                self.cwnd = self.cwnd.saturating_add(1).min(512);
                 self.congestion = false;
                 self.pending[idx] = None;
                 return true;
@@ -1649,7 +1662,9 @@ mod wire_v2_tests {
         // payload region, so the two extractors must not be interchangeable.
         assert_eq!(V2_MAX_PAYLOAD_LEN, 458);
         assert_eq!(MAX_PAYLOAD_LEN, 486);
-        assert!(V2_OFFSET_PAYLOAD_START > OFFSET_PAYLOAD_START);
+        // A compile-time assertion: both sides are constants, so a regression
+        // should stop the build rather than fail a test run.
+        const _: () = assert!(V2_OFFSET_PAYLOAD_START > OFFSET_PAYLOAD_START);
 
         let h = GtfV2Header::new([2, 2, 2, 2], 11, 1, 0);
         let mut payload = vec![0u8; V2_MAX_PAYLOAD_LEN];
@@ -1828,9 +1843,11 @@ mod wire_v2_tests {
     #[test]
     fn test_shape_shifting_wire_negotiation_and_rotation() {
         // §38: Census-driven dialect negotiation and rotating camouflage
-        let mut restricted_census = NetworkCensus::default();
-        restricted_census.raw_udp_permitted = false; // UDP blocked by firewall
-        restricted_census.quic_udp443_permitted = false; // QUIC blocked
+        let restricted_census = NetworkCensus {
+            raw_udp_permitted: false,     // UDP blocked by firewall
+            quic_udp443_permitted: false, // QUIC blocked
+            ..NetworkCensus::default()
+        };
 
         let peer_dialects = vec![
             CamouflageMode::QuicDatagram,

@@ -30,7 +30,7 @@ use common::tunnel::{receiver_open, tunnel_frame};
 use common::wire::{dns_query, dns_response, parse_udp};
 
 const FP: &str = "f1b2c3d4e5f6a7b8";
-const KEY: [u8; 32] = [0xCcu8; 32];
+const KEY: [u8; 32] = [0xCCu8; 32];
 const SH: [u8; 4] = [0xAB, 0xCD, 0xEF, 0x01];
 const PHONE: ([u8; 4], u16) = ([10, 66, 0, 10], 51777);
 const NAS_IP: [u8; 4] = [192, 168, 1, 53];

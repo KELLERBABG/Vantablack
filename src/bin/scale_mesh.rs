@@ -45,7 +45,7 @@ fn enc_split(
     let pay_len = pay.len() as u16;
     let mut framed = pay_len.to_be_bytes().to_vec();
     framed.extend_from_slice(pay);
-    if framed.len() % 2 != 0 {
+    if !framed.len().is_multiple_of(2) {
         framed.push(0);
     }
     encrypt_in_place_with_context(key, ctr, session_hash, direction, &mut framed);
@@ -65,7 +65,7 @@ fn dec_join(
     ctr: u32,
     session_hash: &[u8; 4],
     direction: NonceDirection,
-    shards: &mut Vec<Option<Vec<u8>>>,
+    shards: &mut [Option<Vec<u8>>],
 ) -> Option<Vec<u8>> {
     if shards.iter().filter(|s| s.is_some()).count() < 2 {
         return None;
@@ -84,12 +84,12 @@ fn dec_join(
         let a = shards[0].as_ref()?;
         let b = shards[1].as_ref()?;
         let mut merged = [a.as_slice(), b.as_slice()].concat();
-        if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok() {
-            if merged.len() >= 2 {
-                let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
-                if 2 + len <= merged.len() {
-                    return Some(merged[2..2 + len].to_vec());
-                }
+        if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok()
+            && merged.len() >= 2
+        {
+            let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
+            if 2 + len <= merged.len() {
+                return Some(merged[2..2 + len].to_vec());
             }
         }
     }
@@ -231,11 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Real WAN network dynamics: bandwidth load, BGP route shifts, and latency jitter
             let jitter = rng.gen_range(-15.0..15.0);
             let current_rtt = (n.rtt_ms + jitter).max(4.0);
-            let current_loss = if rng.gen_range(0.0..1.0) < (1.0 - n.reliability) {
-                true
-            } else {
-                false
-            };
+            let current_loss = rng.gen_range(0.0..1.0) < (1.0 - n.reliability);
 
             let rtt_us = current_rtt * 1000.0;
             if current_loss {

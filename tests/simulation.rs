@@ -66,7 +66,7 @@ fn frame_encrypt_binary_safe(key: &[u8; 32], ctr: u32, pay: &[u8]) -> (Vec<Vec<u
     let mut framed = pay_len.to_be_bytes().to_vec();
     framed.extend_from_slice(pay);
     // Pad to even length for RS encoding
-    if framed.len() % 2 != 0 {
+    if !framed.len().is_multiple_of(2) {
         framed.push(0);
     }
     l2_aead::encrypt_in_place(key, ctr, &mut framed);
@@ -93,7 +93,7 @@ fn frame_encrypt_binary_safe(key: &[u8; 32], ctr: u32, pay: &[u8]) -> (Vec<Vec<u
 fn reconstruct_decrypt_binary_safe(
     key: &[u8; 32],
     ctr: u32,
-    shards: &mut Vec<Option<Vec<u8>>>,
+    shards: &mut [Option<Vec<u8>>],
 ) -> Result<Vec<u8>, ()> {
     if l4_rs::reconstruct(shards).is_err() {
         return Err(());
@@ -159,8 +159,8 @@ impl SimNode {
         let mut pdu_c = pdu;
         let shards = l4_rs::encode(&mut pdu_c);
         let tag = [0u8; 16];
-        for i in 0..3 {
-            let wrapped = frame_shard(&shards[i]);
+        for (i, shard) in shards.iter().take(3).enumerate() {
+            let wrapped = frame_shard(shard);
             hub.route(
                 build_test_gtf_packet([0; 4], 0, i as u8, &wrapped, &tag),
                 &self.addr,
@@ -256,20 +256,18 @@ impl SimNode {
                 e[si] = Some(sc);
                 e.iter().filter(|s| s.is_some()).count()
             };
-            if n >= 2 {
-                if ctr <= 1 || self.node.sessions.len() > 0 {
-                    let mut ws = { self.assembly_pool.write().await.remove(&key).unwrap() };
-                    if l4_rs::reconstruct(&mut ws).is_ok() {
-                        let rc: Vec<u8> = ws[0]
-                            .as_ref()
-                            .unwrap()
-                            .iter()
-                            .chain(ws[1].as_ref().unwrap().iter())
-                            .copied()
-                            .collect();
-                        if let Some(r) = self.handle(hub, ctr, &rc, &pkt.src).await {
-                            return Some(r);
-                        }
+            if n >= 2 && (ctr <= 1 || !self.node.sessions.is_empty()) {
+                let mut ws = { self.assembly_pool.write().await.remove(&key).unwrap() };
+                if l4_rs::reconstruct(&mut ws).is_ok() {
+                    let rc: Vec<u8> = ws[0]
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .chain(ws[1].as_ref().unwrap().iter())
+                        .copied()
+                        .collect();
+                    if let Some(r) = self.handle(hub, ctr, &rc, &pkt.src).await {
+                        return Some(r);
                     }
                 }
             }
@@ -325,8 +323,8 @@ impl SimNode {
             let mut r2 = resp;
             let shards = l4_rs::encode(&mut r2);
             let tag = [0u8; 16];
-            for i in 0..3 {
-                let wrapped = frame_shard(&shards[i]);
+            for (i, shard) in shards.iter().take(3).enumerate() {
+                let wrapped = frame_shard(shard);
                 hub.route(
                     build_test_gtf_packet([0; 4], 1, i as u8, &wrapped, &tag),
                     &self.addr,
@@ -435,14 +433,8 @@ impl SimNode {
                 .get(peer_fp)
                 .cloned()
                 .unwrap_or_else(|| peer_fp.to_string());
-            for i in 0..3 {
-                let pkt = build_test_gtf_packet(
-                    ctr.to_be_bytes(),
-                    ctr,
-                    i as u8,
-                    &wrapped_shards[i],
-                    &tag,
-                );
+            for (i, shard) in wrapped_shards.iter().take(3).enumerate() {
+                let pkt = build_test_gtf_packet(ctr.to_be_bytes(), ctr, i as u8, shard, &tag);
                 hub.route(pkt, &self.addr, &target);
             }
         }

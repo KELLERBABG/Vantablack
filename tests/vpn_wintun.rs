@@ -14,7 +14,6 @@
 //!      without aborting or corrupting memory.
 //! 4. Both `FakeTun` and `WintunTun` satisfy the generic [`TunDevice`] contract.
 
-use std::net::Ipv4Addr;
 use vantablack::ghost::net::tun as net_tun;
 use vantablack::ghost::net::vpn::tun::{self as vpn_tun, FakeTun, TunDevice};
 
@@ -84,6 +83,7 @@ fn test_wintun_device_or_graceful_gate() {
         }
 
         // When wintun.dll IS present, attempt real device initialization
+        use std::net::Ipv4Addr;
         let addr = Ipv4Addr::new(10, 66, 0, 2);
         let mask = Ipv4Addr::new(255, 255, 255, 0);
 

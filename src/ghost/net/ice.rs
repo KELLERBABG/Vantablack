@@ -1985,11 +1985,11 @@ mod tests {
         // Uses a route lookup only (no packet is sent), so this is safe offline
         // as long as a default route exists.
         let dest = sock("192.0.2.1:3478");
-        match probe_local_addr(dest) {
-            Ok(a) => assert!(!a.ip().is_unspecified()),
-            // An isolated sandbox may have no default route. That is an I/O
-            // error, not a panic — which is the property under test.
-            Err(_) => {}
+        // An isolated sandbox may have no default route. That is an I/O error,
+        // not a panic — which is the property under test, so a failure to
+        // resolve a source address is simply not asserted on.
+        if let Ok(a) = probe_local_addr(dest) {
+            assert!(!a.ip().is_unspecified());
         }
     }
 

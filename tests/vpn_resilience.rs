@@ -8,6 +8,7 @@
 //!    the hub re-anchors the lease and RESETS its tx counters (next reply
 //!    seals at ctr 1 again) — the desync that would otherwise blackhole a
 //!    reconnected client.
+//!
 //! Timing/backoff transitions are unit-tested in `client::resilience::tests`.
 
 use std::net::SocketAddr;

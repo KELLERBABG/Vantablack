@@ -61,7 +61,7 @@ impl PhysicalStegoCodec {
 
     /// Demodulate physical carrier symbols back into shard bytes.
     pub fn demodulate(frame: &PhysicalShardFrame) -> Result<Vec<u8>, &'static str> {
-        if frame.symbols.len() % 2 != 0 {
+        if !frame.symbols.len().is_multiple_of(2) {
             return Err("invalid symbol length: must contain pairs of nibble symbols");
         }
 
@@ -72,7 +72,7 @@ impl PhysicalStegoCodec {
         };
 
         let mut bytes = Vec::with_capacity(frame.symbols.len() / 2);
-        for chunk in frame.symbols.chunks_exact(2) {
+        for chunk in frame.symbols.as_chunks::<2>().0 {
             let s_high = chunk[0];
             let s_low = chunk[1];
 

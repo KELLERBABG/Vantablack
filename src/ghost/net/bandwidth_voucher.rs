@@ -50,8 +50,8 @@ impl BandwidthVoucher {
     pub fn compute_nullifier(&self) -> VoucherNullifier {
         let mut hasher = Sha256::new();
         hasher.update(b"VANTABLACK_BANDWIDTH_NULLIFIER_V1");
-        hasher.update(&self.epoch_slot.to_be_bytes());
-        hasher.update(&self.token_preimage);
+        hasher.update(self.epoch_slot.to_be_bytes());
+        hasher.update(self.token_preimage);
         hasher.finalize().into()
     }
 }

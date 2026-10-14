@@ -495,7 +495,7 @@ impl Bbr {
         // ProbeRTT would never trigger.
         let floor_is_stale = self
             .last_min_rtt_update
-            .map_or(false, |at| now.saturating_sub(at) >= BBR_PROBE_RTT_INTERVAL);
+            .is_some_and(|at| now.saturating_sub(at) >= BBR_PROBE_RTT_INTERVAL);
 
         if rtt > Duration::ZERO {
             self.rtt_samples.push_back((now, rtt));
@@ -1079,11 +1079,7 @@ impl AckEngine {
                 self.rttvar = Duration::from_secs_f64(sample.as_secs_f64() / 2.0);
             }
             Some(srtt) => {
-                let diff = if srtt > sample {
-                    srtt - sample
-                } else {
-                    sample - srtt
-                };
+                let diff = srtt.abs_diff(sample);
                 self.rttvar = Duration::from_secs_f64(
                     0.75 * self.rttvar.as_secs_f64() + 0.25 * diff.as_secs_f64(),
                 );

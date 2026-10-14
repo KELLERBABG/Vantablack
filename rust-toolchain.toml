@@ -1,0 +1,15 @@
+# Pin the toolchain so a fresh clone builds the same graph the release did.
+#
+# `stable` matches what .github/workflows/*.yml install, which is the point: the
+# pin and CI must not disagree. The docker/ image builds with rust:1.85 and the
+# code needs nothing newer, so that is the floor; stable is the ceiling.
+#
+# The host target is pinned to MSVC on Windows deliberately. The default on a
+# machine with rustup is often x86_64-pc-windows-gnu, and the gnu family has to
+# compile `ring`'s C with whatever gcc is on PATH. msys2 gcc 16 fails that with
+# "Compiler family detection failed", which reads like a code error and is not
+# one. MSVC uses the linker shipped with Visual Studio, so the build needs a
+# developer environment (scripts\build_env.ps1 or vcvars64.bat) instead of a
+# guessed compiler.
+[toolchain]
+channel = "stable"

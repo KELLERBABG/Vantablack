@@ -453,9 +453,12 @@ fn test_l4_encode_and_reconstruct_all_shards() {
 
     let shards = l4_rs::encode(&mut data);
     assert_eq!(shards.len(), 3, "encode() should return 3 shards");
-    assert!(shards[0].len() > 0, "Shard 0 should not be empty");
-    assert!(shards[1].len() > 0, "Shard 1 should not be empty");
-    assert!(shards[2].len() > 0, "Shard 2 (parity) should not be empty");
+    assert!(!shards[0].is_empty(), "Shard 0 should not be empty");
+    assert!(!shards[1].is_empty(), "Shard 1 should not be empty");
+    assert!(
+        !shards[2].is_empty(),
+        "Shard 2 (parity) should not be empty"
+    );
 
     // Reconstruct with all 3 shards present
     let mut to_reconstruct = vec![

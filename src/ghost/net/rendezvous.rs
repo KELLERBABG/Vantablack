@@ -102,10 +102,10 @@ impl DhtRoutingTable {
         let idx = self.bucket_index_for(&contact.node_id);
         let bucket = &self.buckets[idx];
 
-        if bucket.contains_key(&contact.node_id) {
-            bucket.insert(contact.node_id, contact);
-            true
-        } else if bucket.len() < K_BUCKET_SIZE {
+        // Both arms inserted and returned `true`, so the `contains_key` test
+        // was redundant: a known node is refreshed, a new node is admitted while
+        // there is room.
+        if bucket.contains_key(&contact.node_id) || bucket.len() < K_BUCKET_SIZE {
             bucket.insert(contact.node_id, contact);
             true
         } else {
@@ -125,7 +125,7 @@ impl DhtRoutingTable {
             }
         }
 
-        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+        candidates.sort_by_key(|a| a.0);
         candidates.into_iter().take(count).map(|(_, c)| c).collect()
     }
 
@@ -147,7 +147,7 @@ impl RendezvousPoint {
         let epoch = epoch_secs / epoch_duration.max(1);
         let mut hasher = Sha256::new();
         hasher.update(b"VANTABLACK_GLOBAL_SWARM_BOOTSTRAP_V1");
-        hasher.update(&epoch.to_be_bytes());
+        hasher.update(epoch.to_be_bytes());
         hasher.finalize().into()
     }
 
@@ -159,7 +159,7 @@ impl RendezvousPoint {
         hasher.update(b"VANTABLACK_PAIRWISE_RENDEZVOUS_V1");
         hasher.update(sorted[0]);
         hasher.update(sorted[1]);
-        hasher.update(&day_epoch.to_be_bytes());
+        hasher.update(day_epoch.to_be_bytes());
         hasher.finalize().into()
     }
 }
@@ -263,7 +263,7 @@ impl NostrRendezvousEvent {
     ) -> Result<Self, serde_json::Error> {
         let content = serde_json::to_string(beacon)?;
         let mut hasher = Sha256::new();
-        hasher.update(&beacon.timestamp.to_be_bytes());
+        hasher.update(beacon.timestamp.to_be_bytes());
         hasher.update(content.as_bytes());
         let event_id = hex::encode(hasher.finalize());
 

@@ -124,7 +124,7 @@ pub fn init_vpn_mode_with_rotator(
             || std::env::args().any(|arg| arg == "--exit" || arg == "--exit-node" || arg == "-e");
 
         match std::env::var("GHOST_VPN").as_deref() {
-            Ok("hub") | _ if is_exit => {
+            _ if is_exit => {
                 let (subnet, prefix) = std::env::var("GHOST_VPN_LAN_SUBNET")
                     .ok()
                     .and_then(|s| {

@@ -113,14 +113,9 @@ fn m1_lossy_link_tunnel_survives() {
         tun.push_inbound(pkt);
     }
     let mut rbuf = [0u8; 1400];
-    loop {
-        match TunDevice::read_packet(&mut tun, &mut rbuf) {
-            Ok(n) => {
-                let wire = seal_from_tun(&phone, &rbuf[..n]).expect("fits budget");
-                link.send(wire);
-            }
-            Err(_) => break,
-        }
+    while let Ok(n) = TunDevice::read_packet(&mut tun, &mut rbuf) {
+        let wire = seal_from_tun(&phone, &rbuf[..n]).expect("fits budget");
+        link.send(wire);
     }
     link.apply_reorder_schedule();
     let wires = link.drain();
@@ -131,14 +126,10 @@ fn m1_lossy_link_tunnel_survives() {
     let mut accepted = 0usize;
     let mut inner_seqs: Vec<u32> = Vec::new();
     for w in wires {
-        match hub_ing.open(&key, "phone_fp", 1, &w) {
-            OpenOutcome::Accepted { ip_packet, .. } => {
-                accepted += 1;
-                let seq =
-                    u32::from_be_bytes([ip_packet[4], ip_packet[5], ip_packet[6], ip_packet[7]]);
-                inner_seqs.push(seq);
-            }
-            _ => {}
+        if let OpenOutcome::Accepted { ip_packet, .. } = hub_ing.open(&key, "phone_fp", 1, &w) {
+            accepted += 1;
+            let seq = u32::from_be_bytes([ip_packet[4], ip_packet[5], ip_packet[6], ip_packet[7]]);
+            inner_seqs.push(seq);
         }
     }
     let drop_rate = 1.0 - (accepted as f64 / 40.0);

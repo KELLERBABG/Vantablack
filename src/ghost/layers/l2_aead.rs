@@ -7,11 +7,12 @@
 //! - Poly1305 provides 128-bit authentication tag integrity
 //! - Any single-bit modification to ciphertext causes authentication failure
 //!
-//! Nonce derivation (v2): 12-byte nonce = [2 bytes session_hash[0..2] | 1 byte direction | 1 byte reserved | 4 bytes counter BE]
-//!   - session_hash[0..2]: First 2 bytes of the 4-byte session hash — guarantees nonce uniqueness across sessions
-//!   - direction: 0x00 for initiator→responder, 0x01 for responder→initiator — prevents directional counter mirroring
+//! Nonce derivation: 12-byte nonce = [2 bytes session_hash[0..2] | 1 byte direction | 1 byte reserved | 8 byte counter BE]
+//!   - session_hash[0..2]: first 2 bytes of the 4-byte session hash, so nonces stay unique across sessions
+//!   - direction: 0x00 for initiator to responder, 0x01 for responder to initiator, so counters cannot mirror across directions
 //!   - reserved: 0x00 (future use)
-//!   - counter[0..4]: 4-byte monotonic packet counter (big-endian)
+//!   - counter[4..12]: 64-bit monotonic packet counter, big-endian. `nonce_from_counter_u64` fills all 8 bytes;
+//!     `nonce_from_counter` writes the low 4 bytes and leaves the high 4 zero.
 //!
 //! This ensures unique nonces even if directional counters align across different sessions
 //! under the same master key, and prevents nonce reuse after session re-keying.
@@ -77,14 +78,6 @@ pub fn nonce_from_counter(
     nonce[2] = direction as u8;
     nonce[3] = 0x00; // reserved
     nonce[4..8].copy_from_slice(&counter.to_be_bytes());
-    nonce
-}
-
-/// Legacy nonce builder — 12-byte nonce = [4 bytes counter (big-endian) | 8 zero bytes]
-/// DEPRECATED: Use `nonce_from_counter` with session_hash and direction instead.
-pub fn nonce_from_counter_legacy(counter: u32) -> [u8; 12] {
-    let mut nonce = [0u8; 12];
-    nonce[0..4].copy_from_slice(&counter.to_be_bytes());
     nonce
 }
 
@@ -617,6 +610,11 @@ mod tests {
         .is_err());
     }
 
+    // The VPN tunnel types (and `net::vpn` itself) only exist under the `vpn`
+    // feature. Without this gate the test target fails to compile under
+    // `--no-default-features --all-targets`, which is the headless/server build
+    // the release pipeline and CI both exercise.
+    #[cfg(feature = "vpn")]
     #[test]
     fn test_vpn_egress_and_receiver_open_roundtrip() {
         use crate::ghost::net::vpn::client::{open_to_tun, ClientState};

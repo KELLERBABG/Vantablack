@@ -1089,7 +1089,7 @@
       try {
         await fetch('/api/connect', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ connected: targetState })
         });
       } catch (e) {
@@ -1125,11 +1125,46 @@
       }
     }
 
+    // The daemon enforces GHOST_PIN on every mutating request and redacts the
+    // identity fields of its read endpoints without one (src/control.rs). The
+    // page used to send no X-Pin at all, so with a PIN set every button here
+    // failed and the pairing values came back null.
+    //
+    // sessionStorage, not localStorage: docs/SPECIFICATIONS.md specifies a
+    // prompt once per session, and a console PIN has no business outliving the
+    // tab it was typed in.
+    const PIN_KEY = 'ggn-console-pin';
+
+    function storedPin() {
+      return sessionStorage.getItem(PIN_KEY);
+    }
+
+    function pinHeaders(extra) {
+      const headers = Object.assign({}, extra || {});
+      const pin = storedPin();
+      if (pin) headers['X-Pin'] = pin;
+      return headers;
+    }
+
+    let pinPrompted = false;
+
     async function refreshStatus() {
       try {
-        const res = await fetch('/api/status');
+        const res = await fetch('/api/status', { headers: pinHeaders() });
         if (!res.ok) return;
         const data = await res.json();
+
+        // /api/status stays 200 without a PIN and redacts identity instead of
+        // failing (src/control.rs), so pin_required is the tell, not the status
+        // code.
+        if (data.pin_required && !pinPrompted) {
+          pinPrompted = true;
+          const pin = prompt('This node has a console PIN. Enter it to see the pairing values.');
+          if (pin) {
+            sessionStorage.setItem(PIN_KEY, pin);
+            return refreshStatus();
+          }
+        }
         nodeState = data;
 
         updateUIState(Boolean(data.connected));
@@ -1229,7 +1264,7 @@
       try {
         await fetch('/api/settings', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ low_latency: enabled, mix_batch_ms: enabled ? 1 : 20 })
         });
         const sel = document.getElementById('select-mix-batch');
@@ -1245,7 +1280,7 @@
       try {
         await fetch('/api/settings', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ mix_batch_ms: ms, low_latency: ms <= 1 })
         });
         const toggle = document.getElementById('toggle-low-latency');
@@ -1263,7 +1298,7 @@
         btn.disabled = true;
       }
       try {
-        await fetch('/api/mesh/scan', { method: 'POST' });
+        await fetch('/api/mesh/scan', { method: 'POST', headers: pinHeaders() });
         setTimeout(() => {
           if (btn) {
             btn.innerText = '🔍 Scan LAN for Nodes';
@@ -1283,7 +1318,7 @@
       try {
         await fetch('/api/mesh/config', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ scan_interval_secs: parseInt(val, 10) })
         });
       } catch (e) {
@@ -1327,7 +1362,7 @@
       try {
         await fetch('/api/peers/add', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ address: target })
         });
         input.value = '';

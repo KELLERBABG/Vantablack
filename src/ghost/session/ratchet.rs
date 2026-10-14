@@ -166,7 +166,8 @@ impl MsgChain {
         OpenPlan::Forward {
             key,
             new_chain: chain,
-            new_pos: counter + 1,
+            // The counter is peer-supplied, so a checked build must not overflow here.
+            new_pos: counter.saturating_add(1),
             cache,
         }
     }
@@ -185,9 +186,7 @@ impl MsgChain {
                     self.chain = new_chain;
                     self.pos = new_pos;
                     for (counter, key) in cache {
-                        if !self.skipped.contains_key(&counter) {
-                            self.skipped.insert(counter, key);
-                        }
+                        self.skipped.entry(counter).or_insert(key);
                     }
                 }
                 // Evict oldest if > MAX_SKIP

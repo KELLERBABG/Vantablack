@@ -51,7 +51,7 @@ fn mss_ingest_clamp_and_egress_reply_direction() {
         while let Some(pkt) = ns.poll_outgoing() {
             // Egress packets have already been reverse-NATed by nat_egress:
             // src = the real target (NAS), dst = the real client.
-            if pkt.len() > 40 && &pkt[12..16] == &NAS.0[..] && &pkt[16..20] == &CLIENT.0[..] {
+            if pkt.len() > 40 && pkt[12..16] == NAS.0[..] && pkt[16..20] == CLIENT.0[..] {
                 let flags = pkt[20 + 13];
                 if flags & 0x12 == 0x12 {
                     synack = Some(pkt);

@@ -17,7 +17,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 
 /// Maximum allowable time skew / validity window for a PoW challenge (5 minutes).
-
 pub const DEFAULT_POW_TTL_SECS: u64 = 300;
 
 /// Default baseline difficulty (12 leading zero bits ~ avg 4,096 hashes, ~1-5ms on CPU).
@@ -65,11 +64,11 @@ impl PowChallenge {
     pub fn challenge_digest(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_POW_V1_CHALLENGE");
-        hasher.update(&self.server_salt);
-        hasher.update(&self.peer_id);
-        hasher.update(&self.timestamp.to_be_bytes());
-        hasher.update(&self.ttl_secs.to_be_bytes());
-        hasher.update(&[self.difficulty]);
+        hasher.update(self.server_salt);
+        hasher.update(self.peer_id);
+        hasher.update(self.timestamp.to_be_bytes());
+        hasher.update(self.ttl_secs.to_be_bytes());
+        hasher.update([self.difficulty]);
         hasher.finalize().into()
     }
 
@@ -92,7 +91,7 @@ impl PowChallenge {
     pub fn hash_candidate(digest: &[u8; 32], nonce: u64) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(digest);
-        hasher.update(&nonce.to_be_bytes());
+        hasher.update(nonce.to_be_bytes());
         hasher.finalize().into()
     }
 
@@ -296,7 +295,6 @@ impl AntiFragileTarpit {
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
 

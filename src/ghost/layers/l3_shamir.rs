@@ -25,7 +25,7 @@ pub fn split_secret(secret: &mut [u8; 32]) -> Vec<Vec<u8>> {
 /// Split an immutable 32-byte secret slice into 3 shares using (2,3) Shamir SSS.
 pub fn split_secret_bytes(secret: &[u8; 32]) -> Vec<Vec<u8>> {
     let mut copy = *secret;
-    let shares = shamir::generate(&mut copy, 3, 2);
+    let shares = shamir::generate(&copy, 3, 2);
     // Zeroize copy
     copy.fill(0);
     shares
@@ -66,7 +66,7 @@ impl ThresholdGroupKey {
     /// Generate a 3-of-5 threshold group key set from a 32-byte group master secret.
     pub fn new_3_of_5(group_id: [u8; 16], secret: &[u8; 32]) -> Self {
         let mut copy = *secret;
-        let shares = shamir::generate(&mut copy, 5, 3);
+        let shares = shamir::generate(&copy, 5, 3);
         copy.fill(0);
         Self {
             group_id,

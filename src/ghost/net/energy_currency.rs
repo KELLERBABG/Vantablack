@@ -28,11 +28,11 @@ impl ErasureRepairProof {
     pub fn proof_id(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_ERASURE_REPAIR_PROOF_V1");
-        hasher.update(&self.input_shard_hashes[0]);
-        hasher.update(&self.input_shard_hashes[1]);
-        hasher.update(&self.repaired_shard_hash);
-        hasher.update(&self.epoch.to_be_bytes());
-        hasher.update(&self.worker_pk);
+        hasher.update(self.input_shard_hashes[0]);
+        hasher.update(self.input_shard_hashes[1]);
+        hasher.update(self.repaired_shard_hash);
+        hasher.update(self.epoch.to_be_bytes());
+        hasher.update(self.worker_pk);
         hasher.finalize().into()
     }
 
@@ -46,11 +46,11 @@ impl ErasureRepairProof {
         let worker_pk = signing_key.verifying_key().to_bytes();
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_ERASURE_REPAIR_PROOF_V1");
-        hasher.update(&input_shard_hashes[0]);
-        hasher.update(&input_shard_hashes[1]);
-        hasher.update(&repaired_shard_hash);
-        hasher.update(&epoch.to_be_bytes());
-        hasher.update(&worker_pk);
+        hasher.update(input_shard_hashes[0]);
+        hasher.update(input_shard_hashes[1]);
+        hasher.update(repaired_shard_hash);
+        hasher.update(epoch.to_be_bytes());
+        hasher.update(worker_pk);
         let digest: [u8; 32] = hasher.finalize().into();
 
         let sig = signing_key.sign(&digest);
@@ -75,11 +75,11 @@ impl ErasureRepairProof {
 
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_ERASURE_REPAIR_PROOF_V1");
-        hasher.update(&self.input_shard_hashes[0]);
-        hasher.update(&self.input_shard_hashes[1]);
-        hasher.update(&self.repaired_shard_hash);
-        hasher.update(&self.epoch.to_be_bytes());
-        hasher.update(&self.worker_pk);
+        hasher.update(self.input_shard_hashes[0]);
+        hasher.update(self.input_shard_hashes[1]);
+        hasher.update(self.repaired_shard_hash);
+        hasher.update(self.epoch.to_be_bytes());
+        hasher.update(self.worker_pk);
         let digest: [u8; 32] = hasher.finalize().into();
 
         vk.verify(&digest, &sig).is_ok()

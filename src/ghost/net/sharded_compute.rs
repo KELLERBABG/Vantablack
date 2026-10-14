@@ -36,8 +36,8 @@ impl ComputeShardOutput {
     pub fn new(job_id: u64, shard_index: u8, worker_id: String, output_data: Vec<u8>) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_COMPUTE_COMMITMENT_V1");
-        hasher.update(&job_id.to_be_bytes());
-        hasher.update(&[shard_index]);
+        hasher.update(job_id.to_be_bytes());
+        hasher.update([shard_index]);
         hasher.update(&output_data);
         let output_commitment = hasher.finalize().into();
 
@@ -71,7 +71,7 @@ impl ShardedComputeEngine {
     ) -> Vec<ComputeShardTask> {
         let mut framed = (input.len() as u16).to_be_bytes().to_vec();
         framed.extend_from_slice(input);
-        if framed.len() % 2 != 0 {
+        if !framed.len().is_multiple_of(2) {
             framed.push(0);
         }
 
@@ -193,7 +193,9 @@ mod tests {
         assert_eq!(recovered2, input_tensor);
 
         // Single worker output fails
-        assert!(ShardedComputeEngine::reconstruct_compute_output(&[out0.clone()]).is_err());
+        assert!(
+            ShardedComputeEngine::reconstruct_compute_output(std::slice::from_ref(&out0)).is_err()
+        );
     }
 
     #[test]

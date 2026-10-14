@@ -194,7 +194,7 @@ fn enc_split(
     let pay_len = pay.len() as u16;
     let mut framed = pay_len.to_be_bytes().to_vec();
     framed.extend_from_slice(pay);
-    if framed.len() % 2 != 0 {
+    if !framed.len().is_multiple_of(2) {
         framed.push(0);
     }
     encrypt_in_place_with_context(key, ctr, session_hash, direction, &mut framed);
@@ -275,12 +275,11 @@ fn dec_join_tamper_resistant(
             let b = pair_shards[1].as_ref()?;
             let mut merged = [a.as_slice(), b.as_slice()].concat();
             if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok()
+                && merged.len() >= 2
             {
-                if merged.len() >= 2 {
-                    let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
-                    if 2 + len <= merged.len() {
-                        return Some(merged[2..2 + len].to_vec());
-                    }
+                let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
+                if 2 + len <= merged.len() {
+                    return Some(merged[2..2 + len].to_vec());
                 }
             }
         }
@@ -377,7 +376,7 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
 
             // Byzantine Tampering Simulation:
             // Corrupt in-flight shard payload every 3 packets to demonstrate cryptographic tamper isolation
-            if tamper_enabled && pkt_counter % 3 == 0 && payload.len() > 10 {
+            if tamper_enabled && pkt_counter.is_multiple_of(3) && payload.len() > 10 {
                 println!("!!! [BYZANTINE ATTACK] Intercepted in-flight shard packet! Injected 4-byte corruption into encrypted payload...");
                 let p_len = payload.len();
                 payload[p_len - 1] ^= 0xFF;
@@ -446,77 +445,73 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
         let start_wait = Instant::now();
 
         while received_count < 3 && start_wait.elapsed() < Duration::from_millis(3200) {
-            match tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await
+            if let Ok(Ok((len, src))) =
+                tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await
             {
-                Ok(Ok((len, src))) => {
-                    // Check if this is a Post-Quantum Handshake PDU from Client
-                    if len >= 16 && &buf[..16] == b"GHOST_HANDSHAKE_" {
-                        if let Some(parsed_hs) = parse_handshake_pdu(&buf[..len]) {
-                            println!("[EXIT PQ-KEM] Received Post-Quantum ML-KEM-512 Handshake PDU from {}", src);
-                            let (e_x_sec, e_x_pub) = generate_x25519_keypair();
-                            if let Ok((ky_ct, ky_ss)) = kyber_encapsulate(&parsed_hs.kyber_pub) {
-                                let mut e_x_arr = [0u8; 32];
-                                e_x_arr.copy_from_slice(e_x_pub.as_bytes());
+                // Check if this is a Post-Quantum Handshake PDU from Client
+                if len >= 16 && &buf[..16] == b"GHOST_HANDSHAKE_" {
+                    if let Some(parsed_hs) = parse_handshake_pdu(&buf[..len]) {
+                        println!(
+                            "[EXIT PQ-KEM] Received Post-Quantum ML-KEM-512 Handshake PDU from {}",
+                            src
+                        );
+                        let (e_x_sec, e_x_pub) = generate_x25519_keypair();
+                        if let Ok((ky_ct, ky_ss)) = kyber_encapsulate(&parsed_hs.kyber_pub) {
+                            let mut e_x_arr = [0u8; 32];
+                            e_x_arr.copy_from_slice(e_x_pub.as_bytes());
 
-                                let resp_pdu = build_response_pdu(
-                                    &identity.public_key_bytes(),
-                                    |msg| identity.sign(msg).to_bytes(),
-                                    &e_x_arr,
-                                    &ky_ct,
-                                );
+                            let resp_pdu = build_response_pdu(
+                                &identity.public_key_bytes(),
+                                |msg| identity.sign(msg).to_bytes(),
+                                &e_x_arr,
+                                &ky_ct,
+                            );
 
-                                let exit_xs = e_x_sec.diffie_hellman(
-                                    &x25519_dalek::PublicKey::from(parsed_hs.x25519_pub),
-                                );
-                                session_key = derive_hybrid_master_key_with_psk(
-                                    exit_xs.as_bytes(),
-                                    &ky_ss,
-                                    None,
-                                );
-                                current_session_hash = compute_session_hash(&session_key);
-                                handshake_established = true;
+                            let exit_xs = e_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(
+                                parsed_hs.x25519_pub,
+                            ));
+                            session_key =
+                                derive_hybrid_master_key_with_psk(exit_xs.as_bytes(), &ky_ss, None);
+                            current_session_hash = compute_session_hash(&session_key);
+                            handshake_established = true;
 
-                                println!("[EXIT PQ-KEM] Handshake derived Master Key: {}... Session Hash: {}",
-                                    hex::encode(&session_key[..8]), hex::encode(current_session_hash));
+                            println!("[EXIT PQ-KEM] Handshake derived Master Key: {}... Session Hash: {}",
+                                hex::encode(&session_key[..8]), hex::encode(current_session_hash));
 
-                                // Reply with GHOST_RESPONSE__ directly to client
-                                let _ = socket.send_to(&resp_pdu, src).await;
-                                println!("[EXIT PQ-KEM] Dispatched Post-Quantum Response PDU to Client at {}", src);
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Shard packet format: [cycle_u64_be_8_bytes][shard_idx_1_byte][gtf_payload...]
-                    if len >= 9 {
-                        let packet_cycle = u64::from_be_bytes([
-                            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-                        ]);
-                        let shard_idx = buf[8] as usize;
-
-                        if current_cycle == 0 {
-                            current_cycle = packet_cycle;
-                        }
-
-                        if packet_cycle == current_cycle
-                            && shard_idx < 3
-                            && shards[shard_idx].is_none()
-                        {
-                            let gtf_raw = &buf[9..len];
-                            let unpadded = if gtf_raw.len() >= GTF_BASE_SIZE {
-                                let raw_payload = extract_payload(gtf_raw);
-                                unframe(raw_payload).unwrap_or_else(|| raw_payload.to_vec())
-                            } else {
-                                unframe(gtf_raw).unwrap_or_else(|| gtf_raw.to_vec())
-                            };
-                            shards[shard_idx] = Some(unpadded);
-                            received_count += 1;
-                            println!("[EXIT] Cycle #{}: Received Multi-Hop Shard #{} ({} bytes GTF wire frame) from {}",
-                                current_cycle, shard_idx, len - 9, src);
+                            // Reply with GHOST_RESPONSE__ directly to client
+                            let _ = socket.send_to(&resp_pdu, src).await;
+                            println!("[EXIT PQ-KEM] Dispatched Post-Quantum Response PDU to Client at {}", src);
+                            continue;
                         }
                     }
                 }
-                _ => {}
+
+                // Shard packet format: [cycle_u64_be_8_bytes][shard_idx_1_byte][gtf_payload...]
+                if len >= 9 {
+                    let packet_cycle = u64::from_be_bytes([
+                        buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+                    ]);
+                    let shard_idx = buf[8] as usize;
+
+                    if current_cycle == 0 {
+                        current_cycle = packet_cycle;
+                    }
+
+                    if packet_cycle == current_cycle && shard_idx < 3 && shards[shard_idx].is_none()
+                    {
+                        let gtf_raw = &buf[9..len];
+                        let unpadded = if gtf_raw.len() >= GTF_BASE_SIZE {
+                            let raw_payload = extract_payload(gtf_raw);
+                            unframe(raw_payload).unwrap_or_else(|| raw_payload.to_vec())
+                        } else {
+                            unframe(gtf_raw).unwrap_or_else(|| gtf_raw.to_vec())
+                        };
+                        shards[shard_idx] = Some(unpadded);
+                        received_count += 1;
+                        println!("[EXIT] Cycle #{}: Received Multi-Hop Shard #{} ({} bytes GTF wire frame) from {}",
+                            current_cycle, shard_idx, len - 9, src);
+                    }
+                }
             }
         }
 
@@ -845,7 +840,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                         }
                         _ => return,
                     };
-                    let _ = stream.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 04, 56]).await;
+                    let _ = stream.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 4, 56]).await;
                     if let Ok(out) = TcpStream::connect(&dest).await {
                         let (mut ri, mut wi) = stream.into_split();
                         let (mut ro, mut wo) = out.into_split();
@@ -1091,7 +1086,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
 
         // Scenario 2: Active Replay Attack Injection
         // Every 4 cycles, launch a rogue clone of Shard 0 with a stale counter to verify Exit drops it
-        if cycle % 4 == 0 {
+        if cycle.is_multiple_of(4) {
             println!(">>> [ATTACK SIMULATOR] Injecting DUPLICATE REPLAY SHARD with stale counter to test L6 Anti-Replay Guard...");
             let _ = socket.send_to(&pkt_0, "172.28.1.11:8000").await;
             replay_status_str = format!(
@@ -1108,38 +1103,34 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         let wait_return = Instant::now();
 
         while rx_count < 3 && wait_return.elapsed() < Duration::from_millis(3500) {
-            match tokio::time::timeout(Duration::from_millis(600), socket.recv_from(&mut rx_buf))
-                .await
+            if let Ok(Ok((len, from))) =
+                tokio::time::timeout(Duration::from_millis(600), socket.recv_from(&mut rx_buf))
+                    .await
             {
-                Ok(Ok((len, from))) => {
-                    if len >= 9 {
-                        let packet_cycle = u64::from_be_bytes([
-                            rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3], rx_buf[4], rx_buf[5],
-                            rx_buf[6], rx_buf[7],
-                        ]);
-                        let shard_idx = rx_buf[8] as usize;
+                if len >= 9 {
+                    let packet_cycle = u64::from_be_bytes([
+                        rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3], rx_buf[4], rx_buf[5],
+                        rx_buf[6], rx_buf[7],
+                    ]);
+                    let shard_idx = rx_buf[8] as usize;
 
-                        if packet_cycle == cycle
-                            && shard_idx < 3
-                            && return_shards[shard_idx].is_none()
-                        {
-                            let shard_rtt = dispatch_start.elapsed().as_millis() as u64;
-                            let gtf_return = &rx_buf[9..len];
-                            let unpadded = if gtf_return.len() >= GTF_BASE_SIZE {
-                                let raw_payload = extract_payload(gtf_return);
-                                unframe(raw_payload).unwrap_or_else(|| raw_payload.to_vec())
-                            } else {
-                                unframe(gtf_return).unwrap_or_else(|| gtf_return.to_vec())
-                            };
-                            return_shards[shard_idx] = Some(unpadded);
-                            rtts[shard_idx] = shard_rtt;
-                            rx_count += 1;
-                            println!("[CLIENT] Arrived: Return Shard #{} from {} (Multi-Hop Kernel RTT: {} ms, GTF {} bytes)",
-                                shard_idx, from, shard_rtt, gtf_return.len());
-                        }
+                    if packet_cycle == cycle && shard_idx < 3 && return_shards[shard_idx].is_none()
+                    {
+                        let shard_rtt = dispatch_start.elapsed().as_millis() as u64;
+                        let gtf_return = &rx_buf[9..len];
+                        let unpadded = if gtf_return.len() >= GTF_BASE_SIZE {
+                            let raw_payload = extract_payload(gtf_return);
+                            unframe(raw_payload).unwrap_or_else(|| raw_payload.to_vec())
+                        } else {
+                            unframe(gtf_return).unwrap_or_else(|| gtf_return.to_vec())
+                        };
+                        return_shards[shard_idx] = Some(unpadded);
+                        rtts[shard_idx] = shard_rtt;
+                        rx_count += 1;
+                        println!("[CLIENT] Arrived: Return Shard #{} from {} (Multi-Hop Kernel RTT: {} ms, GTF {} bytes)",
+                            shard_idx, from, shard_rtt, gtf_return.len());
                     }
                 }
-                _ => {}
             }
         }
 
@@ -1180,7 +1171,8 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                     lines.push(line.to_string());
                 }
                 if corrupted_idx.is_some() {
-                    format!("TAMPER_ISOLATED: Shard corrupted & rejected, payload successfully recovered")
+                    "TAMPER_ISOLATED: Shard corrupted & rejected, payload successfully recovered"
+                        .to_string()
                 } else {
                     format!("SUCCESS: Reconstructed payload with {}/3 shards", rx_count)
                 }

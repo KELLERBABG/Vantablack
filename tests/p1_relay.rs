@@ -444,11 +444,12 @@ fn skywave_is_the_last_rung_of_the_fallback_ladder() {
     );
 
     // 2. TURN outranks skywave, and skywave never substitutes for it.
-    let turn = Some(addr("198.51.100.9:49152"));
+    let turn_addr = addr("198.51.100.9:49152");
+    let turn = Some(turn_addr);
     assert_eq!(
         fallback::choose_fallback_with_skywave("alice", "bob", &[], turn, Some(5350)),
         Some(FallbackPath::Turn {
-            peer_relayed: turn.unwrap()
+            peer_relayed: turn_addr
         }),
         "TURN outranks the skywave rung"
     );

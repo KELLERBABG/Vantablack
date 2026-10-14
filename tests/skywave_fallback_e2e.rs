@@ -58,12 +58,21 @@ const RELAY_FALLBACK_LOG: &str = "falling back to a relay";
 
 // ── process harness ─────────────────────────────────────────────────────
 
-/// Locate the vantablack binary compiled by cargo.
+/// Locate the node binary compiled by cargo.
+///
+/// The product binary is `ggn`, and cargo only exports `CARGO_BIN_EXE_<name>`
+/// for a test when a target with that name exists, so the fallback list has to
+/// name the shipped target. `vantablack` is kept in it because the Debian and
+/// AUR packages expose the same binary under that name.
 fn find_binary() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_vantablack") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_ggn") {
         return PathBuf::from(path);
     }
     for candidate in [
+        "target/debug/ggn.exe",
+        "target/debug/ggn",
+        "target/release/ggn.exe",
+        "target/release/ggn",
         "target/debug/vantablack.exe",
         "target/debug/vantablack",
         "target/release/vantablack.exe",
@@ -74,7 +83,7 @@ fn find_binary() -> PathBuf {
             return path;
         }
     }
-    panic!("could not locate the vantablack binary — build it before running tests");
+    panic!("could not locate the node binary (ggn) — build it before running tests");
 }
 
 fn free_tcp_port() -> u16 {

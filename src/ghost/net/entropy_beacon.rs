@@ -73,10 +73,10 @@ impl EntropyBeaconCommons {
 
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_ENTROPY_BEACON_COMMONS_V1");
-        hasher.update(&round.to_be_bytes());
+        hasher.update(round.to_be_bytes());
         for s in &sorted_shares {
-            hasher.update(&s.contributor_id);
-            hasher.update(&s.entropy_bytes);
+            hasher.update(s.contributor_id);
+            hasher.update(s.entropy_bytes);
         }
         let beacon_digest: [u8; 32] = hasher.finalize().into();
 

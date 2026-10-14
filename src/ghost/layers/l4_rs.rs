@@ -21,7 +21,7 @@ pub fn encode(data: &mut Vec<u8>) -> Vec<Vec<u8>> {
         return vec![vec![], vec![], vec![]];
     }
 
-    if data.len() % 2 != 0 {
+    if !data.len().is_multiple_of(2) {
         data.push(0);
     }
 
@@ -45,7 +45,7 @@ pub fn encode_parity_slice(d0: &[u8], d1: &[u8], parity_out: &mut [u8]) {
 
 /// Reconstruct missing shards from at least 2 available shards.
 /// `shards` is a slice of 3 Option<Vec<u8>>, where None = missing shard.
-pub fn reconstruct(shards: &mut Vec<Option<Vec<u8>>>) -> Result<(), reed_solomon_erasure::Error> {
+pub fn reconstruct(shards: &mut [Option<Vec<u8>>]) -> Result<(), reed_solomon_erasure::Error> {
     if shards.len() != 3 {
         return Err(reed_solomon_erasure::Error::TooFewShardsPresent);
     }

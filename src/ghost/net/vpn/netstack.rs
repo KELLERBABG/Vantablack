@@ -116,6 +116,12 @@ pub struct Done {
     cv: Condvar,
 }
 
+impl Default for Done {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Done {
     pub fn new() -> Self {
         Self {
@@ -314,7 +320,7 @@ fn driver_loop(
             else {
                 continue;
             };
-            if !flows.contains_key(&local_port) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = flows.entry(local_port) {
                 if !is_syn {
                     continue; // mid-flow packet for an unknown tuple
                 }
@@ -329,26 +335,23 @@ fn driver_loop(
                 let (stack_out_tx, stack_out_rx) = mpsc::sync_channel::<Vec<u8>>(FLOW_QUEUE);
                 let headroom = Arc::new(Headroom::new(1.0));
                 let done = Arc::new(Done::new());
-                flows.insert(
-                    local_port,
-                    Flow {
-                        handle: h,
-                        tuple,
-                        lan_in_rx,
-                        lan_in_tx,
-                        stack_out_tx,
-                        stack_out_rx: Some(stack_out_rx),
-                        headroom: Arc::clone(&headroom),
-                        done: Arc::clone(&done),
-                        spawned: false,
-                        paused: false,
-                        last_activity: Instant::now(),
-                        bytes_c2s: 0,
-                        bytes_s2c: 0,
-                        c2s_pending: VecDeque::new(),
-                        s2c_pending: VecDeque::new(),
-                    },
-                );
+                entry.insert(Flow {
+                    handle: h,
+                    tuple,
+                    lan_in_rx,
+                    lan_in_tx,
+                    stack_out_tx,
+                    stack_out_rx: Some(stack_out_rx),
+                    headroom: Arc::clone(&headroom),
+                    done: Arc::clone(&done),
+                    spawned: false,
+                    paused: false,
+                    last_activity: Instant::now(),
+                    bytes_c2s: 0,
+                    bytes_s2c: 0,
+                    c2s_pending: VecDeque::new(),
+                    s2c_pending: VecDeque::new(),
+                });
                 reverse.lock().insert(local_port, tuple);
                 stats.tcp_flows.store(flows.len() as u64, Ordering::Relaxed);
             }
@@ -501,8 +504,9 @@ fn driver_loop(
         let delay = iface.poll_delay(ts2, &sockets);
         let sleep_for = match delay {
             Some(d) if d.total_millis() == 0 => Duration::ZERO,
-            Some(d) => Duration::from_millis(d.total_millis() as u64)
-                .min(Duration::from_millis(POLL_CAP_MS)),
+            Some(d) => {
+                Duration::from_millis(d.total_millis()).min(Duration::from_millis(POLL_CAP_MS))
+            }
             None => Duration::from_millis(POLL_CAP_MS),
         };
         if sleep_for.is_zero() {
@@ -549,14 +553,13 @@ fn bind_and_connect(
                 socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
             {
                 let _ = sock.set_reuse_address(true);
-                if sock.bind(&socket2::SockAddr::from(egress_addr)).is_ok() {
-                    if sock
+                if sock.bind(&socket2::SockAddr::from(egress_addr)).is_ok()
+                    && sock
                         .connect_timeout(&socket2::SockAddr::from(target), Duration::from_secs(10))
                         .is_ok()
-                    {
-                        let stream: TcpStream = sock.into();
-                        return Ok(stream);
-                    }
+                {
+                    let stream: TcpStream = sock.into();
+                    return Ok(stream);
                 }
             }
         }

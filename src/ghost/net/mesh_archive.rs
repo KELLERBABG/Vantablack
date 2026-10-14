@@ -26,7 +26,7 @@ impl ArchivalRecord {
 
         let mut framed = (content.len() as u16).to_be_bytes().to_vec();
         framed.extend_from_slice(content);
-        if framed.len() % 2 != 0 {
+        if !framed.len().is_multiple_of(2) {
             framed.push(0);
         }
 

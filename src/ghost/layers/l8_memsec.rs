@@ -430,10 +430,10 @@ impl DopplerShiftSimulator {
         let _expected_errors = (total_bits as f64 * error_rate) as usize;
         let mut errors = 0;
 
-        for i in 0..data.len() {
+        for (i, byte) in data.iter_mut().enumerate() {
             // Flip some bits based on the shift
             if (i as f64 * error_rate).fract() < error_rate {
-                data[i] ^= 0x01;
+                *byte ^= 0x01;
                 errors += 1;
             }
         }
@@ -444,9 +444,9 @@ impl DopplerShiftSimulator {
     pub fn apply_plasma_wake(&self, data: &mut [u8]) -> usize {
         let wake_length = (data.len() / 10).max(1); // First 10% of packet
         let mut errors = 0;
-        for i in 0..wake_length {
+        for (i, byte) in data.iter_mut().take(wake_length).enumerate() {
             if i % 2 == 0 {
-                data[i] ^= 0xFF;
+                *byte ^= 0xFF;
                 errors += 8;
             }
         }
@@ -506,8 +506,8 @@ impl HardwareRootedIdentity {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         for m in measurements {
-            hasher.update(&m.pcr_index.to_be_bytes());
-            hasher.update(&m.digest);
+            hasher.update(m.pcr_index.to_be_bytes());
+            hasher.update(m.digest);
         }
         hasher.finalize().into()
     }

@@ -148,7 +148,7 @@ pub fn seal_message(
 ) -> Vec<SealedShard> {
     let mut framed = (plaintext.len() as u16).to_be_bytes().to_vec();
     framed.extend_from_slice(plaintext);
-    if framed.len() % 2 != 0 {
+    if !framed.len().is_multiple_of(2) {
         framed.push(0);
     }
     let shards = l4_rs::encode(&mut framed);
@@ -265,10 +265,11 @@ impl TemporalShardScheduler {
     ) -> Vec<Option<SealedShard>> {
         let mut captured = vec![None, None, None];
         for s in scheduled {
-            if s.delay_ms >= window_start_ms && s.delay_ms <= window_end_ms {
-                if (s.shard.index as usize) < 3 {
-                    captured[s.shard.index as usize] = Some(s.shard.clone());
-                }
+            if s.delay_ms >= window_start_ms
+                && s.delay_ms <= window_end_ms
+                && (s.shard.index as usize) < 3
+            {
+                captured[s.shard.index as usize] = Some(s.shard.clone());
             }
         }
         captured
@@ -311,7 +312,7 @@ impl SpatioTemporalErosionCodec {
     ) -> Vec<SpaceTimeShard> {
         let mut framed = (plaintext.len() as u16).to_be_bytes().to_vec();
         framed.extend_from_slice(plaintext);
-        if framed.len() % 2 != 0 {
+        if !framed.len().is_multiple_of(2) {
             framed.push(0);
         }
         let shards = l4_rs::encode(&mut framed);
@@ -385,7 +386,6 @@ impl SpatioTemporalErosionCodec {
 }
 
 #[cfg(test)]
-
 mod tests {
 
     use super::*;

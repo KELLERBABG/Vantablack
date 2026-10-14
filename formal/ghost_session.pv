@@ -1,76 +1,137 @@
 (*
-   GGN Session & Replay-Guard Model (ProVerif Specification)
+   Vantablack session agreement, adversarial model (ProVerif)
 
-   This is a formal symbolic model of the Vantablack session protocol:
-   1. Hybrid Key Agreement: Post-quantum (ML-KEM) + Classical (X25519) + Mutual Ed25519 identity.
-   2. Ratchet Step: Authenticated rekey transition with epoch confirmation.
-   3. Injective Replay Guard: Monotonic counter binding preventing replay attacks.
-   4. Secrecy: attacker cannot learn attacker_secret under active network attacker.
+   What this file models, and only this:
+
+   1. Two roles, A (initiator) and B (responder), each replicated. Each has a
+      long-term signing key and a post-quantum keypair, and each generates a
+      classical ephemeral secret and a post-quantum ephemeral secret.
+   2. The public keys travel on the untrusted channel, so the adversary chooses
+      what each role believes the peer's keys are.
+   3. The message key is the combination of one classical Diffie-Hellman result
+      and one KEM encapsulation result, the hybrid construction: a break of one
+      family alone is not modelled as sufficient.
+   4. B accepts a message only after A's signature over the transcript
+      verifies. A substituted transcript fails that check, which is the
+      downgrade guard the Rust implementation enforces by requiring both halves
+      of the hybrid signature to verify and refusing either half alone.
+   5. The message counter is public on the wire and bound into the signature
+      over the transcript.
+   6. An active Dolev-Yao attacker. Everything on `c` belongs to the adversary.
+      Nothing else does.
+
+   What this file does NOT model is listed in formal/README.md. Keep the two in
+   step: a claim that is not a query here was not checked by the prover.
 *)
 
 free c: channel.
 
 type skey.
 type pkey.
+type pqsk.
+type pqpk.
 type sig.
-type epoch.
 
 fun pk(skey): pkey.
 fun sign(bitstring, skey): sig.
-reduc forall m:bitstring, s:skey; verify(m, sign(m,s), pk(s)) = m.
+reduc forall m: bitstring, s: skey; verify(sign(m, s), pk(s)) = m.
+
+fun pkpq(pqsk): pqpk.
 
 fun dh(bitstring, bitstring): bitstring.
-fun pq(bitstring, bitstring): bitstring.
-fun hmaster(bitstring, bitstring): skey.
-fun nextkey(skey, bitstring, epoch): skey.
-fun confirm(skey, epoch): bitstring.
+
+(* The KEM: the sender encapsulates under the receiver's public key, and
+   knowing the ciphertext and the public key is not enough for the secret. *)
+fun encaps_pq(pqpk, bitstring): bitstring.
+reduc forall sk: pqsk, r: bitstring; decaps_pq(sk, encaps_pq(pkpq(sk), r)) = r.
+
+fun hcat(bitstring, bitstring): bitstring.
+fun kdf(bitstring): skey.
+
 fun senc(bitstring, skey): bitstring.
-reduc forall m:bitstring, k:skey; sdec(senc(m,k), k) = m.
+reduc forall m: bitstring, k: skey; sdec(senc(m, k), k) = m.
 
-free attacker_secret: bitstring [private].
-free alice_classical: skey [private].
-free bob_classical: skey [private].
-free alice_pq: bitstring [private].
-free bob_pq: bitstring [private].
+(* The base point of the classical group. *)
+free g: bitstring.
 
-event established(pkey, pkey).
-event rotated(pkey, pkey, epoch).
-event sent_counter(pkey, pkey, skey, bitstring).
-event recv_counter(pkey, pkey, skey, bitstring).
+(* What the adversary tries to learn. Both start private, so every derivation
+   has to pass through a message on `c`. *)
+free payload: bitstring [private].
+free session_key: skey [private].
 
-(* Secrecy Query *)
-query attacker(attacker_secret).
+event init_started(pkey).
+event sent_counter(pkey, bitstring).
+event recv_counter(pkey, bitstring).
+event agreement(pkey, pkey).
+(* The responder's start now carries the material it authenticated, so the
+   agreement query below is not vacuous: a responder that started with an
+   attacker's key is a different event from one that started with the key the
+   initiator signed. *)
+event resp_started(pkey, pkey).
 
-(* Anti-Replay Injective Agreement Query *)
-query a:pkey, b:pkey, k:skey, ctr:bitstring;
-  inj-event(recv_counter(a, b, k, ctr)) ==> inj-event(sent_counter(a, b, k, ctr)).
+query attacker(payload).
+query attacker(session_key).
+
+(* Agreement: the initiator accepts only for a session a responder started with
+   the very key the initiator signed. *)
+query a: pkey, b: pkey;
+  inj-event(agreement(a, b)) ==> inj-event(resp_started(a, b)).
+
+(* Replay: every counter the responder accepts was emitted by the initiator.
+   The counter is peer-controlled input, so this is what the sliding window
+   defends. *)
+query a: pkey, cnt: bitstring;
+  inj-event(recv_counter(a, cnt)) ==> inj-event(sent_counter(a, cnt)).
+
+let initiator =
+  new skA: skey;
+  new skPQa: pqsk;
+  new ra: bitstring;
+  new pq_eph_a: bitstring;
+  event init_started(pk(skA));
+  let ga = dh(ra, g) in
+  let pq_pub_a = pkpq(skPQa) in
+  out(c, pk(skA));
+  out(c, ga);
+  out(c, pq_pub_a);
+  out(c, sign((pk(skA), ga, pq_pub_a), skA));
+  in(c, pk_b: pkey);
+  in(c, gb: bitstring);
+  in(c, pq_pub_b: pqpk);
+  let klass_a = dh(ra, gb) in
+  let pq_secret_a = decaps_pq(skPQa, encaps_pq(pq_pub_b, pq_eph_a)) in
+  let k_a = kdf(hcat(klass_a, pq_secret_a)) in
+  new cnt_a: bitstring;
+  event sent_counter(pk(skA), cnt_a);
+  out(c, senc((cnt_a, payload), k_a));
+  in(c, ack_b: sig);
+  let ack = verify(ack_b, pk_b) in
+  if ack = (pk(skA), pk_b, ga, gb, cnt_a) then
+  event agreement(pk(skA), pk_b).
+
+let responder =
+  new skB: skey;
+  new skPQb: pqsk;
+  new rb: bitstring;
+  new pq_eph_b: bitstring;
+  let gb = dh(rb, g) in
+  out(c, pk(skB));
+  out(c, gb);
+  out(c, encaps_pq(pkpq(skPQb), pq_eph_b));
+  in(c, pk_a: pkey);
+  in(c, ga: bitstring);
+  in(c, pq_pub_a: pqpk);
+  in(c, commit_a: sig);
+  let commit = verify(commit_a, pk_a) in
+  if commit = (pk_a, ga, pq_pub_a) then
+  event resp_started(pk_a, pk(skB));
+  let klass_b = dh(rb, ga) in
+  let pq_secret_b = decaps_pq(skPQb, encaps_pq(pq_pub_a, pq_eph_b)) in
+  let k_b = kdf(hcat(klass_b, pq_secret_b)) in
+  in(c, msg_a: bitstring);
+  let (cnt_b: bitstring, pt_b: bitstring) = sdec(msg_a, k_b) in
+  event recv_counter(pk_a, cnt_b);
+  out(c, sign((pk_a, pk(skB), ga, gb, cnt_b), skB)).
 
 process
-  new x: bitstring;
-  new y: bitstring;
-  let classical = dh(x, y) in
-  let post_quantum = pq(alice_pq, bob_pq) in
-  let master = hmaster(classical, post_quantum) in
-  let material = (x, y, alice_pq, bob_pq) in
-  let sa = sign(material, alice_classical) in
-  let sb = sign(material, bob_classical) in
-  if verify(material, sa, pk(alice_classical)) = material then
-  if verify(material, sb, pk(bob_classical)) = material then
-  event established(pk(alice_classical), pk(bob_classical));
-  new e: epoch;
-  let candidate = nextkey(master, dh(x, y), e) in
-  let tag = confirm(candidate, e) in
-  let rmaterial = (x, y, e, tag) in
-  if verify(rmaterial, sign(rmaterial, bob_classical), pk(bob_classical)) = rmaterial then
-  event rotated(pk(bob_classical), pk(bob_classical), e);
-
-  (* Anti-replay packet transmission *)
-  new counter_seq: bitstring;
-  event sent_counter(pk(alice_classical), pk(bob_classical), candidate, counter_seq);
-  let wire_pkt = senc((attacker_secret, counter_seq), candidate) in
-  out(c, wire_pkt);
-
-  (* Receiver verification *)
-  in(c, rx_pkt: bitstring);
-  let (rx_secret: bitstring, rx_seq: bitstring) = sdec(rx_pkt, candidate) in
-  event recv_counter(pk(alice_classical), pk(bob_classical), candidate, rx_seq)
+  ((!initiator) | (!responder))

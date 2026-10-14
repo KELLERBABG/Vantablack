@@ -52,7 +52,7 @@ const MAX_ITERATIONS: usize = 10;
 /// For this implementation, P is constructed as a dual-diagonal matrix
 /// (IRA - Irregular Repeat-Accumulate pattern) which enables linear-time
 /// encoding and efficient belief propagation decoding.
-
+///
 /// LDPC encoder/decoder for forward error correction.
 #[derive(Clone)]
 pub struct LdpcCodec {
@@ -158,11 +158,11 @@ impl LdpcCodec {
         // For AWGN channel with BPSK modulation: LLR = 2r/σ²
         // We approximate with ±5.0 for hard-decision inputs
         let mut llr = vec![0.0f64; LDPC_BLOCK_BITS];
-        for i in 0..LDPC_BLOCK_BITS {
+        for (i, value) in llr.iter_mut().enumerate() {
             let byte_idx = i / 8;
             let bit_idx = 7 - (i % 8);
             let bit = (block[byte_idx] >> bit_idx) & 1;
-            llr[i] = if bit == 0 { 5.0 } else { -5.0 };
+            *value = if bit == 0 { 5.0 } else { -5.0 };
         }
 
         // Belief propagation decoding
@@ -194,9 +194,9 @@ impl LdpcCodec {
         // Parity equation j: parity_j = \sum_{i: j \in parity_cols[i]} data_i
         // That is: parity_j ^ (\sum_{i: j \in parity_cols[i]} data_i) = 0
         let mut check_vars: Vec<Vec<usize>> = vec![Vec::new(); m];
-        for j in 0..m {
+        for (j, vars) in check_vars.iter_mut().enumerate() {
             // Parity bit j is variable node LDPC_DATA_BITS + j
-            check_vars[j].push(LDPC_DATA_BITS + j);
+            vars.push(LDPC_DATA_BITS + j);
         }
         for (i, cols) in self.parity_cols.iter().enumerate() {
             for &j in cols {
@@ -449,7 +449,7 @@ impl SelfTuningConcatenatedCode {
                 Some(out)
             }
             CodingScheme::ConcatenatedLdpcRs => {
-                let shard_len = (original_len + 1) / 2;
+                let shard_len = original_len.div_ceil(2);
                 // Step 1: LDPC Inner decode to fix bit errors in each received shard
                 let mut rs_shards: Vec<Option<Vec<u8>>> = Vec::new();
                 for shard_opt in received_shards {
@@ -505,7 +505,7 @@ mod tests {
 
         let encoded = codec.encode_packet(original);
         // Verify encoded data has the correct length (original / 64 * 128, rounded up)
-        let expected_encoded_len = ((original.len() + 63) / 64) * 128;
+        let expected_encoded_len = original.len().div_ceil(64) * 128;
         assert_eq!(encoded.len(), expected_encoded_len);
 
         let decoded = codec.decode_packet(&encoded);

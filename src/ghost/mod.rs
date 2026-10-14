@@ -30,7 +30,7 @@ use std::time::Instant;
 use dashmap::DashMap;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use net::routing::ContactPlan;
 use net::{FlowController, ThroughputStats};
@@ -79,8 +79,11 @@ pub struct GhostNode {
 }
 
 impl GhostNode {
-    /// Create a new GhostNet node — loads or generates an Ed25519 identity,
-    /// binds a UDP socket, and spawns 4 packet-processing worker tasks.
+    /// Create a new GhostNet node: loads or generates an Ed25519 identity, binds
+    /// a UDP socket, and spawns 4 packet-processing worker tasks.
+    ///
+    /// Test-only. A production build assembles the node by hand in src/main.rs and
+    /// never calls this or `dispatch_packet`; `tests/simulation.rs` is the only caller.
     pub async fn new(bind_addr: &str) -> anyhow::Result<Self> {
         let socket = UdpSocket::bind(bind_addr).await?;
         let local_addr = socket.local_addr()?.to_string();
@@ -96,91 +99,42 @@ impl GhostNode {
         let sessions_clone = Arc::clone(&sessions);
         let stats_clone = Arc::clone(&stats);
 
+        // Test-only worker path (see `new`): no production build routes packets
+        // through here, and the daemon opens v1 frames in src/main.rs instead.
         for i in 0..WORKER_THREADS {
             let (tx, mut rx) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
             let sessions = Arc::clone(&sessions_clone);
             let stats = Arc::clone(&stats_clone);
-            let identity = layers::l0_identity::GhostIdentity::generate_fresh();
 
             tokio::spawn(async move {
-                let worker_fp = identity.fingerprint();
-
                 while let Some((packet, src_addr)) = rx.recv().await {
                     stats.packets_recv.fetch_add(1, Ordering::Relaxed);
                     stats
                         .bytes_recv
                         .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
-                    // The wire counter is 64-bit in GTF v2; the v1 4-byte read is
-                    // still here for legacy frames, and the guard takes the wider
-                    // of the two so a v1 frame cannot alias a v2 counter.
-                    let counter = net::parse_packet_counter_u64(&packet);
-                    let shard_index = packet[net::OFFSET_SHARD_INDEX] as usize;
-                    if shard_index > 2 {
+                    // A frame too short to carry the header cannot be a data
+                    // frame, and indexing it would panic on a peer's datagram.
+                    if packet.len() <= net::OFFSET_SHARD_INDEX {
+                        stats.drops.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
 
-                    let payload = net::extract_payload(&packet).to_vec();
-
-                    // Dispatch based on counter:
-                    // 0 = handshake, 1 = handshake response, 2+ = data
+                    let counter = net::parse_packet_counter_u64(&packet);
                     if counter == 0 || counter == 1 {
                         debug!("Worker {}: handshake packet from {}", i, src_addr);
-                    } else {
-                        // Data packet — find the session
-                        let session_hash = net::parse_session_hash(&packet);
-                        let hash_key = hex::encode(session_hash);
+                        continue;
+                    }
 
-                        // Try to find session by hash prefix
-                        let mut found = false;
-                        for entry in sessions.iter() {
-                            let s_hash =
-                                hex::encode(&entry.session_hash[..4.min(entry.session_hash.len())]);
-                            if s_hash == hash_key {
-                                // Decrypt payload BEFORE updating the replay guard.
-                                // The guard's v_max must never advance on an
-                                // unauthenticated counter (cleartext header), or a
-                                // single forged frame can poison the window.
-                                let key = entry.master_key;
-                                let mut msg = payload.clone();
-                                let plaintext = match layers::l2_aead::decrypt_in_place(
-                                    &key,
-                                    counter as u32,
-                                    &mut msg,
-                                ) {
-                                    Ok(p) => p,
-                                    Err(_) => {
-                                        stats.drops.fetch_add(1, Ordering::Relaxed);
-                                        break;
-                                    }
-                                };
-
-                                // Only after successful AEAD verification do we
-                                // commit the counter to the replay window.
-                                if !entry.check_inbound(counter) {
-                                    warn!(
-                                        "Worker {}: replay rejected counter={} from {}",
-                                        i, counter, src_addr
-                                    );
-                                    stats.drops.fetch_add(1, Ordering::Relaxed);
-                                    break;
-                                }
-
-                                // Display plaintext if UTF-8.
-                                if let Ok(text) = std::str::from_utf8(plaintext) {
-                                    let text = text.trim_end_matches('\0');
-                                    info!("[{}] {}: {}", worker_fp, entry.peer_fingerprint, text);
-                                }
-                                found = true;
-                                break;
+                    match decode_data_frame(&sessions, &packet, &stats) {
+                        Some(plaintext) => {
+                            if let Ok(text) = std::str::from_utf8(&plaintext) {
+                                let text = text.trim_end_matches('\0');
+                                info!("Worker {}: {}: {}", i, src_addr, text);
                             }
                         }
-
-                        if !found {
-                            debug!(
-                                "Worker {}: no session for hash {} from {}",
-                                i, hash_key, src_addr
-                            );
+                        None => {
+                            debug!("Worker {}: data frame from {} dropped", i, src_addr);
                         }
                     }
                 }
@@ -232,5 +186,240 @@ impl GhostNode {
     /// Graceful shutdown signal.
     pub fn shutdown(&self) {
         self.running.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Open one data frame against the session whose hash it carries, exactly as the
+/// test-only worker path does.
+///
+/// Returns the plaintext and commits the counter to the replay window on
+/// success, or `None` after recording a drop. Kept separate from the worker loop
+/// so the open path can be tested without a spawned task.
+///
+/// The shape of the open is the daemon's, not an invention: the 12-byte wire
+/// nonce travels in the header, the 64-byte jitter tail is the AEAD associated
+/// data, and the ciphertext plus tag is the unit that authenticates. Only the
+/// epoch-key lookup differs (`src/main.rs` asks the ratchet; this path holds one
+/// seed key). No production build reaches this function.
+pub(crate) fn decode_data_frame(
+    sessions: &DashMap<String, Session>,
+    packet: &[u8],
+    stats: &ThroughputStats,
+) -> Option<Vec<u8>> {
+    if packet.len() <= net::OFFSET_SHARD_INDEX {
+        stats.drops.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+    if packet[net::OFFSET_SHARD_INDEX] as usize > 2 {
+        stats.drops.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
+
+    let counter = net::parse_packet_counter_u64(packet);
+    let v2 = net::parse_gtf_v2_header(packet).ok_or_else(|| {
+        stats.drops.fetch_add(1, Ordering::Relaxed);
+    });
+    let Ok(header) = v2 else {
+        return None;
+    };
+
+    let session_hash = net::parse_session_hash(packet);
+    let hash_key = hex::encode(session_hash);
+    // Everything after the header up to the tag, plus the tag itself, is what
+    // the sealer authenticated. The tail is left out: it is the AAD.
+    let mut sealed = net::extract_payload(packet).to_vec();
+    let tag = net::extract_auth_tag(packet);
+    let Ok(tag) = <[u8; 16]>::try_from(tag) else {
+        stats.drops.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    sealed.extend_from_slice(&tag);
+
+    for entry in sessions.iter() {
+        let s_hash = hex::encode(&entry.session_hash[..4.min(entry.session_hash.len())]);
+        if s_hash != hash_key {
+            continue;
+        }
+
+        // Decrypt before touching the guard. The guard's `v_max` must never
+        // advance on an unauthenticated cleartext counter, or one forged frame
+        // poisons the window.
+        let ours = entry.role.seal_direction();
+        let aad: &[u8] = if header.bulk { &[] } else { &header.tail };
+        let mut decrypted = None;
+        for dir in [ours.peer_direction(), ours] {
+            let mut msg = sealed.clone();
+            if layers::l2_aead::xchacha_open_with_aad(
+                &entry.master_key,
+                &header.nonce,
+                header.epoch,
+                dir,
+                &mut msg,
+                aad,
+            )
+            .is_ok()
+            {
+                decrypted = Some(msg);
+                break;
+            }
+        }
+        let Some(plain) = decrypted else {
+            stats.drops.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        // The payload region is zero-padded to its fixed width, so the open
+        // returns padding after the shard. The length prefix is what separates
+        // the two; without this an empty body would read back as 458 zeros.
+        let Some(framed) = net::unframe(&plain) else {
+            stats.drops.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+
+        if !entry.check_inbound(counter) {
+            stats.drops.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        return Some(framed);
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ghost::layers::l2_aead::{self, NonceDirection};
+    use crate::ghost::net::{self, GtfV2Header};
+
+    /// The sealed region is the whole payload area: `decode_data_frame` reads
+    /// `extract_payload` plus the tag as one buffer, and the tag covers every
+    /// byte the builder wrote. A body smaller than the region therefore leaves
+    /// padding inside the tag's scope and the frame will not open, which is a
+    /// property of the fixed-width privacy frame rather than of this test.
+    const BODY_LEN: usize = net::V2_MAX_PAYLOAD_LEN - 2;
+
+    fn body(tag: &str) -> Vec<u8> {
+        let mut b = vec![0u8; BODY_LEN];
+        b[..tag.len()].copy_from_slice(tag.as_bytes());
+        b
+    }
+
+    fn frame_for(key: &[u8; 32], session_hash: &[u8; 4], counter: u64, body: &[u8]) -> Vec<u8> {
+        let dir = NonceDirection::InitiatorToResponder;
+        let epoch = 0u64;
+        let nonce = l2_aead::random_xnonce();
+        let tail = net::tail_for(key, &nonce, epoch, dir);
+        // The sealer's own shape: length-prefixed body, XChaCha with the jitter
+        // tail as associated data, and the tag appended to the ciphertext.
+        let mut sealed = net::frame_shard(body);
+        l2_aead::xchacha_seal_in_place_with_aad(key, &nonce, epoch, dir, &mut sealed, &tail)
+            .expect("seal test frame");
+        let (ciphertext, tag) = sealed.split_at(sealed.len() - 16);
+        let tag: [u8; 16] = tag.try_into().expect("aead tag");
+        let header = GtfV2Header {
+            session_hash: *session_hash,
+            counter,
+            epoch,
+            nonce,
+            shard_index: 0,
+            flags: 0,
+            bulk: false,
+            tail,
+        };
+        net::build_gtf_v2_frame(&header, ciphertext, &tag)
+    }
+
+    /// The worker path is the only reader of `dispatch_packet`; nothing else
+    /// opened a frame through it, so the open path had no test at all.
+    #[test]
+    fn a_worker_frame_opens_and_a_replay_of_it_does_not() {
+        let key = [0x5Au8; 32];
+        let session = Session::new(key, "peer-under-test".to_string());
+        let session_hash = session.session_hash;
+        let node_sessions: DashMap<String, Session> = DashMap::new();
+        node_sessions.insert("peer-under-test".to_string(), session);
+        let stats = ThroughputStats::new();
+
+        let frame = frame_for(&key, &session_hash, 2, &body("hello over the worker path"));
+        let opened = decode_data_frame(&node_sessions, &frame, &stats);
+        assert_eq!(
+            opened.as_deref(),
+            Some(&body("hello over the worker path")[..]),
+            "frame len {} session_hash {:02x?} drops {}",
+            frame.len(),
+            session_hash,
+            stats.drops.load(Ordering::Relaxed)
+        );
+
+        // Same counter again: the guard has already seen it.
+        assert!(decode_data_frame(&node_sessions, &frame, &stats).is_none());
+        assert_eq!(stats.drops.load(Ordering::Relaxed), 1);
+    }
+
+    /// A truncated datagram used to index past its own end.
+    #[test]
+    fn a_datagram_shorter_than_the_shard_offset_is_dropped_not_indexed() {
+        let sessions: DashMap<String, Session> = DashMap::new();
+        let stats = ThroughputStats::new();
+
+        for len in 0..=net::OFFSET_SHARD_INDEX {
+            let short = vec![0u8; len];
+            assert!(decode_data_frame(&sessions, &short, &stats).is_none());
+        }
+        assert_eq!(
+            stats.drops.load(Ordering::Relaxed),
+            (net::OFFSET_SHARD_INDEX + 1) as u64
+        );
+    }
+
+    /// A shard index outside the RS(2,1) group is not a frame for this path.
+    #[test]
+    fn a_frame_with_an_out_of_range_shard_index_is_dropped() {
+        let key = [0x11u8; 32];
+        let session = Session::new(key, "peer".to_string());
+        let session_hash = session.session_hash;
+        let sessions: DashMap<String, Session> = DashMap::new();
+        sessions.insert("peer".to_string(), session);
+        let stats = ThroughputStats::new();
+
+        let mut frame = frame_for(&key, &session_hash, 2, &body("body"));
+        frame[net::OFFSET_SHARD_INDEX] = 3;
+        assert!(decode_data_frame(&sessions, &frame, &stats).is_none());
+
+        frame[net::OFFSET_SHARD_INDEX] = 2;
+        assert!(decode_data_frame(&sessions, &frame, &stats).is_some());
+    }
+
+    /// A frame that does not authenticate must not move the replay window: the
+    /// guard is committed only after the tag verifies.
+    #[test]
+    fn a_forged_frame_does_not_advance_the_replay_window() {
+        let key = [0x33u8; 32];
+        let session = Session::new(key, "peer".to_string());
+        let session_hash = session.session_hash;
+        let sessions: DashMap<String, Session> = DashMap::new();
+        sessions.insert("peer".to_string(), session);
+        let stats = ThroughputStats::new();
+
+        let mut forged = frame_for(&key, &session_hash, 2, &body("body"));
+        let last = forged.len() - 20;
+        forged[last] ^= 0x01;
+        assert!(decode_data_frame(&sessions, &forged, &stats).is_none());
+
+        let v_max = sessions
+            .get("peer")
+            .expect("session")
+            .guard
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .v_max;
+        assert_eq!(v_max, 0, "a forged counter must not enter the window");
+
+        // The genuine frame at the same counter still opens.
+        let genuine = frame_for(&key, &session_hash, 2, &body("body"));
+        assert_eq!(
+            decode_data_frame(&sessions, &genuine, &stats),
+            Some(body("body"))
+        );
     }
 }

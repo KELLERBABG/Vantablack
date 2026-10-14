@@ -64,6 +64,13 @@ cargo build --release
 cargo build --release --no-default-features
 ```
 
+### No Activation Step
+
+There is nothing to activate and nothing to buy. The binary you install or build
+is the whole product: no license key, no vendor server, no account, no trial
+that expires. Every capability in the build is available to everyone who has it
+— see [**Free software — no license gate, no payments**](../FREE_SOFTWARE.md).
+
 ### Persistent Data Directory
 
 The binary is self-contained and relocatable. All persistent state (`identity.key`, `peers.cache`, `ghost-consumer.json`, `ghost-topology.json`, and `ghost.log`) is stored in a single per-user directory:
@@ -200,7 +207,7 @@ The HTTP control plane serves both the interactive dashboard and programmatic JS
 | `/healthz` | `GET` | Liveness probe returning `200 OK` |
 | `/metrics` | `GET` | Prometheus-formatted telemetry counters |
 
-> **Security Note:** Set `GHOST_PIN=<secret>` on shared networks to require an `X-Pin` authentication header on all state-changing `POST` endpoints.
+> **Security Note:** Set `GHOST_PIN=<secret>` on shared networks. With a PIN configured, `POST` requests without a matching `X-Pin` header get `401 {"pin_required": true}`, the identity-bearing reads (`GET /api/peers`, `GET /api/wan_telemetry`) are refused the same way, and `GET /api/status` answers 200 with `network_id`, `device_name`, `pair_uri` and `peers` redacted to `null`. The dashboard prompts once per browser session and resends the header.
 
 ---
 
@@ -212,7 +219,7 @@ All parameters can be passed as environment variables or placed in a `config.env
 | :--- | :--- | :--- |
 | `GHOST_BIND` | `0.0.0.0:0` | Local UDP socket address for mesh data transport |
 | `GHOST_WEB_PORT` | `2270` | Local HTTP port for the Control Center UI and REST API (`0` disables) |
-| `GHOST_PIN` | *(unset)* | Require matching `X-Pin` header on all Control Center `POST` endpoints |
+| `GHOST_PIN` | *(unset)* | Require matching `X-Pin` header on `POST`, refuse identity-bearing reads, and redact `network_id` / `device_name` / `pair_uri` / `peers` from `GET /api/status` |
 | `GHOST_NO_GUI` | `0` | Run headless without opening the native desktop window (`1` = headless) |
 | `GHOST_SOCKS_BIND` | `127.0.0.1:1080` | Local SOCKS5 proxy bind address (`off` disables SOCKS5 listener) |
 | `GHOST_SEEDS` | *(unset)* | Comma-separated list of bootstrap peer `host:port` endpoints |

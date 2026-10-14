@@ -1184,7 +1184,7 @@ mod tests {
         let nonce = challenge_nonce(&mut sg);
         assert_eq!(sg.allocation_count(), 0, "no allocation before credentials");
 
-        let req = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let req = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
             m.push(Attribute::Lifetime(600));
         });
@@ -1230,14 +1230,10 @@ mod tests {
     #[test]
     fn an_unknown_nonce_is_rejected() {
         let mut sg = server();
-        let req = authenticated_request(
-            &mut sg,
-            Method::ALLOCATE,
-            "deadbeef-nonce-never-issued",
-            |m| {
+        let req =
+            authenticated_request(&sg, Method::ALLOCATE, "deadbeef-nonce-never-issued", |m| {
                 m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
-            },
-        );
+            });
         let out = sg.handle(&req, client_addr(), Instant::now());
         let Outbound::ToClient { data, .. } = &out[0] else {
             panic!("expected a challenge");
@@ -1249,7 +1245,7 @@ mod tests {
     fn non_udp_transport_is_refused_with_442() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let req = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let req = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             // 6 = TCP: we only relay UDP.
             m.push(Attribute::RequestedTransport(6));
         });
@@ -1264,7 +1260,7 @@ mod tests {
     fn allocate_ports_are_unique_and_recycled_on_expiry() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let req = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let req = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
             m.push(Attribute::Lifetime(600));
         });
@@ -1294,7 +1290,7 @@ mod tests {
         let nonce = challenge_nonce(&mut sg);
         let peer: SocketAddr = "198.51.100.77:51820".parse().unwrap();
 
-        let alloc = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let alloc = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
         });
         sg.handle(&alloc, client_addr(), Instant::now());
@@ -1321,7 +1317,7 @@ mod tests {
             .is_empty());
 
         // After CreatePermission it relays from the allocation's port.
-        let perm = authenticated_request(&mut sg, Method::CREATE_PERMISSION, &nonce, |m| {
+        let perm = authenticated_request(&sg, Method::CREATE_PERMISSION, &nonce, |m| {
             m.push(Attribute::XorPeerAddress(peer));
         });
         let out = sg.handle(&perm, client_addr(), Instant::now());
@@ -1352,13 +1348,13 @@ mod tests {
         let nonce = challenge_nonce(&mut sg);
         let peer: SocketAddr = "198.51.100.77:51820".parse().unwrap();
 
-        let alloc = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let alloc = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
         });
         sg.handle(&alloc, client_addr(), Instant::now());
         let relayed = sg.relay_addr(&client_addr()).unwrap();
 
-        let bind = authenticated_request(&mut sg, Method::CHANNEL_BIND, &nonce, |m| {
+        let bind = authenticated_request(&sg, Method::CHANNEL_BIND, &nonce, |m| {
             m.push(Attribute::ChannelNumber(0x4001));
             m.push(Attribute::XorPeerAddress(peer));
         });
@@ -1404,7 +1400,7 @@ mod tests {
     fn peer_data_without_permission_is_dropped() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let alloc = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let alloc = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
         });
         sg.handle(&alloc, client_addr(), Instant::now());
@@ -1422,13 +1418,13 @@ mod tests {
     fn refresh_with_zero_lifetime_releases_the_allocation() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let alloc = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let alloc = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
         });
         sg.handle(&alloc, client_addr(), Instant::now());
         assert_eq!(sg.allocation_count(), 1);
 
-        let refresh = authenticated_request(&mut sg, Method::REFRESH, &nonce, |m| {
+        let refresh = authenticated_request(&sg, Method::REFRESH, &nonce, |m| {
             m.push(Attribute::Lifetime(0));
         });
         let out = sg.handle(&refresh, client_addr(), Instant::now());
@@ -1443,7 +1439,7 @@ mod tests {
     fn refresh_without_an_allocation_is_437() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let refresh = authenticated_request(&mut sg, Method::REFRESH, &nonce, |m| {
+        let refresh = authenticated_request(&sg, Method::REFRESH, &nonce, |m| {
             m.push(Attribute::Lifetime(600));
         });
         let out = sg.handle(&refresh, client_addr(), Instant::now());
@@ -1457,11 +1453,11 @@ mod tests {
     fn permission_for_the_unspecified_address_is_refused() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let alloc = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let alloc = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
         });
         sg.handle(&alloc, client_addr(), Instant::now());
-        let perm = authenticated_request(&mut sg, Method::CREATE_PERMISSION, &nonce, |m| {
+        let perm = authenticated_request(&sg, Method::CREATE_PERMISSION, &nonce, |m| {
             m.push(Attribute::XorPeerAddress("0.0.0.0:1234".parse().unwrap()));
         });
         let out = sg.handle(&perm, client_addr(), Instant::now());
@@ -1475,12 +1471,12 @@ mod tests {
     fn binding_two_peers_to_one_channel_is_refused() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let alloc = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let alloc = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
         });
         sg.handle(&alloc, client_addr(), Instant::now());
 
-        let bind_a = authenticated_request(&mut sg, Method::CHANNEL_BIND, &nonce, |m| {
+        let bind_a = authenticated_request(&sg, Method::CHANNEL_BIND, &nonce, |m| {
             m.push(Attribute::ChannelNumber(0x4002));
             m.push(Attribute::XorPeerAddress(
                 "198.51.100.1:1000".parse().unwrap(),
@@ -1488,7 +1484,7 @@ mod tests {
         });
         sg.handle(&bind_a, client_addr(), Instant::now());
 
-        let bind_b = authenticated_request(&mut sg, Method::CHANNEL_BIND, &nonce, |m| {
+        let bind_b = authenticated_request(&sg, Method::CHANNEL_BIND, &nonce, |m| {
             m.push(Attribute::ChannelNumber(0x4002));
             m.push(Attribute::XorPeerAddress(
                 "198.51.100.2:2000".parse().unwrap(),
@@ -1561,7 +1557,7 @@ mod tests {
     fn expiry_drops_allocations_but_keeps_live_ones() {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
-        let alloc = authenticated_request(&mut sg, Method::ALLOCATE, &nonce, |m| {
+        let alloc = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
             m.push(Attribute::RequestedTransport(TRANSPORT_UDP));
             m.push(Attribute::Lifetime(600));
         });
@@ -1571,7 +1567,7 @@ mod tests {
 
         // A Refresh at +500 s restarts the lifetime clock there, so the
         // allocation now dies at +1100 s rather than at +600 s.
-        let req = authenticated_request(&mut sg, Method::REFRESH, &nonce, |m| {
+        let req = authenticated_request(&sg, Method::REFRESH, &nonce, |m| {
             m.push(Attribute::Lifetime(600));
         });
         sg.handle(&req, client_addr(), now + Duration::from_secs(500));
