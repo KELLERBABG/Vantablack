@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Inventions §21, §24, §25: Sharded Compute, Inference Privacy & Verifiable Compute
 //!
 //! - §21 Sharded Compute: Split model weights/activation projections across 3 untrusted

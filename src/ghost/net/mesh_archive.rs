@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Mesh-as-Archive
 //!
 //! Permanent, unlinkable public archival mirroring for open standards and public canons.

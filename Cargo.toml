@@ -1,6 +1,6 @@
 [package]
 name = "vantablack"
-version = "0.8.11"
+version = "0.8.12"
 edition = "2021"
 description = "Post-quantum, cryptographically layered WAN mesh routing node."
 homepage = "https://vantablack.kellersystems.dev/"
@@ -56,6 +56,9 @@ sdr = ["dep:abos"]
 # binary free of a TLS stack — and a build without it *refuses* an https:// KME
 # URL rather than falling back to plaintext key delivery.
 qkd-tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile"]
+# Dormant research primitives (see docs/DORMANT_MODULES.md). Off by default so
+# the production daemon only ships live packet-path modules; enabled in CI.
+research = []
 
 
 # Embeds the application icon and version block into the Windows binaries

@@ -70,6 +70,16 @@ jobs:
           cargo test --features quic --verbose
           cargo check --features "quic vpn" --all-targets --verbose
 
+      - name: Verify Skywave SDR & QKD-TLS Anchors (sdr + qkd-tls)
+        run: |
+          cargo check --features sdr,qkd-tls --all-targets --verbose
+          cargo test --features sdr,qkd-tls --verbose
+
+      - name: Verify Research Primitives Feature Gate (research)
+        run: |
+          cargo check --features research --all-targets --verbose
+          cargo test --features research --verbose
+
   clippy-fmt:
     name: Code Hygiene & Formatting
     runs-on: ubuntu-latest
@@ -93,8 +103,10 @@ jobs:
       # `-D warnings` with no `|| true`: a lint gate that cannot fail is not a
       # gate. The only lints allowed to pass are the three shape lints listed,
       # with reasons, under `[lints.clippy]` in Cargo.toml.
-      - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Run Clippy (Default + All Optional Feature Gates)
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --all-targets --features "hardware-tpm,pkcs11,quic,sdr,qkd-tls,research" -- -D warnings
 
   windows-installer:
     name: Windows Installer (build, install, verify, uninstall)

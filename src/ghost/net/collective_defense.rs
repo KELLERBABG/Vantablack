@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Collective Defense from Aggregate Observables
 //!
 //! Architectural collaborative defense without a central collector or honeypot.

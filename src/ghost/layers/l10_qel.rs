@@ -91,7 +91,7 @@ pub const QEL_SIM_LABEL_PREFIX: &str = "qkd-sim/1";
 static CONTROLLER: OnceLock<Arc<QuantumAnchorController>> = OnceLock::new();
 
 /// Install the process-wide controller (daemon boot). Returns `false` if one
-/// was already installed.
+/// was already ed.
 pub fn install_global_controller(ctrl: Arc<QuantumAnchorController>) -> bool {
     CONTROLLER.set(ctrl).is_ok()
 }
@@ -321,10 +321,24 @@ impl SimulatedQel {
         }
     }
 
+    /// Build `PYTHONPATH` with the vendored `src/` directory prepended so the
+    /// `quantumnet` package under `Quantum Entanglement Link/src/quantumnet`
+    /// is importable out-of-the-box without requiring `pip install -e`.
+    fn python_path_env(&self) -> std::ffi::OsString {
+        let src_dir = std::fs::canonicalize(self.qel_dir.join("src"))
+            .unwrap_or_else(|_| PathBuf::from("src"));
+        let mut paths = vec![src_dir];
+        if let Some(existing) = std::env::var_os("PYTHONPATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        std::env::join_paths(paths).unwrap_or_else(|_| std::ffi::OsString::from("src"))
+    }
+
     async fn run_probe(&self) -> QelAnchorState {
         let output = match Command::new(&self.python_bin)
             .args(["-c", "import quantumnet"])
             .current_dir(&self.qel_dir)
+            .env("PYTHONPATH", self.python_path_env())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -525,6 +539,7 @@ impl SimulatedQel {
             let child = Command::new(&self.python_bin)
                 .args(&args)
                 .current_dir(&self.qel_dir)
+                .env("PYTHONPATH", self.python_path_env())
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -827,7 +842,8 @@ impl QuantumAnchorController {
                     QelAnchorState::Degraded => warn!(
                         dir = %sim.dir().display(),
                         "qel: anchor degraded — python found but 'import quantumnet' failed \
-                         (install with: pip install -e \"Quantum Entanglement Link\"). \
+                         (ensure \"Quantum Entanglement Link/src\" exists and numpy is installed: \
+                          pip install -e \"Quantum Entanglement Link\"). \
                          Sessions continue without quantum entropy; this is not logged again."
                     ),
                     QelAnchorState::Unavailable => warn!(
@@ -1216,9 +1232,9 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
-    /// The real subprocess, only where Python + the package exist.
+    /// The real subprocess, only where Python + numpy exist.
     #[tokio::test]
-    #[ignore = "requires python + quantumnet installed (pip install -e \"Quantum Entanglement Link\")"]
+    #[ignore = "requires python + numpy (or pip install -e \"Quantum Entanglement Link\")"]
     async fn live_subprobe_and_route() {
         let ctrl = QuantumAnchorController::new("Quantum Entanglement Link");
         assert_eq!(ctrl.state().await, QelAnchorState::Available);

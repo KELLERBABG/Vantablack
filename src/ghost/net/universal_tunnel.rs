@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Universal Shard-Tunnel (Generic Port Forwarder)
 //!
 //! Carries arbitrary legacy protocols (RDP, RTSP, gRPC, SMTP, SOCKS5, HTTP) blind

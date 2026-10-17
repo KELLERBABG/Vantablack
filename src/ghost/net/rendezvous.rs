@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Decentralized Bootstrap & Rendezvous Subsystem.
 //!
 //! Eliminates dependency on centralized DNS servers, hardcoded VPS seeds, or domain names.

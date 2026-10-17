@@ -112,11 +112,51 @@ function Resolve-AppVersion([string]$ExePath, [string]$CargoToml) {
 
 if (-not (Test-Path -LiteralPath $IssFile)) { throw "Missing installer script: $IssFile" }
 
+function Enter-MsvcEnv {
+    $libDirs = @($env:LIB -split ';' | Where-Object { $_ })
+    if ($libDirs | Where-Object { Test-Path (Join-Path $_ 'kernel32.lib') }) { return }
+
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) { return }
+
+    $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    if (-not $vsRoot) {
+        $vsRoot = & $vswhere -all -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    }
+    if (-not $vsRoot) { return }
+
+    $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
+    if (-not (Test-Path -LiteralPath $vcvars)) { return }
+
+    Write-Step "Importing MSVC x64 build environment from $vcvars"
+    $vcvarsEnv = & cmd.exe /V:ON /c "call `"$vcvars`" >nul 2>&1 && set"
+    foreach ($line in $vcvarsEnv) {
+        if ($line -match '^([A-Za-z_][A-Za-z0-9_()]*)=(.*)$') {
+            $k = $Matches[1]
+            if ($k -in @('INCLUDE', 'LIB', 'LIBPATH', 'PATH', 'VCINSTALLDIR', 'VCToolsInstallDir', 'WindowsSdkDir', 'WindowsSDKVersion', 'UCRTVersion', 'UniversalCRTSdkDir')) {
+                Set-Item -Path "env:$k" -Value $Matches[2]
+            }
+        }
+    }
+}
+
 # -- 1. The application binary -----------------------------------------------
-$ExePath = Join-Path $RepoRoot (Join-Path $BinDir 'ggn.exe')
+$ExePath = if ([System.IO.Path]::IsPathRooted($BinDir)) {
+    Join-Path $BinDir 'ggn.exe'
+} else {
+    Join-Path $RepoRoot (Join-Path $BinDir 'ggn.exe')
+}
 
 if (-not (Test-Path -LiteralPath $ExePath)) {
     if ($SkipBuild) { throw "-SkipBuild was given but $ExePath does not exist." }
+    Enter-MsvcEnv
+    # Building inside a checkout path containing '&' causes Windows DLL init
+    # failures (0xc0000142) when Cargo runs custom build scripts (ring, vswhom).
+    # Redirect CARGO_TARGET_DIR to a clean path when needed.
+    if (-not $env:CARGO_TARGET_DIR -and $RepoRoot.Contains('&')) {
+        $env:CARGO_TARGET_DIR = 'C:\build\vb-installer'
+        Write-Step "Redirecting CARGO_TARGET_DIR to $($env:CARGO_TARGET_DIR) (repo path contains '&')"
+    }
     Write-Step 'Building the release application (cargo build --release --bin ggn)'
     Push-Location $RepoRoot
     try {
@@ -124,6 +164,10 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
     } finally {
         Pop-Location
+    }
+    if (-not (Test-Path -LiteralPath $ExePath) -and $env:CARGO_TARGET_DIR) {
+        $altExe = Join-Path $env:CARGO_TARGET_DIR 'release\ggn.exe'
+        if (Test-Path -LiteralPath $altExe) { $ExePath = $altExe }
     }
 }
 if (-not (Test-Path -LiteralPath $ExePath)) { throw "Expected binary not found: $ExePath" }

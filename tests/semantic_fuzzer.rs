@@ -13,14 +13,18 @@
 
 use rand::rngs::StdRng;
 use rand::{Rng, RngCore, SeedableRng};
+#[cfg(feature = "research")]
 use std::collections::HashMap;
 
 use vantablack::ghost::layers::l2_aead::NonceDirection;
+#[cfg(feature = "research")]
 use vantablack::ghost::net::dead_drop::{BlindDeadDropBlob, DeadDropVault, DropCommitment};
+#[cfg(feature = "research")]
 use vantablack::ghost::net::dtn_reconcile::{reconcile_blackout_stores, DtnBundle, DtnMerkleTree};
 use vantablack::ghost::net::relay::{AnonymousCapabilityLedger, AnonymousThresholdVoucher};
 use vantablack::ghost::net::shardsec::SpatioTemporalErosionCodec;
 
+#[cfg(feature = "research")]
 #[test]
 fn test_semantic_fuzzer_dead_drop_vault_invariants() {
     let mut rng = StdRng::seed_from_u64(0xDEAD_BEEF_CAFE_0001);
@@ -176,6 +180,7 @@ fn test_semantic_fuzzer_anonymous_capability_ledger_invariants() {
     }
 }
 
+#[cfg(feature = "research")]
 #[test]
 fn test_semantic_fuzzer_dtn_anti_entropy_convergence_invariants() {
     let mut rng = StdRng::seed_from_u64(0xABCD_EF01_2345_0003);

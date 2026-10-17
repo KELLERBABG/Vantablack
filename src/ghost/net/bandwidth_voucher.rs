@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Anonymous Bandwidth Vouchers & Sybil Defense Subsystem.
 //!
 //! Provides lightweight, privacy-preserving bandwidth allocation tokens to prevent

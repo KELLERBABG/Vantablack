@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Sovereign Cloud (Topology-Enforced Jurisdiction Constraints)
 //!
 //! A mesh-native cloud fabric where user devices form the storage and compute layer

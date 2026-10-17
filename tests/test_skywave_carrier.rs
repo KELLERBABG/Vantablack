@@ -1,5 +1,6 @@
 //! Integration tests for Skywave SDR Carrier and ABOS Bridge.
 
+#[cfg(feature = "research")]
 use vantablack::ghost::net::dtn_reconcile::DtnBundle;
 use vantablack::ghost::net::fallback::{self, FallbackPath};
 use vantablack::ghost::net::sdr_bridge::SkywaveBridge;
@@ -124,6 +125,7 @@ async fn test_skywave_bridge_initialization_and_telemetry() {
     assert_eq!(bridge.nvis_freq_khz(), Some(5350));
 }
 
+#[cfg(feature = "research")]
 #[tokio::test]
 async fn test_dtn_bundle_skywave_serialization_roundtrip() {
     let bundle_id = [0x42u8; 16];

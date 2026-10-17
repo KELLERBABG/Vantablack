@@ -85,9 +85,9 @@ class MainActivity : Activity() {
 
         val ver = TextView(this).apply {
             val vName = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.11"
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.12"
             } catch (_: Throwable) {
-                "0.8.11"
+                "0.8.12"
             }
             text = "v$vName"
             textSize = 11f

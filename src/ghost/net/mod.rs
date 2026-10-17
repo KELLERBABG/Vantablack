@@ -9,31 +9,46 @@
 pub mod carrier;
 pub mod cc;
 
+#[cfg(feature = "research")]
 pub mod bandwidth_voucher;
+#[cfg(feature = "research")]
 pub mod collective_defense;
 pub mod consumer;
+#[cfg(feature = "research")]
 pub mod dead_drop;
+#[cfg(feature = "research")]
 pub mod diffusion;
 pub mod dispatcher;
+#[cfg(feature = "research")]
 pub mod dtn_reconcile;
+#[cfg(feature = "research")]
 pub mod energy_currency;
+#[cfg(feature = "research")]
 pub mod entropy_beacon;
 pub mod fallback;
 pub mod ice;
 pub mod mesh;
+#[cfg(feature = "research")]
 pub mod mesh_archive;
+#[cfg(feature = "research")]
 pub mod model_gossip;
 pub mod orbit;
+#[cfg(feature = "research")]
 pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod relay;
+#[cfg(feature = "research")]
 pub mod rendezvous;
 pub mod sdr_bridge;
+#[cfg(feature = "research")]
 pub mod sharded_compute;
 pub mod shardsec;
+#[cfg(feature = "research")]
 pub mod sovereign_cloud;
+#[cfg(feature = "research")]
 pub mod stego_physics;
+#[cfg(feature = "research")]
 pub mod universal_tunnel;
 
 /// Which framing an optional transport used for a frame.

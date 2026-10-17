@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Energy-Voucher Currency (Proof-of-Erasure-Repair)
 //!
 //! A decentralized credit ledger pricing forwarding priority strictly based on

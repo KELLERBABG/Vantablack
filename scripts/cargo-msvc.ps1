@@ -1,3 +1,4 @@
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$TargetDir = "C:\build\vb-check",
     [string]$SdkLibDir = "",
@@ -11,7 +12,10 @@ $ErrorActionPreference = "Stop"
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
 $vcvars = $null
 if (Test-Path $vswhere) {
-    $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    if (-not $vsRoot) {
+        $vsRoot = & $vswhere -all -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    }
     if ($vsRoot) {
         $candidate = Join-Path $vsRoot "VC\Auxiliary\Build\vcvars64.bat"
         if (Test-Path $candidate) { $vcvars = $candidate }

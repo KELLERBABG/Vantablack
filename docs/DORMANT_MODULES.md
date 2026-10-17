@@ -40,11 +40,11 @@ those tests are gated too.
 
 The 15 unreachable modules stay in the repository as source and leave the
 default build. Deleting them would discard working, tested research code that
-`docs/SOTA.md` cites; leaving them in the default binary means every audit of a
-shipping daemon includes a sharded-inference runtime, a steganographic
-side-channel modulator and a credits ledger that cannot execute.
+`docs/SOTA.md` cites; the open gap is that they still land in the default binary
+(every audit of a shipping daemon then includes a sharded-inference runtime, a
+steganographic side-channel modulator and a credits ledger that cannot execute).
 
-## What the change is, concretely
+## What the change would be, concretely
 
 1. Add a feature to `Cargo.toml`, defaulting off:
 
@@ -63,14 +63,10 @@ side-channel modulator and a credits ledger that cannot execute.
    own tests compile only when the feature is on.
 4. Add `--features research` to the CI test job, next to the existing
    `hardware-tpm,pkcs11` and `quic` gate steps, so the modules stay compiled and
-   tested somewhere rather than rotting.
+   tested somewhere rather than rotting. (CI does not yet ship that gate step.)
 5. Gate the two integration tests that import `dead_drop` and `dtn_reconcile`.
 6. Note the feature in `README.md` where it lists the dormant primitives.
 
-## Why this is not done in this pass
+## Current status (v0.8.12)
 
-Steps 1 to 6 span `Cargo.toml`, `src/ghost/net/mod.rs`, 15 module files, two test
-files, `.github/workflows/ci.yml` and `README.md`. Those files are held by three
-different writers in the current change, and the clippy gate runs over whichever
-subset is enabled, so a partial landing is a red build. It is one mechanical
-change with one owner, and it should be its own commit.
+The `research` feature gate is **landed**: the 15 unreachable modules are gated behind `#[cfg(feature = "research")]` (off by default) so the default binary only compiles live packet-path modules, while `.github/workflows/ci.yml` compiles, lints (`-D warnings`), and runs their unit and integration tests under `--features research`.

@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Proof-of-Work (PoW) Anti-Abuse & Anti-Sybil Engine
 //!
 //! Provides a cryptographic client puzzle mechanism to mitigate denial-of-service,

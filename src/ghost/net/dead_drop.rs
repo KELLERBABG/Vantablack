@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Inventions §22 & §33: Autonomous Dead-Drop Mesh Storage & Self-Eating Storage
 //!
 //! §22 Autonomous Dead-Drop Mesh Storage (Fleet Vault - Consolidated §22, §23, §26):

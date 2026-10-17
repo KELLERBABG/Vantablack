@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Diffusion Routing (Opt-in Emergency Mode)
 //!
 //! Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1` for disaster recovery,

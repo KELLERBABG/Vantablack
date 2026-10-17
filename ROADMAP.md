@@ -1,7 +1,7 @@
 # Vantablack — Commercialization & Systems Roadmap (Target 9/10 & 10/10)
 
 **Project:** Vantablack — Post-Quantum Layered WAN Mesh Router & High-Assurance TUN VPN  
-**Current Version:** `0.8.11`  
+**Current Version:** `0.8.12`  
 **Current Readiness Score:** **7/10 (Hardened Core System)**  
 **Target Milestone:** **9/10 (Commercially Shippable / Zero-Friction Product)**  
 **Long-Term Milestone:** **10/10 (Field-Tested Production with 24/7 Mesh Telemetry)**
@@ -16,7 +16,7 @@ To advance from **7/10 to 9/10**, Vantablack must transition from a developer-co
 
 ---
 
-## 2. Current Verified Baseline (v0.8.11)
+## 2. Current Verified Baseline (v0.8.12)
 
 - **Cryptographic Stack:** 10-layer onion encryption (L0 identity to L10 physical anchor) with zero runtime panics.
 - **Cross-Platform Surface:** Desktop Frameless GUI (Tao + Wry), headless server daemon, and Android JNI library (`cdylib`).

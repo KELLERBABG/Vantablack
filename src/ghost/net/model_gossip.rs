@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Sharded Model Gossip
 //!
 //! Decentralized behavioral model learning over mesh metadata without a central coordinator.

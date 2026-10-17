@@ -291,8 +291,10 @@ impl SkywaveBridge {
                     "skywave: ABOS system not available — running in synthetic mode (virtual carrier only)"
                 );
             }
-            let mut telem = SkywaveTelemetry::default();
-            telem.sdr_active = dsp_tx.is_some();
+            let telem = SkywaveTelemetry {
+                sdr_active: dsp_tx.is_some(),
+                ..Default::default()
+            };
             Ok(Self {
                 telemetry: Arc::new(parking_lot::RwLock::new(telem)),
                 ingress_tx,

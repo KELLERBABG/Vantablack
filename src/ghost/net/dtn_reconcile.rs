@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Windowing the Blackout (DTN State Reconciliation)
 //!
 //! Merkle-tree anti-entropy synchronization between peers upon reconnecting after

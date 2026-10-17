@@ -1,3 +1,4 @@
+#![cfg(feature = "research")]
 //! Stego-in-Physics (Physical Covert Shard Carriage).
 //!
 //! STATUS: Theoretical modulation prototype & research reference implementation.

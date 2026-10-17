@@ -7,8 +7,9 @@
 //! compiled `.res` into the named binaries.
 //!
 //! Nothing happens for non-Windows targets, and nothing happens for the console
-//! tools: only `ggn` and its `vantablack` alias are the desktop application.
-//! Regenerate the icons with `python scripts/make_icon.py`.
+//! tools: only `ggn` (the `vantablack` alias is purely a Cargo target name — it has no
+//! icon or version embedding of its own). Regenerate the icons with
+//! `python scripts/make_icon.py`.
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/app.rc");
@@ -25,6 +26,6 @@ fn main() {
     // In environments where rc.exe / windres fails (such as Windows GNU without MSVC rc),
     // warn and continue so developer builds and test suites proceed.
     let _ = std::panic::catch_unwind(|| {
-        embed_resource::compile_for("assets/app.rc", ["ggn", "vantablack"], embed_resource::NONE);
+        embed_resource::compile_for("assets/app.rc", ["ggn"], embed_resource::NONE);
     });
 }
