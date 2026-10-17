@@ -387,83 +387,63 @@ fn perform_handshake(
 }
 
 fn detect_local_lan_subnets() -> (Vec<[u8; 3]>, std::collections::HashSet<std::net::Ipv4Addr>) {
-    let mut preferred_subnets: Vec<[u8; 3]> = Vec::new();
-    let mut other_subnets: Vec<[u8; 3]> = Vec::new();
+    let mut subnets: Vec<[u8; 3]> = Vec::new();
     let mut local_ips: std::collections::HashSet<std::net::Ipv4Addr> =
         std::collections::HashSet::new();
 
-    #[cfg(unix)]
-    unsafe {
-        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
-        if libc::getifaddrs(&mut ifap) == 0 && !ifap.is_null() {
-            let mut cur = ifap;
-            while !cur.is_null() {
-                let ifa = &*cur;
-                if !ifa.ifa_addr.is_null()
-                    && (*ifa.ifa_addr).sa_family as libc::c_int == libc::AF_INET
-                {
-                    let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
-                    let ip_u32 = u32::from_be(sin.sin_addr.s_addr);
-                    let ipv4 = std::net::Ipv4Addr::from(ip_u32);
-                    local_ips.insert(ipv4);
-
-                    let flags = ifa.ifa_flags as libc::c_int;
-                    let is_up = (flags & libc::IFF_UP) != 0;
-                    let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
-                    let is_p2p = (flags & libc::IFF_POINTOPOINT) != 0;
-
-                    let name = if !ifa.ifa_name.is_null() {
-                        std::ffi::CStr::from_ptr(ifa.ifa_name)
-                            .to_string_lossy()
-                            .to_ascii_lowercase()
-                    } else {
-                        String::new()
-                    };
-
-                    let is_ignored_iface = name.starts_with("tun")
-                        || name.starts_with("ppp")
-                        || name.starts_with("ccmni")
-                        || name.starts_with("rmnet")
-                        || name.starts_with("dummy")
-                        || name.starts_with("lo")
-                        || name.starts_with("clat")
-                        || name.starts_with("v4-");
-
-                    let vo = ipv4.octets();
-                    let is_valid_lan = vo[0] != 127
-                        && vo[0] != 0
-                        && !(vo[0] == 169 && vo[1] == 254)
-                        && !(vo[0] == 10 && vo[1] == 66 && vo[2] == 0);
-
-                    if is_up && !is_loopback && !is_p2p && !is_ignored_iface && is_valid_lan {
-                        let sn = [vo[0], vo[1], vo[2]];
-                        if name.starts_with("wlan")
-                            || name.starts_with("eth")
-                            || name.starts_with("ap")
-                            || name.starts_with("rndis")
-                            || name.starts_with("swlan")
-                        {
-                            if !preferred_subnets.contains(&sn) {
-                                preferred_subnets.push(sn);
+    if let Ok(temp_sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        // 1. Check all 192.168.X.0/24 subnets via fast kernel FIB lookup (no packets sent)
+        for third in 0..=254u8 {
+            let target = std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, third, 1)),
+                80,
+            );
+            if temp_sock.connect(target).is_ok() {
+                if let Ok(la) = temp_sock.local_addr() {
+                    if let std::net::IpAddr::V4(v4) = la.ip() {
+                        local_ips.insert(v4);
+                        let vo = v4.octets();
+                        if [vo[0], vo[1], vo[2]] == [192, 168, third] {
+                            let sn = [192, 168, third];
+                            if !subnets.contains(&sn) {
+                                subnets.push(sn);
                             }
-                        } else if !other_subnets.contains(&sn) && !preferred_subnets.contains(&sn) {
-                            other_subnets.push(sn);
                         }
                     }
                 }
-                cur = ifa.ifa_next;
             }
-            libc::freeifaddrs(ifap);
+        }
+        // 2. Check common 10.X.Y.0/24 and 172.16..31.X.0/24 LAN/hotspot subnets
+        let extra_prefixes: &[[u8; 3]] = &[
+            [10, 0, 0],
+            [10, 0, 1],
+            [10, 1, 0],
+            [10, 1, 1],
+            [10, 10, 10],
+            [172, 20, 10],
+            [172, 16, 0],
+            [172, 16, 1],
+        ];
+        for p in extra_prefixes {
+            let target = std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(p[0], p[1], p[2], 1)),
+                80,
+            );
+            if temp_sock.connect(target).is_ok() {
+                if let Ok(la) = temp_sock.local_addr() {
+                    if let std::net::IpAddr::V4(v4) = la.ip() {
+                        local_ips.insert(v4);
+                        let vo = v4.octets();
+                        if [vo[0], vo[1], vo[2]] == *p && !subnets.contains(p) {
+                            subnets.push(*p);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    for sn in other_subnets {
-        if !preferred_subnets.contains(&sn) {
-            preferred_subnets.push(sn);
-        }
-    }
-
-    (preferred_subnets, local_ips)
+    (subnets, local_ips)
 }
 
 fn perform_lan_discovery(
