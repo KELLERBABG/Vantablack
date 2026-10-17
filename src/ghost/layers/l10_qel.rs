@@ -336,7 +336,7 @@ impl SimulatedQel {
 
     async fn run_probe(&self) -> QelAnchorState {
         let output = match Command::new(&self.python_bin)
-            .args(["-c", "import quantumnet"])
+            .args(["-c", "import quantumnet.cli"])
             .current_dir(&self.qel_dir)
             .env("PYTHONPATH", self.python_path_env())
             .stdout(Stdio::null())
