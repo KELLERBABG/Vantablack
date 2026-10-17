@@ -108,37 +108,59 @@ class GhostVpnService : VpnService() {
         try { tun?.close() } catch (_: Throwable) {}
         channel = null; tun = null
 
-        // 1. TUN: overlay IP (10.66.0.0/24) + Default Route (0.0.0.0/0) + Zero-Leak Encrypted DNS
+        val fpHex = try { GhostCore.getFingerprint(ptr) } catch (_: Throwable) { "" }
+        val hostByte = ((fpHex.take(4).toIntOrNull(16) ?: 10) % 240) + 10
+
+        // 1. TUN: IPv4 overlay IP (10.66.0.x/24) + Default Route (0.0.0.0/0) + Dynamic/Mesh DNS.
+        // Do NOT assign an IPv6 address to tun0: VpnHub is an IPv4 NAT/netstack, and assigning
+        // fd00:66::10 causes Android netd to prefer AAAA (IPv6) lookups and blackhole traffic.
         val builder = Builder()
             .setSession("Vantablack Mesh")
-            .addAddress("10.66.0.10", 24)
+            .addAddress("10.66.0.$hostByte", 24)
             .addRoute("0.0.0.0", 0)        // Encapsulate ALL IPv4 internet traffic into mesh tunnel
             .addRoute("10.66.0.0", 24)     // Mesh overlay network
-            .addDnsServer("1.1.1.1")       // Cloudflare Privacy-Preserving DNS
-            .addDnsServer("9.9.9.9")       // Quad9 Encapsulated Privacy DNS
-            .addDnsServer("10.66.0.1")     // Mesh Exit Node Resolver
             .setMtu(1280)
             .setBlocking(true)
 
-        // Block IPv6 leakage through local ISP router
-        try {
-            builder.addAddress("fd00:66::10", 64)
-            builder.addRoute("::", 0)
-        } catch (_: Throwable) {
-            // IPv6 route fallback if unsupported on host
+        val customDns = dnsServer.trim()
+        val addedCustomDns = ArrayList<String>()
+        if (customDns.isNotEmpty() && !customDns.equals("auto", ignoreCase = true)) {
+            for (part in customDns.split(",", " ", ";")) {
+                val candidate = part.trim()
+                if (candidate.isNotEmpty()) {
+                    try {
+                        builder.addDnsServer(candidate)
+                        addedCustomDns.add(candidate)
+                    } catch (_: Throwable) {}
+                }
+            }
+        }
+        if (addedCustomDns.isEmpty()) {
+            builder.addDnsServer("10.66.0.1")     // Mesh Exit Node Resolver (forwards to Hub's configured DNS)
+            builder.addDnsServer("1.1.1.1")       // Cloudflare Privacy-Preserving DNS
+            builder.addDnsServer("9.9.9.9")       // Quad9 Encapsulated Privacy DNS
+            activeDnsDisplay = "Auto (Hub 10.66.0.1)"
+        } else {
+            if (!addedCustomDns.contains("10.66.0.1")) {
+                try { builder.addDnsServer("10.66.0.1") } catch (_: Throwable) {}
+            }
+            activeDnsDisplay = addedCustomDns.joinToString(", ")
         }
 
-        if (dnsServer.isNotEmpty() && dnsServer != "10.66.0.1" && dnsServer != "1.1.1.1" && dnsServer != "9.9.9.9") {
-            try {
-                builder.addDnsServer(dnsServer)
-            } catch (_: Throwable) {}
-        }
+        try {
+            builder.allowFamily(android.system.OsConstants.AF_INET)
+        } catch (_: Throwable) {}
+
         searchDomain?.let { builder.addSearchDomain(it) }
 
         tun = builder.establish()
         val tunFd = tun?.fd ?: run { stopSelf(); return }
 
         // 2. Outer UDP socket: bind to standard mesh port 55225 (with fallback), enable broadcast, and PROTECT.
+        // Do NOT call network.bindSocket(ch.socket()) — on dual-SIM/cellular+Wi-Fi devices, explicit
+        // netId fwmark binding bypasses Android's local_network table (rule 20000) and forces LAN
+        // packets out cellular (ccmni). VpnService.protect() alone sets fwmark 0x20000 so both LAN
+        // (wlan0) and default WAN routes work seamlessly.
         val ch = DatagramChannel.open()
         ch.configureBlocking(true)
         ch.socket().broadcast = true
@@ -152,14 +174,12 @@ class GhostVpnService : VpnService() {
                 ch.socket().bind(null)
             }
         }
-        targetNetwork?.let {
-            try { it.bindSocket(ch.socket()) } catch (_: Throwable) { /* best effort on older OEMs */ }
-        }
         protect(ch.socket()) // protect BEFORE send: no packet may ever leave unprotected
+        val sockFd = ParcelFileDescriptor.fromDatagramSocket(ch.socket()).detachFd()
+        protect(sockFd)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
             setUnderlyingNetworks(if (targetNetwork != null) arrayOf(targetNetwork) else null)
         }
-        val sockFd = ParcelFileDescriptor.fromDatagramSocket(ch.socket()).detachFd()
         channel = ch
 
         // 3. Native core takes both fds.
@@ -177,11 +197,15 @@ class GhostVpnService : VpnService() {
         if (!GhostCore.start(ptr, tunFd, sockFd, hubAddrStr)) {
             stopSelf(); return
         }
+        try {
+            val active = GhostCore.getActiveHub(ptr)
+            if (active.isNotEmpty()) currentHubAddr = active
+        } catch (_: Throwable) {}
 
         // 4. Pumps: TUN→mesh and mesh→TUN (map the desktop binary's pumps).
         running = true
         isRunning = true
-        activeNetwork = network
+        activeNetwork = targetNetwork
         pumpThread = Thread {
             while (running) {
                 try { GhostCore.pump(ptr) } catch (_: Throwable) { break }
@@ -197,34 +221,36 @@ class GhostVpnService : VpnService() {
         bootstrapThread = Thread {
             while (running) {
                 try {
-                    // 1. Run local Wi-Fi LAN discovery sweep only if no designated hub is configured
-                    if (currentHubAddr == "auto" || currentHubAddr.isEmpty()) {
-                        try {
-                            GhostCore.scanLan(ptr)
-                        } catch (_: Throwable) {}
-                    }
+                    // 1. Run local Wi-Fi LAN discovery sweep whenever tunnel is not healthy
+                    try {
+                        GhostCore.scanLan(ptr)
+                    } catch (_: Throwable) {}
 
                     // 2. Sync with Cloudflare Worker tracker
                     val fp = try { GhostCore.getFingerprint(ptr) } catch (_: Throwable) { "" }
                     val lanIp = getLocalIpAddress()
+                    val selfEndpoint = if (lanIp.isNotEmpty() && lanIp != "127.0.0.1") "$lanIp:55225" else ""
                     val peers = fetchBootstrapPeers(activeNetwork, fp, lanIp)
-                    val activeList = ArrayList<String>()
                     for (peer in peers) {
                         if (!running) break
-                        activeList.add(peer)
-                        // Only auto-connect to tracker peers if we don't have a designated hub
-                        if (peer != currentHubAddr && (currentHubAddr == "auto" || currentHubAddr.isEmpty())) {
-                            try {
-                                GhostCore.connectPeer(ptr, peer)
-                            } catch (_: Throwable) {}
-                        }
+                        if (peer == selfEndpoint) continue
+                        try {
+                            GhostCore.connectPeer(ptr, peer)
+                        } catch (_: Throwable) {}
                     }
-                    if (activeList.isNotEmpty()) {
-                        discoveredPeersList = activeList
-                        if (currentHubAddr == "auto" || currentHubAddr.isEmpty()) {
-                            currentHubAddr = activeList.first()
+                    try {
+                        val active = GhostCore.getActiveHub(ptr)
+                        if (active.isNotEmpty()) {
+                            currentHubAddr = active
                         }
-                    }
+                        val known = GhostCore.getKnownPeers(ptr)
+                            .split(",")
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                        if (known.isNotEmpty()) {
+                            discoveredPeersList = known
+                        }
+                    } catch (_: Throwable) {}
                 } catch (_: Throwable) {}
 
                 // Sync and beacon every 15 seconds
@@ -242,24 +268,21 @@ class GhostVpnService : VpnService() {
             if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return
             if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return
 
-            if (activeNetwork == null) {
-                activeNetwork = network
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-                    setUnderlyingNetworks(arrayOf(network))
-                }
+            val currentCaps = activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            val currentIsWifi = currentCaps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            val newIsWifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+
+            // Do not let cellular onAvailable override an active Wi-Fi network
+            if (activeNetwork != null && currentIsWifi && !newIsWifi) {
                 return
             }
 
-            // Real physical interface handover (e.g. Wi-Fi <-> Cellular transition).
-            // Re-bind and protect the existing UDP socket to the new physical interface.
-            // Do NOT tear down the TUN or reset the session keys.
-            if (running && activeNetwork != network) {
+            if (activeNetwork != network) {
                 activeNetwork = network
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
                     setUnderlyingNetworks(arrayOf(network))
                 }
                 channel?.socket()?.let { sock ->
-                    try { network.bindSocket(sock) } catch (_: Throwable) {}
                     protect(sock)
                 }
             }
@@ -337,6 +360,7 @@ class GhostVpnService : VpnService() {
         @Volatile var isRunning = false
         @Volatile var activePtr: Long = 0L
         @Volatile var currentHubAddr: String = "auto"
+        @Volatile var activeDnsDisplay: String = "Auto (Hub 10.66.0.1)"
         @Volatile var discoveredPeersList: List<String> = emptyList()
 
         fun getStats(): LongArray {
@@ -347,34 +371,85 @@ class GhostVpnService : VpnService() {
         }
 
         fun getActiveExitNode(): String {
+            val p = activePtr
+            if (p != 0L) {
+                try {
+                    val nativeHub = GhostCore.getActiveHub(p)
+                    if (nativeHub.isNotEmpty()) {
+                        currentHubAddr = nativeHub
+                        return nativeHub
+                    }
+                } catch (_: Throwable) {}
+            }
             return if (currentHubAddr.isNotEmpty() && currentHubAddr != "auto") currentHubAddr else {
                 discoveredPeersList.firstOrNull() ?: "Auto-Discovering..."
             }
         }
 
         fun getDiscoveredPeers(): List<String> {
+            val p = activePtr
+            if (p != 0L) {
+                try {
+                    val known = GhostCore.getKnownPeers(p)
+                        .split(",")
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                    if (known.isNotEmpty()) {
+                        val merged = LinkedHashSet<String>()
+                        merged.addAll(known)
+                        merged.addAll(discoveredPeersList)
+                        discoveredPeersList = merged.toList()
+                    }
+                } catch (_: Throwable) {}
+            }
             return discoveredPeersList
         }
 
+        fun selectExitNode(peerAddr: String, onResult: ((Boolean) -> Unit)? = null) {
+            val p = activePtr
+            if (p != 0L) {
+                Thread {
+                    val ok = try {
+                        GhostCore.selectHub(p, peerAddr)
+                    } catch (_: Throwable) {
+                        false
+                    }
+                    if (ok) {
+                        currentHubAddr = peerAddr
+                    }
+                    onResult?.invoke(ok)
+                }.start()
+            } else {
+                onResult?.invoke(false)
+            }
+        }
+
         fun getLocalIpAddress(): String {
+            var fallback: String? = null
             try {
                 val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
                 while (interfaces.hasMoreElements()) {
                     val iface = interfaces.nextElement()
-                    if (iface.isLoopback || !iface.isUp) continue
+                    val name = iface.name?.lowercase(java.util.Locale.US) ?: ""
+                    if (iface.isLoopback || !iface.isUp || iface.isPointToPoint || iface.isVirtual) continue
+                    if (name.startsWith("tun") || name.startsWith("ppp") || name.startsWith("ccmni") ||
+                        name.startsWith("rmnet") || name.startsWith("dummy") || name.startsWith("clat") ||
+                        name.startsWith("v4-")) continue
                     val addrs = iface.inetAddresses
                     while (addrs.hasMoreElements()) {
                         val addr = addrs.nextElement()
                         if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
-                            val host = addr.hostAddress
-                            if (host != null && !host.startsWith("127.") && !host.startsWith("169.254.")) {
+                            val host = addr.hostAddress ?: continue
+                            if (host.startsWith("127.") || host.startsWith("169.254.") || host.startsWith("10.66.0.")) continue
+                            if (name.startsWith("wlan") || name.startsWith("eth") || name.startsWith("ap") || name.startsWith("rndis")) {
                                 return host
                             }
+                            if (fallback == null) fallback = host
                         }
                     }
                 }
             } catch (_: Throwable) {}
-            return "127.0.0.1"
+            return fallback ?: "127.0.0.1"
         }
 
         fun fetchBootstrapPeers(network: Network? = null, fp: String = "", lanIp: String = ""): List<String> {
@@ -419,15 +494,20 @@ class GhostVpnService : VpnService() {
                     try {
                         val fp = try { GhostCore.getFingerprint(p) } catch (_: Throwable) { "" }
                         val lanIp = getLocalIpAddress()
+                        val selfEndpoint = if (lanIp.isNotEmpty() && lanIp != "127.0.0.1") "$lanIp:55225" else ""
                         val peers = fetchBootstrapPeers(null, fp, lanIp)
                         for (peer in peers) {
+                            if (peer == selfEndpoint) continue
                             try {
                                 GhostCore.connectPeer(p, peer)
                             } catch (_: Throwable) {}
                         }
+                        val active = GhostCore.getActiveHub(p)
+                        if (active.isNotEmpty()) currentHubAddr = active
                     } catch (_: Throwable) {}
 
-                    onComplete?.invoke(count)
+                    val totalPeers = try { getDiscoveredPeers().size.coerceAtLeast(count) } catch (_: Throwable) { count }
+                    onComplete?.invoke(totalPeers)
                 }.start()
             } else {
                 onComplete?.invoke(0)

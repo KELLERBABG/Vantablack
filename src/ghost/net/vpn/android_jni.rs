@@ -386,6 +386,86 @@ fn perform_handshake(
     None
 }
 
+fn detect_local_lan_subnets() -> (Vec<[u8; 3]>, std::collections::HashSet<std::net::Ipv4Addr>) {
+    let mut preferred_subnets: Vec<[u8; 3]> = Vec::new();
+    let mut other_subnets: Vec<[u8; 3]> = Vec::new();
+    let mut local_ips: std::collections::HashSet<std::net::Ipv4Addr> =
+        std::collections::HashSet::new();
+
+    #[cfg(unix)]
+    unsafe {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifap) == 0 && !ifap.is_null() {
+            let mut cur = ifap;
+            while !cur.is_null() {
+                let ifa = &*cur;
+                if !ifa.ifa_addr.is_null()
+                    && (*ifa.ifa_addr).sa_family as libc::c_int == libc::AF_INET
+                {
+                    let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let ip_u32 = u32::from_be(sin.sin_addr.s_addr);
+                    let ipv4 = std::net::Ipv4Addr::from(ip_u32);
+                    local_ips.insert(ipv4);
+
+                    let flags = ifa.ifa_flags as libc::c_int;
+                    let is_up = (flags & libc::IFF_UP) != 0;
+                    let is_loopback = (flags & libc::IFF_LOOPBACK) != 0;
+                    let is_p2p = (flags & libc::IFF_POINTOPOINT) != 0;
+
+                    let name = if !ifa.ifa_name.is_null() {
+                        std::ffi::CStr::from_ptr(ifa.ifa_name)
+                            .to_string_lossy()
+                            .to_ascii_lowercase()
+                    } else {
+                        String::new()
+                    };
+
+                    let is_ignored_iface = name.starts_with("tun")
+                        || name.starts_with("ppp")
+                        || name.starts_with("ccmni")
+                        || name.starts_with("rmnet")
+                        || name.starts_with("dummy")
+                        || name.starts_with("lo")
+                        || name.starts_with("clat")
+                        || name.starts_with("v4-");
+
+                    let vo = ipv4.octets();
+                    let is_valid_lan = vo[0] != 127
+                        && vo[0] != 0
+                        && !(vo[0] == 169 && vo[1] == 254)
+                        && !(vo[0] == 10 && vo[1] == 66 && vo[2] == 0);
+
+                    if is_up && !is_loopback && !is_p2p && !is_ignored_iface && is_valid_lan {
+                        let sn = [vo[0], vo[1], vo[2]];
+                        if name.starts_with("wlan")
+                            || name.starts_with("eth")
+                            || name.starts_with("ap")
+                            || name.starts_with("rndis")
+                            || name.starts_with("swlan")
+                        {
+                            if !preferred_subnets.contains(&sn) {
+                                preferred_subnets.push(sn);
+                            }
+                        } else if !other_subnets.contains(&sn) && !preferred_subnets.contains(&sn) {
+                            other_subnets.push(sn);
+                        }
+                    }
+                }
+                cur = ifa.ifa_next;
+            }
+            libc::freeifaddrs(ifap);
+        }
+    }
+
+    for sn in other_subnets {
+        if !preferred_subnets.contains(&sn) {
+            preferred_subnets.push(sn);
+        }
+    }
+
+    (preferred_subnets, local_ips)
+}
+
 fn perform_lan_discovery(
     sock: &UdpSocket,
     identity: &GhostIdentity,
@@ -406,32 +486,12 @@ fn perform_lan_discovery(
     let raw = l4_rs::encode(&mut c);
     let tag = [0u8; 16];
 
-    let mut subnets: Vec<[u8; 3]> = Vec::new();
-
-    // Dynamically detect local LAN subnets
-    for common in &[[192, 168, 178], [192, 168, 1], [192, 168, 0], [10, 0, 0]] {
-        if let Ok(temp_sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
-            if temp_sock
-                .connect(format!("{}.{}.{}.1:80", common[0], common[1], common[2]))
-                .is_ok()
-            {
-                if let Ok(la) = temp_sock.local_addr() {
-                    if let std::net::IpAddr::V4(v4) = la.ip() {
-                        let vo = v4.octets();
-                        if vo[0] != 127 && vo[0] != 0 && !(vo[0] == 169 && vo[1] == 254) {
-                            let sn = [vo[0], vo[1], vo[2]];
-                            if !subnets.contains(&sn) {
-                                subnets.push(sn);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if subnets.is_empty() {
-        subnets.push([192, 168, 178]);
-    }
+    let (subnets, local_ips) = detect_local_lan_subnets();
+    alog!(
+        "perform_lan_discovery: detected LAN subnets {:?}, local IPs {:?}",
+        subnets,
+        local_ips
+    );
 
     // 1. Broadcast standard signed beacons (112B: prefix + pk + sig) to 2270 and 55225
     // so any PC running Global Ghost Net immediately auto-handshakes this device
@@ -462,13 +522,15 @@ fn perform_lan_discovery(
     // 2. Active subnet unicast probe: send handshake shards directly to hosts on LAN
     for sn in &subnets {
         for host in 1..=254 {
+            let target_ip = std::net::Ipv4Addr::new(sn[0], sn[1], sn[2], host);
+            if local_ips.contains(&target_ip) {
+                continue;
+            }
             if host % 16 == 0 {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            let target_sa: std::net::SocketAddr = std::net::SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::new(sn[0], sn[1], sn[2], host)),
-                55225,
-            );
+            let target_sa: std::net::SocketAddr =
+                std::net::SocketAddr::new(std::net::IpAddr::V4(target_ip), 55225);
             for i in 0..3 {
                 let framed = frame_shard(&raw[i]);
                 let gtf = build_gtf_frame([0, 0, 0, 0], 0, i as u8, &framed, &tag, false);
@@ -582,7 +644,7 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
     let session_hash = *core.session_hash.lock();
 
     match TunDevice::read_packet(tun, buf) {
-        Ok(n) if n > 0 => {
+        Ok(n) if n >= 20 && (buf[0] >> 4) == 4 => {
             if let Some(wire) = seal_from_tun(&core.state, &buf[..n]) {
                 let ctr = core.tx_seq.fetch_add(1, Ordering::Relaxed);
                 let frame = tunnel_frame(
@@ -598,6 +660,25 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
         }
         _ => {}
     }
+}
+
+fn is_tunnel_healthy(core: &AndroidCore) -> bool {
+    if core.session_key.lock().is_none() || core.hub_addr.is_none() {
+        return false;
+    }
+    let tx_sent = core.tx_ctr.load(Ordering::Relaxed);
+    if tx_sent < 6 {
+        return true;
+    }
+    let last_in = core.state.last_inbound_ms();
+    if last_in == 0 {
+        return false;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    now_ms.saturating_sub(last_in) < 12_000
 }
 
 /// One mesh→TUN step: recv a GTF datagram from hub, open it, and write the inner
@@ -621,22 +702,25 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
 
     // Inbound handshake initiation from a peer (counter == 0)
     if ctr == 0 {
-        // If we already have an active tunnel with an established hub, DO NOT rotate/evict it!
+        let healthy = is_tunnel_healthy(core);
+        // If we already have a healthy active tunnel with this hub, do not rotate/evict it
         if let Some(hub) = core.hub_addr {
-            if (src == hub || src.ip() == hub.ip()) && core.session_key.lock().is_some() {
+            if (src == hub || src.ip() == hub.ip()) && healthy {
                 return false;
             }
         }
-        if !core.known_peers.lock().contains_key(&src) {
+        if !healthy || !core.known_peers.lock().contains_key(&src) {
             if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
                 core.known_peers.lock().insert(src, (key, sh));
-                if core.hub_addr.is_none()
+                if !healthy
+                    || core.hub_addr.is_none()
                     || core.hub_addr == Some(src)
                     || core.hub_addr.map(|h| h.ip()) == Some(src.ip())
                 {
                     core.hub_addr = Some(src);
                     core.state.rotate_epoch();
                     core.state.set_key(key);
+                    core.state.note_inbound();
                     *core.session_key.lock() = Some(key);
                     *core.session_hash.lock() = sh;
                     core.tx_seq.store(2, Ordering::Relaxed);
@@ -814,25 +898,29 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
     {
         if let Ok(hub) = addr.parse::<std::net::SocketAddr>() {
             let hub = canonicalize_addr(hub);
-            core.hub_addr = Some(hub);
             if let Some((key, sh)) = perform_handshake(&sock, hub, &core.identity) {
+                core.hub_addr = Some(hub);
                 core.known_peers.lock().insert(hub, (key, sh));
                 core.state.rotate_epoch();
                 core.state.set_key(key);
+                core.state.note_inbound();
                 *core.session_key.lock() = Some(key);
                 *core.session_hash.lock() = sh;
                 core.tx_seq.store(2, Ordering::Relaxed);
             }
         }
-    } else {
-        // Autonomous Wi-Fi Discovery
+    }
+
+    // Always run LAN discovery if no active hub session was established yet
+    if core.session_key.lock().is_none() {
         let found = perform_lan_discovery(&sock, &core.identity);
         for (peer, key, sh) in found {
             core.known_peers.lock().insert(peer, (key, sh));
-            if core.hub_addr.is_none() {
+            if core.session_key.lock().is_none() {
                 core.hub_addr = Some(peer);
                 core.state.rotate_epoch();
                 core.state.set_key(key);
+                core.state.note_inbound();
                 *core.session_key.lock() = Some(key);
                 *core.session_hash.lock() = sh;
                 core.tx_seq.store(2, Ordering::Relaxed);
@@ -885,21 +973,39 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
         return 0;
     };
-    // If tunnel is already established to a designated hub, do not sweep the LAN over the active tunnel socket!
-    if core.hub_addr.is_some() && core.session_key.lock().is_some() {
-        return core.known_peers.lock().len() as jint;
+    let healthy = is_tunnel_healthy(core);
+    // If tunnel is already established and receiving traffic from a hub, do not sweep the LAN over the active tunnel socket!
+    if healthy {
+        return core.known_peers.lock().len().max(1) as jint;
     }
     let Some(sock) = core.sock.as_ref() else {
         return 0;
     };
+    if let Some(hub) = core.hub_addr {
+        if let Some((key, sh)) = perform_handshake(sock, hub, &core.identity) {
+            core.known_peers.lock().insert(hub, (key, sh));
+            core.state.rotate_epoch();
+            core.state.set_key(key);
+            core.state.note_inbound();
+            *core.session_key.lock() = Some(key);
+            *core.session_hash.lock() = sh;
+            core.tx_seq.store(2, Ordering::Relaxed);
+            alog!(
+                "scanLan: re-established session with designated hub {:?}",
+                hub
+            );
+            return core.known_peers.lock().len().max(1) as jint;
+        }
+    }
     let found = perform_lan_discovery(sock, &core.identity);
     let count = found.len();
     for (peer, key, sh) in found {
         core.known_peers.lock().insert(peer, (key, sh));
-        if core.hub_addr.is_none() || core.hub_addr == Some(peer) {
+        if !is_tunnel_healthy(core) || core.hub_addr.is_none() || core.hub_addr == Some(peer) {
             core.hub_addr = Some(peer);
             core.state.rotate_epoch();
             core.state.set_key(key);
+            core.state.note_inbound();
             *core.session_key.lock() = Some(key);
             *core.session_hash.lock() = sh;
             core.tx_seq.store(2, Ordering::Relaxed);
@@ -937,18 +1043,26 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
         return 0;
     };
     let peer = canonicalize_addr(peer);
-    if core.hub_addr == Some(peer) && core.session_key.lock().is_some() {
+    let (_, local_ips) = detect_local_lan_subnets();
+    if let std::net::IpAddr::V4(v4) = peer.ip() {
+        if local_ips.contains(&v4) || v4.is_loopback() {
+            return 0;
+        }
+    }
+    let healthy = is_tunnel_healthy(core);
+    if core.hub_addr == Some(peer) && healthy {
         return 1;
     }
-    if core.known_peers.lock().contains_key(&peer) {
+    if core.known_peers.lock().contains_key(&peer) && healthy {
         return 1;
     }
     if let Some((key, sh)) = perform_handshake(sock, peer, &core.identity) {
         core.known_peers.lock().insert(peer, (key, sh));
-        if core.hub_addr.is_none() || core.hub_addr == Some(peer) {
+        if !is_tunnel_healthy(core) || core.hub_addr.is_none() || core.hub_addr == Some(peer) {
             core.hub_addr = Some(peer);
             core.state.rotate_epoch();
             core.state.set_key(key);
+            core.state.note_inbound();
             *core.session_key.lock() = Some(key);
             *core.session_hash.lock() = sh;
             core.tx_seq.store(2, Ordering::Relaxed);
@@ -959,6 +1073,101 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
     } else {
         tracing::debug!(peer = %peer, "Handshake to bootstrap peer failed");
         0
+    }
+}
+
+/// `fun selectHub(ptr: Long, peerAddr: String): Boolean`
+/// Explicitly switch the active exit hub to `peerAddr`.
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_selectHub(
+    mut env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    peer_addr: JString,
+) -> jboolean {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
+        return 0;
+    };
+    let Some(sock) = core.sock.as_ref() else {
+        return 0;
+    };
+    let addr_str: String = match env.get_string(&peer_addr) {
+        Ok(s) => s.into(),
+        Err(_) => return 0,
+    };
+    let Ok(peer) = addr_str.parse::<std::net::SocketAddr>() else {
+        return 0;
+    };
+    let peer = canonicalize_addr(peer);
+    let session = core
+        .known_peers
+        .lock()
+        .get(&peer)
+        .copied()
+        .or_else(|| perform_handshake(sock, peer, &core.identity));
+    if let Some((key, sh)) = session {
+        core.known_peers.lock().insert(peer, (key, sh));
+        core.hub_addr = Some(peer);
+        core.state.rotate_epoch();
+        core.state.set_key(key);
+        core.state.note_inbound();
+        *core.session_key.lock() = Some(key);
+        *core.session_hash.lock() = sh;
+        core.tx_seq.store(2, Ordering::Relaxed);
+        alog!("selectHub: switched active exit hub to {:?}", peer);
+        1
+    } else {
+        0
+    }
+}
+
+/// `fun getActiveHub(ptr: Long): String`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getActiveHub(
+    env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jstring {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    let hub_str = if core.session_key.lock().is_some() {
+        core.hub_addr.map(|a| a.to_string()).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    match env.new_string(&hub_str) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// `fun getKnownPeers(ptr: Long): String` (comma-separated list of ip:port)
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getKnownPeers(
+    env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jstring {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    let mut list: Vec<String> = Vec::new();
+    if let Some(hub) = core.hub_addr {
+        if core.session_key.lock().is_some() {
+            list.push(hub.to_string());
+        }
+    }
+    for peer in core.known_peers.lock().keys() {
+        let s = peer.to_string();
+        if !list.contains(&s) {
+            list.push(s);
+        }
+    }
+    let joined = list.join(",");
+    match env.new_string(&joined) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 

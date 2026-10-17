@@ -131,12 +131,10 @@ impl VpnHub {
         self.leases.lease_for(fp); // ensure a lease exists
         if self.leases.rotate_epoch(fp, endpoint).is_some() {
             self.ingress.evict(fp);
+            self.ingress_epochs.lock().remove(fp);
             self.sessions.lock().remove(fp);
             self.tx_counters.lock().remove(fp);
             self.readers_spawned.lock().retain(|k| k.fp != fp);
-            // Fresh epoch: the client restarts its counter space, so the
-            // hub must too (keyed by fingerprint only).
-            self.tx_counters.lock().remove(fp);
             tracing::info!(peer = %fp, "VPN handshake: epoch rotated, state evicted");
         }
     }
@@ -242,14 +240,10 @@ impl VpnHub {
                 let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
                 let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
                 // If client queries the hub overlay directly on port 53 (DNS), redirect to configured privacy DNS
-                let effective_dst = if (dst == super::netstack::HUB_ADDR
+                let is_hub_dns = (dst == super::netstack::HUB_ADDR
                     || dst == Ipv4Addr::new(10, 66, 0, 1))
-                    && dport == 53
-                {
-                    self.cfg.dns_server
-                } else {
-                    dst
-                };
+                    && dport == 53;
+                let effective_dst = if is_hub_dns { self.cfg.dns_server } else { dst };
                 let key = FlowKey {
                     fp: fp.to_string(),
                     overlay_src: overlay,
@@ -273,6 +267,14 @@ impl VpnHub {
                         }
                     } else {
                         tracing::info!(peer = %fp, dst = %dst_addr, bytes = udp_payload.len(), "VPN UDP sent to WAN/LAN");
+                    }
+                    // When resolving via the hub overlay DNS (10.66.0.1:53) with default settings,
+                    // also send to 9.9.9.9:53 so networks filtering 1.1.1.1 still resolve without delay.
+                    if is_hub_dns && effective_dst == Ipv4Addr::new(1, 1, 1, 1) {
+                        let _ = flow.socket.send_to(
+                            &udp_payload,
+                            SocketAddr::from((Ipv4Addr::new(9, 9, 9, 9), 53)),
+                        );
                     }
                     // One reader thread per live flow; the reader drops its
                     // dedup key on exit so post-idle queries re-spawn.

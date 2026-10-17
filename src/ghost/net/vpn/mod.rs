@@ -228,18 +228,20 @@ impl LeaseTable {
                     if l.overlay_ip == h {
                         return (h, false);
                     }
-                    let old_ip = l.overlay_ip;
-                    self.by_ip.lock().remove(&old_ip);
-                    self.by_ip.lock().insert(h, fingerprint.to_string());
-                    let mut updated_l = l.clone();
-                    updated_l.overlay_ip = h;
-                    fps.insert(fingerprint.to_string(), updated_l);
-                    return (h, true);
                 }
                 let claimed_by_other = fps
                     .values()
                     .any(|l| l.overlay_ip == h && l.fingerprint != fingerprint);
                 if !claimed_by_other {
+                    if let Some(l) = fps.get(fingerprint) {
+                        let old_ip = l.overlay_ip;
+                        self.by_ip.lock().remove(&old_ip);
+                        self.by_ip.lock().insert(h, fingerprint.to_string());
+                        let mut updated_l = l.clone();
+                        updated_l.overlay_ip = h;
+                        fps.insert(fingerprint.to_string(), updated_l);
+                        return (h, true);
+                    }
                     let mut next = self.next_host.lock();
                     self.by_ip.lock().insert(h, fingerprint.to_string());
                     fps.insert(

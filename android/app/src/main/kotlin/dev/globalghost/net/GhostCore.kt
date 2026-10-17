@@ -53,4 +53,13 @@ object GhostCore {
 
     /** Connect to an external peer endpoint (from bootstrap tracker or manual). */
     external fun connectPeer(ptr: Long, peerAddr: String): Boolean
+
+    /** Explicitly switch the active exit hub to peerAddr. */
+    external fun selectHub(ptr: Long, peerAddr: String): Boolean
+
+    /** Return the currently active exit hub endpoint ("ip:port"), or "" if none. */
+    external fun getActiveHub(ptr: Long): String
+
+    /** Return comma-separated list of all authenticated peer endpoints ("ip:port,..."). */
+    external fun getKnownPeers(ptr: Long): String
 }

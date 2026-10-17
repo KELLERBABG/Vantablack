@@ -123,53 +123,17 @@ pub fn init_vpn_mode_with_rotator(
                 .unwrap_or(false)
             || std::env::args().any(|arg| arg == "--exit" || arg == "--exit-node" || arg == "-e");
 
-        match std::env::var("GHOST_VPN").as_deref() {
-            _ if is_exit => {
-                let (subnet, prefix) = std::env::var("GHOST_VPN_LAN_SUBNET")
-                    .ok()
-                    .and_then(|s| {
-                        let (a, pr) = s.split_once('/')?;
-                        Some((
-                            a.parse::<std::net::Ipv4Addr>().ok()?,
-                            pr.parse::<u8>().ok()?,
-                        ))
-                    })
-                    .unwrap_or((std::net::Ipv4Addr::new(192, 168, 1, 0), 24));
-                let cfg = VpnConfig {
-                    role: VpnRole::Hub,
-                    lan_subnet: (subnet, prefix),
-                    // Default to Quad9/Cloudflare Privacy DNS (1.1.1.1) to eliminate ISP DNS leaks
-                    dns_server: std::env::var("GHOST_VPN_DNS")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(std::net::Ipv4Addr::new(1, 1, 1, 1)),
-                    search_domain: std::env::var("GHOST_VPN_SEARCH")
-                        .ok()
-                        .filter(|x| !x.is_empty()),
-                    // If GHOST_VPN_CLIENTS is not set, allow all authenticated mesh peers (exit mode)
-                    allowed_fingerprints: std::env::var("GHOST_VPN_CLIENTS")
-                        .ok()
-                        .map(|v| {
-                            v.split(',')
-                                .map(|x| x.trim().to_string())
-                                .filter(|x| !x.is_empty())
-                                .collect()
-                        })
-                        .unwrap_or_else(|| vec!["any".to_string()]),
-                    lan_bind_addr: std::env::var("GHOST_VPN_BIND")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
-                    ..VpnConfig::default()
-                };
-                tracing::info!(
-                    "VPN Hub: active as Exit Node (privacy DNS: {}, allowlisted clients: {:?})",
-                    cfg.dns_server,
-                    cfg.allowed_fingerprints
-                );
-                Ok(Some(VpnMode::Hub(VpnHub::start_with_rotator(cfg, rotator))))
-            }
-            Ok("client") => {
+        let vpn_env = std::env::var("GHOST_VPN")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let vpn_disabled = matches!(
+            vpn_env.as_str(),
+            "0" | "false" | "off" | "none" | "disabled"
+        );
+
+        match vpn_env.as_str() {
+            "client" if !is_exit => {
                 let hub_fp = std::env::var("GHOST_VPN_HUB_FP").unwrap_or_default();
                 if hub_fp.is_empty() {
                     anyhow::bail!("VPN client requires GHOST_VPN_HUB_FP (hub fingerprint)");
@@ -268,7 +232,74 @@ pub fn init_vpn_mode_with_rotator(
                     tun,
                 )))
             }
-            _ => Ok(None),
+            _ if vpn_disabled && !is_exit => Ok(None),
+            _ => {
+                let (subnet, prefix) = std::env::var("GHOST_VPN_LAN_SUBNET")
+                    .ok()
+                    .and_then(|s| {
+                        let (a, pr) = s.split_once('/')?;
+                        Some((
+                            a.parse::<std::net::Ipv4Addr>().ok()?,
+                            pr.parse::<u8>().ok()?,
+                        ))
+                    })
+                    .unwrap_or_else(|| {
+                        for target in &["1.1.1.1:80", "8.8.8.8:80", "9.9.9.9:53"] {
+                            if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                                if sock.connect(target).is_ok() {
+                                    if let Ok(la) = sock.local_addr() {
+                                        if let std::net::IpAddr::V4(v4) = la.ip() {
+                                            let o = v4.octets();
+                                            if o[0] != 127
+                                                && o[0] != 0
+                                                && !(o[0] == 10 && o[1] == 66 && o[2] == 0)
+                                            {
+                                                return (
+                                                    std::net::Ipv4Addr::new(o[0], o[1], o[2], 0),
+                                                    24,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        (std::net::Ipv4Addr::new(0, 0, 0, 0), 0)
+                    });
+                let cfg = VpnConfig {
+                    role: VpnRole::Hub,
+                    lan_subnet: (subnet, prefix),
+                    // Default to Quad9/Cloudflare Privacy DNS (1.1.1.1) to eliminate ISP DNS leaks
+                    dns_server: std::env::var("GHOST_VPN_DNS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(std::net::Ipv4Addr::new(1, 1, 1, 1)),
+                    search_domain: std::env::var("GHOST_VPN_SEARCH")
+                        .ok()
+                        .filter(|x| !x.is_empty()),
+                    // If GHOST_VPN_CLIENTS is not set, allow all authenticated mesh peers (exit mode)
+                    allowed_fingerprints: std::env::var("GHOST_VPN_CLIENTS")
+                        .ok()
+                        .map(|v| {
+                            v.split(',')
+                                .map(|x| x.trim().to_string())
+                                .filter(|x| !x.is_empty())
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec!["any".to_string()]),
+                    lan_bind_addr: std::env::var("GHOST_VPN_BIND")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+                    ..VpnConfig::default()
+                };
+                tracing::info!(
+                    "VPN Hub: active as Exit Node (privacy DNS: {}, allowlisted clients: {:?})",
+                    cfg.dns_server,
+                    cfg.allowed_fingerprints
+                );
+                Ok(Some(VpnMode::Hub(VpnHub::start_with_rotator(cfg, rotator))))
+            }
         }
     }
     #[cfg(not(feature = "vpn"))]

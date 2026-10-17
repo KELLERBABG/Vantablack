@@ -23,6 +23,7 @@ class MainActivity : Activity() {
 
     private val VPN_REQUEST_CODE = 1001
     private lateinit var editRemoteAddr: EditText
+    private lateinit var editDnsServer: EditText
     private lateinit var btnConnect: Button
     private lateinit var btnScanLan: Button
     private lateinit var btnLeakTest: Button
@@ -226,7 +227,7 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(createDimLabel("DNS SERVERS"))
                 txtDnsServer = TextView(context).apply {
-                    text = "1.1.1.1, 9.9.9.9"
+                    text = "Auto (Hub 10.66.0.1)"
                     textSize = 13f
                     setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                     setTextColor(Color.parseColor("#f1f5f9"))
@@ -324,12 +325,16 @@ class MainActivity : Activity() {
         }
         layout.addView(cardId)
 
-        // ── Manual Target Override (Optional) ──
+        // ── Optional Gateway & DNS Overrides (Both Default to Auto) ──
         val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
-        val savedHub = prefs.getString("hub_addr", null)
+        if (prefs.getString("hub_addr", null) == "192.168.178.27:55225") {
+            prefs.edit().remove("hub_addr").apply()
+        }
+        val savedHub = prefs.getString("hub_addr", null)?.takeIf { it != "192.168.178.27:55225" }
+        val savedDns = prefs.getString("dns_server", null)
         editRemoteAddr = EditText(this).apply {
-            hint = "192.168.178.27:55225"
-            setText(savedHub ?: "192.168.178.27:55225")
+            hint = "Exit Gateway: Auto-Discover (or Hub IP:Port)"
+            setText(savedHub ?: "")
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#475569"))
             textSize = 12f
@@ -343,10 +348,31 @@ class MainActivity : Activity() {
             val params = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 4, 0, 12) }
+            ).apply { setMargins(0, 4, 0, 8) }
             layoutParams = params
         }
         layout.addView(editRemoteAddr)
+
+        editDnsServer = EditText(this).apply {
+            hint = "DNS Server: Auto via Exit Hub (or custom IP)"
+            setText(savedDns ?: "")
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#475569"))
+            textSize = 12f
+            setTypeface(Typeface.MONOSPACE)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0e1017"))
+                setStroke(1, Color.parseColor("#1e2330"))
+                cornerRadius = 8f
+            }
+            setPadding(24, 16, 24, 16)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, 12) }
+            layoutParams = params
+        }
+        layout.addView(editDnsServer)
 
         // ── Primary Action Button ──
         btnConnect = Button(this).apply {
@@ -424,6 +450,17 @@ class MainActivity : Activity() {
 
         setContentView(scroll)
         updateStatus()
+
+        if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isRunning) {
+            handler.postDelayed({ startVpn() }, 300)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isRunning) {
+            handler.postDelayed({ startVpn() }, 300)
+        }
     }
 
     override fun onResume() {
@@ -488,6 +525,7 @@ class MainActivity : Activity() {
 
             val activeExit = GhostVpnService.getActiveExitNode()
             txtExitNode.text = if (activeExit.isNotEmpty() && activeExit != "auto") activeExit else "Auto"
+            txtDnsServer.text = GhostVpnService.activeDnsDisplay
 
             val stats = GhostVpnService.getStats()
             val rxPkts = if (stats.isNotEmpty()) stats[0] else 0L
@@ -527,7 +565,7 @@ class MainActivity : Activity() {
                 }
             }
 
-            txtMode.text = "Route: 0.0.0.0/0, ::/0 (Full Tunnel)"
+            txtMode.text = "Route: 0.0.0.0/0 (Full Mesh Tunnel)"
             updateUiState(true)
         } else {
             txtMode.text = "Standby"
@@ -549,7 +587,21 @@ class MainActivity : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 4, 0, 4)
+            setPadding(0, 8, 0, 8)
+            setOnClickListener {
+                if (GhostVpnService.isRunning && !isExit && addr.isNotEmpty() && !addr.startsWith("Auto")) {
+                    GhostVpnService.selectExitNode(addr) { ok ->
+                        handler.post {
+                            if (ok) {
+                                Toast.makeText(this@MainActivity, "Exit Gateway switched to $addr", Toast.LENGTH_SHORT).show()
+                                updateStatus()
+                            } else {
+                                Toast.makeText(this@MainActivity, "Failed to switch exit to $addr", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            }
 
             addView(TextView(context).apply {
                 text = if (isExit) "● " else "○ "
@@ -566,10 +618,10 @@ class MainActivity : Activity() {
             })
 
             addView(TextView(context).apply {
-                text = if (isExit) "[Exit]" else "[Peer]"
+                text = if (isExit) "[Active Exit]" else "[Tap to Use as Exit]"
                 textSize = 11f
                 setTypeface(Typeface.MONOSPACE)
-                setTextColor(if (isExit) Color.parseColor("#10b981") else Color.parseColor("#475569"))
+                setTextColor(if (isExit) Color.parseColor("#10b981") else Color.parseColor("#38bdf8"))
             })
         }
     }
@@ -604,8 +656,10 @@ class MainActivity : Activity() {
 
     private fun startVpn() {
         val targetAddr = editRemoteAddr.text.toString().trim().ifEmpty { "auto" }
+        val customDns = editDnsServer.text.toString().trim().ifEmpty { "auto" }
         getSharedPreferences("ggn_vpn", MODE_PRIVATE).edit()
             .putString("hub_addr", if (targetAddr == "auto") "" else targetAddr)
+            .putString("dns_server", if (customDns == "auto") "" else customDns)
             .apply()
 
         val vpnIntent = VpnService.prepare(this)
@@ -620,9 +674,11 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
             val targetAddr = editRemoteAddr.text.toString().trim().ifEmpty { "auto" }
+            val customDns = editDnsServer.text.toString().trim().ifEmpty { "auto" }
             val serviceIntent = Intent(this, GhostVpnService::class.java).apply {
                 putExtra(GhostVpnService.EXTRA_HUB_FP, "auto")
                 putExtra(GhostVpnService.EXTRA_HUB_ADDR, targetAddr)
+                putExtra(GhostVpnService.EXTRA_DNS, customDns)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)

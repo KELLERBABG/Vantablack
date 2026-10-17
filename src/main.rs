@@ -4548,6 +4548,10 @@ fn is_virtual_or_link_local(ip: std::net::Ipv4Addr) -> bool {
     if oct[0] == 169 && oct[1] == 254 {
         return true;
     }
+    // Vantablack mesh TUN overlay subnet (10.66.0.0/24)
+    if oct[0] == 10 && oct[1] == 66 && oct[2] == 0 {
+        return true;
+    }
     // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255) is heavily used by Hyper-V / WSL2 / Docker
     if oct[0] == 172 && (16..=31).contains(&oct[1]) {
         return true;
@@ -4555,19 +4559,17 @@ fn is_virtual_or_link_local(ip: std::net::Ipv4Addr) -> bool {
     false
 }
 
-/// Best-effort LAN address of this machine, used to build the pairing URI.
-/// Probes common physical home gateways first to prevent virtual adapters (WSL/Hyper-V/Docker)
-/// from hijacking the primary LAN IP.
+/// Best-effort LAN address of this machine, used to build the pairing URI and LAN discovery.
+/// Queries OS routing table against public WAN endpoints first so any router subnet works,
+/// while excluding virtual/overlay adapters (WSL/Hyper-V/Docker/TUN).
 fn detect_lan_ip() -> String {
     let candidates = [
-        "192.168.178.1:80", // Fritz!Box
-        "192.168.1.1:80",   // Standard home router
-        "192.168.0.1:80",   // Standard cable/D-Link
-        "192.168.2.1:80",   // Speedport
-        "10.0.0.1:80",      // Standard 10.x home router
-        "10.1.1.1:80",
-        "1.1.1.1:80", // Fallback public WAN
+        "1.1.1.1:80",
         "8.8.8.8:80",
+        "9.9.9.9:53",
+        "192.168.1.1:80",
+        "192.168.0.1:80",
+        "10.0.0.1:80",
     ];
 
     let mut fallback_virtual = None;
@@ -4583,6 +4585,9 @@ fn detect_lan_ip() -> String {
                             && ipv4.octets()[0] != 127
                             && ipv4.octets()[0] != 0
                             && !(ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254)
+                            && !(ipv4.octets()[0] == 10
+                                && ipv4.octets()[1] == 66
+                                && ipv4.octets()[2] == 0)
                         {
                             fallback_virtual = Some(ipv4.to_string());
                         }
@@ -4714,13 +4719,13 @@ async fn sweep_lan_subnet(
         if let Ok(ip) = local_ip_str.parse::<std::net::Ipv4Addr>() {
             set.insert(ip);
         }
-        // Probe common gateways to discover additional local interface IPs
         for target in &[
-            "192.168.178.1:80",
+            "1.1.1.1:80",
+            "8.8.8.8:80",
+            "9.9.9.9:53",
             "192.168.1.1:80",
             "192.168.0.1:80",
             "10.0.0.1:80",
-            "1.1.1.1:80",
         ] {
             if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
                 if sock.connect(target).is_ok() {
@@ -4737,37 +4742,26 @@ async fn sweep_lan_subnet(
 
     let mut subnets_to_sweep: Vec<[u8; 3]> = Vec::new();
 
-    if let Ok(local_ip) = local_ip_str.parse::<std::net::Ipv4Addr>() {
-        let oct = local_ip.octets();
-        if oct[0] != 127 && oct[0] != 0 && !(oct[0] == 169 && oct[1] == 254) {
-            subnets_to_sweep.push([oct[0], oct[1], oct[2]]);
-        }
-    }
-
-    // Proactively check if other common physical subnets (e.g. Fritz!Box 192.168.178.x or 192.168.1.x)
-    // are routable on any local interface and sweep them as well
-    for common in &[[192, 168, 178], [192, 168, 1], [192, 168, 0]] {
-        if !subnets_to_sweep.contains(common) {
-            if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
-                if sock
-                    .connect(format!("{}.{}.{}.1:80", common[0], common[1], common[2]))
-                    .is_ok()
-                {
-                    if let Ok(la) = sock.local_addr() {
-                        if let std::net::IpAddr::V4(v4) = la.ip() {
-                            let vo = v4.octets();
-                            if [vo[0], vo[1], vo[2]] == *common {
-                                subnets_to_sweep.push(*common);
-                            }
-                        }
-                    }
-                }
+    for &ip in &local_ips {
+        if !is_virtual_or_link_local(ip) {
+            let oct = ip.octets();
+            let sn = [oct[0], oct[1], oct[2]];
+            if !subnets_to_sweep.contains(&sn) {
+                subnets_to_sweep.push(sn);
             }
         }
     }
-
     if subnets_to_sweep.is_empty() {
-        subnets_to_sweep.push([192, 168, 178]);
+        if let Ok(local_ip) = local_ip_str.parse::<std::net::Ipv4Addr>() {
+            let oct = local_ip.octets();
+            if oct[0] != 127
+                && oct[0] != 0
+                && !(oct[0] == 169 && oct[1] == 254)
+                && !(oct[0] == 10 && oct[1] == 66 && oct[2] == 0)
+            {
+                subnets_to_sweep.push([oct[0], oct[1], oct[2]]);
+            }
+        }
     }
 
     // 1. Broadcast signed beacons from the main mesh socket so the reply port
@@ -5019,16 +5013,28 @@ async fn run_node(
         .as_ref()
         .and_then(|h| hex::decode(h).ok())
         .and_then(|b| b.try_into().ok());
-    // Exit-node determination:
-    let is_exit_node = std::env::var("GHOST_EXIT")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    // Exit-node determination (enabled by default on desktop/server nodes so
+    // paired mobile and mesh VPN clients get WAN egress out of the box unless
+    // explicitly disabled via GHOST_VPN=client|off or GHOST_EXIT=0):
+    let vpn_env_mode = std::env::var("GHOST_VPN")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let exit_explicitly_off = std::env::var("GHOST_EXIT")
+        .map(|v| v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
         .unwrap_or(false)
+        || matches!(
+            vpn_env_mode.as_str(),
+            "client" | "0" | "false" | "off" | "none" | "disabled"
+        );
+    let is_exit_node = !exit_explicitly_off
+        || std::env::var("GHOST_EXIT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
         || std::env::var("GHOST_EXIT_NODE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
-        || std::env::var("GHOST_VPN")
-            .map(|v| v == "hub")
-            .unwrap_or(false)
+        || vpn_env_mode == "hub"
         || std::env::args().any(|arg| arg == "--exit" || arg == "--exit-node" || arg == "-e");
 
     let mut exit_ips: Vec<std::net::IpAddr> = std::env::var("GHOST_EXIT_IPS")
@@ -5042,19 +5048,16 @@ async fn run_node(
         .unwrap_or_default();
 
     if exit_ips.is_empty() && is_exit_node {
-        for target in &[
-            "1.1.1.1:80",
-            "8.8.8.8:80",
-            "9.9.9.9:80",
-            "192.168.178.1:80",
-            "192.168.1.1:80",
-            "10.0.0.1:80",
-        ] {
+        for target in &["1.1.1.1:80", "8.8.8.8:80", "9.9.9.9:80"] {
             if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
                 if sock.connect(target).is_ok() {
                     if let Ok(la) = sock.local_addr() {
                         let ip = la.ip();
-                        if !ip.is_loopback() && !exit_ips.contains(&ip) {
+                        let is_valid = match ip {
+                            std::net::IpAddr::V4(v4) => !is_virtual_or_link_local(v4),
+                            std::net::IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_unspecified(),
+                        };
+                        if is_valid && !exit_ips.contains(&ip) {
                             exit_ips.push(ip);
                         }
                     }

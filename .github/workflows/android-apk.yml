@@ -34,6 +34,11 @@ jobs:
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: android-apk
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
 
@@ -53,6 +58,7 @@ jobs:
         working-directory: android
         run: |
           gradle assembleDebug --no-daemon --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk ../vantablack-0.8.12-android.apk
 
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
@@ -60,3 +66,13 @@ jobs:
           name: GlobalGhostNet-Android-VPN
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Update Latest Release APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.8.12
+          files: |
+            vantablack-0.8.12-android.apk
+            android/app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
