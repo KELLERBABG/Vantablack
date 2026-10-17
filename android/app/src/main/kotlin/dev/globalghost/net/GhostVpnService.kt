@@ -240,16 +240,12 @@ class GhostVpnService : VpnService() {
                     }
                     try {
                         val active = GhostCore.getActiveHub(ptr)
-                        if (active.isNotEmpty()) {
-                            currentHubAddr = active
-                        }
+                        currentHubAddr = if (active.isNotEmpty()) active else "auto"
                         val known = GhostCore.getKnownPeers(ptr)
                             .split(",")
                             .map { it.trim() }
                             .filter { it.isNotEmpty() }
-                        if (known.isNotEmpty()) {
-                            discoveredPeersList = known
-                        }
+                        discoveredPeersList = known
                     } catch (_: Throwable) {}
                 } catch (_: Throwable) {}
 
@@ -338,10 +334,15 @@ class GhostVpnService : VpnService() {
         running = false
         isRunning = false
         activeNetwork = null
+        activePtr = 0L
+        discoveredPeersList = emptyList()
+        currentHubAddr = "auto"
+        if (ptr != 0L) {
+            try { GhostCore.destroy(ptr) } catch (_: Throwable) {}
+            ptr = 0L
+        }
         try { channel?.close() } catch (_: Throwable) {}
         try { tun?.close() } catch (_: Throwable) {}
-        if (ptr != 0L) { GhostCore.destroy(ptr); ptr = 0 }
-        activePtr = 0L
     }
 
     override fun onDestroy() {
@@ -378,6 +379,8 @@ class GhostVpnService : VpnService() {
                     if (nativeHub.isNotEmpty()) {
                         currentHubAddr = nativeHub
                         return nativeHub
+                    } else {
+                        currentHubAddr = "auto"
                     }
                 } catch (_: Throwable) {}
             }
@@ -394,12 +397,7 @@ class GhostVpnService : VpnService() {
                         .split(",")
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
-                    if (known.isNotEmpty()) {
-                        val merged = LinkedHashSet<String>()
-                        merged.addAll(known)
-                        merged.addAll(discoveredPeersList)
-                        discoveredPeersList = merged.toList()
-                    }
+                    discoveredPeersList = known
                 } catch (_: Throwable) {}
             }
             return discoveredPeersList

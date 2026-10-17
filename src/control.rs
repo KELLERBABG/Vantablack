@@ -552,11 +552,31 @@ pub fn spawn_control_center(
                                     ("HTTP/1.1 200 OK", body, "application/json")
                                 } else if req.starts_with("POST /api/connect") {
                                     let val = json_body(&req);
+                                    let prev = conn_ref.load(Ordering::Relaxed);
                                     let next = val
                                         .get("connected")
                                         .and_then(|v| v.as_bool())
-                                        .unwrap_or_else(|| !conn_ref.load(Ordering::Relaxed));
+                                        .unwrap_or(!prev);
                                     conn_ref.store(next, Ordering::Relaxed);
+                                    nc_ref.beacon_enabled.store(next, Ordering::Relaxed);
+                                    if !next {
+                                        phs_ref.clear();
+                                        broadcast_goodbye(
+                                            &nc_ref,
+                                            &addrs_ref,
+                                            vpn_ref.as_ref(),
+                                            None,
+                                        )
+                                        .await;
+                                        tracing::info!(
+                                            "Mesh deactivated via control center — broadcasted GHOST_BYE to all peers"
+                                        );
+                                    } else if !prev {
+                                        scan_notify_ref.notify_waiters();
+                                        tracing::info!(
+                                            "Mesh reactivated via control center — triggering immediate LAN discovery"
+                                        );
+                                    }
                                     let body = serde_json::json!({
                                         "success": true,
                                         "connected": next

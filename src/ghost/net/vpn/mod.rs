@@ -443,6 +443,23 @@ impl LeaseTable {
         self.by_fp.lock().len()
     }
 
+    /// Evict a client's lease when it sends an authenticated disconnect (GHOST_BYE).
+    pub fn evict(&self, fingerprint: &str) -> bool {
+        let mut fps = self.by_fp.lock();
+        if let Some(lease) = fps.remove(fingerprint) {
+            self.by_ip.lock().remove(&lease.overlay_ip);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear all leases (used when the hub itself deactivates).
+    pub fn clear(&self) {
+        self.by_fp.lock().clear();
+        self.by_ip.lock().clear();
+    }
+
     /// Console snapshot for `LEASES`.
     pub fn snapshot(&self) -> Vec<Lease> {
         let mut v: Vec<Lease> = self.by_fp.lock().values().cloned().collect();
@@ -627,6 +644,27 @@ impl UdpFlowTable {
     /// How many live flows belong to one fingerprint (`VPN STATUS`).
     pub fn count_for(&self, fp: &str) -> usize {
         self.flows.lock().keys().filter(|k| k.fp == fp).count()
+    }
+
+    /// Immediately evict all UDP flows owned by `fp` on peer disconnect.
+    pub fn evict_for(&self, fp: &str) -> usize {
+        let mut flows = self.flows.lock();
+        let mut by_port = self.by_port.lock();
+        let before = flows.len();
+        flows.retain(|k, f| {
+            let keep = k.fp != fp;
+            if !keep {
+                by_port.remove(&f.local_port());
+            }
+            keep
+        });
+        before - flows.len()
+    }
+
+    /// Clear all UDP flows (used when the hub itself deactivates).
+    pub fn clear(&self) {
+        self.flows.lock().clear();
+        self.by_port.lock().clear();
     }
 
     pub fn is_empty(&self) -> bool {

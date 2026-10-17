@@ -210,6 +210,9 @@ const MAX_PENDING_HANDSHAKES: usize = 512;
 
 /// Peer Exchange gossip frame magic — encrypted payload prefix.
 const GHOST_PEX_MAGIC: &[u8] = b"GHOST_PEX_____";
+/// Authenticated goodbye / reroute control notification sent when a node
+/// disconnects or deactivates the mesh.
+pub(crate) const GHOST_BYE_MAGIC: &[u8] = b"GHOST_BYE_____";
 /// Maximum peers to advertise per PEX message.
 const MAX_PEX_PEERS: usize = 32;
 
@@ -1701,11 +1704,16 @@ struct RxContext {
     /// next frame arrives the same way, and the data path back to it is routed by
     /// the fallback table rather than by this address.
     socket: Arc<UdpSocket>,
+    /// True while the user has the mesh activated in the control center.
+    connected: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RxContext {
     /// Pipe one received datagram into the tunnel.
     async fn ingest(&self, datagram: &[u8], src: SocketAddr) {
+        if !self.connected.load(Ordering::Relaxed) {
+            return;
+        }
         let amt = datagram.len();
         if amt < net::MIN_FRAME_SIZE {
             return;
@@ -3845,6 +3853,40 @@ async fn handle_pkt(
             }
         }
 
+        // ── Authenticated Peer Disconnect / Reroute Notification (GHOST_BYE) ──
+        // Checked before the VPN payload handler and before the post-quantum
+        // 2nd-stage auth gate so both desktop (v2) and mobile (v1 1-RTT) peers
+        // can cleanly announce they are going offline and trigger immediate
+        // session/lease eviction and failover.
+        if let Some(framed) = frame_payload(pt) {
+            let is_bye = framed.starts_with(GHOST_BYE_MAGIC)
+                || (framed.len() > 5
+                    && &framed[..5] == b"GVPN1"
+                    && framed[5..].starts_with(GHOST_BYE_MAGIC));
+            if is_bye {
+                node.sessions.remove(&peer_fp);
+                peers.remove(&peer_fp);
+                #[cfg(feature = "vpn")]
+                if let Some(VpnMode::Hub(hub)) = vpn_mode {
+                    hub.on_disconnect(&peer_fp);
+                }
+                exit_tunnels.retain(|_, t| t.session_hash != sh);
+                sessions_rx.remove(&sh);
+                connect_acks.remove(&sh);
+                connect_ok_ctrs.remove(&sh);
+                rx_state_map.remove(&sh);
+                if let Some(fb) = fallback_state {
+                    fb.clear(&peer_fp);
+                }
+                tracing::info!(
+                    peer = %peer_fp,
+                    addr = %src,
+                    "Peer sent GHOST_BYE disconnect notification — session evicted and routes updated"
+                );
+                return;
+            }
+        }
+
         // ── VPN tunnel payload: [len][GVPN1][epoch u32][ctr u32][ct][tag] ──
         // Hub: ingest client datagrams. Client: write hub replies into TUN.
         // Checked BEFORE all control-channel handling; tunnel traffic has its own
@@ -4656,6 +4698,59 @@ async fn send_pex(
     let (f, tag) = enc_split(&ctx, &payload);
     send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
     tracing::debug!(to = %dest_fp, peers = peer_list.len(), "PEX: sent peer list");
+}
+
+/// Broadcast an authenticated `GHOST_BYE_____` notification to all active peers
+/// so they immediately evict our session and reroute traffic elsewhere, then
+/// tear down local session/peer state.
+pub(crate) async fn broadcast_goodbye(
+    nc: &Arc<GhostNode>,
+    addrs: &Arc<DashMap<String, SocketAddr>>,
+    vpn_mode: Option<&VpnMode>,
+    fallback: Option<&Fallback>,
+) {
+    #[cfg(not(feature = "vpn"))]
+    let _ = vpn_mode;
+    let mut targets: std::collections::HashMap<String, SocketAddr> = addrs
+        .iter()
+        .map(|e| (e.key().clone(), *e.value()))
+        .collect();
+    #[cfg(feature = "vpn")]
+    if let Some(VpnMode::Hub(hub)) = vpn_mode {
+        for (fp, ep) in hub.active_endpoints() {
+            targets.entry(fp).or_insert(ep);
+        }
+    }
+
+    for (peer_fp, endpoint) in &targets {
+        // Send twice for UDP loss resilience on Wi-Fi/LAN
+        for _ in 0..2 {
+            #[cfg(feature = "vpn")]
+            send_tunnel_frame(nc, peer_fp, *endpoint, GHOST_BYE_MAGIC, fallback).await;
+
+            #[cfg(not(feature = "vpn"))]
+            if let Some(sess) = nc.sessions.get(peer_fp) {
+                if !sess.is_v1_wire() {
+                    let ctx = SealCtx::from_session(&sess);
+                    drop(sess);
+                    let frame = seal_single(&ctx, GHOST_BYE_MAGIC);
+                    send_frame_to_peer(nc, &nc.socket, endpoint, fallback, peer_fp, frame).await;
+                }
+            }
+        }
+        tracing::info!(
+            peer = %peer_fp,
+            %endpoint,
+            "Sent GHOST_BYE disconnect/reroute notification to mesh peer"
+        );
+    }
+
+    nc.sessions.clear();
+    addrs.clear();
+    #[cfg(feature = "vpn")]
+    if let Some(VpnMode::Hub(hub)) = vpn_mode {
+        hub.evict_all();
+    }
 }
 
 /// HTTP bootstrap: register with the Cloudflare Worker tracker and return
@@ -6301,7 +6396,41 @@ async fn run_node(
         fallback: Some(Arc::clone(&fallback_routes)),
         dispatcher: Arc::new(net::dispatcher::LocklessDispatcher::new(4, 1024)),
         socket: nc.socket.clone(),
+        connected: Arc::clone(&consumer_connected),
     });
+    // Graceful shutdown watcher: broadcast GHOST_BYE to all connected peers
+    // when Ctrl+C arrives or the desktop UI / tray sets `nc.running = false`.
+    {
+        let nc_bye = Arc::clone(&nc);
+        let addrs_bye = Arc::clone(&addrs);
+        let fb_bye = Arc::clone(&fallback_routes);
+        #[cfg(feature = "vpn")]
+        let vpn_bye: Option<VpnMode> = vpn_mode.as_ref().map(|m| match m {
+            VpnMode::Hub(h) => VpnMode::Hub(Arc::clone(h)),
+            VpnMode::Client(c, t) => VpnMode::Client(Arc::clone(c), Arc::clone(t)),
+        });
+        #[cfg(not(feature = "vpn"))]
+        let vpn_bye: Option<VpnMode> = None;
+        tokio::spawn(async move {
+            let running_poll = async {
+                while nc_bye.running.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            };
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Ctrl+C received — broadcasting GHOST_BYE before shutdown");
+                    nc_bye.running.store(false, Ordering::Relaxed);
+                    broadcast_goodbye(&nc_bye, &addrs_bye, vpn_bye.as_ref(), Some(&fb_bye)).await;
+                    std::process::exit(0);
+                }
+                _ = running_poll => {
+                    tracing::info!("Node stopping — broadcasting GHOST_BYE to mesh peers");
+                    broadcast_goodbye(&nc_bye, &addrs_bye, vpn_bye.as_ref(), Some(&fb_bye)).await;
+                }
+            }
+        });
+    }
     {
         let rx = Arc::clone(&rx);
         tokio::spawn(async move {
@@ -6502,11 +6631,17 @@ async fn run_node(
             let fb = Arc::clone(&fallback_routes);
             tokio::spawn(async move {
                 while let Some(wire) = rx.recv().await {
-                    // ClientState.fingerprint = the hub's fingerprint.
+                    // ClientState.fingerprint = the hub's fingerprint (or "auto" / evicted peer).
                     let dest = client2.fingerprint.clone();
-                    let tgt = addrs2.get(&dest).map(|v| *v.value());
-                    if let Some(tgt) = tgt {
+                    if let Some(tgt) = addrs2.get(&dest).map(|v| *v.value()) {
                         send_tunnel_frame(&nc2, &dest, tgt, &wire, Some(&fb)).await;
+                    } else if let Some((alt_fp, alt_tgt)) =
+                        addrs2.iter().next().map(|e| (e.key().clone(), *e.value()))
+                    {
+                        if let Some(sess) = nc2.sessions.get(&alt_fp) {
+                            client2.set_key(sess.master_key);
+                        }
+                        send_tunnel_frame(&nc2, &alt_fp, alt_tgt, &wire, Some(&fb)).await;
                     } else {
                         tracing::debug!("VPN client: hub address unknown — PEER first");
                     }
@@ -7869,6 +8004,7 @@ mod ratchet_live_tests {
             fallback: Some(fallback),
             dispatcher: Arc::new(net::dispatcher::LocklessDispatcher::new(1, 256)),
             socket: Arc::clone(&node.socket),
+            connected: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
 

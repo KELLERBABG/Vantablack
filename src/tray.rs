@@ -71,6 +71,7 @@ pub fn run_tray(nc: Arc<GhostNode>) {
                 } else if ev.id == quit_item.id() {
                     tracing::info!("Tray: quit requested");
                     nc.running.store(false, Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(120));
                     std::process::exit(0);
                 }
             }

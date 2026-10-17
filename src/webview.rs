@@ -236,6 +236,7 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
                             tracing::info!("Desktop window: quit requested");
                             if let Some(node) = &node_clone {
                                 node.running.store(false, Ordering::Relaxed);
+                                std::thread::sleep(Duration::from_millis(120));
                             }
                             std::process::exit(0);
                         }
@@ -306,6 +307,7 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
                         tracing::info!("Tray: quit requested");
                         if let Some(node) = &nc {
                             node.running.store(false, Ordering::Relaxed);
+                            std::thread::sleep(Duration::from_millis(120));
                         }
                         std::process::exit(0);
                     }

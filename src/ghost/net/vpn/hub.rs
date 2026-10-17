@@ -27,6 +27,10 @@ use super::{seal_datagram, FlowKey, LeaseTable, OpenOutcome, UdpFlowTable, VpnCo
 /// Magic prefix marking a VPN tunnel payload inside a decrypted session frame.
 pub const VPN_PAYLOAD_MAGIC: &[u8; 5] = b"GVPN1";
 
+/// Authenticated goodbye / reroute control notification sent when a node
+/// disconnects or deactivates the mesh.
+pub const GHOST_BYE_MAGIC: &[u8; 14] = b"GHOST_BYE_____";
+
 /// Egress unit: a sealed tunnel datagram plus the session routing info.
 pub struct EgressUnit {
     pub fingerprint: String,
@@ -137,6 +141,48 @@ impl VpnHub {
             self.readers_spawned.lock().retain(|k| k.fp != fp);
             tracing::info!(peer = %fp, "VPN handshake: epoch rotated, state evicted");
         }
+    }
+
+    /// Evict all per-client state (lease, UDP flows, replay window, session cache)
+    /// when a peer sends an authenticated `GHOST_BYE_____` disconnect notification.
+    pub fn on_disconnect(&self, fp: &str) {
+        let had_lease = self.leases.evict(fp);
+        let evicted_flows = self.flows.evict_for(fp);
+        self.ingress.evict(fp);
+        self.ingress_epochs.lock().remove(fp);
+        let had_session = self.sessions.lock().remove(fp).is_some();
+        self.tx_counters.lock().remove(fp);
+        self.readers_spawned.lock().retain(|k| k.fp != fp);
+        if had_lease || had_session || evicted_flows > 0 {
+            tracing::info!(
+                peer = %fp,
+                evicted_flows,
+                "VPN hub: peer disconnected (GHOST_BYE) — lease and flow state evicted"
+            );
+        }
+    }
+
+    /// Return all active client endpoints cached by the hub.
+    pub fn active_endpoints(&self) -> Vec<(String, SocketAddr)> {
+        self.sessions
+            .lock()
+            .iter()
+            .map(|(fp, cs)| (fp.clone(), cs.endpoint))
+            .collect()
+    }
+
+    /// Evict all clients when the hub itself deactivates.
+    pub fn evict_all(&self) {
+        let fps: Vec<String> = self.sessions.lock().keys().cloned().collect();
+        for fp in fps {
+            self.ingress.evict(&fp);
+        }
+        self.leases.clear();
+        self.flows.clear();
+        self.ingress_epochs.lock().clear();
+        self.sessions.lock().clear();
+        self.tx_counters.lock().clear();
+        self.readers_spawned.lock().clear();
     }
 
     /// Is `fp` allowed to use this hub?

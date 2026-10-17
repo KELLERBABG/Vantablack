@@ -142,6 +142,7 @@ impl TunDevice for AndroidTun {
 // ── Framing Helpers ──────────────────────────────────────────────────
 
 const MAGIC: &[u8; 5] = crate::ghost::net::vpn::hub::VPN_PAYLOAD_MAGIC;
+const GHOST_BYE_MAGIC: &[u8] = crate::ghost::net::vpn::hub::GHOST_BYE_MAGIC;
 
 // `frame_shard` / `unframe` come from `ghost::net` (canonical);
 // this module used to carry its own byte-identical copies.
@@ -203,6 +204,8 @@ fn receiver_open(
                                     && &payload[..MAGIC.len()] == MAGIC.as_slice()
                                 {
                                     return Some(payload[MAGIC.len()..].to_vec());
+                                } else if payload.starts_with(GHOST_BYE_MAGIC) {
+                                    return Some(GHOST_BYE_MAGIC.to_vec());
                                 }
                             }
                         }
@@ -256,6 +259,8 @@ fn receiver_open(
             payload.len() - MAGIC.len()
         );
         Some(payload[MAGIC.len()..].to_vec())
+    } else if payload.starts_with(GHOST_BYE_MAGIC) {
+        Some(GHOST_BYE_MAGIC.to_vec())
     } else {
         alog!("receiver_open: bad magic prefix in decrypted payload");
         None
@@ -279,9 +284,45 @@ pub struct AndroidCore {
     pub session_hash: Mutex<[u8; 4]>,
     pub tx_seq: AtomicU32,
     pub known_peers: Mutex<std::collections::HashMap<std::net::SocketAddr, ([u8; 32], [u8; 4])>>,
+    pub bye_sent: AtomicBool,
 }
 
 unsafe impl Send for AndroidCore {}
+
+fn send_goodbye(core: &AndroidCore) {
+    if core.bye_sent.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let Some(sock) = core.sock.as_ref() else {
+        return;
+    };
+    let mut targets: Vec<(std::net::SocketAddr, [u8; 32], [u8; 4])> = core
+        .known_peers
+        .lock()
+        .iter()
+        .map(|(&addr, &(k, sh))| (addr, k, sh))
+        .collect();
+    if let (Some(hub), Some(k)) = (core.hub_addr, *core.session_key.lock()) {
+        let sh = *core.session_hash.lock();
+        if !targets.iter().any(|(a, _, _)| *a == hub) {
+            targets.push((hub, k, sh));
+        }
+    }
+    for (peer, key, sh) in targets {
+        for _ in 0..2 {
+            let ctr = core.tx_seq.fetch_add(1, Ordering::Relaxed);
+            let frame = tunnel_frame(
+                &key,
+                sh,
+                ctr,
+                NonceDirection::InitiatorToResponder,
+                GHOST_BYE_MAGIC,
+            );
+            let _ = sock.send_to(&frame, peer).or_else(|_| sock.send(&frame));
+        }
+        alog!("send_goodbye: sent GHOST_BYE to peer {:?}", peer);
+    }
+}
 
 fn perform_handshake(
     sock: &UdpSocket,
@@ -714,38 +755,92 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         return false;
     }
 
+    // Check if a non-hub known peer sent GHOST_BYE_____
+    let flags = parse_flags(&buf[..n]);
+    if flags & 0x02 != 0 {
+        let non_hub = core
+            .hub_addr
+            .map(|h| h != src && h.ip() != src.ip())
+            .unwrap_or(true);
+        if non_hub {
+            let peer_sess = core.known_peers.lock().get(&src).copied();
+            if let Some((peer_key, peer_sh)) = peer_sess {
+                if let Some(wire) = receiver_open(&buf[..n], n, &peer_key, peer_sh, ctr) {
+                    if wire.starts_with(GHOST_BYE_MAGIC) {
+                        core.known_peers
+                            .lock()
+                            .retain(|k, _| *k != src && k.ip() != src.ip());
+                        alog!(
+                            "drain_once: peer {:?} sent GHOST_BYE — evicted from known_peers",
+                            src
+                        );
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
     // Tunnel traffic from established hub
     let session_key_opt = *core.session_key.lock();
     let session_hash = *core.session_hash.lock();
-    if let (Some(hub), Some(session_key), Some(tun)) =
-        (core.hub_addr, session_key_opt, core.tun.as_mut())
-    {
+    if let (Some(hub), Some(session_key)) = (core.hub_addr, session_key_opt) {
         if src == hub || src.ip() == hub.ip() {
             if src != hub {
                 core.hub_addr = Some(src);
             }
-            let flags = parse_flags(&buf[..n]);
             if flags & 0x02 != 0 {
                 match receiver_open(&buf[..n], n, &session_key, session_hash, ctr) {
                     Some(wire) => {
-                        let (accepted, adv) = open_to_tun(&core.state, &wire, tun);
-                        if accepted {
-                            let c = core.rx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
-                            if c % 10 == 1 || c <= 5 {
+                        if wire.starts_with(GHOST_BYE_MAGIC) {
+                            let next_peer = {
+                                let mut kp = core.known_peers.lock();
+                                kp.retain(|k, _| *k != src && k.ip() != src.ip());
+                                kp.iter().next().map(|(&a, &(k, s))| (a, k, s))
+                            };
+                            if let Some((next_addr, next_key, next_sh)) = next_peer {
+                                core.hub_addr = Some(next_addr);
+                                core.state.rotate_epoch();
+                                core.state.set_key(next_key);
+                                core.state.note_inbound();
+                                *core.session_key.lock() = Some(next_key);
+                                *core.session_hash.lock() = next_sh;
+                                core.tx_seq.store(2, Ordering::Relaxed);
                                 alog!(
-                                    "drain_once: ACCEPTED packet from hub (len={}, adv={})! total_rx={}",
-                                    wire.len(),
-                                    adv,
-                                    c
+                                    "drain_once: hub {:?} sent GHOST_BYE — failed over to {:?}",
+                                    src,
+                                    next_addr
+                                );
+                            } else {
+                                core.hub_addr = None;
+                                *core.session_key.lock() = None;
+                                alog!(
+                                    "drain_once: hub {:?} sent GHOST_BYE — no remaining peers, awaiting discovery",
+                                    src
                                 );
                             }
-                            return true;
-                        } else {
-                            alog!(
-                                "drain_once: open_to_tun rejected wire datagram (cur_epoch={}, wire_len={})",
-                                core.state.current_epoch(),
-                                wire.len()
-                            );
+                            return false;
+                        }
+                        if let Some(tun) = core.tun.as_mut() {
+                            let (accepted, adv) = open_to_tun(&core.state, &wire, tun);
+                            if accepted {
+                                let c = core.rx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
+                                if c % 10 == 1 || c <= 5 {
+                                    alog!(
+                                        "drain_once: ACCEPTED packet from hub (len={}, adv={})! total_rx={}",
+                                        wire.len(),
+                                        adv,
+                                        c
+                                    );
+                                }
+                                return true;
+                            } else {
+                                alog!(
+                                    "drain_once: open_to_tun rejected wire datagram (cur_epoch={}, wire_len={})",
+                                    core.state.current_epoch(),
+                                    wire.len()
+                                );
+                            }
                         }
                     }
                     None => {
@@ -770,6 +865,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
 
 impl Drop for AndroidCore {
     fn drop(&mut self) {
+        send_goodbye(self);
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.tun.as_ref() {
             t.shutdown();
@@ -820,6 +916,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
         session_hash: Mutex::new([0u8; 4]),
         tx_seq: AtomicU32::new(2),
         known_peers: Mutex::new(std::collections::HashMap::new()),
+        bye_sent: AtomicBool::new(false),
     });
     Box::into_raw(core) as jlong
 }
