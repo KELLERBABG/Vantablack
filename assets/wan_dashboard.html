@@ -1000,7 +1000,7 @@
 
     <!-- App Footer -->
     <div class="app-footer">
-      <span>Vantablack v0.8.12 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a></span>
+      <span>Vantablack v0.8.15 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a></span>
       <span>Uptime: <span id="footer-uptime">00:00:00</span></span>
     </div>
   </div>
@@ -1008,9 +1008,9 @@
   <script>
     let isConnected = false;
     let nodeState = {};
-    let prevBytesSent = 0;
-    let prevBytesRecv = 0;
-    let prevTimestamp = Date.now();
+    let prevBytesSent = null;
+    let prevBytesRecv = null;
+    let prevTimestamp = null;
 
     // Native IPC Bridge
     function nativeSend(action) {
@@ -1194,16 +1194,22 @@
           document.getElementById('stat-total-up').innerText = `${formatBytes(sent)} total`;
 
           const now = Date.now();
-          const dt = (now - prevTimestamp) / 1000;
-          if (dt > 0 && prevBytesSent > 0) {
-            const upSpeed = Math.max(0, (sent - prevBytesSent) / dt);
-            const downSpeed = Math.max(0, (recv - prevBytesRecv) / dt);
-            document.getElementById('stat-speed-up').innerText = `↑ ${formatBytes(upSpeed)}/s`;
-            document.getElementById('stat-speed-down').innerText = `↓ ${formatBytes(downSpeed)}/s`;
+          if (prevTimestamp !== null && prevBytesSent !== null && prevBytesRecv !== null) {
+            const dt = (now - prevTimestamp) / 1000;
+            if (dt > 0.05) {
+              const upSpeed = Math.max(0, (sent - prevBytesSent) / dt);
+              const downSpeed = Math.max(0, (recv - prevBytesRecv) / dt);
+              document.getElementById('stat-speed-up').innerText = `↑ ${formatBytes(upSpeed)}/s`;
+              document.getElementById('stat-speed-down').innerText = `↓ ${formatBytes(downSpeed)}/s`;
+              prevBytesSent = sent;
+              prevBytesRecv = recv;
+              prevTimestamp = now;
+            }
+          } else {
+            prevBytesSent = sent;
+            prevBytesRecv = recv;
+            prevTimestamp = now;
           }
-          prevBytesSent = sent;
-          prevBytesRecv = recv;
-          prevTimestamp = now;
 
           document.getElementById('diag-pkts-sent').innerText = (tp.packets_sent || 0).toLocaleString() + ' pkts';
           document.getElementById('diag-pkts-recv').innerText = (tp.packets_recv || 0).toLocaleString() + ' pkts';

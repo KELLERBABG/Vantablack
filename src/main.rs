@@ -1574,6 +1574,8 @@ async fn send_tunnel_frame(
         let mut frame = net::build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
         frame[net::OFFSET_FLAGS] |= 0x02; // FLAG_TUNNEL
         tracing::info!(peer = %peer_fp, %endpoint, len = frame.len(), ctr, "VPN egress GTF frame sent to client");
+        nc.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
+        nc.stats.bytes_sent.fetch_add(frame.len() as u64, Ordering::Relaxed);
         let _ = nc.socket.send_to(&frame, endpoint).await;
         return;
     }
@@ -1606,6 +1608,8 @@ async fn send_tunnel_frame(
     // frame_shard produces and the receive path's unframe() consumes).
     let framed = frame_shard(&framed);
     let frame = net::build_gtf_v2_frame(&ctx.header(0, true, net::FLAG_TUNNEL), &framed, &tag);
+    nc.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
+    nc.stats.bytes_sent.fetch_add(frame.len() as u64, Ordering::Relaxed);
     // A peer with no direct path carries its tunnel traffic over the same
     // fallback the control frames use; otherwise a VPN session would connect and
     // then silently stop moving packets.

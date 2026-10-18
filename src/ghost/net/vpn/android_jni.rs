@@ -39,7 +39,7 @@ use ml_kem::kem::Decapsulate;
 use ml_kem::{Ciphertext, MlKem512};
 use parking_lot::Mutex;
 use std::net::UdpSocket;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use x25519_dalek::PublicKey;
@@ -279,6 +279,8 @@ pub struct AndroidCore {
     pub stop: Arc<AtomicBool>,
     pub rx_ctr: Arc<AtomicU32>,
     pub tx_ctr: Arc<AtomicU32>,
+    pub rx_bytes: Arc<AtomicU64>,
+    pub tx_bytes: Arc<AtomicU64>,
     pub identity: GhostIdentity,
     pub session_key: Mutex<Option<[u8; 32]>>,
     pub session_hash: Mutex<[u8; 4]>,
@@ -676,6 +678,7 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
                     &wire,
                 );
                 core.tx_ctr.fetch_add(1, Ordering::Relaxed);
+                core.tx_bytes.fetch_add(frame.len() as u64, Ordering::Relaxed);
                 let _ = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame));
             }
         }
@@ -841,6 +844,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
                             let (accepted, adv) = open_to_tun(&core.state, &wire, tun);
                             if accepted {
                                 let c = core.rx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
+                                core.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                                 if c % 10 == 1 || c <= 5 {
                                     alog!(
                                         "drain_once: ACCEPTED packet from hub (len={}, adv={})! total_rx={}",
@@ -923,6 +927,8 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
         stop: Arc::new(AtomicBool::new(false)),
         rx_ctr: Arc::new(AtomicU32::new(0)),
         tx_ctr: Arc::new(AtomicU32::new(0)),
+        rx_bytes: Arc::new(AtomicU64::new(0)),
+        tx_bytes: Arc::new(AtomicU64::new(0)),
         identity,
         session_key: Mutex::new(None),
         session_hash: Mutex::new([0u8; 4]),
@@ -1262,7 +1268,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getKnownPeers(
     }
 }
 
-/// `fun stats(ptr: Long): LongArray` — [rxPackets, txPackets, epoch, txCounter]
+/// `fun stats(ptr: Long): LongArray` — [rxPackets, txPackets, epoch, txCounter, rxBytes, txBytes]
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_stats(
     env: JNIEnv,
@@ -1272,13 +1278,15 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_stats(
     let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_ref() }) else {
         return std::ptr::null_mut();
     };
-    let vals: [jlong; 4] = [
+    let vals: [jlong; 6] = [
         core.rx_ctr.load(Ordering::Relaxed) as jlong,
         core.tx_ctr.load(Ordering::Relaxed) as jlong,
         core.state.current_epoch() as jlong,
         core.state.tx_counter() as jlong,
+        core.rx_bytes.load(Ordering::Relaxed) as jlong,
+        core.tx_bytes.load(Ordering::Relaxed) as jlong,
     ];
-    match env.new_long_array(4) {
+    match env.new_long_array(6) {
         Ok(arr) => {
             let _ = env.set_long_array_region(&arr, 0, &vals);
             arr.into_raw()

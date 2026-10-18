@@ -86,9 +86,9 @@ class MainActivity : Activity() {
 
         val ver = TextView(this).apply {
             val vName = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.14"
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.15"
             } catch (_: Throwable) {
-                "0.8.14"
+                "0.8.15"
             }
             text = "v$vName"
             textSize = 11f
@@ -161,7 +161,7 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(createDimLabel("DOWNLINK"))
                 txtDownSpeed = TextView(context).apply {
-                    text = "0.0 KB/s"
+                    text = "0 B/s"
                     textSize = 15f
                     setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                     setTextColor(Color.parseColor("#f1f5f9"))
@@ -180,7 +180,7 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(createDimLabel("UPLINK"))
                 txtUpSpeed = TextView(context).apply {
-                    text = "0.0 KB/s"
+                    text = "0 B/s"
                     textSize = 15f
                     setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
                     setTextColor(Color.parseColor("#f1f5f9"))
@@ -528,20 +528,24 @@ class MainActivity : Activity() {
             val rxPkts = if (stats.isNotEmpty()) stats[0] else 0L
             val txPkts = if (stats.size > 1) stats[1] else 0L
 
-            val currentRxBytes = rxPkts * 576L
-            val currentTxBytes = txPkts * 576L
+            val currentRxBytes = if (stats.size > 4 && stats[4] > 0) stats[4] else rxPkts * 576L
+            val currentTxBytes = if (stats.size > 5 && stats[5] > 0) stats[5] else txPkts * 576L
 
-            val rxRate = if (lastRxBytes > 0 && currentRxBytes >= lastRxBytes) (currentRxBytes - lastRxBytes) / dt else 0.0
-            val txRate = if (lastTxBytes > 0 && currentTxBytes >= lastTxBytes) (currentTxBytes - lastTxBytes) / dt else 0.0
+            val rxRate = if (lastTimestamp > 0 && lastRxBytes >= 0 && dt > 0.05) {
+                if (currentRxBytes >= lastRxBytes) (currentRxBytes - lastRxBytes) / dt else 0.0
+            } else 0.0
+            val txRate = if (lastTimestamp > 0 && lastTxBytes >= 0 && dt > 0.05) {
+                if (currentTxBytes >= lastTxBytes) (currentTxBytes - lastTxBytes) / dt else 0.0
+            } else 0.0
 
             lastRxBytes = currentRxBytes
             lastTxBytes = currentTxBytes
             lastTimestamp = now
 
-            txtDownSpeed.text = String.format(Locale.US, "%.1f KB/s", rxRate / 1024.0)
+            txtDownSpeed.text = formatRate(rxRate)
             txtDownTotal.text = formatBytes(currentRxBytes) + " • " + rxPkts + " pkts"
 
-            txtUpSpeed.text = String.format(Locale.US, "%.1f KB/s", txRate / 1024.0)
+            txtUpSpeed.text = formatRate(txRate)
             txtUpTotal.text = formatBytes(currentTxBytes) + " • " + txPkts + " pkts"
 
             peerListContainer.removeAllViews()
@@ -566,8 +570,8 @@ class MainActivity : Activity() {
             updateUiState(true)
         } else {
             txtMode.text = "Standby"
-            txtDownSpeed.text = "0.0 KB/s"
-            txtUpSpeed.text = "0.0 KB/s"
+            txtDownSpeed.text = "0 B/s"
+            txtUpSpeed.text = "0 B/s"
             peerListContainer.removeAllViews()
             peerListContainer.addView(TextView(this).apply {
                 text = "Offline"
@@ -620,6 +624,14 @@ class MainActivity : Activity() {
                 setTypeface(Typeface.MONOSPACE)
                 setTextColor(if (isExit) Color.parseColor("#10b981") else Color.parseColor("#38bdf8"))
             })
+        }
+    }
+
+    private fun formatRate(bytesPerSec: Double): String {
+        return when {
+            bytesPerSec >= 1_048_576.0 -> String.format(Locale.US, "%.1f MB/s", bytesPerSec / 1_048_576.0)
+            bytesPerSec >= 1024.0 -> String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0)
+            else -> String.format(Locale.US, "%.0f B/s", bytesPerSec)
         }
     }
 
