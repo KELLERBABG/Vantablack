@@ -701,8 +701,9 @@
         <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 2.18l7 3.12v4.7c0 4.54-3.05 8.78-7 9.88-3.95-1.1-7-5.34-7-9.88V6.3l7-3.12z"/>
       </svg>
       <span class="brand-name">VANTABLACK</span>
-      <span class="brand-badge" id="app-version">v0.8.12</span>
+      <span class="brand-badge" id="app-version">v0.8.18</span>
       <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" class="brand-badge" style="text-decoration:none; cursor:pointer; color: var(--accent); border-color: rgba(0,240,255,0.3); pointer-events: auto;" title="Open GitHub Repository">GitHub ↗</a>
+      <span id="titlebar-update-pill" onclick="triggerUpdateModal()" style="display: none; background: rgba(16,185,129,0.18); border: 1px solid #10b981; color: #10b981; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; cursor: pointer; pointer-events: auto;" title="Click to install update">⚡ Update Available</span>
       <div class="titlebar-status">
         <span class="status-dot" id="header-status-dot"></span>
         <span id="header-status-text">DISCONNECTED</span>
@@ -718,6 +719,22 @@
       </button>
       <button class="win-btn close" onclick="nativeSend('close')" title="Close to Tray">
         <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8m0-8L1 9" stroke="currentColor" stroke-width="1.5"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Update Notification Banner -->
+  <div id="update-banner" style="display: none; background: rgba(16, 185, 129, 0.12); border-bottom: 1px solid rgba(16, 185, 129, 0.35); padding: 8px 24px; align-items: center; justify-content: space-between; font-size: 13px;">
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <span>🚀</span>
+      <span id="update-banner-text" style="color: #f1f5f9; font-weight: 500;">New version available!</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <button class="nav-tab active" id="btn-update-apply" style="padding: 4px 12px; font-size: 12px; background: #059669; border-color: #10b981; color: white;" onclick="applyUpdateNow()">
+        Update & Restart Now ⚡
+      </button>
+      <button class="nav-tab" style="padding: 4px 8px; font-size: 12px;" onclick="document.getElementById('update-banner').style.display='none'">
+        ✕
       </button>
     </div>
   </div>
@@ -994,13 +1011,27 @@
             GitHub Repository ↗
           </button>
         </div>
+        <div class="setting-item" style="border-top: 1px solid var(--border-card); padding-top: 16px;">
+          <div class="setting-text">
+            <span class="setting-title">Software Updates</span>
+            <span class="setting-desc" id="setting-update-desc">Automatically check for and install newer versions with zero setup wizards.</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button class="nav-tab active" id="btn-check-update" style="padding: 6px 14px;" onclick="checkUpdateManual()">
+              Check for Updates
+            </button>
+            <button class="btn btn-connect" id="btn-apply-update" style="display: none; padding: 6px 14px; background: #059669; color: white;" onclick="applyUpdateNow()">
+              Install Update 🚀
+            </button>
+          </div>
+        </div>
       </div>
 
     </div>
 
     <!-- App Footer -->
     <div class="app-footer">
-      <span>Vantablack v0.8.17 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a></span>
+      <span>Vantablack v0.8.18 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a> • <a href="#" onclick="checkUpdateManual(); return false;" style="color: #38bdf8; text-decoration: none; cursor: pointer;" id="footer-update-link">Check for Updates</a></span>
       <span>Uptime: <span id="footer-uptime">00:00:00</span></span>
     </div>
   </div>
@@ -1396,6 +1427,123 @@
     function saveSetting(key, value) {
       console.log('Setting:', key, value);
     }
+
+    // Software Update Client
+    let latestUpdateInfo = null;
+
+    async function checkUpdateManual() {
+      const btn = document.getElementById('btn-check-update');
+      const footerLink = document.getElementById('footer-update-link');
+      if (btn) btn.innerText = 'Checking...';
+      if (footerLink) footerLink.innerText = 'Checking for updates...';
+
+      try {
+        const res = await fetch('/api/update/check');
+        const data = await res.json();
+        latestUpdateInfo = data;
+
+        if (data.update_available) {
+          showUpdateAvailable(data);
+          if (footerLink) footerLink.innerText = `⚡ v${data.latest_version} Available`;
+        } else {
+          if (btn) btn.innerText = '✓ Up to Date';
+          if (footerLink) footerLink.innerText = `✓ Up to date (v${data.current_version})`;
+          const desc = document.getElementById('setting-update-desc');
+          if (desc) desc.innerText = `You are running the latest release (v${data.current_version}).`;
+          setTimeout(() => {
+            if (btn) btn.innerText = 'Check for Updates';
+          }, 3500);
+        }
+      } catch (e) {
+        if (btn) btn.innerText = 'Check Failed';
+        if (footerLink) footerLink.innerText = 'Check Failed';
+      }
+    }
+
+    function showUpdateAvailable(data) {
+      const pill = document.getElementById('titlebar-update-pill');
+      if (pill) {
+        pill.innerText = `⚡ v${data.latest_version} Available`;
+        pill.style.display = 'inline-block';
+      }
+
+      const banner = document.getElementById('update-banner');
+      const bannerText = document.getElementById('update-banner-text');
+      if (banner && bannerText) {
+        bannerText.innerText = `Vantablack v${data.latest_version} is available (current: v${data.current_version}).`;
+        banner.style.display = 'flex';
+      }
+
+      const applyBtn = document.getElementById('btn-apply-update');
+      if (applyBtn) {
+        applyBtn.innerText = `Install v${data.latest_version} 🚀`;
+        applyBtn.style.display = 'inline-block';
+      }
+      const desc = document.getElementById('setting-update-desc');
+      if (desc) desc.innerText = `Release v${data.latest_version} is ready for automatic silent installation.`;
+    }
+
+    function triggerUpdateModal() {
+      if (latestUpdateInfo && latestUpdateInfo.update_available) {
+        applyUpdateNow();
+      } else {
+        checkUpdateManual();
+      }
+    }
+
+    async function applyUpdateNow() {
+      const bannerBtn = document.getElementById('btn-update-apply');
+      const applyBtn = document.getElementById('btn-apply-update');
+      if (bannerBtn) {
+        bannerBtn.innerText = '⏳ Downloading & Restarting...';
+        bannerBtn.disabled = true;
+      }
+      if (applyBtn) {
+        applyBtn.innerText = '⏳ Downloading & Restarting...';
+        applyBtn.disabled = true;
+      }
+
+      try {
+        const res = await fetch('/api/update/apply', { method: 'POST', headers: pinHeaders() });
+        const data = await res.json();
+        if (data.success) {
+          alert('Update downloaded! Vantablack is restarting silently. Reconnecting automatically...');
+          pollForRestart();
+        } else {
+          alert('Update failed: ' + (data.error || 'Unknown error'));
+          if (bannerBtn) {
+            bannerBtn.innerText = 'Update & Restart Now ⚡';
+            bannerBtn.disabled = false;
+          }
+          if (applyBtn) {
+            applyBtn.innerText = 'Install Update 🚀';
+            applyBtn.disabled = false;
+          }
+        }
+      } catch (e) {
+        // Node process exited to install, poll for the restarted node
+        pollForRestart();
+      }
+    }
+
+    function pollForRestart() {
+      let attempts = 0;
+      const interval = setInterval(async () => {
+        attempts++;
+        try {
+          const res = await fetch('/api/status');
+          if (res.ok) {
+            clearInterval(interval);
+            window.location.reload();
+          }
+        } catch (_) {
+          if (attempts > 40) clearInterval(interval);
+        }
+      }, 1500);
+    }
+
+    // Auto-check for updates 3 seconds after page load
+    setTimeout(checkUpdateManual, 3000);
 
     // Polling loop
     refreshStatus();

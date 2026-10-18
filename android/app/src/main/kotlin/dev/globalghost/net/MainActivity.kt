@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var btnScanLan: Button
     private lateinit var btnLeakTest: Button
     private lateinit var btnCopyFp: Button
+    private lateinit var btnUpdateBadge: Button
     private lateinit var txtStatus: TextView
     private lateinit var txtMode: TextView
     private lateinit var txtFingerprint: TextView
@@ -86,9 +87,9 @@ class MainActivity : Activity() {
 
         val ver = TextView(this).apply {
             val vName = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.17"
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.18"
             } catch (_: Throwable) {
-                "0.8.17"
+                "0.8.18"
             }
             text = "v$vName"
             textSize = 11f
@@ -99,8 +100,33 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { setMargins(16, 0, 0, 0) }
             layoutParams = params
+            setOnClickListener {
+                checkUpdate(userInitiated = true)
+            }
         }
         header.addView(ver)
+
+        btnUpdateBadge = Button(this).apply {
+            text = "⚡ Update"
+            textSize = 10f
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#059669"))
+                cornerRadius = 6f
+            }
+            setPadding(16, 4, 16, 4)
+            visibility = View.GONE
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(12, 0, 0, 0) }
+            layoutParams = params
+            setOnClickListener {
+                promptUpdateDialog()
+            }
+        }
+        header.addView(btnUpdateBadge)
         layout.addView(header)
 
         val sub = TextView(this).apply {
@@ -445,8 +471,32 @@ class MainActivity : Activity() {
         }
         layout.addView(btnRepo)
 
+        val btnCheckUpdates = Button(this).apply {
+            text = "Check for App Updates"
+            textSize = 12f
+            setTextColor(Color.parseColor("#34d399"))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0e1017"))
+                setStroke(1, Color.parseColor("#065f46"))
+                cornerRadius = 8f
+            }
+            setPadding(0, 20, 0, 20)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 8, 0, 0) }
+            layoutParams = params
+            setOnClickListener {
+                checkUpdate(userInitiated = true)
+            }
+        }
+        layout.addView(btnCheckUpdates)
+
         setContentView(scroll)
         updateStatus()
+
+        // Background update check on app launch
+        handler.postDelayed({ checkUpdate(userInitiated = false) }, 2500)
 
         if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isVpnActive(this)) {
             handler.postDelayed({ startVpn() }, 300)
@@ -718,6 +768,186 @@ class MainActivity : Activity() {
             updateStatus()
         } else {
             Toast.makeText(this, "VPN permission rejected", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ── In-App Software Updater ──
+    private var availableUpdateUrl: String? = null
+    private var availableUpdateVer: String? = null
+
+    private fun isNewerVersion(latest: String, current: String): Boolean {
+        val cleanLatest = latest.trimStart('v')
+        val cleanCurrent = current.trimStart('v')
+        val lParts = cleanLatest.split('.').mapNotNull { it.toIntOrNull() }
+        val cParts = cleanCurrent.split('.').mapNotNull { it.toIntOrNull() }
+        val len = maxOf(lParts.size, cParts.size)
+        for (i in 0 until len) {
+            val l = lParts.getOrElse(i) { 0 }
+            val c = cParts.getOrElse(i) { 0 }
+            if (l > c) return true
+            if (l < c) return false
+        }
+        return false
+    }
+
+    private fun checkUpdate(userInitiated: Boolean) {
+        if (userInitiated) {
+            Toast.makeText(this, "Checking GitHub for updates...", Toast.LENGTH_SHORT).show()
+        }
+        Thread {
+            try {
+                val url = java.net.URL("https://api.github.com/repos/KELLERBABG/Vantablack/releases/latest")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
+                conn.setRequestProperty("User-Agent", "Vantablack-Android")
+                if (conn.responseCode in 200..299) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    val json = org.json.JSONObject(body)
+                    val tag = json.optString("tag_name", "")
+                    val assets = json.optJSONArray("assets")
+                    var apkUrl: String? = null
+                    if (assets != null) {
+                        for (i in 0 until assets.length()) {
+                            val asset = assets.getJSONObject(i)
+                            val name = asset.optString("name", "")
+                            if (name.endsWith(".apk")) {
+                                apkUrl = asset.optString("browser_download_url", "")
+                                break
+                            }
+                        }
+                    }
+
+                    val currentVer = try {
+                        packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.18"
+                    } catch (_: Throwable) {
+                        "0.8.18"
+                    }
+
+                    val hasUpdate = tag.isNotEmpty() && apkUrl != null && isNewerVersion(tag, currentVer)
+                    handler.post {
+                        if (hasUpdate) {
+                            availableUpdateUrl = apkUrl
+                            availableUpdateVer = tag
+                            btnUpdateBadge.visibility = View.VISIBLE
+                            btnUpdateBadge.text = "⚡ $tag"
+                            if (userInitiated) {
+                                promptUpdateDialog()
+                            }
+                        } else {
+                            btnUpdateBadge.visibility = View.GONE
+                            if (userInitiated) {
+                                Toast.makeText(this, "You're on the latest version ($currentVer)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                } else if (userInitiated) {
+                    handler.post { Toast.makeText(this, "Check failed (HTTP ${conn.responseCode})", Toast.LENGTH_SHORT).show() }
+                }
+            } catch (e: Throwable) {
+                if (userInitiated) {
+                    handler.post { Toast.makeText(this, "Update check error: ${e.message}", Toast.LENGTH_SHORT).show() }
+                }
+            }
+        }.start()
+    }
+
+    private fun promptUpdateDialog() {
+        val url = availableUpdateUrl ?: return
+        val ver = availableUpdateVer ?: "latest"
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Update Available")
+            .setMessage("Vantablack $ver is available.\n\nWould you like to download and install this update?")
+            .setPositiveButton("Download & Install") { _, _ ->
+                downloadAndInstallApk(url, "vantablack-$ver.apk")
+            }
+            .setNegativeButton("Later", null)
+            .show()
+    }
+
+    private fun downloadAndInstallApk(downloadUrl: String, fileName: String) {
+        val progressDialog = android.app.ProgressDialog(this).apply {
+            setTitle("Downloading Update")
+            setMessage("Downloading Vantablack update...")
+            setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
+            isIndeterminate = false
+            max = 100
+            setCancelable(false)
+            show()
+        }
+
+        Thread {
+            try {
+                val targetDir = getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: cacheDir
+                val targetFile = java.io.File(targetDir, fileName)
+                if (targetFile.exists()) targetFile.delete()
+
+                val url = java.net.URL(downloadUrl)
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 8000
+                conn.readTimeout = 15000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("User-Agent", "Vantablack-Android")
+                conn.connect()
+
+                val fileLength = conn.contentLength
+                val input = java.io.BufferedInputStream(conn.inputStream)
+                val output = java.io.FileOutputStream(targetFile)
+
+                val buffer = ByteArray(8192)
+                var total: Long = 0
+                var count: Int
+                while (input.read(buffer).also { count = it } != -1) {
+                    total += count
+                    if (fileLength > 0) {
+                        val progress = ((total * 100) / fileLength).toInt()
+                        handler.post { progressDialog.progress = progress }
+                    }
+                    output.write(buffer, 0, count)
+                }
+                output.flush()
+                output.close()
+                input.close()
+
+                handler.post {
+                    progressDialog.dismiss()
+                    installApk(targetFile)
+                }
+            } catch (e: Throwable) {
+                handler.post {
+                    progressDialog.dismiss()
+                    Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun installApk(file: java.io.File) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!packageManager.canRequestPackageInstalls()) {
+                    Toast.makeText(this, "Please allow installing updates from Vantablack", Toast.LENGTH_LONG).show()
+                    val permissionIntent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(permissionIntent)
+                    return
+                }
+            }
+
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "${packageName}.provider",
+                file
+            )
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(installIntent)
+        } catch (e: Throwable) {
+            Toast.makeText(this, "Installer launch failed: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 }

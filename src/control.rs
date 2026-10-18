@@ -829,6 +829,28 @@ pub fn spawn_control_center(
                                     })
                                     .to_string();
                                     ("HTTP/1.1 200 OK", body, "application/json")
+                                } else if req.starts_with("GET /api/update/check") {
+                                    let body = match check_github_update().await {
+                                        Ok(val) => val.to_string(),
+                                        Err(e) => serde_json::json!({
+                                            "error": e,
+                                            "update_available": false,
+                                            "current_version": env!("CARGO_PKG_VERSION")
+                                        }).to_string(),
+                                    };
+                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                } else if req.starts_with("POST /api/update/apply") {
+                                    let (status, body) = match apply_github_update().await {
+                                        Ok(msg) => (
+                                            "HTTP/1.1 200 OK",
+                                            serde_json::json!({ "success": true, "message": msg }).to_string(),
+                                        ),
+                                        Err(e) => (
+                                            "HTTP/1.1 500 Internal Server Error",
+                                            serde_json::json!({ "success": false, "error": e }).to_string(),
+                                        ),
+                                    };
+                                    (status, body, "application/json")
                                 } else if req.starts_with("GET /dashboard")
                                     || req.starts_with("GET / ")
                                     || req.starts_with("GET /?")
@@ -938,3 +960,136 @@ pub fn save_consumer_settings(path: &str, settings: &ConsumerSettings) {
         tracing::warn!("Could not replace {path}");
     }
 }
+
+/// Compare two semver-like version strings (e.g. "v0.8.18" vs "0.8.17").
+pub fn is_newer_version(latest: &str, current: &str) -> bool {
+    let parse_parts = |s: &str| -> Vec<u32> {
+        s.trim_start_matches('v')
+            .split('.')
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect()
+    };
+    let l_parts = parse_parts(latest);
+    let c_parts = parse_parts(current);
+    let len = l_parts.len().max(c_parts.len());
+    for i in 0..len {
+        let l = l_parts.get(i).copied().unwrap_or(0);
+        let c = c_parts.get(i).copied().unwrap_or(0);
+        if l > c {
+            return true;
+        }
+        if l < c {
+            return false;
+        }
+    }
+    false
+}
+
+/// Query the latest release info from the official GitHub repository.
+pub async fn check_github_update() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Vantablack-Updater/0.8")
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let res = client
+        .get("https://api.github.com/repos/KELLERBABG/Vantablack/releases/latest")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        return Err(format!("GitHub API returned HTTP {}", res.status()));
+    }
+
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    let tag = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let current = env!("CARGO_PKG_VERSION");
+    let has_update = is_newer_version(&tag, current);
+
+    let mut exe_url = String::new();
+    let mut zip_url = String::new();
+    let mut apk_url = String::new();
+
+    if let Some(assets) = json.get("assets").and_then(|a| a.as_array()) {
+        for asset in assets {
+            if let (Some(name), Some(url)) = (
+                asset.get("name").and_then(|n| n.as_str()),
+                asset.get("browser_download_url").and_then(|u| u.as_str()),
+            ) {
+                if name.ends_with(".exe") && (name.contains("setup") || name.starts_with("ggn-")) {
+                    exe_url = url.to_string();
+                } else if name.ends_with(".zip") && name.contains("windows") {
+                    zip_url = url.to_string();
+                } else if name.ends_with(".apk") {
+                    apk_url = url.to_string();
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "current_version": current,
+        "latest_version": tag.trim_start_matches('v'),
+        "tag_name": tag,
+        "update_available": has_update,
+        "html_url": json.get("html_url").and_then(|u| u.as_str()).unwrap_or(""),
+        "release_notes": json.get("body").and_then(|b| b.as_str()).unwrap_or(""),
+        "published_at": json.get("published_at").and_then(|p| p.as_str()).unwrap_or(""),
+        "windows_setup_url": exe_url,
+        "windows_zip_url": zip_url,
+        "android_apk_url": apk_url,
+    }))
+}
+
+/// Download the latest Windows release installer and execute it silently.
+pub async fn apply_github_update() -> Result<String, String> {
+    let update_info = check_github_update().await?;
+    let setup_url = update_info
+        .get("windows_setup_url")
+        .and_then(|u| u.as_str())
+        .filter(|u| !u.is_empty())
+        .ok_or_else(|| "No Windows installer (.exe) found in release".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .user_agent("Vantablack-Updater/0.8")
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client.get(setup_url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", resp.status()));
+    }
+
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let temp_installer = std::env::temp_dir().join("vantablack-latest-setup.exe");
+    std::fs::write(&temp_installer, &bytes).map_err(|e| e.to_string())?;
+
+    #[cfg(windows)]
+    {
+        let installer_path = temp_installer.to_string_lossy().to_string();
+        std::process::Command::new("cmd")
+            .args(&["/c", "start", "", &installer_path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            std::process::exit(0);
+        });
+    }
+
+    #[cfg(not(windows))]
+    {
+        return Err("Silent self-update is currently supported on Windows".to_string());
+    }
+
+    Ok("Installer launched silently. Vantablack is restarting...".to_string())
+}
+
