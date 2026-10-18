@@ -675,8 +675,20 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
                     NonceDirection::InitiatorToResponder,
                     &wire,
                 );
-                core.tx_ctr.fetch_add(1, Ordering::Relaxed);
-                let _ = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame));
+                let c = core.tx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
+                if c % 25 == 1 || c <= 5 {
+                    alog!(
+                        "pump_once: sent tunnel frame to hub {:?} (len={}, ctr={}, inner_len={}) total_tx={}",
+                        hub,
+                        frame.len(),
+                        ctr,
+                        n,
+                        c
+                    );
+                }
+                if let Err(e) = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame)) {
+                    alog!("pump_once: sock.send_to failed to {:?}: {}", hub, e);
+                }
             }
         }
         _ => {}
@@ -693,13 +705,13 @@ fn is_tunnel_healthy(core: &AndroidCore) -> bool {
     }
     let last_in = core.state.last_inbound_ms();
     if last_in == 0 {
-        return false;
+        return tx_sent < 30;
     }
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    now_ms.saturating_sub(last_in) < 12_000
+    now_ms.saturating_sub(last_in) < 30_000
 }
 
 /// One mesh→TUN step: recv a GTF datagram from hub, open it, and write the inner
@@ -723,21 +735,38 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
 
     // Inbound handshake initiation from a peer (counter == 0)
     if ctr == 0 {
+        let is_current_hub = core
+            .hub_addr
+            .map(|h| src == h || src.ip() == h.ip())
+            .unwrap_or(false);
+        let has_hub_session = core.hub_addr.is_some() && core.session_key.lock().is_some();
         let healthy = is_tunnel_healthy(core);
-        // If we already have a healthy active tunnel with this hub, do not rotate/evict it
-        if let Some(hub) = core.hub_addr {
-            if (src == hub || src.ip() == hub.ip()) && healthy {
-                return false;
-            }
+
+        // If from our current hub and tunnel is healthy, ignore redundant re-handshake probes
+        if is_current_hub && healthy {
+            return false;
         }
-        if !healthy || !core.known_peers.lock().contains_key(&src) {
+
+        // If we already have a hub session, do NOT let a non-hub peer hijack hub_addr!
+        if has_hub_session && !is_current_hub {
+            if !core.known_peers.lock().contains_key(&src) {
+                if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
+                    core.known_peers.lock().insert(src, (key, sh));
+                    alog!(
+                        "drain_once: established P2P session with peer {:?} (hub remains {:?})",
+                        src,
+                        core.hub_addr
+                    );
+                }
+            }
+            return false;
+        }
+
+        // Hub handshake / initial adoption / explicit reconnect
+        if !has_hub_session || !healthy || is_current_hub {
             if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
                 core.known_peers.lock().insert(src, (key, sh));
-                if !healthy
-                    || core.hub_addr.is_none()
-                    || core.hub_addr == Some(src)
-                    || core.hub_addr.map(|h| h.ip()) == Some(src.ip())
-                {
+                if core.hub_addr.is_none() || is_current_hub || !healthy {
                     core.hub_addr = Some(src);
                     core.state.rotate_epoch();
                     core.state.set_key(key);
@@ -852,11 +881,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
                     }
                 }
             } else {
-                alog!(
-                    "drain_once: packet from hub missing tunnel flag (flags=0x{:02x}, len={})",
-                    flags,
-                    n
-                );
+                // Control or gossip frame (e.g. PEX or beacon) without FLAG_TUNNEL — ignore quietly
             }
         }
     }
@@ -1050,9 +1075,10 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
         return 0;
     };
+    let has_hub_session = core.hub_addr.is_some() && core.session_key.lock().is_some();
     let healthy = is_tunnel_healthy(core);
-    // If tunnel is already established and receiving traffic from a hub, do not sweep the LAN over the active tunnel socket!
-    if healthy {
+    // If tunnel is already established and healthy, do not disturb hub session
+    if has_hub_session && healthy {
         return core.known_peers.lock().len().max(1) as jint;
     }
     let Some(sock) = core.sock.as_ref() else {
@@ -1078,7 +1104,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     let count = found.len();
     for (peer, key, sh) in found {
         core.known_peers.lock().insert(peer, (key, sh));
-        if !is_tunnel_healthy(core) || core.hub_addr.is_none() || core.hub_addr == Some(peer) {
+        if core.hub_addr.is_none() || core.session_key.lock().is_none() {
             core.hub_addr = Some(peer);
             core.state.rotate_epoch();
             core.state.set_key(key);
@@ -1135,7 +1161,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
     }
     if let Some((key, sh)) = perform_handshake(sock, peer, &core.identity) {
         core.known_peers.lock().insert(peer, (key, sh));
-        if !is_tunnel_healthy(core) || core.hub_addr.is_none() || core.hub_addr == Some(peer) {
+        if core.hub_addr.is_none() || core.session_key.lock().is_none() {
             core.hub_addr = Some(peer);
             core.state.rotate_epoch();
             core.state.set_key(key);

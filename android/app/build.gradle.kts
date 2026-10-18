@@ -11,8 +11,8 @@ android {
         applicationId = "dev.globalghost.net"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "0.8.12"
+        versionCode = 14
+        versionName = "0.8.13"
     }
 
     buildTypes {

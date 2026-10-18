@@ -3696,6 +3696,8 @@ async fn handle_pkt(
 
             peers.insert(fp.clone(), *src);
             let initiator_session = Session::new(d, fp.clone());
+            initiator_session.set_v1_wire(true);
+            initiator_session.set_pq_authenticated(true);
             // Same pin on this side: the answer to a ratchet step is verified
             // against the responder's identity key.
             initiator_session.pin_peer_identity(resp.identity_pk);
@@ -3703,16 +3705,18 @@ async fn handle_pkt(
             if let Some(relay) = relay_role {
                 relay.authorize(&fp, *src);
             }
-            // VPN client: adopt the real session key for tunnel sealing.
+            // VPN: adopt key for client or register lease for hub
             #[cfg(feature = "vpn")]
-            if let Some(VpnMode::Client(client, _)) = vpn_mode {
-                // Fresh handshake: rotate the epoch FIRST (clears the replay
-                // window and TX counters), then adopt the negotiated key.
-                // Without the rotation a reconnect reuses the old epoch and
-                // the hub rejects every datagram as a replay.
-                let e = client.rotate_epoch();
-                client.set_key(d);
-                tracing::info!(epoch = e, "VPN client: epoch rotated for fresh session");
+            match vpn_mode {
+                Some(VpnMode::Client(client, _)) => {
+                    let e = client.rotate_epoch();
+                    client.set_key(d);
+                    tracing::info!(epoch = e, "VPN client: epoch rotated for fresh session");
+                }
+                Some(VpnMode::Hub(hub)) => {
+                    hub.on_handshake(&fp, *src);
+                }
+                None => {}
             }
             tracing::info!(peer = %src, "Session established (initiator)");
         } else {

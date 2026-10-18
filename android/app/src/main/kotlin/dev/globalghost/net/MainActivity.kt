@@ -86,9 +86,9 @@ class MainActivity : Activity() {
 
         val ver = TextView(this).apply {
             val vName = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.12"
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.13"
             } catch (_: Throwable) {
-                "0.8.12"
+                "0.8.13"
             }
             text = "v$vName"
             textSize = 11f
@@ -327,10 +327,7 @@ class MainActivity : Activity() {
 
         // ── Optional Gateway & DNS Overrides (Both Default to Auto) ──
         val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
-        if (prefs.getString("hub_addr", null) == "192.168.178.27:55225") {
-            prefs.edit().remove("hub_addr").apply()
-        }
-        val savedHub = prefs.getString("hub_addr", null)?.takeIf { it != "192.168.178.27:55225" }
+        val savedHub = prefs.getString("hub_addr", null)
         val savedDns = prefs.getString("dns_server", null)
         editRemoteAddr = EditText(this).apply {
             hint = "Exit Gateway: Auto-Discover (or Hub IP:Port)"
