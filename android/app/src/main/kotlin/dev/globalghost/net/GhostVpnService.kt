@@ -166,6 +166,10 @@ class GhostVpnService : VpnService() {
         ch.socket().broadcast = true
         ch.socket().reuseAddress = true
         try {
+            ch.socket().receiveBufferSize = 4 * 1024 * 1024
+            ch.socket().sendBufferSize = 4 * 1024 * 1024
+        } catch (_: Throwable) {}
+        try {
             ch.socket().bind(InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), 55225))
         } catch (_: Throwable) {
             try {

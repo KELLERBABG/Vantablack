@@ -675,20 +675,8 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
                     NonceDirection::InitiatorToResponder,
                     &wire,
                 );
-                let c = core.tx_ctr.fetch_add(1, Ordering::Relaxed) + 1;
-                if c % 25 == 1 || c <= 5 {
-                    alog!(
-                        "pump_once: sent tunnel frame to hub {:?} (len={}, ctr={}, inner_len={}) total_tx={}",
-                        hub,
-                        frame.len(),
-                        ctr,
-                        n,
-                        c
-                    );
-                }
-                if let Err(e) = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame)) {
-                    alog!("pump_once: sock.send_to failed to {:?}: {}", hub, e);
-                }
+                core.tx_ctr.fetch_add(1, Ordering::Relaxed);
+                let _ = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame));
             }
         }
         _ => {}
@@ -721,7 +709,6 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         std::thread::sleep(Duration::from_millis(50));
         return false;
     };
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(100)));
 
     let (n, raw_src) = match sock.recv_from(buf) {
         Ok(res) => res,
@@ -992,6 +979,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
     use std::os::fd::FromRawFd;
     let sock = Arc::new(unsafe { UdpSocket::from_raw_fd(sock_fd) });
     let _ = sock.set_broadcast(true);
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(15)));
 
     if !addr.is_empty()
         && addr != "auto"
@@ -1312,7 +1300,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_pump(
     if core.stop.load(Ordering::Relaxed) {
         return;
     }
-    let mut buf = vec![0u8; 2048];
+    let mut buf = [0u8; 2048];
     pump_once(core, &mut buf);
 }
 
@@ -1329,8 +1317,16 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_drain(
     if core.stop.load(Ordering::Relaxed) {
         return 0;
     }
-    let mut buf = vec![0u8; 2048];
-    drain_once(core, &mut buf) as jboolean
+    let mut buf = [0u8; 2048];
+    let mut received = false;
+    for _ in 0..16 {
+        if drain_once(core, &mut buf) {
+            received = true;
+        } else {
+            break;
+        }
+    }
+    received as jboolean
 }
 
 /// `fun destroy(ptr: Long)`

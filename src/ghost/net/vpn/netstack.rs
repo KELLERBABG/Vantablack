@@ -58,17 +58,17 @@ const LOCAL_PORT_END: u16 = 40000;
 
 // ── Capacity constants ──────────────────────────────────────────────
 
-const MAX_TCP_SOCKETS: usize = 256;
-const SOCK_BUF: usize = 64 * 1024;
-const RX_QUEUE: usize = 512;
-const TX_QUEUE: usize = 1024;
-const FLOW_QUEUE: usize = 256;
+const MAX_TCP_SOCKETS: usize = 512;
+const SOCK_BUF: usize = 512 * 1024;
+const RX_QUEUE: usize = 2048;
+const TX_QUEUE: usize = 2048;
+const FLOW_QUEUE: usize = 512;
 /// Cap on per-flow stack→LAN pending bytes (full proxy channel). Matches the
 /// channel bound × chunk size in spirit: bounded memory, never unbounded.
-const S2C_PENDING_CAP: usize = 256;
+const S2C_PENDING_CAP: usize = 512;
 const PAUSE_AT: f64 = 0.25;
 const RESUME_AT: f64 = 0.75;
-const POLL_CAP_MS: u64 = 10;
+const POLL_CAP_MS: u64 = 2;
 /// Idle TCP flows are torn down after this long without traffic.
 const FLOW_IDLE: Duration = Duration::from_secs(300);
 
@@ -309,12 +309,14 @@ fn driver_loop(
     let mut nat: HashMap<Tuple, u16> = HashMap::new();
     let mut flows: HashMap<u16, Flow> = HashMap::new();
     let mut next_port: u16 = 20000;
-    let mut t_ms: i64 = 0;
+    let start_instant = Instant::now();
     let mut rx_buf = vec![0u8; 65536];
 
     while !stop.is_set() {
+        let mut had_work = false;
         // ── 1. Ingest mesh packets ──
         while let Ok(pkt) = rx_q.try_recv() {
+            had_work = true;
             let Some((rewritten, tuple, is_syn, local_port)) =
                 nat_ingress(&pkt, &mut next_port, &mut nat)
             else {
@@ -394,6 +396,7 @@ fn driver_loop(
                         Err(_) => break,
                     }
                 };
+                had_work = true;
                 let n = sock.send_slice(&data).unwrap_or(0);
                 f.bytes_c2s += n as u64;
                 f.last_activity = Instant::now();
@@ -431,6 +434,7 @@ fn driver_loop(
                     match sock.recv_slice(&mut rx_buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            had_work = true;
                             f.bytes_s2c += n as u64;
                             f.last_activity = Instant::now();
                             rx_buf[..n].to_vec()
@@ -492,16 +496,20 @@ fn driver_loop(
         stats.tcp_flows.store(flows.len() as u64, Ordering::Relaxed);
 
         // ── 4. smoltcp poll (device RX → sockets → device TX → mesh queue) ──
+        let t_ms = start_instant.elapsed().as_millis() as i64;
         let ts = smoltcp::time::Instant::from_millis(t_ms);
+        let prev_tx = device.tx_count.load(Ordering::Relaxed);
         iface.poll(ts, &mut device, &mut sockets);
-        t_ms += POLL_CAP_MS as i64;
+        let now_tx = device.tx_count.load(Ordering::Relaxed);
+        if now_tx > prev_tx {
+            had_work = true;
+        }
         stats
             .packets_out
-            .store(device.tx_count.load(Ordering::Relaxed), Ordering::Relaxed);
+            .store(now_tx, Ordering::Relaxed);
 
         // ── 5. Sleep capped by poll_delay ──
-        let ts2 = smoltcp::time::Instant::from_millis(t_ms);
-        let delay = iface.poll_delay(ts2, &sockets);
+        let delay = iface.poll_delay(ts, &sockets);
         let sleep_for = match delay {
             Some(d) if d.total_millis() == 0 => Duration::ZERO,
             Some(d) => {
@@ -509,7 +517,7 @@ fn driver_loop(
             }
             None => Duration::from_millis(POLL_CAP_MS),
         };
-        if sleep_for.is_zero() {
+        if sleep_for.is_zero() || had_work {
             std::thread::yield_now();
         } else {
             // wake early on stop
@@ -590,6 +598,9 @@ fn spawn_proxy(
                 }
             };
             lan.set_nodelay(true).ok();
+            let sock_ref = socket2::SockRef::from(&lan);
+            let _ = sock_ref.set_recv_buffer_size(2 * 1024 * 1024);
+            let _ = sock_ref.set_send_buffer_size(2 * 1024 * 1024);
             let rd = match lan.try_clone() {
                 Ok(r) => r,
                 Err(_) => {
@@ -602,7 +613,7 @@ fn spawn_proxy(
             let reader = std::thread::spawn(move || {
                 use std::io::Read;
                 let mut rd = rd;
-                let mut buf = vec![0u8; 8192];
+                let mut buf = vec![0u8; 65536];
                 loop {
                     if done_r.is_set() {
                         break;
