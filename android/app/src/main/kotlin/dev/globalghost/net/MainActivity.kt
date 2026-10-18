@@ -87,9 +87,9 @@ class MainActivity : Activity() {
 
         val ver = TextView(this).apply {
             val vName = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.18"
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.19"
             } catch (_: Throwable) {
-                "0.8.18"
+                "0.8.19"
             }
             text = "v$vName"
             textSize = 11f
@@ -819,9 +819,9 @@ class MainActivity : Activity() {
                     }
 
                     val currentVer = try {
-                        packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.18"
+                        packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.19"
                     } catch (_: Throwable) {
-                        "0.8.18"
+                        "0.8.19"
                     }
 
                     val hasUpdate = tag.isNotEmpty() && apkUrl != null && isNewerVersion(tag, currentVer)

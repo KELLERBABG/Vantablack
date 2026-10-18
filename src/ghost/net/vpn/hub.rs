@@ -304,6 +304,26 @@ impl VpnHub {
                 let payload_start = ihl + 8;
                 if pkt.len() > payload_start {
                     let udp_payload = pkt[payload_start..].to_vec();
+
+                    // Anti-leak protection: if client queries AAAA (IPv6) on port 53, immediately reply
+                    // with standard RFC NOERROR/NODATA (0 answers). This prevents dual-stack clients from
+                    // attempting IPv6 connections that would bypass the mesh tunnel or stall, eliminating
+                    // IPv6 traces and guaranteeing all traffic flows through the post-quantum mesh.
+                    if (is_hub_dns || dport == 53) && is_dns_aaaa_query(&udp_payload) {
+                        if let Some(nodata) = build_dns_nodata_response(&udp_payload) {
+                            if let Some(reply_pkt) = build_udp_packet(
+                                IpAddr::V4(dst),
+                                dport,
+                                IpAddr::V4(overlay),
+                                sport,
+                                &nodata,
+                            ) {
+                                let _ = self.egress_tx.send((fp.to_string(), reply_pkt));
+                                return;
+                            }
+                        }
+                    }
+
                     let dst_addr = SocketAddr::from((effective_dst, dport));
                     // The query itself is sent from THIS (packet-handling)
                     // context — never a per-packet thread.
@@ -716,6 +736,81 @@ pub(crate) fn internet_checksum(buf: &[u8]) -> u16 {
     !(sum as u16)
 }
 
+/// Check if a DNS packet is a standard query for AAAA (IPv6) records.
+pub fn is_dns_aaaa_query(payload: &[u8]) -> bool {
+    if payload.len() < 12 {
+        return false;
+    }
+    // Check QR bit: 0 = query
+    if (payload[2] & 0x80) != 0 {
+        return false;
+    }
+    let qdcount = u16::from_be_bytes([payload[4], payload[5]]);
+    if qdcount == 0 {
+        return false;
+    }
+    // Walk QNAME to find QTYPE
+    let mut idx = 12;
+    while idx < payload.len() {
+        let len = payload[idx] as usize;
+        if len == 0 {
+            idx += 1;
+            break;
+        }
+        if (len & 0xC0) == 0xC0 {
+            idx += 2;
+            break;
+        }
+        idx += 1 + len;
+    }
+    if idx + 4 <= payload.len() {
+        let qtype = u16::from_be_bytes([payload[idx], payload[idx + 1]]);
+        let qclass = u16::from_be_bytes([payload[idx + 2], payload[idx + 3]]);
+        return qtype == 28 && qclass == 1; // 28 = AAAA, 1 = IN
+    }
+    false
+}
+
+/// Construct a standard RFC NOERROR / NODATA response for an AAAA query.
+pub fn build_dns_nodata_response(query: &[u8]) -> Option<Vec<u8>> {
+    if query.len() < 12 {
+        return None;
+    }
+    let mut resp = query.to_vec();
+    // Flags: Response (0x80), Recursion Desired (0x01), Recursion Available (0x80), NoError (0x00) -> 0x8180
+    resp[2] = 0x81;
+    resp[3] = 0x80;
+    // ANCOUNT = 0
+    resp[6] = 0;
+    resp[7] = 0;
+    // NSCOUNT = 0
+    resp[8] = 0;
+    resp[9] = 0;
+    // ARCOUNT = 0
+    resp[10] = 0;
+    resp[11] = 0;
+
+    let mut idx = 12;
+    while idx < resp.len() {
+        let len = resp[idx] as usize;
+        if len == 0 {
+            idx += 1;
+            break;
+        }
+        if (len & 0xC0) == 0xC0 {
+            idx += 2;
+            break;
+        }
+        idx += 1 + len;
+    }
+    if idx + 4 <= resp.len() {
+        resp.truncate(idx + 4);
+        Some(resp)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,5 +869,39 @@ mod tests {
         assert_eq!(next, 0);
         let adjusted = if next == 0 { 1 } else { next };
         assert_eq!(adjusted, 1);
+    }
+
+    #[test]
+    fn dns_aaaa_leak_prevention_builds_nodata_reply() {
+        // Construct query: ID=0x4242, QR=0, QDCOUNT=1, "example.com", TYPE=28 (AAAA), CLASS=1 (IN)
+        let mut query = vec![
+            0x42, 0x42, // ID
+            0x01, 0x00, // Flags: RD=1
+            0x00, 0x01, // QDCOUNT=1
+            0x00, 0x00, // ANCOUNT=0
+            0x00, 0x00, // NSCOUNT=0
+            0x00, 0x00, // ARCOUNT=0
+            // QNAME: 7example3com0
+            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            3, b'c', b'o', b'm', 0,
+            0x00, 0x1C, // QTYPE=28 (AAAA)
+            0x00, 0x01, // QCLASS=1 (IN)
+        ];
+        assert!(is_dns_aaaa_query(&query));
+
+        // Construct A query (TYPE=1) -> must NOT be treated as AAAA
+        let a_query_len = query.len();
+        query[a_query_len - 4] = 0x00;
+        query[a_query_len - 3] = 0x01;
+        assert!(!is_dns_aaaa_query(&query));
+
+        // Switch back to AAAA and verify NODATA response
+        query[a_query_len - 3] = 0x1C;
+        let resp = build_dns_nodata_response(&query).expect("build nodata");
+        assert_eq!(&resp[0..2], &[0x42, 0x42]); // Same ID
+        assert_eq!(&resp[2..4], &[0x81, 0x80]); // QR=1, RA=1, NoError=0
+        assert_eq!(&resp[4..6], &[0x00, 0x01]); // 1 Question
+        assert_eq!(&resp[6..8], &[0x00, 0x00]); // 0 Answers
+        assert_eq!(resp.len(), query.len());
     }
 }

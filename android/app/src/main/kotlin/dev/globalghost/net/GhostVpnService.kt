@@ -126,6 +126,13 @@ class GhostVpnService : VpnService() {
             .setMtu(1280)
             .setBlocking(true)
 
+        // IPv6 Leak Prevention: Trap all IPv6 traffic inside the TUN interface
+        // Combined with the Hub's AAAA NODATA responder, this ensures dual-stack clients never leak IPv6
+        try {
+            builder.addAddress("fd00:66::1", 128)
+            builder.addRoute("::", 0)
+        } catch (_: Throwable) {}
+
         val customDns = dnsServer.trim()
         val addedCustomDns = ArrayList<String>()
         if (customDns.isNotEmpty() && !customDns.equals("auto", ignoreCase = true)) {
@@ -140,20 +147,16 @@ class GhostVpnService : VpnService() {
             }
         }
         if (addedCustomDns.isEmpty()) {
-            builder.addDnsServer("10.66.0.1")     // Mesh Exit Node Resolver (forwards to Hub's configured DNS)
-            builder.addDnsServer("1.1.1.1")       // Cloudflare Privacy-Preserving DNS
-            builder.addDnsServer("9.9.9.9")       // Quad9 Encapsulated Privacy DNS
-            activeDnsDisplay = "Auto (Hub 10.66.0.1)"
+            // Strictly tunnel all DNS lookups to the Mesh Exit Node overlay resolver (10.66.0.1)
+            // No direct external DNS IPs are passed to Android netd, ensuring zero ISP leaks
+            builder.addDnsServer("10.66.0.1")
+            activeDnsDisplay = "Auto (Mesh 10.66.0.1)"
         } else {
             if (!addedCustomDns.contains("10.66.0.1")) {
                 try { builder.addDnsServer("10.66.0.1") } catch (_: Throwable) {}
             }
             activeDnsDisplay = addedCustomDns.joinToString(", ")
         }
-
-        try {
-            builder.allowFamily(android.system.OsConstants.AF_INET)
-        } catch (_: Throwable) {}
 
         searchDomain?.let { builder.addSearchDomain(it) }
 
