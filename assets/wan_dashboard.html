@@ -1000,7 +1000,7 @@
 
     <!-- App Footer -->
     <div class="app-footer">
-      <span>Vantablack v0.8.15 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a></span>
+      <span>Vantablack v0.8.16 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a></span>
       <span>Uptime: <span id="footer-uptime">00:00:00</span></span>
     </div>
   </div>
@@ -1147,10 +1147,19 @@
     }
 
     let pinPrompted = false;
+    let isFetchingStatus = false;
 
     async function refreshStatus() {
+      if (isFetchingStatus) return;
+      isFetchingStatus = true;
       try {
-        const res = await fetch('/api/status', { headers: pinHeaders() });
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2500);
+        const res = await fetch('/api/status', {
+          headers: pinHeaders(),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
         if (!res.ok) return;
         const data = await res.json();
 
@@ -1263,6 +1272,8 @@
 
       } catch (e) {
         // Node starting up
+      } finally {
+        isFetchingStatus = false;
       }
     }
 
@@ -1389,6 +1400,14 @@
     // Polling loop
     refreshStatus();
     setInterval(refreshStatus, 1200);
+
+    // Immediately wake up and refresh numbers when window is focused or restored from background
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshStatus();
+    });
+    window.addEventListener('focus', () => {
+      refreshStatus();
+    });
   </script>
 </body>
 </html>

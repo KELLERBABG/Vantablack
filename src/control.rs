@@ -250,8 +250,9 @@ pub fn spawn_control_center(
                     });
                 }
                 loop {
-                    if let Ok((mut stream, _)) = listener.accept().await {
-                        let nc_ref = Arc::clone(&nc_m);
+                    match listener.accept().await {
+                        Ok((mut stream, _)) => {
+                            let nc_ref = Arc::clone(&nc_m);
                         let addrs_ref = Arc::clone(&addrs_m);
                         let vpn_ref = vpn_m.clone();
                         let conn_ref = Arc::clone(&c_conn_m);
@@ -347,6 +348,8 @@ pub fn spawn_control_center(
                                 if req.starts_with("OPTIONS ") {
                                     let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nConnection: close\r\n\r\n";
                                     let _ = stream.write_all(resp.as_bytes()).await;
+                                    let _ = stream.flush().await;
+                                    let _ = stream.shutdown().await;
                                     return;
                                 }
 
@@ -792,6 +795,8 @@ pub fn spawn_control_center(
                                             body
                                         );
                                         let _ = stream.write_all(resp.as_bytes()).await;
+                                        let _ = stream.flush().await;
+                                        let _ = stream.shutdown().await;
                                         return;
                                     };
                                     let topo_path = std::env::var("GHOST_QEL_TOPOLOGY")
@@ -876,14 +881,21 @@ pub fn spawn_control_center(
                                     status_line, content_type, body.len(), body
                                 );
                                 let _ = stream.write_all(resp.as_bytes()).await;
+                                let _ = stream.flush().await;
+                                let _ = stream.shutdown().await;
                             }
                         });
                     }
+                    Err(e) => {
+                        tracing::warn!("Control center accept error: {e}");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    }
                 }
             }
-            Err(e) => {
-                tracing::warn!("Failed to bind metrics HTTP endpoint on port {}: {}", mp, e);
-            }
+        }
+        Err(e) => {
+            tracing::warn!("Failed to bind metrics HTTP endpoint on port {}: {}", mp, e);
+        }
         }
     });
 }
