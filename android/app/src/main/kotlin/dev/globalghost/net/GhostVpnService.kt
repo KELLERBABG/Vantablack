@@ -54,8 +54,14 @@ class GhostVpnService : VpnService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        hubFp = intent?.getStringExtra(EXTRA_HUB_FP)?.trim() ?: hubFp
-        intent?.getStringExtra(EXTRA_HUB_ADDR)?.trim()?.let {
+        if (intent == null || intent.action == ACTION_STOP) {
+            shutdown()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        hubFp = intent.getStringExtra(EXTRA_HUB_FP)?.trim() ?: hubFp
+        intent.getStringExtra(EXTRA_HUB_ADDR)?.trim()?.let {
             val s = it.replace(" ", "")
             if (s.isNotEmpty() && !s.equals("auto", ignoreCase = true)) {
                 val host: String
@@ -78,8 +84,8 @@ class GhostVpnService : VpnService() {
                 hubAddr = null
             }
         }
-        dnsServer = intent?.getStringExtra(EXTRA_DNS) ?: dnsServer
-        searchDomain = intent?.getStringExtra(EXTRA_SEARCH_DOMAIN)
+        dnsServer = intent.getStringExtra(EXTRA_DNS) ?: dnsServer
+        searchDomain = intent.getStringExtra(EXTRA_SEARCH_DOMAIN)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
         if (hubFp.isEmpty()) {
@@ -87,15 +93,13 @@ class GhostVpnService : VpnService() {
         }
         if (ptr == 0L) {
             ptr = GhostCore.init(hubFp)
-            if (ptr == 0L) { stopSelf(); return START_NOT_STICKY }
+            if (ptr == 0L) { shutdown(); stopSelf(); return START_NOT_STICKY }
             activePtr = ptr
         }
-        if (!running) {
-            Thread {
-                startTunnel()
-            }.start()
-        }
-        return START_STICKY
+        Thread {
+            startTunnel()
+        }.start()
+        return START_NOT_STICKY
     }
 
     @Synchronized
@@ -295,18 +299,27 @@ class GhostVpnService : VpnService() {
 
     private fun stopPumps() {
         running = false
+        // Close sockets and TUN file descriptor first so blocking native read/recv syscalls immediately unblock
+        try { channel?.close() } catch (_: Throwable) {}
+        try { tun?.close() } catch (_: Throwable) {}
+        channel = null
+        tun = null
+
         pumpThread?.interrupt()
         drainThread?.interrupt()
         bootstrapThread?.interrupt()
-        pumpThread?.join(500)
-        drainThread?.join(500)
-        bootstrapThread?.join(500)
+        pumpThread?.join(300)
+        drainThread?.join(300)
+        bootstrapThread?.join(300)
         pumpThread = null
         drainThread = null
         bootstrapThread = null
     }
 
-    override fun onRevoke() { shutdown(); stopSelf() }
+    override fun onRevoke() {
+        shutdown()
+        stopSelf()
+    }
 
     private fun startForegroundServiceNotification() {
         val channelId = "ggn-vpn"
@@ -316,10 +329,37 @@ class GhostVpnService : VpnService() {
                 NotificationChannel(channelId, "Vantablack VPN", NotificationManager.IMPORTANCE_LOW)
             )
         }
-        val notification = Notification.Builder(this, channelId)
+        val disconnectIntent = Intent(this, GhostVpnService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val pendingDisconnect = android.app.PendingIntent.getService(
+            this, 1, disconnectIntent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            else
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val openAppIntent = Intent(this, MainActivity::class.java)
+        val pendingOpenApp = android.app.PendingIntent.getActivity(
+            this, 0, openAppIntent,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            else
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        val notification = builder
             .setContentTitle("Vantablack")
             .setContentText("Secure mesh tunnel active")
             .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentIntent(pendingOpenApp)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Disconnect", pendingDisconnect)
             .setOngoing(true)
             .build()
         try {
@@ -334,19 +374,29 @@ class GhostVpnService : VpnService() {
     }
 
     private fun shutdown() {
-        stopPumps()
         running = false
         isRunning = false
         activeNetwork = null
-        activePtr = 0L
         discoveredPeersList = emptyList()
         currentHubAddr = "auto"
-        if (ptr != 0L) {
-            try { GhostCore.destroy(ptr) } catch (_: Throwable) {}
-            ptr = 0L
+        val p = activePtr
+        activePtr = 0L
+        ptr = 0L
+
+        stopPumps()
+
+        if (p != 0L) {
+            try { GhostCore.destroy(p) } catch (_: Throwable) {}
         }
-        try { channel?.close() } catch (_: Throwable) {}
-        try { tun?.close() } catch (_: Throwable) {}
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Throwable) {}
     }
 
     override fun onDestroy() {
@@ -356,6 +406,8 @@ class GhostVpnService : VpnService() {
     }
 
     companion object {
+        const val ACTION_START = "dev.globalghost.net.START"
+        const val ACTION_STOP = "dev.globalghost.net.STOP"
         const val EXTRA_HUB_FP = "hub_fp"
         const val EXTRA_HUB_ADDR = "hub_addr"
         const val EXTRA_DNS = "dns_server"
@@ -367,6 +419,19 @@ class GhostVpnService : VpnService() {
         @Volatile var currentHubAddr: String = "auto"
         @Volatile var activeDnsDisplay: String = "Auto (Hub 10.66.0.1)"
         @Volatile var discoveredPeersList: List<String> = emptyList()
+
+        fun isVpnActive(context: android.content.Context): Boolean {
+            if (isRunning && activePtr != 0L) return true
+            try {
+                val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+                val activeNet = cm.activeNetwork ?: return false
+                val caps = cm.getNetworkCapabilities(activeNet) ?: return false
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                    return isRunning || activePtr != 0L
+                }
+            } catch (_: Throwable) {}
+            return false
+        }
 
         fun getStats(): LongArray {
             val p = activePtr

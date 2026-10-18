@@ -86,9 +86,9 @@ class MainActivity : Activity() {
 
         val ver = TextView(this).apply {
             val vName = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.16"
+                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.17"
             } catch (_: Throwable) {
-                "0.8.16"
+                "0.8.17"
             }
             text = "v$vName"
             textSize = 11f
@@ -129,17 +129,18 @@ class MainActivity : Activity() {
 
         // ── Status Panel ──
         val cardStatus = createCard().apply {
+            val initialActive = GhostVpnService.isVpnActive(this@MainActivity)
             txtStatus = TextView(context).apply {
-                text = if (GhostVpnService.isRunning) "● CONNECTED (TUNNEL ACTIVE)" else "○ DISCONNECTED"
+                text = if (initialActive) "● CONNECTED (TUNNEL ACTIVE)" else "○ DISCONNECTED"
                 textSize = 14f
                 setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(if (GhostVpnService.isRunning) Color.parseColor("#10b981") else Color.parseColor("#64748b"))
+                setTextColor(if (initialActive) Color.parseColor("#10b981") else Color.parseColor("#64748b"))
                 setPadding(0, 0, 0, 4)
             }
             addView(txtStatus)
 
             txtMode = TextView(context).apply {
-                text = if (GhostVpnService.isRunning) "Route: 0.0.0.0/0, ::/0 (Full Tunnel)" else "Standby"
+                text = if (initialActive) "Route: 0.0.0.0/0, ::/0 (Full Tunnel)" else "Standby"
                 textSize = 12f
                 setTextColor(Color.parseColor("#94a3b8"))
             }
@@ -373,20 +374,19 @@ class MainActivity : Activity() {
 
         // ── Primary Action Button ──
         btnConnect = Button(this).apply {
-            text = if (GhostVpnService.isRunning) "Disconnect" else "Connect"
+            val connected = GhostVpnService.isVpnActive(this@MainActivity)
+            text = if (connected) "Disconnect" else "Connect"
             textSize = 14f
             setTypeface(Typeface.DEFAULT_BOLD)
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
-                setColor(if (GhostVpnService.isRunning) Color.parseColor("#7f1d1d") else Color.parseColor("#1d4ed8"))
+                setColor(if (connected) Color.parseColor("#7f1d1d") else Color.parseColor("#1d4ed8"))
                 cornerRadius = 8f
             }
             setPadding(0, 28, 0, 28)
             setOnClickListener {
-                if (GhostVpnService.isRunning) {
-                    stopService(Intent(this@MainActivity, GhostVpnService::class.java))
-                    GhostVpnService.isRunning = false
-                    updateUiState(false)
+                if (GhostVpnService.isVpnActive(this@MainActivity)) {
+                    stopVpn()
                 } else {
                     startVpn()
                 }
@@ -448,14 +448,14 @@ class MainActivity : Activity() {
         setContentView(scroll)
         updateStatus()
 
-        if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isRunning) {
+        if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isVpnActive(this)) {
             handler.postDelayed({ startVpn() }, 300)
         }
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
-        if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isRunning) {
+        if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isVpnActive(this)) {
             handler.postDelayed({ startVpn() }, 300)
         }
     }
@@ -511,7 +511,8 @@ class MainActivity : Activity() {
         val now = System.currentTimeMillis()
         val dt = if (lastTimestamp > 0) ((now - lastTimestamp) / 1000.0).coerceAtLeast(0.1) else 1.0
 
-        if (GhostVpnService.isRunning) {
+        val isConnected = GhostVpnService.isVpnActive(this)
+        if (isConnected) {
             val fp = GhostVpnService.getFingerprint()
             if (fp.isNotEmpty()) txtFingerprint.text = fp
 
@@ -663,6 +664,23 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun stopVpn() {
+        val stopIntent = Intent(this, GhostVpnService::class.java).apply {
+            action = GhostVpnService.ACTION_STOP
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(stopIntent)
+        } else {
+            startService(stopIntent)
+        }
+        stopService(Intent(this, GhostVpnService::class.java))
+        GhostVpnService.isRunning = false
+        GhostVpnService.activePtr = 0L
+        updateUiState(false)
+        updateStatus()
+        Toast.makeText(this, "Mesh Disconnected", Toast.LENGTH_SHORT).show()
+    }
+
     private fun startVpn() {
         val targetAddr = editRemoteAddr.text.toString().trim().ifEmpty { "auto" }
         val customDns = editDnsServer.text.toString().trim().ifEmpty { "auto" }
@@ -685,6 +703,7 @@ class MainActivity : Activity() {
             val targetAddr = editRemoteAddr.text.toString().trim().ifEmpty { "auto" }
             val customDns = editDnsServer.text.toString().trim().ifEmpty { "auto" }
             val serviceIntent = Intent(this, GhostVpnService::class.java).apply {
+                action = GhostVpnService.ACTION_START
                 putExtra(GhostVpnService.EXTRA_HUB_FP, "auto")
                 putExtra(GhostVpnService.EXTRA_HUB_ADDR, targetAddr)
                 putExtra(GhostVpnService.EXTRA_DNS, customDns)
@@ -696,6 +715,7 @@ class MainActivity : Activity() {
             }
             GhostVpnService.isRunning = true
             updateUiState(true)
+            updateStatus()
         } else {
             Toast.makeText(this, "VPN permission rejected", Toast.LENGTH_SHORT).show()
         }
