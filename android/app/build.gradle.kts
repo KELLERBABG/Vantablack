@@ -15,9 +15,22 @@ android {
         versionName = "0.8.19"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("vantablack.keystore")
+            storePassword = "vantablack_mesh_key"
+            keyAlias = "vantablack"
+            keyPassword = "vantablack_mesh_key"
+        }
+    }
+
     buildTypes {
-        release {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("release")
+        }
+        getByName("release") {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
