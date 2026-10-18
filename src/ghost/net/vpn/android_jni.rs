@@ -900,18 +900,34 @@ fn throw(env: &mut JNIEnv, msg: &str) {
     let _ = env.throw_new("java/lang/IllegalStateException", msg);
 }
 
-/// `fun init(hubFingerprint: String): Long`
+/// `fun init(hubFingerprint: String, storageDir: String): Long`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
     mut env: JNIEnv,
     _class: JClass,
     hub_fp: JString,
+    storage_dir: JString,
 ) -> jlong {
     let fp: String = match env.get_string(&hub_fp) {
         Ok(s) => s.into(),
         Err(_) => "".to_string(),
     };
-    let identity = GhostIdentity::generate_fresh();
+    let dir: String = match env.get_string(&storage_dir) {
+        Ok(s) => s.into(),
+        Err(_) => "".to_string(),
+    };
+    let identity = {
+        let key_path = if !dir.is_empty() {
+            std::path::PathBuf::from(dir).join("identity.key")
+        } else {
+            std::path::PathBuf::from("/data/data/dev.globalghost.net/files/identity.key")
+        };
+        if let Some(parent) = key_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let p_str = key_path.to_str().unwrap_or("identity.key");
+        GhostIdentity::load_or_generate(p_str)
+    };
     let effective_fp = if fp.is_empty() || fp == "auto" {
         hex::encode(&identity.public_key_bytes()[..8])
     } else {

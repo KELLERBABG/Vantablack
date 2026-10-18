@@ -15,7 +15,7 @@ object GhostCore {
     }
 
     /** Allocate the native core. Returns a raw pointer (0 on failure). */
-    external fun init(hubFingerprint: String): Long
+    external fun init(hubFingerprint: String, storageDir: String): Long
 
     /** Adopt the hybrid session key (32 bytes) negotiated by the handshake. */
     external fun setSessionKey(ptr: Long, key: ByteArray)

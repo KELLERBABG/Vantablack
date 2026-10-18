@@ -23,7 +23,7 @@ pub const WINDOW_SIZE: u32 = 128;
 pub const SESSION_HARD_TIMEOUT: Duration = Duration::from_secs(86400); // 24 hours
 
 /// Maximum inactivity before automatic session expiry.
-pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(1800); // 30 minutes
+pub const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(120); // 2 minutes
 
 /// The anti-replay sliding window state (supports 32-bit counter windowing).
 pub struct SessionGuard {

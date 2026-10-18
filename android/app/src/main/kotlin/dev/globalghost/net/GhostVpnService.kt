@@ -92,7 +92,8 @@ class GhostVpnService : VpnService() {
             hubFp = "auto"
         }
         if (ptr == 0L) {
-            ptr = GhostCore.init(hubFp)
+            val storageDir = try { filesDir.absolutePath } catch (_: Throwable) { "" }
+            ptr = GhostCore.init(hubFp, storageDir)
             if (ptr == 0L) { shutdown(); stopSelf(); return START_NOT_STICKY }
             activePtr = ptr
         }

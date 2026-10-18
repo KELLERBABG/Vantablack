@@ -3016,6 +3016,62 @@ fn build_beacon_packet(
     buf
 }
 
+fn is_single_device_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            if v4.is_loopback() {
+                return false;
+            }
+            let octets = v4.octets();
+            v4.is_private()
+                || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
+                || v4.is_link_local()
+        }
+        std::net::IpAddr::V6(v6) => !v6.is_loopback(),
+    }
+}
+
+fn register_peer_session(
+    node: &Arc<GhostNode>,
+    peers: &DashMap<String, SocketAddr>,
+    fp: &str,
+    src: SocketAddr,
+    session: Session,
+    vpn_mode: Option<&VpnMode>,
+) {
+    let _ = vpn_mode;
+    let stale_fps: Vec<String> = peers
+        .iter()
+        .filter(|entry| {
+            if entry.key().as_str() == fp {
+                return false;
+            }
+            if *entry.value() == src {
+                return true;
+            }
+            if is_single_device_ip(src.ip()) && entry.value().ip() == src.ip() {
+                return true;
+            }
+            false
+        })
+        .map(|entry| entry.key().clone())
+        .collect();
+
+    for stale in stale_fps {
+        tracing::info!(stale_fp = %stale, new_fp = %fp, ip = %src, "Evicting stale peer mapping and session for endpoint");
+        peers.remove(&stale);
+        node.sessions.remove(&stale);
+        #[cfg(feature = "vpn")]
+        if let Some(VpnMode::Hub(hub)) = vpn_mode {
+            hub.on_disconnect(&stale);
+        }
+    }
+
+    peers.insert(fp.to_string(), src);
+    node.sessions.insert(fp.to_string(), session);
+    record_active_peer(src);
+}
+
 async fn handle_pkt(
     node: Arc<GhostNode>,
     peers: &DashMap<String, SocketAddr>,
@@ -3133,13 +3189,11 @@ async fn handle_pkt(
             tracing::debug!(peer = %src, "Handshake from self ignored");
             return;
         }
-        peers.insert(fp.clone(), *src);
-        record_active_peer(*src);
         let mut session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
         session.set_cipher_suite(selected);
         session.pin_peer_identity(hs.identity_pk);
         session.pin_peer_pq_commitment(hs.pq_commitment);
-        node.sessions.insert(fp.clone(), session);
+        register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, suite = selected.wire_id(), "Explicit suite-negotiated session established");
         // Immediately transmit local post-quantum authentication chunks
         send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
@@ -3215,12 +3269,10 @@ async fn handle_pkt(
             tracing::debug!(peer = %src, "Handshake from self ignored");
             return;
         }
-        peers.insert(fp.clone(), *src);
-        record_active_peer(*src);
         let mut session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
         session.set_cipher_suite(hs.suite);
         session.pin_peer_identity(hs.identity_pk);
-        node.sessions.insert(fp.clone(), session);
+        register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, fingerprint = %fp, suite = hs.suite.wire_id(), "Suite-negotiated session established");
         return;
     }
@@ -3280,11 +3332,9 @@ async fn handle_pkt(
             )
             .await;
         }
-        peers.insert(fp.clone(), *src);
-        record_active_peer(*src);
         let session = Session::new_with_role(master, fp.clone(), SessionRole::Responder);
         session.pin_peer_identity(hs.identity_pk);
-        node.sessions.insert(fp, session);
+        register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, "Uniform handshake session established");
         return;
     }
@@ -3435,15 +3485,13 @@ async fn handle_pkt(
             )
             .await;
         }
-        peers.insert(fp.clone(), *src);
-        record_active_peer(*src);
         let responder_session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
         responder_session.set_v1_wire(true);
         responder_session.set_pq_authenticated(true);
         // Pin the initiator's identity key: it is what a later ratchet step is
         // verified against, and without it a step is refused rather than trusted.
         responder_session.pin_peer_identity(hs.identity_pk);
-        node.sessions.insert(fp.clone(), responder_session);
+        register_peer_session(&node, peers, &fp, *src, responder_session, vpn_mode);
         // Keep the relay's address book current: a session is also the strongest
         // statement that this peer is who it says it is, and its address may have
         // moved since the beacon that first authorized it.
@@ -3550,12 +3598,11 @@ async fn handle_pkt(
             &resp.pq_commitment,
         );
         let fp = hex::encode(&resp.identity_pk[..8]);
-        peers.insert(fp.clone(), *src);
         let mut session = Session::new(master, fp.clone());
         session.set_cipher_suite(resp.suite);
         session.pin_peer_identity(resp.identity_pk);
         session.pin_peer_pq_commitment(resp.pq_commitment);
-        node.sessions.insert(fp.clone(), session);
+        register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, suite = resp.suite.wire_id(), "Explicit suite-negotiated session established (initiator)");
         // Immediately transmit local post-quantum authentication chunks
         send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
@@ -3595,11 +3642,10 @@ async fn handle_pkt(
         let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
         let d =
             derive_hybrid_master_key_with_suite(resp.suite, xs.as_bytes(), &ky_ss, psk.as_ref());
-        peers.insert(fp.clone(), *src);
         let mut session = Session::new(d, fp.clone());
         session.set_cipher_suite(resp.suite);
         session.pin_peer_identity(resp.identity_pk);
-        node.sessions.insert(fp.clone(), session);
+        register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, fingerprint = %fp, suite = %resp.suite.wire_id(), "Suite-negotiated session established (initiator)");
         return;
     }
@@ -3632,10 +3678,9 @@ async fn handle_pkt(
         let xs = ax.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
         let master = derive_hybrid_master_key_with_psk(xs.as_bytes(), ks.as_slice(), psk.as_ref());
         let fp = hex::encode(&resp.identity_pk[..8]);
-        peers.insert(fp.clone(), *src);
         let session = Session::new(master, fp.clone());
         session.pin_peer_identity(resp.identity_pk);
-        node.sessions.insert(fp, session);
+        register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, "Uniform handshake session established (initiator)");
         return;
     }
@@ -3698,14 +3743,13 @@ async fn handle_pkt(
                 locked.as_mut_slice()[..32].copy_from_slice(&d);
             }
 
-            peers.insert(fp.clone(), *src);
             let initiator_session = Session::new(d, fp.clone());
             initiator_session.set_v1_wire(true);
             initiator_session.set_pq_authenticated(true);
             // Same pin on this side: the answer to a ratchet step is verified
             // against the responder's identity key.
             initiator_session.pin_peer_identity(resp.identity_pk);
-            node.sessions.insert(fp.clone(), initiator_session);
+            register_peer_session(&node, peers, &fp, *src, initiator_session, vpn_mode);
             if let Some(relay) = relay_role {
                 relay.authorize(&fp, *src);
             }
@@ -6791,12 +6835,32 @@ async fn run_node(
         });
     }
 
-    // ── Session Cleanup ──
+    // ── Session & Peer Mapping Cleanup ──
     let nm = Arc::clone(&nc);
+    let addrs_cleanup = Arc::clone(&addrs);
+    #[cfg(feature = "vpn")]
+    let vpn_cleanup: Option<VpnMode> = vpn_mode.as_ref().cloned();
     tokio::spawn(async move {
         loop {
-            sleep(Duration::from_secs(60)).await;
-            nm.sessions.retain(|_, s| s.is_valid());
+            sleep(Duration::from_secs(15)).await;
+            let mut expired_fps = Vec::new();
+            nm.sessions.retain(|fp, s| {
+                let valid = s.is_valid();
+                if !valid {
+                    expired_fps.push(fp.clone());
+                    addrs_cleanup.remove(fp);
+                }
+                valid
+            });
+            // Also prune any orphaned addrs entries that have no active session
+            addrs_cleanup.retain(|fp, _| nm.sessions.contains_key(fp));
+
+            #[cfg(feature = "vpn")]
+            if let Some(VpnMode::Hub(ref hub)) = vpn_cleanup {
+                for fp in expired_fps {
+                    hub.on_disconnect(&fp);
+                }
+            }
         }
     });
 
