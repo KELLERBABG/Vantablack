@@ -32,6 +32,27 @@ pub fn json_body(req: &str) -> serde_json::Value {
     serde_json::from_str(body_str.trim()).unwrap_or(serde_json::Value::Null)
 }
 
+/// Extract and validate the `Origin` header against permitted localhost origins.
+pub fn is_origin_allowed(req: &str, port: u16) -> bool {
+    let origin = req.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case("origin") {
+            Some(value.trim())
+        } else {
+            None
+        }
+    });
+
+    match origin {
+        None => true, // direct curl, desktop webview, or native process
+        Some(o) => {
+            o == format!("http://127.0.0.1:{}", port)
+                || o == format!("http://localhost:{}", port)
+                || o == "null"
+        }
+    }
+}
+
 /// Extract the `X-Pin` header from an incoming HTTP request.
 pub fn header_pin(req: &str) -> Option<&str> {
     req.lines().find_map(|line| {
@@ -224,12 +245,14 @@ pub fn spawn_control_center(
     let qel_route_m = Arc::clone(&qel_last_route);
 
     tokio::spawn(async move {
-        let bind_addr = format!("0.0.0.0:{}", mp);
+        let bind_host = std::env::var("GHOST_CONTROL_BIND")
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
+        let bind_addr = format!("{}:{}", bind_host, mp);
         match tokio::net::TcpListener::bind(&bind_addr).await {
             Ok(listener) => {
                 tracing::info!(
-                    "Ghost Web Control Center & Telemetry listening on http://127.0.0.1:{} (LAN: http://0.0.0.0:{})",
-                    mp,
+                    "Ghost Web Control Center & Telemetry listening on http://{}:{}",
+                    bind_host,
                     mp
                 );
                 if std::env::var("GHOST_OPEN_BROWSER")
@@ -344,9 +367,25 @@ pub fn spawn_control_center(
                                     Some(expected) => pin_matches(expected, header_pin(&req)),
                                 };
                                 let is_mutation = req.starts_with("POST ");
+                                let origin_allowed = is_origin_allowed(&req, mp);
+
+                                if is_mutation && !origin_allowed {
+                                    let resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nCross-Origin Forbidden\n";
+                                    let _ = stream.write_all(resp.as_bytes()).await;
+                                    return;
+                                }
+
+                                let cors_header = if origin_allowed {
+                                    format!("Access-Control-Allow-Origin: http://127.0.0.1:{}\r\n", mp)
+                                } else {
+                                    String::new()
+                                };
 
                                 if req.starts_with("OPTIONS ") {
-                                    let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nConnection: close\r\n\r\n";
+                                    let resp = format!(
+                                        "HTTP/1.1 204 No Content\r\n{}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nConnection: close\r\n\r\n",
+                                        cors_header
+                                    );
                                     let _ = stream.write_all(resp.as_bytes()).await;
                                     let _ = stream.flush().await;
                                     let _ = stream.shutdown().await;
@@ -790,7 +829,8 @@ pub fn spawn_control_center(
                                         })
                                         .to_string();
                                         let resp = format!(
-                                            "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            "HTTP/1.1 400 Bad Request\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                            cors_header,
                                             body.len(),
                                             body
                                         );
@@ -899,8 +939,8 @@ pub fn spawn_control_center(
                                     body
                                 };
                                 let resp = format!(
-                                    "{}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                    status_line, content_type, body.len(), body
+                                    "{}\r\n{}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    status_line, cors_header, content_type, body.len(), body
                                 );
                                 let _ = stream.write_all(resp.as_bytes()).await;
                                 let _ = stream.flush().await;

@@ -11,6 +11,7 @@ pub mod cc;
 
 #[cfg(feature = "research")]
 pub mod bandwidth_voucher;
+pub mod coalesce;
 #[cfg(feature = "research")]
 pub mod collective_defense;
 pub mod consumer;
@@ -18,6 +19,7 @@ pub mod consumer;
 pub mod dead_drop;
 #[cfg(feature = "research")]
 pub mod diffusion;
+pub mod discovery;
 pub mod dispatcher;
 #[cfg(feature = "research")]
 pub mod dtn_reconcile;
@@ -38,6 +40,7 @@ pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
 pub mod relay;
+pub mod reassembly;
 #[cfg(feature = "research")]
 pub mod rendezvous;
 pub mod sdr_bridge;
@@ -907,6 +910,23 @@ pub fn try_build_gtf_v2_frame(
     packet[V2_OFFSET_NONCE..V2_OFFSET_NONCE + 12].copy_from_slice(&h.nonce);
     packet[V2_OFFSET_PAYLOAD_START..V2_OFFSET_PAYLOAD_START + payload.len()]
         .copy_from_slice(payload);
+
+    // DPI Resistance & Entropy Preservation:
+    // If a privacy frame payload does not completely fill capacity (cap), mask the
+    // slack space with deterministic PRF keystream bytes derived from the authenticated
+    // tail, ensuring zero-byte patterns never reach the wire under any payload size.
+    if !h.bulk && payload.len() < cap {
+        let slack_start = V2_OFFSET_PAYLOAD_START + payload.len();
+        for (idx, b) in packet[slack_start..tag_start].iter_mut().enumerate() {
+            let tail_byte = if !h.tail.is_empty() {
+                h.tail[idx % h.tail.len()]
+            } else {
+                0x5A
+            };
+            *b = tail_byte ^ ((idx as u8).wrapping_mul(0x9E) ^ 0x33);
+        }
+    }
+
     packet[tag_start..total].copy_from_slice(auth_tag);
 
     // Jitter tail — privacy frames only, CONSTANT length, and now

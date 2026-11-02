@@ -63,7 +63,7 @@ use vantablack::ghost::{
         },
         l4_rs,
         l7_ldpc::LdpcCodec,
-        l8_memsec::{VerifiedRingBuffer, XtsMemoryEncryptor},
+        l8_memsec::VerifiedRingBuffer,
     },
     net::{
         self,
@@ -5124,15 +5124,6 @@ async fn run_node(
     let reputation_matrix = Arc::new(PoissonReputationMatrix::new());
     let bundle_buffer = Arc::new(BundleBuffer::new());
     let shard_router = Arc::new(vantablack::ghost::net::mesh::AdaptiveShardRouter::new());
-    // WIRED: Category B - Encrypted Runtime Memory (AES-256-XTS)
-    let mut xts_key1 = [0u8; 32];
-    let mut xts_key2 = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut xts_key1);
-    rand::thread_rng().fill_bytes(&mut xts_key2);
-    let _mem_encryptor = Arc::new(XtsMemoryEncryptor::new(&xts_key1, &xts_key2));
-    // Zero key material from stack after initialization
-    xts_key1.fill(0);
-    xts_key2.fill(0);
 
     // WIRED: Category B - Verified SPSC Ring Buffer for packet staging
     let verified_ring = Arc::new(VerifiedRingBuffer::<Vec<u8>>::new(1024));
