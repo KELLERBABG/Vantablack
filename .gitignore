@@ -68,3 +68,8 @@ Thumbs.db
 wintun-pkg/
 wintun.zip
 
+# Local developer scratch & architecture workspace (never committed)
+/DEV/
+DEV/
+
+

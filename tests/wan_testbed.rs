@@ -210,3 +210,164 @@ async fn test_wan_multi_region_relay_failover() {
 
     assert_eq!(received, test_packet);
 }
+
+#[tokio::test]
+async fn test_wan_symmetric_relay_return_path_envelope_e2e() {
+    use vantablack::ghost::layers::l2_aead::{
+        random_xnonce, xchacha_open, xchacha_seal_in_place, NonceDirection,
+    };
+    use vantablack::ghost::net::relay::{build_relay_packet, parse_relay_header};
+
+    // Simulated 3-node P2P mesh: Client (Hotspot) -> Relay (Middle Hub) -> Exit (Server)
+    let client_fp = "client-ed25519-abc1234567890def";
+    let relay_fp = "relay-vps-ed25519-node987654321";
+    let _exit_fp = "exit-ed25519-residential-host1";
+
+    let exit_client_shared_key = [0x42u8; 32];
+    let stream_id = 42u32;
+
+    // Channels simulating WAN links:
+    // Link 1: Exit -> Relay
+    let (exit_to_relay_tx, mut exit_to_relay_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    // Link 2: Relay -> Client
+    let (relay_to_client_tx, mut relay_to_client_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+    // Relay forwarding task: mimics `src/main.rs:4160-4172`
+    tokio::spawn(async move {
+        while let Some(raw_frame) = exit_to_relay_rx.recv().await {
+            let relay = parse_relay_header(&raw_frame).expect("Relay parses RLY! envelope from Exit");
+            assert_eq!(relay.next_hop_fingerprint, client_fp);
+            assert_eq!(relay.remaining_hops, 1);
+
+            // Relay peals/rewraps header for the final hop (remaining_hops = 0)
+            let rewrapped = build_relay_packet(&relay.next_hop_fingerprint, 0, &relay.inner_payload);
+            let _ = relay_to_client_tx.send(rewrapped);
+        }
+    });
+
+    // ── Phase 1: Exit sends OK!42! via Relay to Client ──
+    let ok_payload = format!("OK!{stream_id}!").into_bytes();
+    let dctr = 2u64;
+    let mut blob = (ok_payload.len() as u16).to_be_bytes().to_vec();
+    blob.extend_from_slice(&ok_payload);
+    if !blob.len().is_multiple_of(2) {
+        blob.push(0);
+    }
+    let wire_nonce = random_xnonce();
+    xchacha_seal_in_place(
+        &exit_client_shared_key,
+        &wire_nonce,
+        0,
+        NonceDirection::ResponderToInitiator,
+        &mut blob,
+    )
+    .expect("Exit seals OK envelope for client");
+
+    let mut inner = Vec::with_capacity(8 + 12 + blob.len());
+    inner.extend_from_slice(&dctr.to_be_bytes());
+    inner.extend_from_slice(&wire_nonce);
+    inner.extend_from_slice(&blob);
+
+    // Exit wraps in RLY! header pointing to client_fp with 1 hop remaining
+    let exit_return_envelope = build_relay_packet(client_fp, 1, &inner);
+    exit_to_relay_tx
+        .send(exit_return_envelope)
+        .expect("Exit transmits return packet to Relay");
+
+    // Client receives relayed frame
+    let client_recvd_frame = tokio::time::timeout(Duration::from_secs(2), relay_to_client_rx.recv())
+        .await
+        .expect("Timeout waiting for relayed OK")
+        .expect("Packet delivered to client");
+
+    let relay_hdr = parse_relay_header(&client_recvd_frame).expect("Client parses RLY! header");
+    assert_eq!(relay_hdr.next_hop_fingerprint, client_fp);
+    assert_eq!(relay_hdr.remaining_hops, 0, "Final hop to client must have 0 hops remaining");
+
+    let client_inner = &relay_hdr.inner_payload;
+    assert!(client_inner.len() >= 20 + 16);
+    let mut recvd_nonce = [0u8; 12];
+    recvd_nonce.copy_from_slice(&client_inner[8..20]);
+    let mut cipher = client_inner[20..].to_vec();
+
+    let decrypted = xchacha_open(
+        &exit_client_shared_key,
+        &recvd_nonce,
+        0,
+        NonceDirection::ResponderToInitiator,
+        &mut cipher,
+    )
+    .expect("Client successfully opens inner envelope using Exit session key");
+
+    // Unframe 2-byte length
+    let len = u16::from_be_bytes([decrypted[0], decrypted[1]]) as usize;
+    let recvd_payload = &decrypted[2..2 + len];
+    assert_eq!(recvd_payload, format!("OK!{stream_id}!").as_bytes());
+
+    // ── Phase 2: Exit sends Stream Data via Relay to Client ──
+    let http_response = b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello Vantablack";
+    let mut framed_data = Vec::with_capacity(4 + http_response.len());
+    framed_data.extend_from_slice(&stream_id.to_be_bytes());
+    framed_data.extend_from_slice(http_response);
+
+    let dctr2 = 3u64;
+    let mut data_blob = (framed_data.len() as u16).to_be_bytes().to_vec();
+    data_blob.extend_from_slice(&framed_data);
+    if !data_blob.len().is_multiple_of(2) {
+        data_blob.push(0);
+    }
+    let wire_nonce2 = random_xnonce();
+    xchacha_seal_in_place(
+        &exit_client_shared_key,
+        &wire_nonce2,
+        0,
+        NonceDirection::ResponderToInitiator,
+        &mut data_blob,
+    )
+    .expect("Exit seals data envelope");
+
+    let mut inner2 = Vec::with_capacity(8 + 12 + data_blob.len());
+    inner2.extend_from_slice(&dctr2.to_be_bytes());
+    inner2.extend_from_slice(&wire_nonce2);
+    inner2.extend_from_slice(&data_blob);
+
+    let exit_data_envelope = build_relay_packet(client_fp, 1, &inner2);
+    exit_to_relay_tx
+        .send(exit_data_envelope)
+        .expect("Exit sends data packet to Relay");
+
+    let client_recvd_data_frame =
+        tokio::time::timeout(Duration::from_secs(2), relay_to_client_rx.recv())
+            .await
+            .expect("Timeout waiting for relayed data")
+            .expect("Data packet delivered to client");
+
+    let relay_data_hdr =
+        parse_relay_header(&client_recvd_data_frame).expect("Client parses RLY! header for data");
+    assert_eq!(relay_data_hdr.remaining_hops, 0);
+
+    let mut recvd_nonce_data = [0u8; 12];
+    recvd_nonce_data.copy_from_slice(&relay_data_hdr.inner_payload[8..20]);
+    let mut data_cipher = relay_data_hdr.inner_payload[20..].to_vec();
+
+    let decrypted_data = xchacha_open(
+        &exit_client_shared_key,
+        &recvd_nonce_data,
+        0,
+        NonceDirection::ResponderToInitiator,
+        &mut data_cipher,
+    )
+    .expect("Client decrypts stream payload");
+
+    let len_data = u16::from_be_bytes([decrypted_data[0], decrypted_data[1]]) as usize;
+    let uncompressed_payload = &decrypted_data[2..2 + len_data];
+
+    let recvd_sid = u32::from_be_bytes([
+        uncompressed_payload[0],
+        uncompressed_payload[1],
+        uncompressed_payload[2],
+        uncompressed_payload[3],
+    ]);
+    assert_eq!(recvd_sid, stream_id);
+    assert_eq!(&uncompressed_payload[4..], http_response);
+}

@@ -4269,11 +4269,13 @@ async fn handle_pkt(
                                     }
                                     handle_exit_connect(
                                         Arc::clone(&node),
+                                        peers,
                                         sock,
                                         &initiator_addr,
                                         &key,
                                         &sh,
                                         &fp2,
+                                        Some(peer_fp.to_string()),
                                         payload,
                                         exit_tunnels,
                                         ic,
@@ -4281,6 +4283,21 @@ async fn handle_pkt(
                                         fallback_state,
                                     )
                                     .await;
+                                    return;
+                                }
+                                if payload == b"OK" || payload.starts_with(b"OK!") {
+                                    let stream_id = if payload.starts_with(b"OK!") {
+                                        let s = String::from_utf8_lossy(payload);
+                                        s.strip_prefix("OK!")
+                                            .and_then(|r| r.strip_suffix('!'))
+                                            .and_then(|id_str| id_str.parse::<u32>().ok())
+                                            .unwrap_or(0)
+                                    } else {
+                                        0
+                                    };
+                                    connect_acks.insert((sh, stream_id), true);
+                                    connect_ok_ctrs.insert((sh, stream_id), ic);
+                                    rx_state_map.remove(&(sh, stream_id));
                                     return;
                                 }
                                 if payload.starts_with(b"CLOSE!") {
@@ -4314,6 +4331,11 @@ async fn handle_pkt(
                                 }
                                 if let Some(tx) = sessions_rx.get(&(sh, stream_id)).map(|v| v.value().clone()) {
                                     let mut st = rx_state_map.entry((sh, stream_id)).or_default();
+                                    if st.next.is_none() {
+                                        if let Some(ok) = connect_ok_ctrs.get(&(sh, stream_id)) {
+                                            st.next = Some(ok.value() + 1);
+                                        }
+                                    }
                                     let flush = rx_push(&mut st, ic, inner_data.to_vec());
                                     drop(st);
                                     for chunk in flush {
@@ -4403,11 +4425,13 @@ async fn handle_pkt(
                 }
                 handle_exit_connect(
                     Arc::clone(&node),
+                    peers,
                     sock,
                     src,
                     &key,
                     &sh,
                     &peer_fp,
+                    None,
                     payload,
                     exit_tunnels,
                     ctr,
@@ -4448,11 +4472,13 @@ async fn handle_pkt(
 /// reply "OK" over the mesh, and relay bytes in both directions.
 async fn handle_exit_connect(
     node: Arc<GhostNode>,
+    peers: &DashMap<String, SocketAddr>,
     sock: &UdpSocket,
     src: &SocketAddr,
     key: &[u8; 32],
     sh: &[u8; 4],
     peer_fp: &str,
+    via_relay: Option<String>,
     dest: &[u8],
     tunnels: &ExitTunnels,
     connect_ctr: u64,
@@ -4619,25 +4645,71 @@ async fn handle_exit_connect(
     } else {
         b"OK".to_vec()
     };
-    let (f, tag) = enc_split(&ok_ctx, &ok_payload);
-    // The initiator may have reached us *through* a relay, in which case `src` is
-    // the relay's address and a direct reply would go nowhere. Route it the same
-    // way the data path is routed.
-    match fallback_state.and_then(|f| f.path(peer_fp)) {
-        Some(path) => {
-            let _ = send3_via_fallback(
-                &node,
-                sock,
-                peer_fp,
-                &ok_ctx,
-                &f,
-                &tag,
-                &path,
-                fallback_state.and_then(|f| f.turn()),
-            )
-            .await;
+    if let Some(relay_fp) = via_relay.as_deref() {
+        let dctr = node
+            .sessions
+            .get(peer_fp)
+            .map(|s| s.next_tx_counter())
+            .unwrap_or(2);
+        let mut blob = (ok_payload.len() as u16).to_be_bytes().to_vec();
+        blob.extend_from_slice(&ok_payload);
+        if !blob.len().is_multiple_of(2) {
+            blob.push(0);
         }
-        None => send3(sock, src, &ok_ctx, &f, &tag).await,
+        let wire_nonce = vantablack::ghost::layers::l2_aead::random_xnonce();
+        if vantablack::ghost::layers::l2_aead::xchacha_seal_in_place(
+            key,
+            &wire_nonce,
+            0,
+            NonceDirection::ResponderToInitiator,
+            &mut blob,
+        )
+        .is_ok()
+        {
+            let mut inner = Vec::with_capacity(8 + 12 + blob.len());
+            inner.extend_from_slice(&dctr.to_be_bytes());
+            inner.extend_from_slice(&wire_nonce);
+            inner.extend_from_slice(&blob);
+            let relay_envelope = build_relay_packet(peer_fp, 1, &inner);
+
+            let relay_tgt = peers.get(relay_fp).map(|v| *v.value()).unwrap_or(*src);
+            let relay_ctx = node
+                .sessions
+                .get(relay_fp)
+                .map(|s| SealCtx::from_session(&s))
+                .unwrap_or_else(|| SealCtx {
+                    key: *key,
+                    epoch: 0,
+                    counter: 2,
+                    nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                    direction: NonceDirection::ResponderToInitiator,
+                    session_hash: *sh,
+                    ratchet_due: false,
+                });
+            let (f, tag) = enc_split(&relay_ctx, &relay_envelope);
+            send3(sock, &relay_tgt, &relay_ctx, &f, &tag).await;
+        }
+    } else {
+        let (f, tag) = enc_split(&ok_ctx, &ok_payload);
+        // The initiator may have reached us *through* a relay, in which case `src` is
+        // the relay's address and a direct reply would go nowhere. Route it the same
+        // way the data path is routed.
+        match fallback_state.and_then(|f| f.path(peer_fp)) {
+            Some(path) => {
+                let _ = send3_via_fallback(
+                    &node,
+                    sock,
+                    peer_fp,
+                    &ok_ctx,
+                    &f,
+                    &tag,
+                    &path,
+                    fallback_state.and_then(|f| f.turn()),
+                )
+                .await;
+            }
+            None => send3(sock, src, &ok_ctx, &f, &tag).await,
+        }
     }
 
     let tkey = exit_tunnel_key(src, sh, stream_id);
@@ -4677,6 +4749,11 @@ async fn handle_exit_connect(
     let node3 = Arc::clone(&node);
     let route2 = fallback_state.and_then(|f| f.path(peer_fp));
     let turn2 = fallback_state.and_then(|f| f.turn().cloned());
+    let via_relay_rd = via_relay.clone();
+    let relay_target_addr = via_relay
+        .as_deref()
+        .and_then(|rfp| peers.get(rfp).map(|v| *v.value()))
+        .unwrap_or(*src);
     tokio::spawn(async move {
         let (mut rd, mut wr) = stream.into_split();
         let sock3 = sock2;
@@ -4684,20 +4761,61 @@ async fn handle_exit_connect(
             let mut rbuf = vec![0u8; 900]; // keeps each RS shard ≤ 486 B privacy-frame cap
             loop {
                 match rd.read(&mut rbuf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        if stream_id > 0 {
+                            let close_msg = format!("CLOSE!{stream_id}!");
+                            if let Some(relay_fp) = via_relay_rd.as_deref() {
+                                let dctr = sessions2
+                                    .get(&fp2)
+                                    .map(|s| s.next_tx_counter())
+                                    .unwrap_or(2);
+                                let mut blob = (close_msg.len() as u16).to_be_bytes().to_vec();
+                                blob.extend_from_slice(close_msg.as_bytes());
+                                if !blob.len().is_multiple_of(2) {
+                                    blob.push(0);
+                                }
+                                let wire_nonce = vantablack::ghost::layers::l2_aead::random_xnonce();
+                                if vantablack::ghost::layers::l2_aead::xchacha_seal_in_place(
+                                    &key2,
+                                    &wire_nonce,
+                                    0,
+                                    NonceDirection::ResponderToInitiator,
+                                    &mut blob,
+                                )
+                                .is_ok()
+                                {
+                                    let mut inner = Vec::with_capacity(8 + 12 + blob.len());
+                                    inner.extend_from_slice(&dctr.to_be_bytes());
+                                    inner.extend_from_slice(&wire_nonce);
+                                    inner.extend_from_slice(&blob);
+                                    let relay_envelope = build_relay_packet(&fp2, 1, &inner);
+                                    let relay_ctx = sessions2
+                                        .get(relay_fp)
+                                        .map(|s| SealCtx::from_session(&s))
+                                        .unwrap_or_else(|| SealCtx {
+                                            key: key2,
+                                            epoch: 0,
+                                            counter: 2,
+                                            nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                            direction: NonceDirection::ResponderToInitiator,
+                                            session_hash: sh2,
+                                            ratchet_due: false,
+                                        });
+                                    let (rf, rtag) = enc_split(&relay_ctx, &relay_envelope);
+                                    send3_mixed(
+                                        Arc::clone(&sock3),
+                                        &relay_target_addr,
+                                        &relay_ctx,
+                                        &rf,
+                                        &rtag,
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                        break;
+                    }
                     Ok(n) => {
-                        let ctx2 = sessions2
-                            .get(&fp2)
-                            .map(|s| SealCtx::from_session(&s))
-                            .unwrap_or_else(|| SealCtx {
-                                key: key2,
-                                epoch: 0,
-                                counter: 2,
-                                nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
-                                direction: NonceDirection::ResponderToInitiator,
-                                session_hash: sh2,
-                                ratchet_due: false,
-                            });
                         let payload_to_seal = if stream_id > 0 {
                             let mut framed = Vec::with_capacity(4 + n);
                             framed.extend_from_slice(&stream_id.to_be_bytes());
@@ -4706,22 +4824,87 @@ async fn handle_exit_connect(
                         } else {
                             rbuf[..n].to_vec()
                         };
-                        let (f, tag) = enc_split(&ctx2, &payload_to_seal);
-                        match route2.as_ref() {
-                            Some(path) => {
-                                let _ = send3_via_fallback(
-                                    &node3,
-                                    &sock3,
-                                    &fp2,
-                                    &ctx2,
-                                    &f,
-                                    &tag,
-                                    path,
-                                    turn2.as_ref(),
+
+                        if let Some(relay_fp) = via_relay_rd.as_deref() {
+                            let dctr = sessions2
+                                .get(&fp2)
+                                .map(|s| s.next_tx_counter())
+                                .unwrap_or(2);
+                            let mut blob = (payload_to_seal.len() as u16).to_be_bytes().to_vec();
+                            blob.extend_from_slice(&payload_to_seal);
+                            if !blob.len().is_multiple_of(2) {
+                                blob.push(0);
+                            }
+                            let wire_nonce = vantablack::ghost::layers::l2_aead::random_xnonce();
+                            if vantablack::ghost::layers::l2_aead::xchacha_seal_in_place(
+                                &key2,
+                                &wire_nonce,
+                                0,
+                                NonceDirection::ResponderToInitiator,
+                                &mut blob,
+                            )
+                            .is_ok()
+                            {
+                                let mut inner = Vec::with_capacity(8 + 12 + blob.len());
+                                inner.extend_from_slice(&dctr.to_be_bytes());
+                                inner.extend_from_slice(&wire_nonce);
+                                inner.extend_from_slice(&blob);
+                                let relay_envelope = build_relay_packet(&fp2, 1, &inner);
+
+                                let relay_ctx = sessions2
+                                    .get(relay_fp)
+                                    .map(|s| SealCtx::from_session(&s))
+                                    .unwrap_or_else(|| SealCtx {
+                                        key: key2,
+                                        epoch: 0,
+                                        counter: 2,
+                                        nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                        direction: NonceDirection::ResponderToInitiator,
+                                        session_hash: sh2,
+                                        ratchet_due: false,
+                                    });
+                                let (rf, rtag) = enc_split(&relay_ctx, &relay_envelope);
+                                send3_mixed(
+                                    Arc::clone(&sock3),
+                                    &relay_target_addr,
+                                    &relay_ctx,
+                                    &rf,
+                                    &rtag,
                                 )
                                 .await;
                             }
-                            None => send3_mixed(Arc::clone(&sock3), &addr2, &ctx2, &f, &tag).await,
+                        } else {
+                            let ctx2 = sessions2
+                                .get(&fp2)
+                                .map(|s| SealCtx::from_session(&s))
+                                .unwrap_or_else(|| SealCtx {
+                                    key: key2,
+                                    epoch: 0,
+                                    counter: 2,
+                                    nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                    direction: NonceDirection::ResponderToInitiator,
+                                    session_hash: sh2,
+                                    ratchet_due: false,
+                                });
+                            let (f, tag) = enc_split(&ctx2, &payload_to_seal);
+                            match route2.as_ref() {
+                                Some(path) => {
+                                    let _ = send3_via_fallback(
+                                        &node3,
+                                        &sock3,
+                                        &fp2,
+                                        &ctx2,
+                                        &f,
+                                        &tag,
+                                        path,
+                                        turn2.as_ref(),
+                                    )
+                                    .await;
+                                }
+                                None => {
+                                    send3_mixed(Arc::clone(&sock3), &addr2, &ctx2, &f, &tag).await
+                                }
+                            }
                         }
                     }
                 }
