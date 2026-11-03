@@ -917,13 +917,30 @@ pub fn try_build_gtf_v2_frame(
     // tail, ensuring zero-byte patterns never reach the wire under any payload size.
     if !h.bulk && payload.len() < cap {
         let slack_start = V2_OFFSET_PAYLOAD_START + payload.len();
-        for (idx, b) in packet[slack_start..tag_start].iter_mut().enumerate() {
-            let tail_byte = if !h.tail.is_empty() {
-                h.tail[idx % h.tail.len()]
-            } else {
-                0x5A
-            };
-            *b = tail_byte ^ ((idx as u8).wrapping_mul(0x9E) ^ 0x33);
+        let mut seed = h.counter
+            ^ h.epoch.rotate_left(17)
+            ^ u64::from_le_bytes([
+                h.nonce[0], h.nonce[1], h.nonce[2], h.nonce[3],
+                h.nonce[4], h.nonce[5], h.nonce[6], h.nonce[7],
+            ])
+            ^ u64::from_le_bytes([
+                h.session_hash[0], h.session_hash[1], h.session_hash[2], h.session_hash[3],
+                h.nonce[8], h.nonce[9], h.nonce[10], h.nonce[11],
+            ])
+            ^ u64::from_le_bytes([
+                h.tail[0], h.tail[1], h.tail[2], h.tail[3],
+                h.tail[4], h.tail[5], h.tail[6], h.tail[7],
+            ])
+            ^ ((h.shard_index as u64) << 40)
+            ^ 0x9E37_79B9_7F4A_7C15;
+        for chunk in packet[slack_start..tag_start].chunks_mut(8) {
+            seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            let bytes = z.to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
         }
     }
 

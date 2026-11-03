@@ -1510,8 +1510,8 @@ type ConnectOkCtrs = Arc<DashMap<([u8; 4], u32), u64>>;
 /// Initiator side: per-(session, stream) reorder state for exit data.
 pub(crate) type RxStateMap = Arc<DashMap<([u8; 4], u32), RxState>>;
 
-fn exit_tunnel_key(src: &SocketAddr, sh: &[u8; 4], stream_id: u32) -> String {
-    format!("{}|{}|{}", src, hex::encode(sh), stream_id)
+fn exit_tunnel_key(_src: &SocketAddr, sh: &[u8; 4], stream_id: u32) -> String {
+    format!("{}|{}", hex::encode(sh), stream_id)
 }
 
 /// Direction our own sends take, given our role in the session.
@@ -4255,11 +4255,22 @@ async fn handle_pkt(
                             tracing::info!(peer = %fp2, "Relay payload delivered (final hop)");
                             let payload = pt2.to_vec();
                             if let Some(payload) = frame_payload(&payload) {
-                                if role == SessionRole::Responder && looks_like_dest(payload) {
+                                let initiator_addr = peers.get(&fp2).map(|v| *v.value()).unwrap_or(*src);
+                                if (role == SessionRole::Responder || payload.starts_with(b"STREAM!"))
+                                    && looks_like_dest(payload)
+                                {
+                                    let allowed = trusted_exits
+                                        .read()
+                                        .map(|s| s.contains("any") || s.contains(&fp2))
+                                        .unwrap_or(false);
+                                    if !allowed {
+                                        tracing::warn!(peer = %fp2, "Relay Exit CONNECT denied — fingerprint not allowlisted (EXITAUTH)");
+                                        return;
+                                    }
                                     handle_exit_connect(
                                         Arc::clone(&node),
                                         sock,
-                                        src,
+                                        &initiator_addr,
                                         &key,
                                         &sh,
                                         &fp2,
@@ -4272,6 +4283,18 @@ async fn handle_pkt(
                                     .await;
                                     return;
                                 }
+                                if payload.starts_with(b"CLOSE!") {
+                                    let s = String::from_utf8_lossy(payload);
+                                    if let Some(id_str) = s.strip_prefix("CLOSE!").and_then(|r| r.strip_suffix('!')) {
+                                        if let Ok(sid) = id_str.parse::<u32>() {
+                                            exit_tunnels.remove(&exit_tunnel_key(&initiator_addr, &sh, sid));
+                                            sessions_rx.remove(&(sh, sid));
+                                            connect_acks.remove(&(sh, sid));
+                                            rx_state_map.remove(&(sh, sid));
+                                        }
+                                    }
+                                    return;
+                                }
                                 // Relay unwrapped data frame dispatch
                                 let (stream_id, inner_data) = if payload.len() >= 4 && !looks_like_dest(payload) {
                                     let sid = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
@@ -4279,7 +4302,7 @@ async fn handle_pkt(
                                 } else {
                                     (0u32, payload)
                                 };
-                                let tkey = exit_tunnel_key(src, &sh, stream_id);
+                                let tkey = exit_tunnel_key(&initiator_addr, &sh, stream_id);
                                 if let Some(mut t_guard) = exit_tunnels.get_mut(&tkey) {
                                     let flush = rx_push(&mut t_guard.rx, ic, inner_data.to_vec());
                                     let out_tx = t_guard.out_tx.clone();

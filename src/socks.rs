@@ -12,9 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use vantablack::ghost::net::coalesce::{
-    CoalescedShard, CoalescingQueue, COALESCE_TARGET_BYTES, FLAG_IMMEDIATE, SHARD_PAYLOAD_BYTES,
-};
+use vantablack::ghost::net::coalesce::CoalescedShard;
 use vantablack::ghost::net::reassembly::ReassemblyBuffer;
 use vantablack::ghost::net::relay::build_onion_route;
 
@@ -22,6 +20,48 @@ static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
 
 /// Maximum stream flow credit (64 KB window) to prevent congestion and bufferbloat.
 pub const MAX_STREAM_CREDIT: usize = 65536;
+
+/// Maximum TCP payload bytes coalesced into a single tunnel frame so that
+/// `[stream_id (4B) || payload]` plus optional multi-hop `RLY!` + XChaCha20 E2E
+/// headers always fit inside a single 2-data + 1-parity RS(2,1) coding group.
+const MAX_STREAM_COALESCE_BYTES: usize = 850;
+
+/// Seal `payload` end-to-end for `exit_fp` using XChaCha20-Poly1305 and wrap it
+/// in the `RLY!` onion headers for `route` (`[guard, exit]` or `[guard, middle, exit]`).
+fn wrap_onion_e2e(
+    nn: &GhostNode,
+    exit_fp: &str,
+    exit_key: &[u8; 32],
+    exit_role: SessionRole,
+    route: &[String],
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    let dctr = nn
+        .sessions
+        .get(exit_fp)
+        .map(|s| s.next_tx_counter())
+        .unwrap_or(2);
+    let mut blob = (payload.len() as u16).to_be_bytes().to_vec();
+    blob.extend_from_slice(payload);
+    if !blob.len().is_multiple_of(2) {
+        blob.push(0);
+    }
+    let wire_nonce = vantablack::ghost::layers::l2_aead::random_xnonce();
+    vantablack::ghost::layers::l2_aead::xchacha_seal_in_place(
+        exit_key,
+        &wire_nonce,
+        0,
+        dir_for(exit_role),
+        &mut blob,
+    )
+    .ok()?;
+    let mut inner = Vec::with_capacity(8 + 12 + blob.len());
+    inner.extend_from_slice(&dctr.to_be_bytes());
+    inner.extend_from_slice(&wire_nonce);
+    inner.extend_from_slice(&blob);
+    let route_refs: Vec<&str> = route.iter().map(|s| s.as_str()).collect();
+    build_onion_route(&route_refs, &inner)
+}
 
 /// Hop and routing policy for SOCKS5 connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +251,20 @@ pub async fn handle_socks5_connection(
     let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
 
     // ── Circuit Route & First-Hop Resolution ─────────────────────────
-    let (first_hop_fp, first_hop_addr, onion_route) = match policy {
+    let effective_policy = match policy {
+        HopPolicy::Auto => {
+            if active_sessions >= 3 {
+                HopPolicy::StrictThreeHop
+            } else if active_sessions == 2 {
+                HopPolicy::TwoHop
+            } else {
+                HopPolicy::OneHop
+            }
+        }
+        other => other,
+    };
+
+    let (first_hop_fp, first_hop_addr, onion_route) = match effective_policy {
         HopPolicy::StrictThreeHop => {
             let candidates: Vec<String> = nn.sessions.iter().map(|e| e.key().clone()).collect();
             if candidates.len() < 3 {
@@ -255,6 +308,19 @@ pub async fn handle_socks5_connection(
         }
     };
 
+    let exit_sess = match nn.sessions.get(&fp) {
+        Some(s) => s,
+        None => {
+            tracing::warn!("SOCKS5: No session for exit {fp}");
+            let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+            return;
+        }
+    };
+    let exit_key = exit_sess.master_key;
+    let exit_sh = exit_sess.session_hash;
+    let exit_role = exit_sess.role;
+    drop(exit_sess);
+
     let ss = match nn.sessions.get(&first_hop_fp) {
         Some(s) => s,
         None => {
@@ -268,8 +334,9 @@ pub async fn handle_socks5_connection(
     let role = ss.role;
     drop(ss);
 
+    // Return traffic and OK!{stream_id}! from the exit arrive under `exit_sh`.
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    chh.insert((sh, stream_id), tx);
+    chh.insert((exit_sh, stream_id), tx);
 
     let connect_ctr = nn
         .sessions
@@ -301,8 +368,7 @@ pub async fn handle_socks5_connection(
 
     let connect_payload = match onion_route.as_ref() {
         Some(route) => {
-            let route_refs: Vec<&str> = route.iter().map(|s| s.as_str()).collect();
-            build_onion_route(&route_refs, dest.as_bytes())
+            wrap_onion_e2e(&nn, &fp, &exit_key, exit_role, route, dest.as_bytes())
                 .unwrap_or_else(|| dest.into_bytes())
         }
         None => dest.into_bytes(),
@@ -331,7 +397,7 @@ pub async fn handle_socks5_connection(
     // Wait for the exit's framed "OK!{stream_id}!" or "OK" (delivered via handle_pkt).
     let mut connected = false;
     for _ in 0..50 {
-        if ak2.get(&(sh, stream_id)).map(|v| *v.value()).unwrap_or(false) {
+        if ak2.get(&(exit_sh, stream_id)).map(|v| *v.value()).unwrap_or(false) {
             connected = true;
             break;
         }
@@ -339,13 +405,13 @@ pub async fn handle_socks5_connection(
     }
     if !connected {
         tracing::warn!(stream_id = stream_id, "SOCKS5 CONNECT failed (timeout waiting for CONNECT_OK)");
-        chh.remove(&(sh, stream_id));
+        chh.remove(&(exit_sh, stream_id));
         let _ = s.write_all(&[5, 4, 0, 1, 0, 0, 0, 0, 0, 0]).await; // 0x04 = Host unreachable
         return;
     }
     tracing::info!(stream_id = stream_id, "SOCKS5 CONNECT_OK established");
     if s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_err() {
-        chh.remove(&(sh, stream_id));
+        chh.remove(&(exit_sh, stream_id));
         return;
     }
 
@@ -353,8 +419,13 @@ pub async fn handle_socks5_connection(
     let (mut rd, mut wr) = s.into_split();
     let nn2 = Arc::clone(&nn);
     let first_hop_out = first_hop_fp.clone();
+    let exit_fp_out = fp.clone();
     let key_out = key;
     let sh_out = sh;
+    let role_out = role;
+    let exit_key_out = exit_key;
+    let exit_sh_out = exit_sh;
+    let exit_role_out = exit_role;
     let tgt_out = first_hop_addr;
     let chh2 = Arc::clone(&chh);
     let ak2_out = Arc::clone(&ak2);
@@ -368,176 +439,230 @@ pub async fn handle_socks5_connection(
     let stream_credit = Arc::new(AtomicUsize::new(MAX_STREAM_CREDIT));
     let credit_in = Arc::clone(&stream_credit);
 
-    // Client -> Mesh pumping task: gathers chunks into optimal 984-byte coalescing groups
+    // Client -> Mesh pumping task: coalesces small TCP writes within a 200 µs
+    // window up to MAX_STREAM_COALESCE_BYTES and dispatches each batch as a
+    // single SIMD RS(2,1) coding group (zero double-RS amplification, zero
+    // request-response deadlock).
     tokio::spawn(async move {
-        let mut rbuf = vec![0u8; 984];
-        let mut queue = CoalescingQueue::new(COALESCE_TARGET_BYTES, Duration::from_micros(200));
+        let mut rbuf = vec![0u8; MAX_STREAM_COALESCE_BYTES];
+        let mut coalesce_buf: Vec<u8> = Vec::with_capacity(4 + MAX_STREAM_COALESCE_BYTES);
+
         loop {
-            // Check credit limit before pulling more from TCP stream
             while credit_in.load(Ordering::Relaxed) == 0 {
                 sleep(Duration::from_micros(200)).await;
             }
 
-            match rd.read(&mut rbuf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let current_credit = credit_in.load(Ordering::Relaxed);
-                    let to_consume = n.min(current_credit);
-                    credit_in.fetch_sub(to_consume, Ordering::Relaxed);
+            let max_read = (4 + MAX_STREAM_COALESCE_BYTES)
+                .saturating_sub(coalesce_buf.len())
+                .min(rbuf.len());
 
-                    let mut framed = Vec::with_capacity(4 + n);
-                    framed.extend_from_slice(&stream_id.to_be_bytes());
-                    framed.extend_from_slice(&rbuf[..n]);
-
-                    let groups = queue.push(&framed, false);
-                    for triplet in groups {
-                        for shard in triplet {
-                            let mut shard_bytes = [0u8; CoalescedShard::HEADER_LEN + SHARD_PAYLOAD_BYTES];
-                            if shard.serialize_into(&mut shard_bytes).is_err() {
-                                continue;
-                            }
-
-                            let c = nn2
-                                .sessions
-                                .get(&first_hop_out)
-                                .map(|s| s.next_tx_counter())
-                                .unwrap_or(2);
-                            let ctx_out = nn2
-                                .sessions
-                                .get(&first_hop_out)
-                                .map(|s| SealCtx::from_session(&s))
-                                .unwrap_or_else(|| SealCtx {
-                                    key: key_out,
-                                    epoch: 0,
-                                    counter: c,
-                                    nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
-                                    direction: NonceDirection::InitiatorToResponder,
-                                    session_hash: sh_out,
-                                    ratchet_due: false,
-                                });
-
-                            let wire_payload = match onion_route_out.as_ref() {
-                                Some(route) => {
-                                    let route_refs: Vec<&str> = route.iter().map(|s| s.as_str()).collect();
-                                    build_onion_route(&route_refs, &shard_bytes)
-                                        .unwrap_or_else(|| shard_bytes.to_vec())
-                                }
-                                None => shard_bytes.to_vec(),
-                            };
-
-                            let (f, tag) = enc_split(&ctx_out, &wire_payload);
-                            let me = nn2.fingerprint();
-                            let plan = nn2.contact_plan.read().await;
-                            let route = routes_out.path(&first_hop_out);
-                            let _ = send3_adaptive(
-                                &nn2,
-                                &nn2.socket,
-                                &tgt_out,
-                                &first_hop_out,
-                                &ctx_out,
-                                &f,
-                                &tag,
-                                &srouter,
-                                &aa_proxy,
-                                Some(&plan),
-                                &me,
-                                route.as_ref(),
-                                turn_path_out.as_ref(),
-                                Some(&carrier_out),
-                            )
-                            .await;
-                        }
+            let should_flush = if coalesce_buf.is_empty() {
+                match rd.read(&mut rbuf[..max_read]).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let current_credit = credit_in.load(Ordering::Relaxed);
+                        credit_in.fetch_sub(n.min(current_credit), Ordering::Relaxed);
+                        coalesce_buf.extend_from_slice(&stream_id.to_be_bytes());
+                        coalesce_buf.extend_from_slice(&rbuf[..n]);
+                        coalesce_buf.len() >= 4 + MAX_STREAM_COALESCE_BYTES
                     }
                 }
-            }
-        }
+            } else {
+                tokio::select! {
+                    biased;
+                    res = rd.read(&mut rbuf[..max_read]) => {
+                        match res {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                let current_credit = credit_in.load(Ordering::Relaxed);
+                                credit_in.fetch_sub(n.min(current_credit), Ordering::Relaxed);
+                                coalesce_buf.extend_from_slice(&rbuf[..n]);
+                                coalesce_buf.len() >= 4 + MAX_STREAM_COALESCE_BYTES
+                            }
+                        }
+                    }
+                    _ = sleep(Duration::from_micros(200)) => true,
+                }
+            };
 
-        // Flush remaining bytes with immediate preemption
-        if let Some(triplet) = queue.flush(FLAG_IMMEDIATE) {
-            for shard in triplet {
-                let mut shard_bytes = [0u8; CoalescedShard::HEADER_LEN + SHARD_PAYLOAD_BYTES];
-                if shard.serialize_into(&mut shard_bytes).is_ok() {
-                    let c = nn2.sessions.get(&first_hop_out).map(|s| s.next_tx_counter()).unwrap_or(2);
-                    let ctx_out = nn2.sessions.get(&first_hop_out).map(|s| SealCtx::from_session(&s)).unwrap_or_else(|| SealCtx {
+            if should_flush && !coalesce_buf.is_empty() {
+                let batch = std::mem::replace(
+                    &mut coalesce_buf,
+                    Vec::with_capacity(4 + MAX_STREAM_COALESCE_BYTES),
+                );
+                let c = nn2
+                    .sessions
+                    .get(&first_hop_out)
+                    .map(|s| s.next_tx_counter())
+                    .unwrap_or(2);
+                let ctx_out = nn2
+                    .sessions
+                    .get(&first_hop_out)
+                    .map(|s| SealCtx::from_session(&s))
+                    .unwrap_or_else(|| SealCtx {
                         key: key_out,
                         epoch: 0,
                         counter: c,
                         nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
-                        direction: NonceDirection::InitiatorToResponder,
+                        direction: dir_for(role_out),
                         session_hash: sh_out,
                         ratchet_due: false,
                     });
-                    let wire_payload = match onion_route_out.as_ref() {
-                        Some(route) => {
-                            let route_refs: Vec<&str> = route.iter().map(|s| s.as_str()).collect();
-                            build_onion_route(&route_refs, &shard_bytes).unwrap_or_else(|| shard_bytes.to_vec())
-                        }
-                        None => shard_bytes.to_vec(),
-                    };
-                    let (f, tag) = enc_split(&ctx_out, &wire_payload);
-                    let me = nn2.fingerprint();
-                    let plan = nn2.contact_plan.read().await;
-                    let route = routes_out.path(&first_hop_out);
-                    let _ = send3_adaptive(&nn2, &nn2.socket, &tgt_out, &first_hop_out, &ctx_out, &f, &tag, &srouter, &aa_proxy, Some(&plan), &me, route.as_ref(), turn_path_out.as_ref(), Some(&carrier_out)).await;
-                }
+
+                let wire_payload = match onion_route_out.as_ref() {
+                    Some(route) => {
+                        wrap_onion_e2e(&nn2, &exit_fp_out, &exit_key_out, exit_role_out, route, &batch)
+                            .unwrap_or(batch)
+                    }
+                    None => batch,
+                };
+
+                let (f, tag) = enc_split(&ctx_out, &wire_payload);
+                let me = nn2.fingerprint();
+                let plan = nn2.contact_plan.read().await;
+                let route = routes_out.path(&first_hop_out);
+                let _ = send3_adaptive(
+                    &nn2,
+                    &nn2.socket,
+                    &tgt_out,
+                    &first_hop_out,
+                    &ctx_out,
+                    &f,
+                    &tag,
+                    &srouter,
+                    &aa_proxy,
+                    Some(&plan),
+                    &me,
+                    route.as_ref(),
+                    turn_path_out.as_ref(),
+                    Some(&carrier_out),
+                )
+                .await;
             }
+        }
+
+        // Flush any remaining buffered bytes on stream EOF
+        if !coalesce_buf.is_empty() {
+            let c = nn2
+                .sessions
+                .get(&first_hop_out)
+                .map(|s| s.next_tx_counter())
+                .unwrap_or(2);
+            let ctx_out = nn2
+                .sessions
+                .get(&first_hop_out)
+                .map(|s| SealCtx::from_session(&s))
+                .unwrap_or_else(|| SealCtx {
+                    key: key_out,
+                    epoch: 0,
+                    counter: c,
+                    nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                    direction: dir_for(role_out),
+                    session_hash: sh_out,
+                    ratchet_due: false,
+                });
+            let wire_payload = match onion_route_out.as_ref() {
+                Some(route) => {
+                    wrap_onion_e2e(&nn2, &exit_fp_out, &exit_key_out, exit_role_out, route, &coalesce_buf)
+                        .unwrap_or(coalesce_buf)
+                }
+                None => coalesce_buf,
+            };
+            let (f, tag) = enc_split(&ctx_out, &wire_payload);
+            let me = nn2.fingerprint();
+            let plan = nn2.contact_plan.read().await;
+            let route = routes_out.path(&first_hop_out);
+            let _ = send3_adaptive(
+                &nn2,
+                &nn2.socket,
+                &tgt_out,
+                &first_hop_out,
+                &ctx_out,
+                &f,
+                &tag,
+                &srouter,
+                &aa_proxy,
+                Some(&plan),
+                &me,
+                route.as_ref(),
+                turn_path_out.as_ref(),
+                Some(&carrier_out),
+            )
+            .await;
         }
 
         // Send CLOSE notification to exit node
         let close_msg = format!("CLOSE!{stream_id}!");
         let close_payload = match onion_route_out.as_ref() {
             Some(route) => {
-                let route_refs: Vec<&str> = route.iter().map(|s| s.as_str()).collect();
-                build_onion_route(&route_refs, close_msg.as_bytes()).unwrap_or_else(|| close_msg.into_bytes())
+                wrap_onion_e2e(&nn2, &exit_fp_out, &exit_key_out, exit_role_out, route, close_msg.as_bytes())
+                    .unwrap_or_else(|| close_msg.into_bytes())
             }
             None => close_msg.into_bytes(),
         };
-        let c = nn2.sessions.get(&first_hop_out).map(|s| s.next_tx_counter()).unwrap_or(2);
-        let ctx_close = nn2.sessions.get(&first_hop_out).map(|s| SealCtx::from_session(&s)).unwrap_or_else(|| SealCtx {
-            key: key_out,
-            epoch: 0,
-            counter: c,
-            nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
-            direction: NonceDirection::InitiatorToResponder,
-            session_hash: sh_out,
-            ratchet_due: false,
-        });
+        let c = nn2
+            .sessions
+            .get(&first_hop_out)
+            .map(|s| s.next_tx_counter())
+            .unwrap_or(2);
+        let ctx_close = nn2
+            .sessions
+            .get(&first_hop_out)
+            .map(|s| SealCtx::from_session(&s))
+            .unwrap_or_else(|| SealCtx {
+                key: key_out,
+                epoch: 0,
+                counter: c,
+                nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                direction: dir_for(role_out),
+                session_hash: sh_out,
+                ratchet_due: false,
+            });
         let (f, tag) = enc_split(&ctx_close, &close_payload);
         let me = nn2.fingerprint();
         let plan = nn2.contact_plan.read().await;
         let route = routes_out.path(&first_hop_out);
-        let _ = send3_adaptive(&nn2, &nn2.socket, &tgt_out, &first_hop_out, &ctx_close, &f, &tag, &srouter, &aa_proxy, Some(&plan), &me, route.as_ref(), turn_path_out.as_ref(), Some(&carrier_out)).await;
+        let _ = send3_adaptive(
+            &nn2,
+            &nn2.socket,
+            &tgt_out,
+            &first_hop_out,
+            &ctx_close,
+            &f,
+            &tag,
+            &srouter,
+            &aa_proxy,
+            Some(&plan),
+            &me,
+            route.as_ref(),
+            turn_path_out.as_ref(),
+            Some(&carrier_out),
+        )
+        .await;
 
-        chh2.remove(&(sh_out, stream_id));
-        ak2_out.remove(&(sh_out, stream_id));
+        chh2.remove(&(exit_sh_out, stream_id));
+        ak2_out.remove(&(exit_sh_out, stream_id));
     });
 
-    // Mesh -> Client pumping task: reconstructs shards via ReassemblyBuffer and replenishes flow credits
+    // Mesh -> Client pumping task: delivers reassembled exit chunks and replenishes flow credits.
+    // Note: `handle_pkt` already strips the 4-byte `stream_id` header before pushing to `sessions_rx`.
     let mut reassembly_buf = ReassemblyBuffer::new();
     while let Some(chunk) = rx.recv().await {
         let len = chunk.len();
         if let Some(shard) = CoalescedShard::deserialize(&chunk) {
             if let Some(assembled) = reassembly_buf.ingest_shard(&shard) {
-                let data = if assembled.len() >= 4 { &assembled[4..] } else { &assembled };
-                if wr.write_all(data).await.is_err() {
+                if wr.write_all(&assembled).await.is_err() {
                     break;
                 }
             }
-        } else {
-            let data = if chunk.len() >= 4 && !chunk.starts_with(b"OK!") && !chunk.starts_with(b"CLOSE!") {
-                &chunk[4..]
-            } else {
-                &chunk
-            };
-            if wr.write_all(data).await.is_err() {
-                break;
-            }
+        } else if wr.write_all(&chunk).await.is_err() {
+            break;
         }
         // Replenish credit window
         stream_credit.fetch_add(len, Ordering::Relaxed);
     }
-    chh.remove(&(sh, stream_id));
-    ak2.remove(&(sh, stream_id));
+    chh.remove(&(exit_sh, stream_id));
+    ak2.remove(&(exit_sh, stream_id));
 }
 
 /// Spawns the port-multiplexed SOCKS5 proxy server listeners:
@@ -683,5 +808,55 @@ mod tests {
         let sid2 = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
         assert_ne!(sid1, sid2, "Concurrent streams must receive distinct monotone stream IDs");
         assert!(sid2 > sid1);
+    }
+
+    #[tokio::test]
+    async fn test_wrap_onion_e2e_roundtrips_3_hop_circuit_envelope() {
+        let node = GhostNode::new("127.0.0.1:0").await.expect("GhostNode bind");
+        let exit_key = [0x42u8; 32];
+        let route = vec![
+            "guard_fp_0001".to_string(),
+            "middle_fp_002".to_string(),
+            "exit_fp_00003".to_string(),
+        ];
+        let original = b"STREAM!7!example.com:443";
+        let onion = wrap_onion_e2e(
+            &node,
+            "exit_fp_00003",
+            &exit_key,
+            SessionRole::Initiator,
+            &route,
+            original,
+        )
+        .expect("3-hop onion envelope must build");
+
+        // Guard peels outer RLY! layer -> points to middle_fp_002 with remaining_hops == 2
+        let hop1 = vantablack::ghost::net::relay::parse_relay_header(&onion)
+            .expect("guard layer must parse");
+        assert_eq!(hop1.next_hop_fingerprint, "middle_fp_002");
+        assert_eq!(hop1.remaining_hops, 2);
+
+        // Middle peels second RLY! layer -> points to exit_fp_00003 with remaining_hops == 1
+        let hop2 = vantablack::ghost::net::relay::parse_relay_header(&hop1.inner_payload)
+            .expect("middle layer must parse");
+        assert_eq!(hop2.next_hop_fingerprint, "exit_fp_00003");
+        assert_eq!(hop2.remaining_hops, 1);
+
+        // Exit unwraps inner [dctr (8B)][wire_nonce (12B)][xchacha_seal([len u16][payload])]
+        let inner = &hop2.inner_payload;
+        assert!(inner.len() >= 20 + 16);
+        let mut wire_nonce = [0u8; 12];
+        wire_nonce.copy_from_slice(&inner[8..20]);
+        let mut blob = inner[20..].to_vec();
+        let pt = vantablack::ghost::layers::l2_aead::xchacha_open(
+            &exit_key,
+            &wire_nonce,
+            0,
+            NonceDirection::InitiatorToResponder,
+            &mut blob,
+        )
+        .expect("Exit must authenticate and decrypt E2E inner layer");
+        let unpacked = frame_payload(pt).expect("frame_payload must strip u16 length prefix");
+        assert_eq!(unpacked, original);
     }
 }
