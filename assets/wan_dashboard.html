@@ -938,35 +938,35 @@
         </div>
 
         <!-- Standings / My Rank Card -->
-        <div class="metrics-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 16px;">
-          <div class="metric-card">
-            <span class="stat-lbl">Your Rank Badge</span>
-            <span class="stat-val" style="color: #fbbf24; font-size: 16px;" id="lb-my-badge">Mesh Cadet</span>
+        <div class="stats-grid" style="margin-bottom: 18px;">
+          <div class="stat-card">
+            <span class="stat-label">Your Rank Badge</span>
+            <span class="stat-val" style="color: #fbbf24; font-size: 17px;" id="lb-my-badge">Mesh Cadet</span>
             <span class="stat-sub" id="lb-my-score">0 Score Points</span>
           </div>
-          <div class="metric-card">
-            <span class="stat-lbl">Relayed Traffic</span>
-            <span class="stat-val" style="color: var(--accent);" id="lb-my-relayed">0 MB</span>
+          <div class="stat-card">
+            <span class="stat-label">Relayed Traffic</span>
+            <span class="stat-val" style="color: var(--accent); font-size: 17px;" id="lb-my-relayed">0 B</span>
             <span class="stat-sub">Network Contribution</span>
           </div>
-          <div class="metric-card">
-            <span class="stat-lbl">Repaired Shards</span>
-            <span class="stat-val" style="color: var(--emerald);" id="lb-my-repaired">0 Shards</span>
+          <div class="stat-card">
+            <span class="stat-label">Repaired Shards</span>
+            <span class="stat-val" style="color: var(--emerald); font-size: 17px;" id="lb-my-repaired">0 Shards</span>
             <span class="stat-sub">Reed-Solomon RS(2,1)</span>
           </div>
-          <div class="metric-card">
-            <span class="stat-lbl">Mesh Uptime</span>
-            <span class="stat-val" style="color: var(--cyan);" id="lb-my-uptime">00:00:00</span>
+          <div class="stat-card">
+            <span class="stat-label">Mesh Uptime</span>
+            <span class="stat-val" style="color: #38bdf8; font-size: 17px;" id="lb-my-uptime">00:00:00</span>
             <span class="stat-sub">Online Availability</span>
           </div>
         </div>
 
         <!-- Opt-In & Nickname Control -->
-        <div style="background: var(--surface); border: 1px solid var(--border-card); border-radius: var(--radius-md); padding: 16px; margin-bottom: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
             <div>
-              <div style="font-weight: 600; font-size: 14px; color: var(--text);">Public Leaderboard Participation</div>
-              <div style="font-size: 12px; color: var(--text-muted);">Publish your cryptographic node statistics to the decentralized swarm leaderboard.</div>
+              <div style="font-weight: 600; font-size: 14px; color: var(--text);">Public Swarm Participation</div>
+              <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Publish your cryptographic node statistics to the decentralized mesh leaderboard.</div>
             </div>
             <label class="toggle">
               <input type="checkbox" id="lb-optin-toggle" onchange="toggleLeaderboardOptin(this.checked)">
@@ -974,22 +974,22 @@
             </label>
           </div>
 
-          <div style="display: flex; gap: 10px; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 12px;">
+          <div style="display: flex; gap: 12px; align-items: flex-start; border-top: 1px solid var(--border-subtle); padding-top: 14px;">
             <div style="flex: 1;">
-              <input type="text" id="lb-nickname-input" class="text-input" placeholder="Enter nickname (3-16 chars, letters/numbers/-/_)" oninput="validateNicknameLive(this.value)">
-              <div id="lb-nick-feedback" style="font-size: 11px; margin-top: 4px; color: var(--text-dim);">Only alphanumeric, hyphens and underscores allowed. Real names and profanity are blocked.</div>
+              <input type="text" id="lb-nickname-input" class="text-input" style="width: 100%; box-sizing: border-box;" placeholder="Choose a public nickname (3-16 characters)" oninput="validateNicknameLive(this.value)">
+              <div id="lb-nick-feedback" style="font-size: 11px; margin-top: 6px; color: var(--text-dim);">Only alphanumeric, hyphens and underscores allowed. Real names and profanity are blocked.</div>
             </div>
-            <button class="action-btn" id="btn-save-nickname" style="padding: 9px 18px; font-size: 12px; background: var(--emerald); border-color: var(--emerald); color: white;" onclick="saveNicknameNow()">Save Nickname</button>
+            <button class="action-btn" id="btn-save-nickname" style="padding: 10px 20px; font-size: 13px; height: 38px; white-space: nowrap;" onclick="saveNicknameNow()">Save Nickname</button>
           </div>
         </div>
 
         <!-- Leaderboard Table -->
-        <div style="background: var(--surface); border: 1px solid var(--border-card); border-radius: var(--radius-md); overflow: hidden;">
-          <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); font-weight: 600; font-size: 13px; color: var(--text-muted); display: flex; justify-content: space-between;">
+        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
+          <div style="padding: 14px 20px; border-bottom: 1px solid var(--border-subtle); font-weight: 600; font-size: 12px; letter-spacing: 0.6px; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
             <span>TOP NODES IN SWARM</span>
-            <span style="cursor: pointer; color: var(--accent);" onclick="refreshLeaderboard()">↻ Refresh</span>
+            <span style="cursor: pointer; color: var(--accent); font-size: 12px; transition: opacity 0.2s;" onclick="refreshLeaderboard()" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">↻ Refresh</span>
           </div>
-          <div id="leaderboard-table-body" style="padding: 6px 12px;">
+          <div id="leaderboard-table-body" style="padding: 8px 16px;">
             <!-- Rows rendered by JS -->
           </div>
         </div>
@@ -1144,7 +1144,7 @@
             GitHub Repository ↗
           </button>
         </div>
-        <div class="setting-item" style="border-top: 1px solid var(--border-card); padding-top: 16px;">
+        <div class="setting-item" style="border-top: 1px solid var(--border-subtle); padding-top: 16px;">
           <div class="setting-text">
             <span class="setting-title">Software Updates</span>
             <span class="setting-desc" id="setting-update-desc">Automatically check for and install newer versions with zero setup wizards.</span>
