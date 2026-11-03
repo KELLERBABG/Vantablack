@@ -742,23 +742,23 @@
   <div class="app-body">
     <!-- Top Navigation Bar -->
     <div class="nav-bar">
-      <button class="nav-tab active" onclick="switchTab('tab-shield')">
+      <button class="nav-tab active" data-tab="tab-shield" onclick="switchTab('tab-shield')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3z"/></svg>
         Status
       </button>
-      <button class="nav-tab" onclick="switchTab('tab-peers')">
+      <button class="nav-tab" data-tab="tab-peers" onclick="switchTab('tab-peers')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 3s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
         Peers (<span id="nav-peer-count">0</span>)
       </button>
-      <button class="nav-tab" onclick="switchTab('tab-metrics')">
+      <button class="nav-tab" data-tab="tab-metrics" onclick="switchTab('tab-metrics')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
         Diagnostics
       </button>
-      <button class="nav-tab" onclick="switchTab('tab-leaderboard')">
+      <button class="nav-tab" data-tab="tab-leaderboard" onclick="switchTab('tab-leaderboard')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0 0 11 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 0 0 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>
         Leaderboard
       </button>
-      <button class="nav-tab" onclick="switchTab('tab-settings')">
+      <button class="nav-tab" data-tab="tab-settings" onclick="switchTab('tab-settings')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         Settings
       </button>
@@ -929,30 +929,26 @@
 
       <!-- TAB 4: MESH HALL OF FAME / LEADERBOARD -->
       <div class="tab-pane" id="tab-leaderboard">
-        <div class="section-header" style="margin-bottom: 16px; align-items: center;">
+        <div class="section-header" style="margin-bottom: 16px;">
           <div>
             <span class="section-title">Mesh Hall of Fame</span>
             <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Community Proof-of-Forwarding &amp; Shard-Repair ranking across the global swarm.</div>
-          </div>
-          <div style="display: flex; align-items: center; gap: 8px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: var(--radius-sm); padding: 6px 14px;">
-            <span style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); font-weight: 600;">Your Score</span>
-            <span id="lb-header-score" style="font-size: 16px; font-weight: 800; color: #fbbf24; font-family: var(--font-mono);">0 pts</span>
           </div>
         </div>
 
         <!-- Standings / My Rank Card -->
         <div class="stats-grid" style="margin-bottom: 18px;">
           <div class="stat-card">
-            <span class="stat-label">Your Rank Badge</span>
-            <span class="stat-val" style="color: #fbbf24; font-size: 17px;" id="lb-my-badge">Mesh Cadet</span>
+            <span class="stat-label">Score Points</span>
+            <span class="stat-val" style="color: #fbbf24; font-size: 17px;" id="lb-my-score">0 pts</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Rank Badge</span>
+            <span class="stat-val" style="color: var(--accent); font-size: 17px;" id="lb-my-badge">Mesh Cadet</span>
           </div>
           <div class="stat-card">
             <span class="stat-label">Relayed Traffic</span>
-            <span class="stat-val" style="color: var(--accent); font-size: 17px;" id="lb-my-relayed">0 B</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">Repaired Shards</span>
-            <span class="stat-val" style="color: var(--emerald); font-size: 17px;" id="lb-my-repaired">0 Shards</span>
+            <span class="stat-val" style="color: var(--emerald); font-size: 17px;" id="lb-my-relayed">0 B</span>
           </div>
           <div class="stat-card">
             <span class="stat-label">Mesh Uptime</span>
@@ -1196,20 +1192,17 @@
     // Tab Switching
     function switchTab(tabId) {
       document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
-      document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-bar .nav-tab').forEach(el => el.classList.remove('active'));
       
       const target = document.getElementById(tabId);
       if (target) target.classList.add('active');
 
-      const tabs = Array.from(document.querySelectorAll('.nav-tab'));
-      if (tabId === 'tab-shield') tabs[0]?.classList.add('active');
-      if (tabId === 'tab-peers') tabs[1]?.classList.add('active');
-      if (tabId === 'tab-metrics') tabs[2]?.classList.add('active');
+      const btn = document.querySelector(`.nav-bar .nav-tab[data-tab="${tabId}"]`);
+      if (btn) btn.classList.add('active');
+
       if (tabId === 'tab-leaderboard') {
-        tabs[3]?.classList.add('active');
         refreshLeaderboard();
       }
-      if (tabId === 'tab-settings') tabs[4]?.classList.add('active');
     }
 
     function formatBytes(bytes) {
