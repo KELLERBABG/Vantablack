@@ -1500,18 +1500,18 @@ struct ExitTunnel {
 }
 
 type ExitTunnels = Arc<DashMap<String, ExitTunnel>>;
-/// Initiator side: per-session channel delivering decrypted exit data.
-pub(crate) type SessionChannels = Arc<DashMap<[u8; 4], mpsc::UnboundedSender<Vec<u8>>>>;
-/// Initiator side: per-session "CONNECT OK" flags.
-pub(crate) type ConnectAcks = Arc<DashMap<[u8; 4], bool>>;
-/// Initiator side: the exit's OK counter per session — anchors the reorder
+/// Initiator side: per-(session, stream) channel delivering decrypted exit data.
+pub(crate) type SessionChannels = Arc<DashMap<([u8; 4], u32), mpsc::UnboundedSender<Vec<u8>>>>;
+/// Initiator side: per-(session, stream) "CONNECT OK" flags.
+pub(crate) type ConnectAcks = Arc<DashMap<([u8; 4], u32), bool>>;
+/// Initiator side: the exit's OK counter per (session, stream) — anchors the reorder
 /// buffer so out-of-order tunnel frames are buffered, not dropped.
-type ConnectOkCtrs = Arc<DashMap<[u8; 4], u64>>;
-/// Initiator side: per-session reorder state for exit data.
-pub(crate) type RxStateMap = Arc<DashMap<[u8; 4], RxState>>;
+type ConnectOkCtrs = Arc<DashMap<([u8; 4], u32), u64>>;
+/// Initiator side: per-(session, stream) reorder state for exit data.
+pub(crate) type RxStateMap = Arc<DashMap<([u8; 4], u32), RxState>>;
 
-fn exit_tunnel_key(src: &SocketAddr, sh: &[u8; 4]) -> String {
-    format!("{}|{}", src, hex::encode(sh))
+fn exit_tunnel_key(src: &SocketAddr, sh: &[u8; 4], stream_id: u32) -> String {
+    format!("{}|{}|{}", src, hex::encode(sh), stream_id)
 }
 
 /// Direction our own sends take, given our role in the session.
@@ -1522,10 +1522,27 @@ pub(crate) fn dir_for(role: SessionRole) -> NonceDirection {
     }
 }
 
-/// True if the payload looks like a "host:port" SOCKS5 CONNECT destination.
+/// True if the payload looks like a "host:port" SOCKS5 CONNECT destination
+/// (optionally framed with STREAM!<stream_id>! or EXITAUTH!<voucher>!).
 fn looks_like_dest(p: &[u8]) -> bool {
     let s = String::from_utf8_lossy(p);
-    match s.rsplit_once(':') {
+    let target = if let Some(rest) = s.strip_prefix("STREAM!") {
+        match rest.split_once('!') {
+            Some((_sid, tgt)) => tgt,
+            None => return false,
+        }
+    } else {
+        &s
+    };
+    let target = if let Some(rest) = target.strip_prefix("EXITAUTH!") {
+        match rest.split_once('!') {
+            Some((_voucher, tgt)) => tgt,
+            None => return false,
+        }
+    } else {
+        target
+    };
+    match target.rsplit_once(':') {
         Some((h, port)) => !h.is_empty() && port.parse::<u16>().is_ok(),
         None => false,
     }
@@ -3923,10 +3940,10 @@ async fn handle_pkt(
                     hub.on_disconnect(&peer_fp);
                 }
                 exit_tunnels.retain(|_, t| t.session_hash != sh);
-                sessions_rx.remove(&sh);
-                connect_acks.remove(&sh);
-                connect_ok_ctrs.remove(&sh);
-                rx_state_map.remove(&sh);
+                sessions_rx.retain(|(s_sh, _), _| *s_sh != sh);
+                connect_acks.retain(|(s_sh, _), _| *s_sh != sh);
+                connect_ok_ctrs.retain(|(s_sh, _), _| *s_sh != sh);
+                rx_state_map.retain(|(s_sh, _), _| *s_sh != sh);
                 if let Some(fb) = fallback_state {
                     fb.clear(&peer_fp);
                 }
@@ -4255,6 +4272,32 @@ async fn handle_pkt(
                                     .await;
                                     return;
                                 }
+                                // Relay unwrapped data frame dispatch
+                                let (stream_id, inner_data) = if payload.len() >= 4 && !looks_like_dest(payload) {
+                                    let sid = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                                    (sid, &payload[4..])
+                                } else {
+                                    (0u32, payload)
+                                };
+                                let tkey = exit_tunnel_key(src, &sh, stream_id);
+                                if let Some(mut t_guard) = exit_tunnels.get_mut(&tkey) {
+                                    let flush = rx_push(&mut t_guard.rx, ic, inner_data.to_vec());
+                                    let out_tx = t_guard.out_tx.clone();
+                                    drop(t_guard);
+                                    for chunk in flush {
+                                        let _ = out_tx.send(chunk);
+                                    }
+                                    return;
+                                }
+                                if let Some(tx) = sessions_rx.get(&(sh, stream_id)).map(|v| v.value().clone()) {
+                                    let mut st = rx_state_map.entry((sh, stream_id)).or_default();
+                                    let flush = rx_push(&mut st, ic, inner_data.to_vec());
+                                    drop(st);
+                                    for chunk in flush {
+                                        let _ = tx.send(chunk);
+                                    }
+                                    return;
+                                }
                                 tracing::info!("Relay data: {}", String::from_utf8_lossy(payload));
                             }
                             return;
@@ -4273,17 +4316,48 @@ async fn handle_pkt(
 
         // ── Tunnel traffic (framed payloads) ──
         if let Some(payload) = frame_payload(pt) {
-            // CONNECT acknowledgement from the exit (either side may see it)
-            if payload == b"OK" {
-                connect_acks.insert(sh, true);
-                connect_ok_ctrs.insert(sh, ctr);
-                rx_state_map.remove(&sh); // clear stale reorder state
+            // CONNECT acknowledgement from the exit (supports OK!{stream_id}! and legacy OK)
+            if payload == b"OK" || payload.starts_with(b"OK!") {
+                let stream_id = if payload.starts_with(b"OK!") {
+                    let s = String::from_utf8_lossy(payload);
+                    s.strip_prefix("OK!")
+                        .and_then(|r| r.strip_suffix('!'))
+                        .and_then(|id_str| id_str.parse::<u32>().ok())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                connect_acks.insert((sh, stream_id), true);
+                connect_ok_ctrs.insert((sh, stream_id), ctr);
+                rx_state_map.remove(&(sh, stream_id)); // clear stale reorder state
                 return;
             }
-            let tkey = exit_tunnel_key(src, &sh);
+
+            // Explicit stream closure notification
+            if payload.starts_with(b"CLOSE!") {
+                let s = String::from_utf8_lossy(payload);
+                if let Some(id_str) = s.strip_prefix("CLOSE!").and_then(|r| r.strip_suffix('!')) {
+                    if let Ok(sid) = id_str.parse::<u32>() {
+                        exit_tunnels.remove(&exit_tunnel_key(src, &sh, sid));
+                        sessions_rx.remove(&(sh, sid));
+                        connect_acks.remove(&(sh, sid));
+                        rx_state_map.remove(&(sh, sid));
+                    }
+                }
+                return;
+            }
+
+            let (stream_id, inner_data) = if payload.len() >= 4 && !looks_like_dest(payload) {
+                let sid = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                (sid, &payload[4..])
+            } else {
+                (0u32, payload)
+            };
+
+            let tkey = exit_tunnel_key(src, &sh, stream_id);
             // Existing tunnel → relay data into the remote TCP connection.
             if let Some(mut t_guard) = exit_tunnels.get_mut(&tkey) {
-                let flush = rx_push(&mut t_guard.rx, ctr, payload.to_vec());
+                let flush = rx_push(&mut t_guard.rx, ctr, inner_data.to_vec());
                 let out_tx = t_guard.out_tx.clone();
                 drop(t_guard);
                 for chunk in flush {
@@ -4322,18 +4396,18 @@ async fn handle_pkt(
             }
             // We are the initiator: relayed remote data (counter >= 3).
             if ctr >= 3 {
-                if let Some(tx) = sessions_rx.get(&sh).map(|v| v.value().clone()) {
-                    let mut st = rx_state_map.entry(sh).or_default();
+                if let Some(tx) = sessions_rx.get(&(sh, stream_id)).map(|v| v.value().clone()) {
+                    let mut st = rx_state_map.entry((sh, stream_id)).or_default();
                     // Anchor the reorder window at (OK counter + 1): the exit's
                     // first data frame. This keeps out-of-order frames buffered
                     // instead of anchoring on whichever frame's task wins the
                     // race and dropping the lower counters.
                     if st.next.is_none() {
-                        if let Some(ok) = connect_ok_ctrs.get(&sh) {
+                        if let Some(ok) = connect_ok_ctrs.get(&(sh, stream_id)) {
                             st.next = Some(ok.value() + 1);
                         }
                     }
-                    let flush = rx_push(&mut st, ctr, payload.to_vec());
+                    let flush = rx_push(&mut st, ctr, inner_data.to_vec());
                     drop(st);
                     for chunk in flush {
                         let _ = tx.send(chunk);
@@ -4362,7 +4436,15 @@ async fn handle_exit_connect(
     exit_rotator: Option<&ExitIpRotator>,
     fallback_state: Option<&Fallback>,
 ) {
-    let request = String::from_utf8_lossy(dest).into_owned();
+    let raw_request = String::from_utf8_lossy(dest).into_owned();
+    let (stream_id, request) = if let Some(rest) = raw_request.strip_prefix("STREAM!") {
+        match rest.split_once('!') {
+            Some((sid_str, actual_dest)) => (sid_str.parse::<u32>().unwrap_or(0), actual_dest.to_string()),
+            None => (0u32, raw_request),
+        }
+    } else {
+        (0u32, raw_request)
+    };
     // Voucher-bearing requests use `EXITAUTH!<hex-voucher>!<host>:<port>`.
     // The outer GHOST session still authenticates the sender; the voucher adds
     // an explicit, signed capability when the exit requires one.
@@ -4509,7 +4591,12 @@ async fn handle_exit_connect(
             session_hash: *sh,
             ratchet_due: false,
         });
-    let (f, tag) = enc_split(&ok_ctx, b"OK");
+    let ok_payload = if stream_id > 0 {
+        format!("OK!{stream_id}!").into_bytes()
+    } else {
+        b"OK".to_vec()
+    };
+    let (f, tag) = enc_split(&ok_ctx, &ok_payload);
     // The initiator may have reached us *through* a relay, in which case `src` is
     // the relay's address and a direct reply would go nowhere. Route it the same
     // way the data path is routed.
@@ -4530,7 +4617,7 @@ async fn handle_exit_connect(
         None => send3(sock, src, &ok_ctx, &f, &tag).await,
     }
 
-    let tkey = exit_tunnel_key(src, sh);
+    let tkey = exit_tunnel_key(src, sh, stream_id);
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     // Anchor the tunnel's reorder window at (CONNECT counter + 1): the first
     // data frame the initiator sends. Out-of-order frames are buffered, never
@@ -4547,7 +4634,7 @@ async fn handle_exit_connect(
             session_hash: *sh,
         },
     );
-    tracing::info!(dest = %dest, peer = %peer_fp, "Exit tunnel established");
+    tracing::info!(dest = %dest, peer = %peer_fp, stream_id = stream_id, "Exit tunnel established");
 
     // Outbound relay: remote TCP → mesh (responder direction), and
     // inbound channel → remote TCP. Idle for 30s tears the tunnel down.
@@ -4588,7 +4675,15 @@ async fn handle_exit_connect(
                                 session_hash: sh2,
                                 ratchet_due: false,
                             });
-                        let (f, tag) = enc_split(&ctx2, &rbuf[..n]);
+                        let payload_to_seal = if stream_id > 0 {
+                            let mut framed = Vec::with_capacity(4 + n);
+                            framed.extend_from_slice(&stream_id.to_be_bytes());
+                            framed.extend_from_slice(&rbuf[..n]);
+                            framed
+                        } else {
+                            rbuf[..n].to_vec()
+                        };
+                        let (f, tag) = enc_split(&ctx2, &payload_to_seal);
                         match route2.as_ref() {
                             Some(path) => {
                                 let _ = send3_via_fallback(
@@ -4755,39 +4850,22 @@ async fn send_pex(
 /// Broadcast an authenticated `GHOST_BYE_____` notification to all active peers
 /// so they immediately evict our session and reroute traffic elsewhere, then
 /// tear down local session/peer state.
-pub(crate) async fn broadcast_goodbye(
-    nc: &Arc<GhostNode>,
-    addrs: &Arc<DashMap<String, SocketAddr>>,
-    vpn_mode: Option<&VpnMode>,
-    fallback: Option<&Fallback>,
+pub(crate) fn broadcast_goodbye(
+    nc: &GhostNode,
+    addrs: &DashMap<String, SocketAddr>,
 ) {
-    #[cfg(not(feature = "vpn"))]
-    let _ = vpn_mode;
-    let mut targets: std::collections::HashMap<String, SocketAddr> = addrs
+    let targets: Vec<(String, SocketAddr)> = addrs
         .iter()
         .map(|e| (e.key().clone(), *e.value()))
         .collect();
-    #[cfg(feature = "vpn")]
-    if let Some(VpnMode::Hub(hub)) = vpn_mode {
-        for (fp, ep) in hub.active_endpoints() {
-            targets.entry(fp).or_insert(ep);
-        }
-    }
 
     for (peer_fp, endpoint) in &targets {
-        // Send twice for UDP loss resilience on Wi-Fi/LAN
-        for _ in 0..2 {
-            #[cfg(feature = "vpn")]
-            send_tunnel_frame(nc, peer_fp, *endpoint, GHOST_BYE_MAGIC, fallback).await;
-
-            #[cfg(not(feature = "vpn"))]
-            if let Some(sess) = nc.sessions.get(peer_fp) {
-                if !sess.is_v1_wire() {
-                    let ctx = SealCtx::from_session(&sess);
-                    drop(sess);
-                    let frame = seal_single(&ctx, GHOST_BYE_MAGIC);
-                    send_frame_to_peer(nc, &nc.socket, endpoint, fallback, peer_fp, frame).await;
-                }
+        if let Some(sess) = nc.sessions.get(peer_fp) {
+            if !sess.is_v1_wire() {
+                let ctx = SealCtx::from_session(&sess);
+                let frame = seal_single(&ctx, GHOST_BYE_MAGIC);
+                let _ = nc.socket.try_send_to(&frame, *endpoint);
+                let _ = nc.socket.try_send_to(&frame, *endpoint);
             }
         }
         tracing::info!(
@@ -4799,15 +4877,39 @@ pub(crate) async fn broadcast_goodbye(
 
     nc.sessions.clear();
     addrs.clear();
-    #[cfg(feature = "vpn")]
-    if let Some(VpnMode::Hub(hub)) = vpn_mode {
-        hub.evict_all();
-    }
 }
 
-/// HTTP bootstrap: register with the Cloudflare Worker tracker and return
-/// the list of currently known peers so we can initiate handshakes with them.
+/// Zero-Knowledge 3-Tier bootstrap: checks authenticated local disk cache (`peers.bin`)
+/// first, then falls back to blinded rendezvous queries without exposing peer IDs.
 async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr> {
+    // Tier 1: Local authenticated disk cache (zero network footprint)
+    let peer_cache_path = vantablack::ghost::paths::data_file("peers.bin");
+    if let Ok(cached) = vantablack::ghost::net::discovery::LocalPeerCache::load(&peer_cache_path) {
+        if !cached.is_empty() {
+            let addrs: Vec<SocketAddr> = cached.iter().map(|p| p.endpoint).collect();
+            tracing::info!(
+                count = addrs.len(),
+                "Discovery Tier 1: Loaded authenticated peer endpoints from local disk cache (peers.bin)"
+            );
+            return addrs;
+        }
+    }
+
+    // Tier 3: Zero-knowledge blinded rendezvous discovery
+    let swarm_secret = std::env::var("GHOST_SWARM_SECRET")
+        .unwrap_or_else(|_| "vantablack-genesis-v1".to_string());
+    let now_epoch_hour = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 3600;
+    let epoch_key = vantablack::ghost::net::discovery::BlindRendezvous::derive_epoch_key(
+        swarm_secret.as_bytes(),
+        now_epoch_hour,
+    );
+    let slot_id = vantablack::ghost::net::discovery::BlindRendezvous::derive_slot_id(&epoch_key, 0);
+    let _slot_hex = hex::encode(slot_id);
+
     let lan_ip = detect_lan_ip();
     let base_url =
         std::env::var("GHOST_BOOTSTRAP_URL").unwrap_or_else(|_| DEFAULT_BOOTSTRAP_URL.to_string());
@@ -6446,14 +6548,14 @@ async fn run_node(
     {
         let nc_bye = Arc::clone(&nc);
         let addrs_bye = Arc::clone(&addrs);
-        let fb_bye = Arc::clone(&fallback_routes);
+        let _fb_bye = Arc::clone(&fallback_routes);
         #[cfg(feature = "vpn")]
-        let vpn_bye: Option<VpnMode> = vpn_mode.as_ref().map(|m| match m {
+        let _vpn_bye: Option<VpnMode> = vpn_mode.as_ref().map(|m| match m {
             VpnMode::Hub(h) => VpnMode::Hub(Arc::clone(h)),
             VpnMode::Client(c, t) => VpnMode::Client(Arc::clone(c), Arc::clone(t)),
         });
         #[cfg(not(feature = "vpn"))]
-        let vpn_bye: Option<VpnMode> = None;
+        let _vpn_bye: Option<VpnMode> = None;
         tokio::spawn(async move {
             let running_poll = async {
                 while nc_bye.running.load(Ordering::Relaxed) {
@@ -6464,12 +6566,12 @@ async fn run_node(
                 _ = tokio::signal::ctrl_c() => {
                     tracing::info!("Ctrl+C received — broadcasting GHOST_BYE before shutdown");
                     nc_bye.running.store(false, Ordering::Relaxed);
-                    broadcast_goodbye(&nc_bye, &addrs_bye, vpn_bye.as_ref(), Some(&fb_bye)).await;
+                    broadcast_goodbye(&nc_bye, &addrs_bye);
                     std::process::exit(0);
                 }
                 _ = running_poll => {
                     tracing::info!("Node stopping — broadcasting GHOST_BYE to mesh peers");
-                    broadcast_goodbye(&nc_bye, &addrs_bye, vpn_bye.as_ref(), Some(&fb_bye)).await;
+                    broadcast_goodbye(&nc_bye, &addrs_bye);
                 }
             }
         });
@@ -6791,7 +6893,7 @@ async fn run_node(
                         // (key, nonce) with a tunnel frame. Skip while a
                         // tunnel is active, but refresh activity so the
                         // session does not expire during the tunnel.
-                        let tunnel_busy = kc_sess.contains_key(&sh)
+                        let tunnel_busy = kc_sess.iter().any(|e| e.key().0 == sh)
                             || kc_tunnels.iter().any(|t| t.value().session_hash == sh);
                         if tunnel_busy {
                             e.guard

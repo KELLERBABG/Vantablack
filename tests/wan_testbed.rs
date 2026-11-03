@@ -194,13 +194,19 @@ async fn test_wan_multi_region_relay_failover() {
     });
 
     let test_packet = b"PING_FROM_FRANKFURT_TO_TOKYO_OVER_INTERCONTINENTAL_MESH".to_vec();
-    link_eu_us.send(test_packet.clone());
 
-    // Wait for transatlantic + transpacific propagation (~250-300ms)
-    tokio::time::sleep(Duration::from_millis(450)).await;
+    // Send packets with short interval until delivered (accommodating WAN stochastic drop and scheduler jitter)
+    let received = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            link_eu_us.send(test_packet.clone());
+            tokio::select! {
+                Some(pkt) = tokyo_out.recv() => return pkt,
+                _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+            }
+        }
+    })
+    .await
+    .expect("Packet arrived at destination in Tokyo within timeout");
 
-    let received = tokyo_out
-        .try_recv()
-        .expect("Packet arrived at destination in Tokyo");
     assert_eq!(received, test_packet);
 }

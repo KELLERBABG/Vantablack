@@ -603,13 +603,7 @@ pub fn spawn_control_center(
                                     nc_ref.beacon_enabled.store(next, Ordering::Relaxed);
                                     if !next {
                                         phs_ref.clear();
-                                        broadcast_goodbye(
-                                            &nc_ref,
-                                            &addrs_ref,
-                                            vpn_ref.as_ref(),
-                                            None,
-                                        )
-                                        .await;
+                                        broadcast_goodbye(&nc_ref, &addrs_ref);
                                         tracing::info!(
                                             "Mesh deactivated via control center — broadcasted GHOST_BYE to all peers"
                                         );
@@ -1127,9 +1121,10 @@ pub async fn apply_github_update() -> Result<String, String> {
 
     #[cfg(not(windows))]
     {
-        return Err("Silent self-update is currently supported on Windows".to_string());
+        Err("Silent self-update is currently supported on Windows".to_string())
     }
 
+    #[cfg(windows)]
     Ok("Installer launched silently. Vantablack is restarting...".to_string())
 }
 
