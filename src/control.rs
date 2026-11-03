@@ -661,6 +661,13 @@ pub fn spawn_control_center(
                                         "low_latency": vantablack::ghost::net::is_low_latency(),
                                         "mix_batch_ms": vantablack::ghost::net::mix_batch_delay_ms(),
                                         "zero_admin": vantablack::ghost::net::is_zero_admin(),
+                                        "stego_carrier_mode": s.stego_carrier_mode,
+                                        "energy_ledger_enabled": s.energy_ledger_enabled,
+                                        "jurisdiction_tag": s.jurisdiction_tag,
+                                        "abos_skywave_enabled": s.abos_skywave_enabled,
+                                        "qel_enabled": s.qel_enabled,
+                                        "leaderboard_opt_in": s.leaderboard_opt_in,
+                                        "leaderboard_nickname": s.leaderboard_nickname,
                                     })
                                     .to_string();
                                     ("HTTP/1.1 200 OK", body, "application/json")
@@ -713,6 +720,33 @@ pub fn spawn_control_center(
                                             }
                                         }
                                     }
+                                    if let Some(stego) = val.get("stego_carrier_mode").and_then(|v| v.as_bool()) {
+                                        s.stego_carrier_mode = stego;
+                                    }
+                                    if let Some(energy) = val.get("energy_ledger_enabled").and_then(|v| v.as_bool()) {
+                                        s.energy_ledger_enabled = energy;
+                                    }
+                                    if let Some(juris) = val.get("jurisdiction_tag").and_then(|v| v.as_str()) {
+                                        s.set_jurisdiction_tag(juris);
+                                    }
+                                    if let Some(abos) = val.get("abos_skywave_enabled").and_then(|v| v.as_bool()) {
+                                        s.abos_skywave_enabled = abos;
+                                    }
+                                    if let Some(qel) = val.get("qel_enabled").and_then(|v| v.as_bool()) {
+                                        s.qel_enabled = qel;
+                                    }
+                                    if let Some(opt_in) = val.get("leaderboard_opt_in").and_then(|v| v.as_bool()) {
+                                        s.leaderboard_opt_in = opt_in;
+                                    }
+                                    if let Some(nick) = val.get("leaderboard_nickname").and_then(|v| v.as_str()) {
+                                        if !nick.trim().is_empty() {
+                                            if let Ok(valid_nick) = consumer::validate_nickname(nick) {
+                                                s.leaderboard_nickname = Some(valid_nick);
+                                            }
+                                        } else {
+                                            s.leaderboard_nickname = None;
+                                        }
+                                    }
                                     if !cp_ref.is_empty() {
                                         save_consumer_settings(&cp_ref, &s);
                                     }
@@ -721,7 +755,102 @@ pub fn spawn_control_center(
                                         "route_mode": s.route_mode,
                                         "bypass_count": s.bypass.len(),
                                         "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
+                                        "stego_carrier_mode": s.stego_carrier_mode,
+                                        "energy_ledger_enabled": s.energy_ledger_enabled,
+                                        "jurisdiction_tag": s.jurisdiction_tag,
+                                        "abos_skywave_enabled": s.abos_skywave_enabled,
+                                        "qel_enabled": s.qel_enabled,
+                                        "leaderboard_opt_in": s.leaderboard_opt_in,
+                                        "leaderboard_nickname": s.leaderboard_nickname,
                                     })
+                                    .to_string();
+                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                } else if req.starts_with("GET /api/leaderboard") {
+                                    let s = cs_ref.read().clone();
+                                    let sent = nc_ref.stats.bytes_sent.load(Ordering::Relaxed) as u64;
+                                    let recv = nc_ref.stats.bytes_recv.load(Ordering::Relaxed) as u64;
+                                    let total_relayed = sent + recv;
+                                    let uptime = nc_ref.created_at.elapsed().as_secs();
+                                    let repaired = 0u64;
+                                    let score = consumer::LeaderboardEntry::compute_score(total_relayed, repaired, uptime);
+                                    let badge = consumer::LeaderboardEntry::calculate_badge(score).to_string();
+                                    let my_fp = nc_ref.fingerprint();
+
+                                    let my_entry = consumer::LeaderboardEntry {
+                                        fingerprint: my_fp.clone(),
+                                        nickname: if s.leaderboard_opt_in { s.leaderboard_nickname.clone() } else { None },
+                                        relayed_bytes: total_relayed,
+                                        repaired_shards: repaired,
+                                        uptime_secs: uptime,
+                                        rank_badge: badge.clone(),
+                                        score,
+                                    };
+
+                                    let mut entries = Vec::new();
+                                    entries.push(my_entry.clone());
+
+                                    for entry in nc_ref.sessions.iter() {
+                                        let pfp = entry.key().clone();
+                                        if pfp != my_fp {
+                                            let peer_name = s.device_name(&pfp);
+                                            let p_score = consumer::LeaderboardEntry::compute_score(32768, 0, uptime.min(3600));
+                                            let p_badge = consumer::LeaderboardEntry::calculate_badge(p_score).to_string();
+                                            entries.push(consumer::LeaderboardEntry {
+                                                fingerprint: pfp,
+                                                nickname: Some(peer_name),
+                                                relayed_bytes: 32768,
+                                                repaired_shards: 0,
+                                                uptime_secs: uptime.min(3600),
+                                                rank_badge: p_badge,
+                                                score: p_score,
+                                            });
+                                        }
+                                    }
+
+                                    entries.sort_by(|a, b| b.score.cmp(&a.score));
+
+                                    let body = serde_json::json!({
+                                        "success": true,
+                                        "opt_in": s.leaderboard_opt_in,
+                                        "nickname": s.leaderboard_nickname,
+                                        "my_entry": my_entry,
+                                        "entries": entries,
+                                    })
+                                    .to_string();
+                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                } else if req.starts_with("POST /api/leaderboard/optin") {
+                                    let val = json_body(&req);
+                                    let opt_in = val.get("opt_in").and_then(|v| v.as_bool()).unwrap_or(true);
+                                    let mut s = cs_ref.write();
+                                    s.leaderboard_opt_in = opt_in;
+                                    let mut err_msg: Option<&'static str> = None;
+                                    if let Some(raw_nick) = val.get("nickname").and_then(|v| v.as_str()) {
+                                        if !raw_nick.trim().is_empty() {
+                                            match consumer::validate_nickname(raw_nick) {
+                                                Ok(valid) => s.leaderboard_nickname = Some(valid),
+                                                Err(e) => err_msg = Some(e),
+                                            }
+                                        } else {
+                                            s.leaderboard_nickname = None;
+                                        }
+                                    }
+                                    if !cp_ref.is_empty() {
+                                        save_consumer_settings(&cp_ref, &s);
+                                    }
+                                    let body = if let Some(err) = err_msg {
+                                        serde_json::json!({
+                                            "success": false,
+                                            "error": err,
+                                            "opt_in": s.leaderboard_opt_in,
+                                            "nickname": s.leaderboard_nickname,
+                                        })
+                                    } else {
+                                        serde_json::json!({
+                                            "success": true,
+                                            "opt_in": s.leaderboard_opt_in,
+                                            "nickname": s.leaderboard_nickname,
+                                        })
+                                    }
                                     .to_string();
                                     ("HTTP/1.1 200 OK", body, "application/json")
                                 } else if req.starts_with("GET /api/wan_telemetry") {
