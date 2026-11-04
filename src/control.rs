@@ -245,8 +245,8 @@ pub fn spawn_control_center(
     let qel_route_m = Arc::clone(&qel_last_route);
 
     tokio::spawn(async move {
-        let bind_host = std::env::var("GHOST_CONTROL_BIND")
-            .unwrap_or_else(|_| "127.0.0.1".to_string());
+        let bind_host =
+            std::env::var("GHOST_CONTROL_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
         let bind_addr = format!("{}:{}", bind_host, mp);
         match tokio::net::TcpListener::bind(&bind_addr).await {
             Ok(listener) => {
@@ -276,182 +276,190 @@ pub fn spawn_control_center(
                     match listener.accept().await {
                         Ok((mut stream, _)) => {
                             let nc_ref = Arc::clone(&nc_m);
-                        let addrs_ref = Arc::clone(&addrs_m);
-                        let vpn_ref = vpn_m.clone();
-                        let conn_ref = Arc::clone(&c_conn_m);
-                        let mode_ref = Arc::clone(&c_mode_m);
-                        let pin_ref = Arc::clone(&c_pin_m);
-                        let cs_ref = Arc::clone(&c_settings_m);
-                        let cp_ref = c_path_m.clone();
-                        let lan_host_ref = lan_host_m.clone();
-                        let pair_uri_ref = pair_uri_m.clone();
-                        let carrier_ref = Arc::clone(&carrier_m);
-                        let phs_ref = Arc::clone(&phs_m);
-                        let scan_notify_ref = Arc::clone(&scan_notify_m);
-                        let scan_interval_ref = Arc::clone(&scan_interval_m);
-                        let qel_state_ref = Arc::clone(&qel_state_m);
-                        let qel_last_route = Arc::clone(&qel_route_m);
-                        tokio::spawn(async move {
-                            // Read the whole request. A single `read` races the client's
-                            // TCP segmentation: a POST whose body lands in a later segment
-                            // would be parsed as body-less and rejected. Clients here do
-                            // NOT half-close their write side before reading the response
-                            // (every browser does the same), so we cannot read to EOF;
-                            // instead read until the headers are complete and then until
-                            // `Content-Length` body bytes have arrived (bounded).
-                            let mut buf: Vec<u8> = Vec::with_capacity(4096);
-                            {
-                                let mut chunk = [0u8; 4096];
-                                let _guard = tokio::time::timeout(
-                                    tokio::time::Duration::from_secs(10),
-                                    async {
-                                        loop {
-                                            // Headers complete?
-                                            let header_end =
-                                                buf.windows(4).position(|w| w == b"\r\n\r\n");
-                                            let need_body = match header_end {
-                                                Some(h) => {
-                                                    let headers =
-                                                        String::from_utf8_lossy(&buf[..h]);
-                                                    headers
-                                                        .lines()
-                                                        .find_map(|l| {
-                                                            let (k, v) = l.split_once(':')?;
-                                                            k.trim()
-                                                                .eq_ignore_ascii_case(
-                                                                    "content-length",
-                                                                )
-                                                                .then(|| {
-                                                                    v.trim().parse::<usize>().ok()
-                                                                })
-                                                                .flatten()
-                                                        })
-                                                        .unwrap_or(0)
+                            let addrs_ref = Arc::clone(&addrs_m);
+                            let vpn_ref = vpn_m.clone();
+                            let conn_ref = Arc::clone(&c_conn_m);
+                            let mode_ref = Arc::clone(&c_mode_m);
+                            let pin_ref = Arc::clone(&c_pin_m);
+                            let cs_ref = Arc::clone(&c_settings_m);
+                            let cp_ref = c_path_m.clone();
+                            let lan_host_ref = lan_host_m.clone();
+                            let pair_uri_ref = pair_uri_m.clone();
+                            let carrier_ref = Arc::clone(&carrier_m);
+                            let phs_ref = Arc::clone(&phs_m);
+                            let scan_notify_ref = Arc::clone(&scan_notify_m);
+                            let scan_interval_ref = Arc::clone(&scan_interval_m);
+                            let qel_state_ref = Arc::clone(&qel_state_m);
+                            let qel_last_route = Arc::clone(&qel_route_m);
+                            tokio::spawn(async move {
+                                // Read the whole request. A single `read` races the client's
+                                // TCP segmentation: a POST whose body lands in a later segment
+                                // would be parsed as body-less and rejected. Clients here do
+                                // NOT half-close their write side before reading the response
+                                // (every browser does the same), so we cannot read to EOF;
+                                // instead read until the headers are complete and then until
+                                // `Content-Length` body bytes have arrived (bounded).
+                                let mut buf: Vec<u8> = Vec::with_capacity(4096);
+                                {
+                                    let mut chunk = [0u8; 4096];
+                                    let _guard = tokio::time::timeout(
+                                        tokio::time::Duration::from_secs(10),
+                                        async {
+                                            loop {
+                                                // Headers complete?
+                                                let header_end =
+                                                    buf.windows(4).position(|w| w == b"\r\n\r\n");
+                                                let need_body = match header_end {
+                                                    Some(h) => {
+                                                        let headers =
+                                                            String::from_utf8_lossy(&buf[..h]);
+                                                        headers
+                                                            .lines()
+                                                            .find_map(|l| {
+                                                                let (k, v) = l.split_once(':')?;
+                                                                k.trim()
+                                                                    .eq_ignore_ascii_case(
+                                                                        "content-length",
+                                                                    )
+                                                                    .then(|| {
+                                                                        v.trim()
+                                                                            .parse::<usize>()
+                                                                            .ok()
+                                                                    })
+                                                                    .flatten()
+                                                            })
+                                                            .unwrap_or(0)
+                                                    }
+                                                    None => usize::MAX, // keep reading headers
+                                                };
+                                                let have = buf.len()
+                                                    - header_end.map(|h| h + 4).unwrap_or(0);
+                                                if header_end.is_some() && have >= need_body {
+                                                    break;
                                                 }
-                                                None => usize::MAX, // keep reading headers
-                                            };
-                                            let have =
-                                                buf.len() - header_end.map(|h| h + 4).unwrap_or(0);
-                                            if header_end.is_some() && have >= need_body {
-                                                break;
-                                            }
-                                            match stream.read(&mut chunk).await {
-                                                Ok(0) | Err(_) => break,
-                                                Ok(n) => {
-                                                    buf.extend_from_slice(&chunk[..n]);
-                                                    if buf.len() > 1_048_576 {
-                                                        break; // request size cap
+                                                match stream.read(&mut chunk).await {
+                                                    Ok(0) | Err(_) => break,
+                                                    Ok(n) => {
+                                                        buf.extend_from_slice(&chunk[..n]);
+                                                        if buf.len() > 1_048_576 {
+                                                            break; // request size cap
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                    },
-                                )
-                                .await;
-                            }
-                            if !buf.is_empty() {
-                                let req = String::from_utf8_lossy(&buf);
-                                let (vpn_role, vpn_prom, vpn_json) = vpn_export(&vpn_ref);
-                                tracing::debug!(
-                                    first = %req.lines().next().unwrap_or(""),
-                                    bytes = buf.len(),
-                                    "control: request received"
-                                );
-                                let vpn_available = vpn_ref.is_some();
-                                let configured_pin = pin_ref.read().clone();
-                                // `true` here means the caller may see identity and
-                                // pairing material: either no PIN is configured, or it
-                                // was supplied correctly.
-                                let pin_ok = match configured_pin.as_deref() {
-                                    None => true,
-                                    Some(expected) => pin_matches(expected, header_pin(&req)),
-                                };
-                                let is_mutation = req.starts_with("POST ");
-                                let origin_allowed = is_origin_allowed(&req, mp);
-
-                                if is_mutation && !origin_allowed {
-                                    let resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nCross-Origin Forbidden\n";
-                                    let _ = stream.write_all(resp.as_bytes()).await;
-                                    return;
+                                        },
+                                    )
+                                    .await;
                                 }
+                                if !buf.is_empty() {
+                                    let req = String::from_utf8_lossy(&buf);
+                                    let (vpn_role, vpn_prom, vpn_json) = vpn_export(&vpn_ref);
+                                    tracing::debug!(
+                                        first = %req.lines().next().unwrap_or(""),
+                                        bytes = buf.len(),
+                                        "control: request received"
+                                    );
+                                    let vpn_available = vpn_ref.is_some();
+                                    let configured_pin = pin_ref.read().clone();
+                                    // `true` here means the caller may see identity and
+                                    // pairing material: either no PIN is configured, or it
+                                    // was supplied correctly.
+                                    let pin_ok = match configured_pin.as_deref() {
+                                        None => true,
+                                        Some(expected) => pin_matches(expected, header_pin(&req)),
+                                    };
+                                    let is_mutation = req.starts_with("POST ");
+                                    let origin_allowed = is_origin_allowed(&req, mp);
 
-                                let cors_header = if origin_allowed {
-                                    format!("Access-Control-Allow-Origin: http://127.0.0.1:{}\r\n", mp)
-                                } else {
-                                    String::new()
-                                };
+                                    if is_mutation && !origin_allowed {
+                                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nCross-Origin Forbidden\n";
+                                        let _ = stream.write_all(resp.as_bytes()).await;
+                                        return;
+                                    }
 
-                                if req.starts_with("OPTIONS ") {
-                                    let resp = format!(
+                                    let cors_header = if origin_allowed {
+                                        format!(
+                                            "Access-Control-Allow-Origin: http://127.0.0.1:{}\r\n",
+                                            mp
+                                        )
+                                    } else {
+                                        String::new()
+                                    };
+
+                                    if req.starts_with("OPTIONS ") {
+                                        let resp = format!(
                                         "HTTP/1.1 204 No Content\r\n{}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nConnection: close\r\n\r\n",
                                         cors_header
                                     );
-                                    let _ = stream.write_all(resp.as_bytes()).await;
-                                    let _ = stream.flush().await;
-                                    let _ = stream.shutdown().await;
-                                    return;
-                                }
+                                        let _ = stream.write_all(resp.as_bytes()).await;
+                                        let _ = stream.flush().await;
+                                        let _ = stream.shutdown().await;
+                                        return;
+                                    }
 
-                                let (status_line, body, content_type) = if is_mutation && !pin_ok {
-                                    (
-                                        "HTTP/1.1 401 Unauthorized",
-                                        serde_json::json!({
+                                    let (status_line, body, content_type) = if is_mutation
+                                        && !pin_ok
+                                    {
+                                        (
+                                            "HTTP/1.1 401 Unauthorized",
+                                            serde_json::json!({
+                                                "success": false,
+                                                "error": "PIN required",
+                                                "pin_required": true
+                                            })
+                                            .to_string(),
+                                            "application/json",
+                                        )
+                                    } else if !pin_ok
+                                        && (req.starts_with("GET /api/peers")
+                                            || req.starts_with("GET /api/wan_telemetry"))
+                                    {
+                                        // These reads carry peer or node fingerprints and
+                                        // have no liveness role, so a missing PIN denies
+                                        // them outright. /api/status stays readable and
+                                        // redacts its identity fields instead.
+                                        let body = serde_json::json!({
                                             "success": false,
                                             "error": "PIN required",
                                             "pin_required": true
                                         })
-                                        .to_string(),
-                                        "application/json",
-                                    )
-                                } else if !pin_ok
-                                    && (req.starts_with("GET /api/peers")
-                                        || req.starts_with("GET /api/wan_telemetry"))
-                                {
-                                    // These reads carry peer or node fingerprints and
-                                    // have no liveness role, so a missing PIN denies
-                                    // them outright. /api/status stays readable and
-                                    // redacts its identity fields instead.
-                                    let body = serde_json::json!({
-                                        "success": false,
-                                        "error": "PIN required",
-                                        "pin_required": true
-                                    })
-                                    .to_string();
-                                    ("HTTP/1.1 401 Unauthorized", body, "application/json")
-                                } else if req.starts_with("GET /api/status") {
-                                    let is_conn = conn_ref.load(Ordering::Relaxed);
-                                    let current_mode = mode_ref.read().clone();
-                                    let has_pin = pin_ref.read().is_some();
-                                    let sent_bytes =
-                                        nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                    let recv_bytes =
-                                        nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                    let sent_pkts =
-                                        nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                    let recv_pkts =
-                                        nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                    let uptime = nc_ref.created_at.elapsed().as_secs();
-                                    let peers_count = addrs_ref.len();
-                                    let sessions_count = nc_ref.sessions.len();
+                                        .to_string();
+                                        ("HTTP/1.1 401 Unauthorized", body, "application/json")
+                                    } else if req.starts_with("GET /api/status") {
+                                        let is_conn = conn_ref.load(Ordering::Relaxed);
+                                        let current_mode = mode_ref.read().clone();
+                                        let has_pin = pin_ref.read().is_some();
+                                        let sent_bytes =
+                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                        let recv_bytes =
+                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                        let sent_pkts =
+                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                        let recv_pkts =
+                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                        let uptime = nc_ref.created_at.elapsed().as_secs();
+                                        let peers_count = addrs_ref.len();
+                                        let sessions_count = nc_ref.sessions.len();
 
-                                    let settings_now = cs_ref.read().clone();
-                                    let peer_entries: Vec<serde_json::Value> = addrs_ref
-                                        .iter()
-                                        .map(|entry| {
-                                            peer_entry(
-                                                &nc_ref,
-                                                &settings_now,
-                                                entry.key(),
-                                                entry.value(),
-                                            )
-                                        })
-                                        .collect();
+                                        let settings_now = cs_ref.read().clone();
+                                        let peer_entries: Vec<serde_json::Value> = addrs_ref
+                                            .iter()
+                                            .map(|entry| {
+                                                peer_entry(
+                                                    &nc_ref,
+                                                    &settings_now,
+                                                    entry.key(),
+                                                    entry.value(),
+                                                )
+                                            })
+                                            .collect();
 
-                                    let route_mode_active = match settings_now.route_mode.as_str() {
-                                        consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
-                                        _ => socks_listening,
-                                    };
-                                    let body = serde_json::json!({
+                                        let route_mode_active =
+                                            match settings_now.route_mode.as_str() {
+                                                consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
+                                                _ => socks_listening,
+                                            };
+                                        let body = serde_json::json!({
                                         "connected": is_conn,
                                         "mode": current_mode,
                                         "network_id": if pin_ok { serde_json::json!(nc_ref.fingerprint()) } else { serde_json::Value::Null },
@@ -518,139 +526,150 @@ pub fn spawn_control_center(
                                         "peers": if pin_ok { serde_json::json!(peer_entries) } else { serde_json::json!([]) },
                                     })
                                     .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/peers/add") {
-                                    let val = json_body(&req);
-                                    let addr_str = val
-                                        .get("address")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .trim();
-                                    match addr_str.parse::<SocketAddr>() {
-                                        Ok(target_addr) => {
-                                            initiate_handshake(
-                                                &nc_ref,
-                                                &nc_ref.socket,
-                                                target_addr,
-                                                &phs_ref,
-                                            )
-                                            .await;
-                                            let peers_cache =
-                                                vantablack::ghost::paths::data_file("peers.cache");
-                                            if let Ok(mut current) =
-                                                std::fs::read_to_string(&peers_cache)
-                                            {
-                                                if !current.contains(addr_str) {
-                                                    if !current.ends_with('\n')
-                                                        && !current.is_empty()
-                                                    {
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/peers/add") {
+                                        let val = json_body(&req);
+                                        let addr_str = val
+                                            .get("address")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .trim();
+                                        match addr_str.parse::<SocketAddr>() {
+                                            Ok(target_addr) => {
+                                                initiate_handshake(
+                                                    &nc_ref,
+                                                    &nc_ref.socket,
+                                                    target_addr,
+                                                    &phs_ref,
+                                                )
+                                                .await;
+                                                let peers_cache =
+                                                    vantablack::ghost::paths::data_file(
+                                                        "peers.cache",
+                                                    );
+                                                if let Ok(mut current) =
+                                                    std::fs::read_to_string(&peers_cache)
+                                                {
+                                                    if !current.contains(addr_str) {
+                                                        if !current.ends_with('\n')
+                                                            && !current.is_empty()
+                                                        {
+                                                            current.push('\n');
+                                                        }
+                                                        current.push_str(addr_str);
                                                         current.push('\n');
+                                                        let _ =
+                                                            std::fs::write(&peers_cache, current);
                                                     }
-                                                    current.push_str(addr_str);
-                                                    current.push('\n');
-                                                    let _ = std::fs::write(&peers_cache, current);
+                                                } else {
+                                                    let _ = std::fs::write(
+                                                        &peers_cache,
+                                                        format!("{}\n", addr_str),
+                                                    );
                                                 }
-                                            } else {
-                                                let _ = std::fs::write(
-                                                    &peers_cache,
-                                                    format!("{}\n", addr_str),
-                                                );
-                                            }
-                                            let body = serde_json::json!({
+                                                let body = serde_json::json!({
                                                 "success": true,
                                                 "address": addr_str,
                                                 "message": format!("Handshake initiated with {}", target_addr)
                                             })
                                             .to_string();
-                                            ("HTTP/1.1 200 OK", body, "application/json")
-                                        }
-                                        Err(e) => {
-                                            let body = serde_json::json!({
+                                                ("HTTP/1.1 200 OK", body, "application/json")
+                                            }
+                                            Err(e) => {
+                                                let body = serde_json::json!({
                                                 "success": false,
                                                 "error": format!("Invalid address format '{}': {}", addr_str, e)
                                             })
                                             .to_string();
-                                            ("HTTP/1.1 400 Bad Request", body, "application/json")
+                                                (
+                                                    "HTTP/1.1 400 Bad Request",
+                                                    body,
+                                                    "application/json",
+                                                )
+                                            }
                                         }
-                                    }
-                                } else if req.starts_with("GET /api/peers") {
-                                    let settings_now = cs_ref.read().clone();
-                                    let peer_entries: Vec<serde_json::Value> = addrs_ref
-                                        .iter()
-                                        .map(|entry| {
-                                            peer_entry(
-                                                &nc_ref,
-                                                &settings_now,
-                                                entry.key(),
-                                                entry.value(),
-                                            )
+                                    } else if req.starts_with("GET /api/peers") {
+                                        let settings_now = cs_ref.read().clone();
+                                        let peer_entries: Vec<serde_json::Value> = addrs_ref
+                                            .iter()
+                                            .map(|entry| {
+                                                peer_entry(
+                                                    &nc_ref,
+                                                    &settings_now,
+                                                    entry.key(),
+                                                    entry.value(),
+                                                )
+                                            })
+                                            .collect();
+                                        let body = serde_json::json!({
+                                            "peers": peer_entries,
+                                            "count": peer_entries.len()
                                         })
-                                        .collect();
-                                    let body = serde_json::json!({
-                                        "peers": peer_entries,
-                                        "count": peer_entries.len()
-                                    })
-                                    .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/connect") {
-                                    let val = json_body(&req);
-                                    let prev = conn_ref.load(Ordering::Relaxed);
-                                    let next = val
-                                        .get("connected")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(!prev);
-                                    conn_ref.store(next, Ordering::Relaxed);
-                                    nc_ref.beacon_enabled.store(next, Ordering::Relaxed);
-                                    if !next {
-                                        phs_ref.clear();
-                                        broadcast_goodbye(&nc_ref, &addrs_ref);
-                                        tracing::info!(
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/connect") {
+                                        let val = json_body(&req);
+                                        let prev = conn_ref.load(Ordering::Relaxed);
+                                        let next = val
+                                            .get("connected")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(!prev);
+                                        conn_ref.store(next, Ordering::Relaxed);
+                                        nc_ref.beacon_enabled.store(next, Ordering::Relaxed);
+                                        if !next {
+                                            phs_ref.clear();
+                                            broadcast_goodbye(&nc_ref, &addrs_ref);
+                                            tracing::info!(
                                             "Mesh deactivated via control center — broadcasted GHOST_BYE to all peers"
                                         );
-                                    } else if !prev {
-                                        scan_notify_ref.notify_waiters();
-                                        tracing::info!(
+                                        } else if !prev {
+                                            scan_notify_ref.notify_waiters();
+                                            tracing::info!(
                                             "Mesh reactivated via control center — triggering immediate LAN discovery"
                                         );
-                                    }
-                                    let body = serde_json::json!({
-                                        "success": true,
-                                        "connected": next
-                                    })
-                                    .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/mode") {
-                                    let val = json_body(&req);
-                                    if let Some(m) = val.get("mode").and_then(|v| v.as_str()) {
-                                        *mode_ref.write() = m.to_string();
-                                    }
-                                    let current_mode = mode_ref.read().clone();
-                                    let body = serde_json::json!({
-                                        "success": true,
-                                        "mode": current_mode
-                                    })
-                                    .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/scan") {
-                                    scan_notify_ref.notify_waiters();
-                                    let body = serde_json::json!({
-                                        "success": true,
-                                        "message": "LAN discovery sweep triggered immediately"
-                                    })
-                                    .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/pipeline_probe") {
-                                    let val = json_body(&req);
-                                    let total_bytes = val
-                                        .get("total_bytes")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(2_000_000)
-                                        as usize;
-                                    let probe_res = run_pipeline_probe(total_bytes);
-                                    ("HTTP/1.1 200 OK", probe_res.to_string(), "application/json")
-                                } else if req.starts_with("GET /api/settings") {
-                                    let s = cs_ref.read().clone();
-                                    let body = serde_json::json!({
+                                        }
+                                        let body = serde_json::json!({
+                                            "success": true,
+                                            "connected": next
+                                        })
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/mode") {
+                                        let val = json_body(&req);
+                                        if let Some(m) = val.get("mode").and_then(|v| v.as_str()) {
+                                            *mode_ref.write() = m.to_string();
+                                        }
+                                        let current_mode = mode_ref.read().clone();
+                                        let body = serde_json::json!({
+                                            "success": true,
+                                            "mode": current_mode
+                                        })
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/scan") {
+                                        scan_notify_ref.notify_waiters();
+                                        let body = serde_json::json!({
+                                            "success": true,
+                                            "message": "LAN discovery sweep triggered immediately"
+                                        })
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/pipeline_probe") {
+                                        let val = json_body(&req);
+                                        let total_bytes = val
+                                            .get("total_bytes")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(2_000_000)
+                                            as usize;
+                                        let probe_res = run_pipeline_probe(total_bytes);
+                                        (
+                                            "HTTP/1.1 200 OK",
+                                            probe_res.to_string(),
+                                            "application/json",
+                                        )
+                                    } else if req.starts_with("GET /api/settings") {
+                                        let s = cs_ref.read().clone();
+                                        let body = serde_json::json!({
                                         "success": true,
                                         "route_mode": s.route_mode,
                                         "device_names": s.device_names,
@@ -668,75 +687,88 @@ pub fn spawn_control_center(
                                         "qel_enabled": s.qel_enabled,
                                     })
                                     .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/settings") {
-                                    let val = json_body(&req);
-                                    let mut s = cs_ref.write();
-                                    if let Some(r) = val.get("route_mode").and_then(|v| v.as_str())
-                                    {
-                                        s.set_route_mode(r);
-                                    }
-                                    if let Some(ll) =
-                                        val.get("low_latency").and_then(|v| v.as_bool())
-                                    {
-                                        vantablack::ghost::net::set_low_latency(ll);
-                                    }
-                                    if let Some(ms) =
-                                        val.get("mix_batch_ms").and_then(|v| v.as_u64())
-                                    {
-                                        vantablack::ghost::net::set_mix_batch_delay_ms(ms);
-                                    }
-                                    if let Some(za) =
-                                        val.get("zero_admin").and_then(|v| v.as_bool())
-                                    {
-                                        vantablack::ghost::net::set_zero_admin(za);
-                                    }
-                                    if let Some(add) =
-                                        val.get("bypass_add").and_then(|v| v.as_str())
-                                    {
-                                        let _ = s.add_bypass(add);
-                                    }
-                                    if let Some(rem) =
-                                        val.get("bypass_remove").and_then(|v| v.as_str())
-                                    {
-                                        s.remove_bypass(rem);
-                                    }
-                                    if let Some(secs) = val
-                                        .get("private_mesh_scan_interval_secs")
-                                        .and_then(|v| v.as_u64())
-                                    {
-                                        scan_interval_ref.store(secs as u32, Ordering::Relaxed);
-                                    }
-                                    if let Some(names) = val
-                                        .get("set_device_name")
-                                        .or_else(|| val.get("set_peer_name"))
-                                        .and_then(|v| v.as_object())
-                                    {
-                                        for (k, v) in names {
-                                            if let Some(name_str) = v.as_str() {
-                                                let _ = s.set_device_name(k, name_str);
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/settings") {
+                                        let val = json_body(&req);
+                                        let mut s = cs_ref.write();
+                                        if let Some(r) =
+                                            val.get("route_mode").and_then(|v| v.as_str())
+                                        {
+                                            s.set_route_mode(r);
+                                        }
+                                        if let Some(ll) =
+                                            val.get("low_latency").and_then(|v| v.as_bool())
+                                        {
+                                            vantablack::ghost::net::set_low_latency(ll);
+                                        }
+                                        if let Some(ms) =
+                                            val.get("mix_batch_ms").and_then(|v| v.as_u64())
+                                        {
+                                            vantablack::ghost::net::set_mix_batch_delay_ms(ms);
+                                        }
+                                        if let Some(za) =
+                                            val.get("zero_admin").and_then(|v| v.as_bool())
+                                        {
+                                            vantablack::ghost::net::set_zero_admin(za);
+                                        }
+                                        if let Some(add) =
+                                            val.get("bypass_add").and_then(|v| v.as_str())
+                                        {
+                                            let _ = s.add_bypass(add);
+                                        }
+                                        if let Some(rem) =
+                                            val.get("bypass_remove").and_then(|v| v.as_str())
+                                        {
+                                            s.remove_bypass(rem);
+                                        }
+                                        if let Some(secs) = val
+                                            .get("private_mesh_scan_interval_secs")
+                                            .and_then(|v| v.as_u64())
+                                        {
+                                            scan_interval_ref.store(secs as u32, Ordering::Relaxed);
+                                        }
+                                        if let Some(names) = val
+                                            .get("set_device_name")
+                                            .or_else(|| val.get("set_peer_name"))
+                                            .and_then(|v| v.as_object())
+                                        {
+                                            for (k, v) in names {
+                                                if let Some(name_str) = v.as_str() {
+                                                    let _ = s.set_device_name(k, name_str);
+                                                }
                                             }
                                         }
-                                    }
-                                    if let Some(stego) = val.get("stego_carrier_mode").and_then(|v| v.as_bool()) {
-                                        s.stego_carrier_mode = stego;
-                                    }
-                                    if let Some(energy) = val.get("energy_ledger_enabled").and_then(|v| v.as_bool()) {
-                                        s.energy_ledger_enabled = energy;
-                                    }
-                                    if let Some(juris) = val.get("jurisdiction_tag").and_then(|v| v.as_str()) {
-                                        s.set_jurisdiction_tag(juris);
-                                    }
-                                    if let Some(abos) = val.get("abos_skywave_enabled").and_then(|v| v.as_bool()) {
-                                        s.abos_skywave_enabled = abos;
-                                    }
-                                    if let Some(qel) = val.get("qel_enabled").and_then(|v| v.as_bool()) {
-                                        s.qel_enabled = qel;
-                                    }
-                                    if !cp_ref.is_empty() {
-                                        save_consumer_settings(&cp_ref, &s);
-                                    }
-                                    let body = serde_json::json!({
+                                        if let Some(stego) =
+                                            val.get("stego_carrier_mode").and_then(|v| v.as_bool())
+                                        {
+                                            s.stego_carrier_mode = stego;
+                                        }
+                                        if let Some(energy) = val
+                                            .get("energy_ledger_enabled")
+                                            .and_then(|v| v.as_bool())
+                                        {
+                                            s.energy_ledger_enabled = energy;
+                                        }
+                                        if let Some(juris) =
+                                            val.get("jurisdiction_tag").and_then(|v| v.as_str())
+                                        {
+                                            s.set_jurisdiction_tag(juris);
+                                        }
+                                        if let Some(abos) = val
+                                            .get("abos_skywave_enabled")
+                                            .and_then(|v| v.as_bool())
+                                        {
+                                            s.abos_skywave_enabled = abos;
+                                        }
+                                        if let Some(qel) =
+                                            val.get("qel_enabled").and_then(|v| v.as_bool())
+                                        {
+                                            s.qel_enabled = qel;
+                                        }
+                                        if !cp_ref.is_empty() {
+                                            save_consumer_settings(&cp_ref, &s);
+                                        }
+                                        let body = serde_json::json!({
                                         "success": true,
                                         "route_mode": s.route_mode,
                                         "bypass_count": s.bypass.len(),
@@ -748,19 +780,20 @@ pub fn spawn_control_center(
                                         "qel_enabled": s.qel_enabled,
                                     })
                                     .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("GET /api/wan_telemetry") {
-                                    let sent_bytes =
-                                        nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                    let recv_bytes =
-                                        nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                    let sent_pkts =
-                                        nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                    let recv_pkts =
-                                        nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                    let retrans = nc_ref.stats.retransmits.load(Ordering::Relaxed);
-                                    let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
-                                    let body = serde_json::json!({
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("GET /api/wan_telemetry") {
+                                        let sent_bytes =
+                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                        let recv_bytes =
+                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                        let sent_pkts =
+                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                        let recv_pkts =
+                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                        let retrans =
+                                            nc_ref.stats.retransmits.load(Ordering::Relaxed);
+                                        let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
+                                        let body = serde_json::json!({
                                         "node_fingerprint": nc_ref.fingerprint(),
                                         "active_sessions": nc_ref.sessions.len(),
                                         "known_peers": addrs_ref.len(),
@@ -777,14 +810,14 @@ pub fn spawn_control_center(
                                         "handshake_status": "ML-KEM-512 + X25519 Post-Quantum Hybrid",
                                         "discovery_source": "DNS Seed + Multicast Beacon + peers.cache"
                                     }).to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("GET /api/v1/anchors/status") {
-                                    // Physical anchors (experimental, in-simulation):
-                                    // ABOS skywave carrier + QEL quantum anchor.
-                                    let sky = net::sdr_bridge::SkywaveBridge::global()
-                                        .map(|b| b.telemetry());
-                                    let qel_state = *qel_state_ref.read();
-                                    let body = serde_json::json!({
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("GET /api/v1/anchors/status") {
+                                        // Physical anchors (experimental, in-simulation):
+                                        // ABOS skywave carrier + QEL quantum anchor.
+                                        let sky = net::sdr_bridge::SkywaveBridge::global()
+                                            .map(|b| b.telemetry());
+                                        let qel_state = *qel_state_ref.read();
+                                        let body = serde_json::json!({
                                         "abos_skywave": match sky {
                                             Some(t) => serde_json::json!({
                                                 "status": if t.sdr_active { "online" } else { "standby" },
@@ -825,61 +858,61 @@ pub fn spawn_control_center(
                                         },
                                     })
                                     .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/v1/anchors/qel/route") {
-                                    tracing::debug!("control: qel route endpoint entered");
-                                    // Trigger a real QEL route computation between two
-                                    // live peer fingerprints: {"from": "<fp>", "to": "<fp>"}.
-                                    // PIN-gated like every mutation above.
-                                    let parsed: Option<(String, String)> = req
-                                        .split_once("\r\n\r\n")
-                                        .and_then(|(_, body)| {
-                                            serde_json::from_str(body.trim()).ok()
-                                        })
-                                        .and_then(|v: serde_json::Value| {
-                                            let from = v.get("from")?.as_str()?.to_string();
-                                            let to = v.get("to")?.as_str()?.to_string();
-                                            Some((from, to))
-                                        });
-                                    let Some((from_fp, to_fp)) = parsed else {
-                                        let body = serde_json::json!({
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/v1/anchors/qel/route") {
+                                        tracing::debug!("control: qel route endpoint entered");
+                                        // Trigger a real QEL route computation between two
+                                        // live peer fingerprints: {"from": "<fp>", "to": "<fp>"}.
+                                        // PIN-gated like every mutation above.
+                                        let parsed: Option<(String, String)> = req
+                                            .split_once("\r\n\r\n")
+                                            .and_then(|(_, body)| {
+                                                serde_json::from_str(body.trim()).ok()
+                                            })
+                                            .and_then(|v: serde_json::Value| {
+                                                let from = v.get("from")?.as_str()?.to_string();
+                                                let to = v.get("to")?.as_str()?.to_string();
+                                                Some((from, to))
+                                            });
+                                        let Some((from_fp, to_fp)) = parsed else {
+                                            let body = serde_json::json!({
                                             "success": false,
                                             "error": "body must be JSON: {\"from\": \"<fingerprint>\", \"to\": \"<fingerprint>\"}"
                                         })
                                         .to_string();
-                                        let resp = format!(
+                                            let resp = format!(
                                             "HTTP/1.1 400 Bad Request\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                                             cors_header,
                                             body.len(),
                                             body
                                         );
-                                        let _ = stream.write_all(resp.as_bytes()).await;
-                                        let _ = stream.flush().await;
-                                        let _ = stream.shutdown().await;
-                                        return;
-                                    };
-                                    let topo_path = std::env::var("GHOST_QEL_TOPOLOGY")
-                                        .unwrap_or_else(|_| {
-                                            vantablack::ghost::paths::data_file_string(
-                                                "ghost-topology.json",
+                                            let _ = stream.write_all(resp.as_bytes()).await;
+                                            let _ = stream.flush().await;
+                                            let _ = stream.shutdown().await;
+                                            return;
+                                        };
+                                        let topo_path = std::env::var("GHOST_QEL_TOPOLOGY")
+                                            .unwrap_or_else(|_| {
+                                                vantablack::ghost::paths::data_file_string(
+                                                    "ghost-topology.json",
+                                                )
+                                            });
+                                        let ctrl =
+                                            vantablack::ghost::layers::l10_qel::shared_controller();
+                                        let outcome = ctrl
+                                            .establish_quantum_link(
+                                                Path::new(&topo_path),
+                                                &from_fp,
+                                                &to_fp,
                                             )
-                                        });
-                                    let ctrl =
-                                        vantablack::ghost::layers::l10_qel::shared_controller();
-                                    let outcome = ctrl
-                                        .establish_quantum_link(
-                                            Path::new(&topo_path),
-                                            &from_fp,
-                                            &to_fp,
-                                        )
-                                        .await;
-                                    if let Some(route) = &outcome.route {
-                                        if route.success {
-                                            *qel_last_route.write() = Some(route.clone());
+                                            .await;
+                                        if let Some(route) = &outcome.route {
+                                            if route.success {
+                                                *qel_last_route.write() = Some(route.clone());
+                                            }
                                         }
-                                    }
-                                    *qel_state_ref.write() = outcome.anchor_state;
-                                    let body = serde_json::json!({
+                                        *qel_state_ref.write() = outcome.anchor_state;
+                                        let body = serde_json::json!({
                                         "anchor_state": outcome.anchor_state.as_str(),
                                         "success": outcome.route.as_ref().map(|r| r.success).unwrap_or(false),
                                         "route": outcome.route,
@@ -887,19 +920,20 @@ pub fn spawn_control_center(
                                         "error": outcome.error,
                                     })
                                     .to_string();
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("GET /api/update/check") {
-                                    let body = match check_github_update().await {
-                                        Ok(val) => val.to_string(),
-                                        Err(e) => serde_json::json!({
-                                            "error": e,
-                                            "update_available": false,
-                                            "current_version": env!("CARGO_PKG_VERSION")
-                                        }).to_string(),
-                                    };
-                                    ("HTTP/1.1 200 OK", body, "application/json")
-                                } else if req.starts_with("POST /api/update/apply") {
-                                    let (status, body) = match apply_github_update().await {
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("GET /api/update/check") {
+                                        let body = match check_github_update().await {
+                                            Ok(val) => val.to_string(),
+                                            Err(e) => serde_json::json!({
+                                                "error": e,
+                                                "update_available": false,
+                                                "current_version": env!("CARGO_PKG_VERSION")
+                                            })
+                                            .to_string(),
+                                        };
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/update/apply") {
+                                        let (status, body) = match apply_github_update().await {
                                         Ok(msg) => (
                                             "HTTP/1.1 200 OK",
                                             serde_json::json!({ "success": true, "message": msg }).to_string(),
@@ -909,74 +943,75 @@ pub fn spawn_control_center(
                                             serde_json::json!({ "success": false, "error": e }).to_string(),
                                         ),
                                     };
-                                    (status, body, "application/json")
-                                } else if req.starts_with("GET /dashboard")
-                                    || req.starts_with("GET / ")
-                                    || req.starts_with("GET /?")
-                                {
-                                    let html = include_str!("../assets/wan_dashboard.html")
-                                        .replace(
-                                            "v0.7.5",
-                                            &format!("v{}", env!("CARGO_PKG_VERSION")),
-                                        )
-                                        .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
-                                    ("HTTP/1.1 200 OK", html, "text/html; charset=utf-8")
-                                } else if req.starts_with("GET /metrics") {
-                                    let sessions = nc_ref.sessions.len();
-                                    let peers = addrs_ref.len();
-                                    let uptime = nc_ref.created_at.elapsed().as_secs();
-                                    let sent_bytes =
-                                        nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
-                                    let recv_bytes =
-                                        nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
-                                    let sent_pkts =
-                                        nc_ref.stats.packets_sent.load(Ordering::Relaxed);
-                                    let recv_pkts =
-                                        nc_ref.stats.packets_recv.load(Ordering::Relaxed);
-                                    let retrans = nc_ref.stats.retransmits.load(Ordering::Relaxed);
-                                    let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
-                                    let body = format!(
+                                        (status, body, "application/json")
+                                    } else if req.starts_with("GET /dashboard")
+                                        || req.starts_with("GET / ")
+                                        || req.starts_with("GET /?")
+                                    {
+                                        let html = include_str!("../assets/wan_dashboard.html")
+                                            .replace(
+                                                "v0.7.5",
+                                                &format!("v{}", env!("CARGO_PKG_VERSION")),
+                                            )
+                                            .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
+                                        ("HTTP/1.1 200 OK", html, "text/html; charset=utf-8")
+                                    } else if req.starts_with("GET /metrics") {
+                                        let sessions = nc_ref.sessions.len();
+                                        let peers = addrs_ref.len();
+                                        let uptime = nc_ref.created_at.elapsed().as_secs();
+                                        let sent_bytes =
+                                            nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
+                                        let recv_bytes =
+                                            nc_ref.stats.bytes_recv.load(Ordering::Relaxed);
+                                        let sent_pkts =
+                                            nc_ref.stats.packets_sent.load(Ordering::Relaxed);
+                                        let recv_pkts =
+                                            nc_ref.stats.packets_recv.load(Ordering::Relaxed);
+                                        let retrans =
+                                            nc_ref.stats.retransmits.load(Ordering::Relaxed);
+                                        let drops = nc_ref.stats.drops.load(Ordering::Relaxed);
+                                        let body = format!(
                                         "# HELP ghost_sessions_total Active peer-to-peer sessions\n# TYPE ghost_sessions_total gauge\nghost_sessions_total {}\n# HELP ghost_known_peers_total Discovered mesh peers\n# TYPE ghost_known_peers_total gauge\nghost_known_peers_total {}\n# HELP ghost_uptime_seconds Process uptime in seconds\n# TYPE ghost_uptime_seconds counter\nghost_uptime_seconds {}\n# HELP ghost_bytes_sent_total Total bytes transmitted\n# TYPE ghost_bytes_sent_total counter\nghost_bytes_sent_total {}\n# HELP ghost_bytes_recv_total Total bytes received\n# TYPE ghost_bytes_recv_total counter\nghost_bytes_recv_total {}\n# HELP ghost_packets_sent_total Total packets sent\n# TYPE ghost_packets_sent_total counter\nghost_packets_sent_total {}\n# HELP ghost_packets_recv_total Total packets received\n# TYPE ghost_packets_recv_total counter\nghost_packets_recv_total {}\n# HELP ghost_retransmits_total Total retransmissions triggered\n# TYPE ghost_retransmits_total counter\nghost_retransmits_total {}\n# HELP ghost_drops_total Total dropped or replay-rejected frames\n# TYPE ghost_drops_total counter\nghost_drops_total {}\n# HELP ghost_cover_traffic_rate_hz Nominal cover traffic emission rate in Hz\n# TYPE ghost_cover_traffic_rate_hz gauge\nghost_cover_traffic_rate_hz 2.0\n",
                                         sessions, peers, uptime, sent_bytes, recv_bytes, sent_pkts, recv_pkts, retrans, drops
                                     );
-                                    (
-                                        "HTTP/1.1 200 OK",
-                                        body,
-                                        "text/plain; version=0.0.4; charset=utf-8",
-                                    )
-                                } else {
-                                    (
-                                        "HTTP/1.1 404 Not Found",
-                                        "Not Found".to_string(),
-                                        "text/plain",
-                                    )
-                                };
+                                        (
+                                            "HTTP/1.1 200 OK",
+                                            body,
+                                            "text/plain; version=0.0.4; charset=utf-8",
+                                        )
+                                    } else {
+                                        (
+                                            "HTTP/1.1 404 Not Found",
+                                            "Not Found".to_string(),
+                                            "text/plain",
+                                        )
+                                    };
 
-                                let body = if req.starts_with("GET /metrics") {
-                                    format!("{body}{vpn_prom}")
-                                } else {
-                                    body
-                                };
-                                let resp = format!(
+                                    let body = if req.starts_with("GET /metrics") {
+                                        format!("{body}{vpn_prom}")
+                                    } else {
+                                        body
+                                    };
+                                    let resp = format!(
                                     "{}\r\n{}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Pin\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                                     status_line, cors_header, content_type, body.len(), body
                                 );
-                                let _ = stream.write_all(resp.as_bytes()).await;
-                                let _ = stream.flush().await;
-                                let _ = stream.shutdown().await;
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!("Control center accept error: {e}");
-                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                                    let _ = stream.write_all(resp.as_bytes()).await;
+                                    let _ = stream.flush().await;
+                                    let _ = stream.shutdown().await;
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            tracing::warn!("Control center accept error: {e}");
+                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                        }
                     }
                 }
             }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to bind metrics HTTP endpoint on port {}: {}", mp, e);
-        }
+            Err(e) => {
+                tracing::warn!("Failed to bind metrics HTTP endpoint on port {}: {}", mp, e);
+            }
         }
     });
 }
@@ -1121,7 +1156,11 @@ pub async fn apply_github_update() -> Result<String, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client.get(setup_url).send().await.map_err(|e| e.to_string())?;
+    let resp = client
+        .get(setup_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("Download failed: HTTP {}", resp.status()));
     }
@@ -1134,7 +1173,15 @@ pub async fn apply_github_update() -> Result<String, String> {
     {
         let installer_path = temp_installer.to_string_lossy().to_string();
         std::process::Command::new("cmd")
-            .args(&["/c", "start", "", &installer_path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+            .args(&[
+                "/c",
+                "start",
+                "",
+                &installer_path,
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+            ])
             .spawn()
             .map_err(|e| e.to_string())?;
 
@@ -1152,4 +1199,3 @@ pub async fn apply_github_update() -> Result<String, String> {
     #[cfg(windows)]
     Ok("Installer launched silently. Vantablack is restarting...".to_string())
 }
-

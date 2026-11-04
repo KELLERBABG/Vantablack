@@ -504,9 +504,7 @@ fn driver_loop(
         if now_tx > prev_tx {
             had_work = true;
         }
-        stats
-            .packets_out
-            .store(now_tx, Ordering::Relaxed);
+        stats.packets_out.store(now_tx, Ordering::Relaxed);
 
         // ── 5. Sleep capped by poll_delay ──
         let delay = iface.poll_delay(ts, &sockets);

@@ -678,7 +678,8 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
                     &wire,
                 );
                 core.tx_ctr.fetch_add(1, Ordering::Relaxed);
-                core.tx_bytes.fetch_add(frame.len() as u64, Ordering::Relaxed);
+                core.tx_bytes
+                    .fetch_add(frame.len() as u64, Ordering::Relaxed);
                 let _ = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame));
             }
         }

@@ -882,9 +882,8 @@ mod tests {
             0x00, 0x00, // NSCOUNT=0
             0x00, 0x00, // ARCOUNT=0
             // QNAME: 7example3com0
-            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
-            3, b'c', b'o', b'm', 0,
-            0x00, 0x1C, // QTYPE=28 (AAAA)
+            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 0x00,
+            0x1C, // QTYPE=28 (AAAA)
             0x00, 0x01, // QCLASS=1 (IN)
         ];
         assert!(is_dns_aaaa_query(&query));

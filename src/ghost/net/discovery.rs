@@ -69,7 +69,8 @@ impl PeerDescriptor {
             .as_secs();
 
         let ed25519_pk = identity.public_key_bytes();
-        let signing_material = Self::signing_bytes(&ed25519_pk, &ml_kem_hash, endpoint, nat_type, now);
+        let signing_material =
+            Self::signing_bytes(&ed25519_pk, &ml_kem_hash, endpoint, nat_type, now);
         let signature = identity.sign(&signing_material).to_bytes();
 
         Self {
@@ -305,10 +306,7 @@ impl BlindRendezvous {
     }
 
     /// Decrypt a blind rendezvous payload retrieved from a worker or DHT.
-    pub fn decrypt_descriptor(
-        epoch_key: &[u8; 32],
-        ciphertext: &[u8],
-    ) -> Option<PeerDescriptor> {
+    pub fn decrypt_descriptor(epoch_key: &[u8; 32], ciphertext: &[u8]) -> Option<PeerDescriptor> {
         let cipher = ChaCha20Poly1305::new(Key::from_slice(epoch_key));
         let nonce = Nonce::from_slice(b"VB_BLND_NO_1");
         let plain = cipher.decrypt(nonce, ciphertext).ok()?;
@@ -356,11 +354,13 @@ mod tests {
 
         assert_ne!(slot_id, [0u8; 32]);
 
-        let encrypted = BlindRendezvous::encrypt_descriptor(&epoch_key, &desc).expect("encrypt failed");
+        let encrypted =
+            BlindRendezvous::encrypt_descriptor(&epoch_key, &desc).expect("encrypt failed");
         // Cloudflare sees only random bytes:
         assert_ne!(&encrypted[..4], PeerDescriptor::MAGIC);
 
-        let decrypted = BlindRendezvous::decrypt_descriptor(&epoch_key, &encrypted).expect("decrypt failed");
+        let decrypted =
+            BlindRendezvous::decrypt_descriptor(&epoch_key, &encrypted).expect("decrypt failed");
         assert_eq!(desc, decrypted);
     }
 }

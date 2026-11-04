@@ -630,6 +630,6 @@ mod tests {
         assert_eq!(partial.route_mode, DEFAULT_ROUTE_MODE);
         assert_eq!(partial.bypass, vec!["x.de".to_string()]);
         assert_eq!(partial.jurisdiction_tag, "any");
-        assert_eq!(partial.qel_enabled, true);
+        assert!(partial.qel_enabled);
     }
 }

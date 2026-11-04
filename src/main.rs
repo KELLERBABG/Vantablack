@@ -1592,7 +1592,9 @@ async fn send_tunnel_frame(
         frame[net::OFFSET_FLAGS] |= 0x02; // FLAG_TUNNEL
         tracing::info!(peer = %peer_fp, %endpoint, len = frame.len(), ctr, "VPN egress GTF frame sent to client");
         nc.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-        nc.stats.bytes_sent.fetch_add(frame.len() as u64, Ordering::Relaxed);
+        nc.stats
+            .bytes_sent
+            .fetch_add(frame.len() as u64, Ordering::Relaxed);
         let _ = nc.socket.send_to(&frame, endpoint).await;
         return;
     }
@@ -1626,7 +1628,9 @@ async fn send_tunnel_frame(
     let framed = frame_shard(&framed);
     let frame = net::build_gtf_v2_frame(&ctx.header(0, true, net::FLAG_TUNNEL), &framed, &tag);
     nc.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-    nc.stats.bytes_sent.fetch_add(frame.len() as u64, Ordering::Relaxed);
+    nc.stats
+        .bytes_sent
+        .fetch_add(frame.len() as u64, Ordering::Relaxed);
     // A peer with no direct path carries its tunnel traffic over the same
     // fallback the control frames use; otherwise a VPN session would connect and
     // then silently stop moving packets.
@@ -3040,9 +3044,7 @@ fn is_single_device_ip(ip: std::net::IpAddr) -> bool {
                 return false;
             }
             let octets = v4.octets();
-            v4.is_private()
-                || (octets[0] == 100 && (octets[1] & 0xc0) == 64)
-                || v4.is_link_local()
+            v4.is_private() || (octets[0] == 100 && (octets[1] & 0xc0) == 64) || v4.is_link_local()
         }
         std::net::IpAddr::V6(v6) => !v6.is_loopback(),
     }
@@ -4255,8 +4257,10 @@ async fn handle_pkt(
                             tracing::info!(peer = %fp2, "Relay payload delivered (final hop)");
                             let payload = pt2.to_vec();
                             if let Some(payload) = frame_payload(&payload) {
-                                let initiator_addr = peers.get(&fp2).map(|v| *v.value()).unwrap_or(*src);
-                                if (role == SessionRole::Responder || payload.starts_with(b"STREAM!"))
+                                let initiator_addr =
+                                    peers.get(&fp2).map(|v| *v.value()).unwrap_or(*src);
+                                if (role == SessionRole::Responder
+                                    || payload.starts_with(b"STREAM!"))
                                     && looks_like_dest(payload)
                                 {
                                     let allowed = trusted_exits
@@ -4302,9 +4306,15 @@ async fn handle_pkt(
                                 }
                                 if payload.starts_with(b"CLOSE!") {
                                     let s = String::from_utf8_lossy(payload);
-                                    if let Some(id_str) = s.strip_prefix("CLOSE!").and_then(|r| r.strip_suffix('!')) {
+                                    if let Some(id_str) =
+                                        s.strip_prefix("CLOSE!").and_then(|r| r.strip_suffix('!'))
+                                    {
                                         if let Ok(sid) = id_str.parse::<u32>() {
-                                            exit_tunnels.remove(&exit_tunnel_key(&initiator_addr, &sh, sid));
+                                            exit_tunnels.remove(&exit_tunnel_key(
+                                                &initiator_addr,
+                                                &sh,
+                                                sid,
+                                            ));
                                             sessions_rx.remove(&(sh, sid));
                                             connect_acks.remove(&(sh, sid));
                                             rx_state_map.remove(&(sh, sid));
@@ -4313,12 +4323,15 @@ async fn handle_pkt(
                                     return;
                                 }
                                 // Relay unwrapped data frame dispatch
-                                let (stream_id, inner_data) = if payload.len() >= 4 && !looks_like_dest(payload) {
-                                    let sid = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                                    (sid, &payload[4..])
-                                } else {
-                                    (0u32, payload)
-                                };
+                                let (stream_id, inner_data) =
+                                    if payload.len() >= 4 && !looks_like_dest(payload) {
+                                        let sid = u32::from_be_bytes([
+                                            payload[0], payload[1], payload[2], payload[3],
+                                        ]);
+                                        (sid, &payload[4..])
+                                    } else {
+                                        (0u32, payload)
+                                    };
                                 let tkey = exit_tunnel_key(&initiator_addr, &sh, stream_id);
                                 if let Some(mut t_guard) = exit_tunnels.get_mut(&tkey) {
                                     let flush = rx_push(&mut t_guard.rx, ic, inner_data.to_vec());
@@ -4329,7 +4342,9 @@ async fn handle_pkt(
                                     }
                                     return;
                                 }
-                                if let Some(tx) = sessions_rx.get(&(sh, stream_id)).map(|v| v.value().clone()) {
+                                if let Some(tx) =
+                                    sessions_rx.get(&(sh, stream_id)).map(|v| v.value().clone())
+                                {
                                     let mut st = rx_state_map.entry((sh, stream_id)).or_default();
                                     if st.next.is_none() {
                                         if let Some(ok) = connect_ok_ctrs.get(&(sh, stream_id)) {
@@ -4488,7 +4503,9 @@ async fn handle_exit_connect(
     let raw_request = String::from_utf8_lossy(dest).into_owned();
     let (stream_id, request) = if let Some(rest) = raw_request.strip_prefix("STREAM!") {
         match rest.split_once('!') {
-            Some((sid_str, actual_dest)) => (sid_str.parse::<u32>().unwrap_or(0), actual_dest.to_string()),
+            Some((sid_str, actual_dest)) => {
+                (sid_str.parse::<u32>().unwrap_or(0), actual_dest.to_string())
+            }
             None => (0u32, raw_request),
         }
     } else {
@@ -4774,7 +4791,8 @@ async fn handle_exit_connect(
                                 if !blob.len().is_multiple_of(2) {
                                     blob.push(0);
                                 }
-                                let wire_nonce = vantablack::ghost::layers::l2_aead::random_xnonce();
+                                let wire_nonce =
+                                    vantablack::ghost::layers::l2_aead::random_xnonce();
                                 if vantablack::ghost::layers::l2_aead::xchacha_seal_in_place(
                                     &key2,
                                     &wire_nonce,
@@ -4796,7 +4814,8 @@ async fn handle_exit_connect(
                                             key: key2,
                                             epoch: 0,
                                             counter: 2,
-                                            nonce: vantablack::ghost::layers::l2_aead::random_xnonce(),
+                                            nonce:
+                                                vantablack::ghost::layers::l2_aead::random_xnonce(),
                                             direction: NonceDirection::ResponderToInitiator,
                                             session_hash: sh2,
                                             ratchet_due: false,
@@ -5056,10 +5075,7 @@ async fn send_pex(
 /// Broadcast an authenticated `GHOST_BYE_____` notification to all active peers
 /// so they immediately evict our session and reroute traffic elsewhere, then
 /// tear down local session/peer state.
-pub(crate) fn broadcast_goodbye(
-    nc: &GhostNode,
-    addrs: &DashMap<String, SocketAddr>,
-) {
+pub(crate) fn broadcast_goodbye(nc: &GhostNode, addrs: &DashMap<String, SocketAddr>) {
     let targets: Vec<(String, SocketAddr)> = addrs
         .iter()
         .map(|e| (e.key().clone(), *e.value()))
@@ -5102,8 +5118,8 @@ async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr
     }
 
     // Tier 3: Zero-knowledge blinded rendezvous discovery
-    let swarm_secret = std::env::var("GHOST_SWARM_SECRET")
-        .unwrap_or_else(|_| "vantablack-genesis-v1".to_string());
+    let swarm_secret =
+        std::env::var("GHOST_SWARM_SECRET").unwrap_or_else(|_| "vantablack-genesis-v1".to_string());
     let now_epoch_hour = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

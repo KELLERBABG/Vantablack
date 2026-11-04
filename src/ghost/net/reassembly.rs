@@ -90,7 +90,9 @@ impl ReassemblyBuffer {
             }
         } else if slot.group_id != 0 {
             // Different group occupied this slot
-            if shard.group_id < slot.group_id && (slot.group_id - shard.group_id) < (RING_SLOTS as u64) {
+            if shard.group_id < slot.group_id
+                && (slot.group_id - shard.group_id) < (RING_SLOTS as u64)
+            {
                 // Outdated shard from earlier ring cycle
                 return None;
             }

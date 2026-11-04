@@ -5,10 +5,15 @@
 //! - docs/SOTA.md
 //! - README.md
 
-use std::time::Instant;
 use ml_kem::kem::{Decapsulate, KeyExport};
+use std::time::Instant;
 use vantablack::ghost::layers::{l0_identity, l1_kem, l2_aead, l4_rs, l6_session};
-use vantablack::ghost::net::{self, coalesce::{CoalescingQueue, COALESCE_TARGET_BYTES}, reassembly::ReassemblyBuffer, shardsec, GtfV2Header};
+use vantablack::ghost::net::{
+    self,
+    coalesce::{CoalescingQueue, COALESCE_TARGET_BYTES},
+    reassembly::ReassemblyBuffer,
+    shardsec, GtfV2Header,
+};
 
 const BENCH_PACKETS: usize = 50_000;
 const DPI_FRAMES: usize = 10_000;
@@ -84,7 +89,12 @@ fn sota_comprehensive_benchmark() {
     println!("\n--- [2] GTF v2 FRAMING MICROBENCHMARK ---");
     let key = [0x5Au8; 32];
     let nonce = [0x01u8; 12];
-    let tail = net::tail_for(&key, &nonce, 1, l2_aead::NonceDirection::InitiatorToResponder);
+    let tail = net::tail_for(
+        &key,
+        &nonce,
+        1,
+        l2_aead::NonceDirection::InitiatorToResponder,
+    );
     let header = GtfV2Header {
         session_hash: [1, 2, 3, 4],
         counter: 42,
@@ -128,7 +138,12 @@ fn sota_comprehensive_benchmark() {
             framed.push(0);
         }
         let nonce_arr = [0x05u8; 12];
-        let tail_bytes = net::tail_for(&key, &nonce_arr, 0, l2_aead::NonceDirection::InitiatorToResponder);
+        let tail_bytes = net::tail_for(
+            &key,
+            &nonce_arr,
+            0,
+            l2_aead::NonceDirection::InitiatorToResponder,
+        );
         l2_aead::xchacha_seal_in_place_with_aad(
             &key,
             &nonce_arr,
@@ -136,7 +151,8 @@ fn sota_comprehensive_benchmark() {
             l2_aead::NonceDirection::InitiatorToResponder,
             &mut framed,
             &tail_bytes,
-        ).expect("seal");
+        )
+        .expect("seal");
         let auth_tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
         let shards = l4_rs::encode(&mut framed);
         for (i, shard) in shards.into_iter().enumerate() {
@@ -194,7 +210,9 @@ fn sota_comprehensive_benchmark() {
     let lat_shardsec_us = (elapsed_shardsec.as_secs_f64() * 1_000_000.0) / (BENCH_PACKETS as f64);
     println!(
         "Pipeline (ShardSec Default):{:>8.2} MiB/s | {:>6.2} µs/pkt ({:.2} Gbps)",
-        throughput_shardsec, lat_shardsec_us, (throughput_shardsec * 8.0) / 1024.0
+        throughput_shardsec,
+        lat_shardsec_us,
+        (throughput_shardsec * 8.0) / 1024.0
     );
 
     // 3.3 Zero-Allocation Coalescing Pipeline (984 B Batch + SIMD RS(2,1))
@@ -213,7 +231,9 @@ fn sota_comprehensive_benchmark() {
     let lat_coalesce_us = (elapsed_coalesce.as_secs_f64() * 1_000_000.0) / (BENCH_PACKETS as f64);
     println!(
         "Coalescing Queue (984 B Batch):{:>7.2} MiB/s | {:>6.2} µs/batch ({:.2} Gbps)",
-        throughput_coalesce, lat_coalesce_us, (throughput_coalesce * 8.0) / 1024.0
+        throughput_coalesce,
+        lat_coalesce_us,
+        (throughput_coalesce * 8.0) / 1024.0
     );
 
     // 3.4 Exit Reassembly Fast-Path (D0 + D1 -> Instant Concatenation)
@@ -230,7 +250,9 @@ fn sota_comprehensive_benchmark() {
     let lat_reasm_us = (elapsed_reasm.as_secs_f64() * 1_000_000.0) / (BENCH_PACKETS as f64);
     println!(
         "Reassembly Fast-Path (D0+D1): {:>8.2} MiB/s | {:>6.2} µs/batch ({:.2} Gbps)",
-        throughput_reasm, lat_reasm_us, (throughput_reasm * 8.0) / 1024.0
+        throughput_reasm,
+        lat_reasm_us,
+        (throughput_reasm * 8.0) / 1024.0
     );
 
     // 3.5 Exit Reassembly Erasure Recovery (D0 + P0 -> SIMD RS Reconstruction)
@@ -244,7 +266,9 @@ fn sota_comprehensive_benchmark() {
     let lat_reasm_rec_us = (elapsed_reasm_rec.as_secs_f64() * 1_000_000.0) / (BENCH_PACKETS as f64);
     println!(
         "Reassembly Erasure Rec (D0+P0):{:>7.2} MiB/s | {:>6.2} µs/batch ({:.2} Gbps)",
-        throughput_reasm_rec, lat_reasm_rec_us, (throughput_reasm_rec * 8.0) / 1024.0
+        throughput_reasm_rec,
+        lat_reasm_rec_us,
+        (throughput_reasm_rec * 8.0) / 1024.0
     );
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -258,7 +282,12 @@ fn sota_comprehensive_benchmark() {
         let random_payload_len = 50 + (i % 380);
         let p: Vec<u8> = (0..random_payload_len).map(|b| (b * 7 + i) as u8).collect();
         let nonce_i = [(i & 0xFF) as u8; 12];
-        let tail_i = net::tail_for(&key, &nonce_i, 0, l2_aead::NonceDirection::InitiatorToResponder);
+        let tail_i = net::tail_for(
+            &key,
+            &nonce_i,
+            0,
+            l2_aead::NonceDirection::InitiatorToResponder,
+        );
         let mut framed = Vec::with_capacity(p.len() + 2 + 16);
         framed.extend_from_slice(&(p.len() as u16).to_be_bytes());
         framed.extend_from_slice(&p);
@@ -272,7 +301,8 @@ fn sota_comprehensive_benchmark() {
             l2_aead::NonceDirection::InitiatorToResponder,
             &mut framed,
             &tail_i,
-        ).unwrap();
+        )
+        .unwrap();
         let tag_i: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
         let h = GtfV2Header {
             session_hash: [0xDE, 0xAD, 0xBE, 0xEF],
@@ -292,19 +322,37 @@ fn sota_comprehensive_benchmark() {
     let min_len = lengths.iter().min().unwrap();
     let max_len = lengths.iter().max().unwrap();
     let mean_len = lengths.iter().sum::<usize>() as f64 / lengths.len() as f64;
-    let variance = lengths.iter().map(|&l| (l as f64 - mean_len).powi(2)).sum::<f64>() / lengths.len() as f64;
+    let variance = lengths
+        .iter()
+        .map(|&l| (l as f64 - mean_len).powi(2))
+        .sum::<f64>()
+        / lengths.len() as f64;
     let shannon = l1_kem::calculate_shannon_entropy(&aggregate_stream);
     let (chi2, p_val) = l1_kem::calculate_chi_square_uniformity(&aggregate_stream);
 
-    println!("Privacy Frame Length:   min={} B, max={} B, mean={:.1} B, variance={:.4}", min_len, max_len, mean_len, variance);
-    println!("Shannon Byte Entropy:   {:.4} bits/byte (Target: >= 7.95, Claimed: 7.989)", shannon);
-    println!("Chi-Square Uniformity:  chi2={:.2}, p={:.4} (Target: p in [0.01, 0.99])", chi2, p_val);
+    println!(
+        "Privacy Frame Length:   min={} B, max={} B, mean={:.1} B, variance={:.4}",
+        min_len, max_len, mean_len, variance
+    );
+    println!(
+        "Shannon Byte Entropy:   {:.4} bits/byte (Target: >= 7.95, Claimed: 7.989)",
+        shannon
+    );
+    println!(
+        "Chi-Square Uniformity:  chi2={:.2}, p={:.4} (Target: p in [0.01, 0.99])",
+        chi2, p_val
+    );
 
     // 4.1 Keyed Tail Tamper Resistance Check
     let mut tamper_success_count = 0;
     for i in 0..100 {
         let nonce_t = [i as u8; 12];
-        let tail_t = net::tail_for(&key, &nonce_t, 0, l2_aead::NonceDirection::InitiatorToResponder);
+        let tail_t = net::tail_for(
+            &key,
+            &nonce_t,
+            0,
+            l2_aead::NonceDirection::InitiatorToResponder,
+        );
         let mut framed = vec![0x99u8; 100];
         l2_aead::xchacha_seal_in_place_with_aad(
             &key,
@@ -313,7 +361,8 @@ fn sota_comprehensive_benchmark() {
             l2_aead::NonceDirection::InitiatorToResponder,
             &mut framed,
             &tail_t,
-        ).unwrap();
+        )
+        .unwrap();
         let tag_t: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
         let h = GtfV2Header {
             session_hash: [0x11, 0x22, 0x33, 0x44],
@@ -345,7 +394,10 @@ fn sota_comprehensive_benchmark() {
             tamper_success_count += 1;
         }
     }
-    println!("Tail Tamper Rejection:  {} / 100 rejected (100% rejection required)", 100 - tamper_success_count);
+    println!(
+        "Tail Tamper Rejection:  {} / 100 rejected (100% rejection required)",
+        100 - tamper_success_count
+    );
 
     // ─────────────────────────────────────────────────────────────────────────────
     // 5. SESSIONGUARD ANTI-REPLAY SLIDING WINDOW BENCHMARK
@@ -358,7 +410,11 @@ fn sota_comprehensive_benchmark() {
     }
     let elapsed_sg = start.elapsed();
     let lat_sg_ns = (elapsed_sg.as_secs_f64() * 1_000_000_000.0) / (BENCH_PACKETS as f64);
-    println!("SessionGuard Sequential Accept: {:>6.2} ns/pkt ({:.2} Mpps)", lat_sg_ns, (BENCH_PACKETS as f64 / elapsed_sg.as_secs_f64()) / 1_000_000.0);
+    println!(
+        "SessionGuard Sequential Accept: {:>6.2} ns/pkt ({:.2} Mpps)",
+        lat_sg_ns,
+        (BENCH_PACKETS as f64 / elapsed_sg.as_secs_f64()) / 1_000_000.0
+    );
 
     let start = Instant::now();
     for c in 1..=BENCH_PACKETS as u32 {
@@ -367,7 +423,11 @@ fn sota_comprehensive_benchmark() {
     }
     let elapsed_replay = start.elapsed();
     let lat_replay_ns = (elapsed_replay.as_secs_f64() * 1_000_000_000.0) / (BENCH_PACKETS as f64);
-    println!("SessionGuard Replay Drop:       {:>6.2} ns/pkt ({:.2} Mpps blocked)", lat_replay_ns, (BENCH_PACKETS as f64 / elapsed_replay.as_secs_f64()) / 1_000_000.0);
+    println!(
+        "SessionGuard Replay Drop:       {:>6.2} ns/pkt ({:.2} Mpps blocked)",
+        lat_replay_ns,
+        (BENCH_PACKETS as f64 / elapsed_replay.as_secs_f64()) / 1_000_000.0
+    );
 
     // ─────────────────────────────────────────────────────────────────────────────
     // 6. POST-QUANTUM CRYPTOGRAPHY PRIMITIVE BENCHMARKS
@@ -382,7 +442,10 @@ fn sota_comprehensive_benchmark() {
         let _ = s.diffie_hellman(&p);
     }
     let el_x25519 = start.elapsed();
-    println!("X25519 ECDH (Keygen + DH):      {:>6.2} µs/op", (el_x25519.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64);
+    println!(
+        "X25519 ECDH (Keygen + DH):      {:>6.2} µs/op",
+        (el_x25519.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64
+    );
 
     // 6.2 ML-KEM-768 (Kyber-768 / FIPS 203)
     let start = Instant::now();
@@ -393,7 +456,10 @@ fn sota_comprehensive_benchmark() {
         assert_eq!(ss_enc, ss_dec);
     }
     let el_kem768 = start.elapsed();
-    println!("ML-KEM-768 (Keygen+Encap+Decap):{:>6.2} µs/op", (el_kem768.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64);
+    println!(
+        "ML-KEM-768 (Keygen+Encap+Decap):{:>6.2} µs/op",
+        (el_kem768.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64
+    );
 
     // 6.3 ML-KEM-512 (Kyber-512)
     let start = Instant::now();
@@ -405,7 +471,10 @@ fn sota_comprehensive_benchmark() {
         assert_eq!(ss_enc, ss_dec.as_slice());
     }
     let el_kem512 = start.elapsed();
-    println!("ML-KEM-512 (Keygen+Encap+Decap):{:>6.2} µs/op", (el_kem512.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64);
+    println!(
+        "ML-KEM-512 (Keygen+Encap+Decap):{:>6.2} µs/op",
+        (el_kem512.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64
+    );
 
     // 6.4 Ed25519 Sign & Verify
     let id = l0_identity::GhostIdentity::generate_fresh();
@@ -414,10 +483,17 @@ fn sota_comprehensive_benchmark() {
     for _ in 0..CRYPTO_ITERS {
         let sig = id.sign(msg);
         let pk = id.public_key_bytes();
-        assert!(l0_identity::verify_peer_signature(&pk, msg, &sig.to_bytes()));
+        assert!(l0_identity::verify_peer_signature(
+            &pk,
+            msg,
+            &sig.to_bytes()
+        ));
     }
     let el_ed25519 = start.elapsed();
-    println!("Ed25519 (Sign + Verify):        {:>6.2} µs/op", (el_ed25519.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64);
+    println!(
+        "Ed25519 (Sign + Verify):        {:>6.2} µs/op",
+        (el_ed25519.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64
+    );
 
     // 6.5 ML-DSA-65 (FIPS 204) Sign & Verify
     let start = Instant::now();
@@ -426,7 +502,10 @@ fn sota_comprehensive_benchmark() {
         assert!(id.verify_hybrid(msg, &sig));
     }
     let el_mldsa = start.elapsed();
-    println!("Hybrid ML-DSA-65+Ed25519:       {:>6.2} µs/op", (el_mldsa.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64);
+    println!(
+        "Hybrid ML-DSA-65+Ed25519:       {:>6.2} µs/op",
+        (el_mldsa.as_secs_f64() * 1_000_000.0) / CRYPTO_ITERS as f64
+    );
 
     println!("\n================================================================================");
     println!("                       BENCHMARK COMPLETE                                       ");

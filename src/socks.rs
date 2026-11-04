@@ -273,7 +273,8 @@ pub async fn handle_socks5_connection(
                 return;
             }
             let exit_fp = fp.clone();
-            let other_peers: Vec<String> = candidates.into_iter().filter(|p| p != &exit_fp).collect();
+            let other_peers: Vec<String> =
+                candidates.into_iter().filter(|p| p != &exit_fp).collect();
             if other_peers.len() < 2 {
                 tracing::warn!("SOCKS5 :1083 Strict 3-Hop: distinct peers unavailable");
                 let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
@@ -293,7 +294,8 @@ pub async fn handle_socks5_connection(
                 return;
             }
             let exit_fp = fp.clone();
-            let other_peers: Vec<String> = candidates.into_iter().filter(|p| p != &exit_fp).collect();
+            let other_peers: Vec<String> =
+                candidates.into_iter().filter(|p| p != &exit_fp).collect();
             if other_peers.is_empty() {
                 let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
                 return;
@@ -303,9 +305,7 @@ pub async fn handle_socks5_connection(
             let route = vec![relay_fp.clone(), exit_fp];
             (relay_fp, relay_addr, Some(route))
         }
-        HopPolicy::OneHop | HopPolicy::Auto => {
-            (fp.clone(), tgt, None)
-        }
+        HopPolicy::OneHop | HopPolicy::Auto => (fp.clone(), tgt, None),
     };
 
     let exit_sess = match nn.sessions.get(&fp) {
@@ -367,10 +367,8 @@ pub async fn handle_socks5_connection(
         });
 
     let connect_payload = match onion_route.as_ref() {
-        Some(route) => {
-            wrap_onion_e2e(&nn, &fp, &exit_key, exit_role, route, dest.as_bytes())
-                .unwrap_or_else(|| dest.into_bytes())
-        }
+        Some(route) => wrap_onion_e2e(&nn, &fp, &exit_key, exit_role, route, dest.as_bytes())
+            .unwrap_or_else(|| dest.into_bytes()),
         None => dest.into_bytes(),
     };
 
@@ -390,21 +388,35 @@ pub async fn handle_socks5_connection(
             .await;
         }
         None => {
-            send3_mixed(Arc::clone(&nn.socket), &first_hop_addr, &connect_ctx, &f, &tag).await
+            send3_mixed(
+                Arc::clone(&nn.socket),
+                &first_hop_addr,
+                &connect_ctx,
+                &f,
+                &tag,
+            )
+            .await
         }
     }
 
     // Wait for the exit's framed "OK!{stream_id}!" or "OK" (delivered via handle_pkt).
     let mut connected = false;
     for _ in 0..50 {
-        if ak2.get(&(exit_sh, stream_id)).map(|v| *v.value()).unwrap_or(false) {
+        if ak2
+            .get(&(exit_sh, stream_id))
+            .map(|v| *v.value())
+            .unwrap_or(false)
+        {
             connected = true;
             break;
         }
         sleep(Duration::from_millis(100)).await;
     }
     if !connected {
-        tracing::warn!(stream_id = stream_id, "SOCKS5 CONNECT failed (timeout waiting for CONNECT_OK)");
+        tracing::warn!(
+            stream_id = stream_id,
+            "SOCKS5 CONNECT failed (timeout waiting for CONNECT_OK)"
+        );
         chh.remove(&(exit_sh, stream_id));
         let _ = s.write_all(&[5, 4, 0, 1, 0, 0, 0, 0, 0, 0]).await; // 0x04 = Host unreachable
         return;
@@ -510,10 +522,15 @@ pub async fn handle_socks5_connection(
                     });
 
                 let wire_payload = match onion_route_out.as_ref() {
-                    Some(route) => {
-                        wrap_onion_e2e(&nn2, &exit_fp_out, &exit_key_out, exit_role_out, route, &batch)
-                            .unwrap_or(batch)
-                    }
+                    Some(route) => wrap_onion_e2e(
+                        &nn2,
+                        &exit_fp_out,
+                        &exit_key_out,
+                        exit_role_out,
+                        route,
+                        &batch,
+                    )
+                    .unwrap_or(batch),
                     None => batch,
                 };
 
@@ -562,10 +579,15 @@ pub async fn handle_socks5_connection(
                     ratchet_due: false,
                 });
             let wire_payload = match onion_route_out.as_ref() {
-                Some(route) => {
-                    wrap_onion_e2e(&nn2, &exit_fp_out, &exit_key_out, exit_role_out, route, &coalesce_buf)
-                        .unwrap_or(coalesce_buf)
-                }
+                Some(route) => wrap_onion_e2e(
+                    &nn2,
+                    &exit_fp_out,
+                    &exit_key_out,
+                    exit_role_out,
+                    route,
+                    &coalesce_buf,
+                )
+                .unwrap_or(coalesce_buf),
                 None => coalesce_buf,
             };
             let (f, tag) = enc_split(&ctx_out, &wire_payload);
@@ -594,10 +616,15 @@ pub async fn handle_socks5_connection(
         // Send CLOSE notification to exit node
         let close_msg = format!("CLOSE!{stream_id}!");
         let close_payload = match onion_route_out.as_ref() {
-            Some(route) => {
-                wrap_onion_e2e(&nn2, &exit_fp_out, &exit_key_out, exit_role_out, route, close_msg.as_bytes())
-                    .unwrap_or_else(|| close_msg.into_bytes())
-            }
+            Some(route) => wrap_onion_e2e(
+                &nn2,
+                &exit_fp_out,
+                &exit_key_out,
+                exit_role_out,
+                route,
+                close_msg.as_bytes(),
+            )
+            .unwrap_or_else(|| close_msg.into_bytes()),
             None => close_msg.into_bytes(),
         };
         let c = nn2
@@ -686,9 +713,21 @@ pub fn spawn_socks5_server(
 ) {
     let port_policies = [
         (socks_port, HopPolicy::Auto, "Auto (Adaptive)"),
-        (socks_port.saturating_add(1), HopPolicy::OneHop, "1-Hop Fast Path"),
-        (socks_port.saturating_add(2), HopPolicy::TwoHop, "2-Hop Circuit"),
-        (socks_port.saturating_add(3), HopPolicy::StrictThreeHop, "Strict 3-Hop Onion"),
+        (
+            socks_port.saturating_add(1),
+            HopPolicy::OneHop,
+            "1-Hop Fast Path",
+        ),
+        (
+            socks_port.saturating_add(2),
+            HopPolicy::TwoHop,
+            "2-Hop Circuit",
+        ),
+        (
+            socks_port.saturating_add(3),
+            HopPolicy::StrictThreeHop,
+            "Strict 3-Hop Onion",
+        ),
     ];
 
     for (port, policy, desc) in port_policies {
@@ -731,7 +770,9 @@ pub fn spawn_socks5_server(
                     if policy == HopPolicy::Auto {
                         panic!("Failed to bind primary SOCKS5 proxy on 127.0.0.1:{port}: {e}");
                     } else {
-                        tracing::warn!("SOCKS5 auxiliary port 127.0.0.1:{port} ({desc}) unavailable: {e}");
+                        tracing::warn!(
+                            "SOCKS5 auxiliary port 127.0.0.1:{port} ({desc}) unavailable: {e}"
+                        );
                     }
                 }
             }
@@ -747,7 +788,9 @@ mod tests {
     #[tokio::test]
     async fn test_multi_port_socks5_live_listeners() {
         let test_base_port = 19180u16;
-        let node = GhostNode::new("127.0.0.1:0").await.expect("GhostNode failed to bind");
+        let node = GhostNode::new("127.0.0.1:0")
+            .await
+            .expect("GhostNode failed to bind");
         let nc = Arc::new(node);
         let addrs = Arc::new(DashMap::new());
         let sess_chan = Arc::new(DashMap::new());
@@ -786,7 +829,9 @@ mod tests {
         for (port, desc) in ports {
             let mut stream = TcpStream::connect(("127.0.0.1", port))
                 .await
-                .unwrap_or_else(|e| panic!("Failed to connect to SOCKS5 port {port} ({desc}): {e}"));
+                .unwrap_or_else(|e| {
+                    panic!("Failed to connect to SOCKS5 port {port} ({desc}): {e}")
+                });
 
             stream.write_all(&[5, 1, 0]).await.expect("write handshake");
             let mut resp = [0u8; 2];
@@ -794,9 +839,15 @@ mod tests {
             assert_eq!(resp, [5, 0], "SOCKS5 handshake must succeed on {port}");
 
             // Send CONNECT 127.0.0.1:8080
-            stream.write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 0x1F, 0x90]).await.expect("write CONNECT");
+            stream
+                .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 0x1F, 0x90])
+                .await
+                .expect("write CONNECT");
             let mut conn_resp = [0u8; 10];
-            stream.read_exact(&mut conn_resp).await.expect("read CONNECT response");
+            stream
+                .read_exact(&mut conn_resp)
+                .await
+                .expect("read CONNECT response");
             assert_eq!(conn_resp[0], 5);
             assert_eq!(conn_resp[1], 5, "Port {port} ({desc}) must reject with 0x05 Connection Refused when swarm size is insufficient");
         }
@@ -806,7 +857,10 @@ mod tests {
     async fn test_multi_stream_allocates_distinct_stream_ids() {
         let sid1 = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
         let sid2 = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
-        assert_ne!(sid1, sid2, "Concurrent streams must receive distinct monotone stream IDs");
+        assert_ne!(
+            sid1, sid2,
+            "Concurrent streams must receive distinct monotone stream IDs"
+        );
         assert!(sid2 > sid1);
     }
 

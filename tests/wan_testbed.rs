@@ -220,7 +220,7 @@ async fn test_wan_symmetric_relay_return_path_envelope_e2e() {
 
     // Simulated 3-node P2P mesh: Client (Hotspot) -> Relay (Middle Hub) -> Exit (Server)
     let client_fp = "client-ed25519-abc1234567890def";
-    let relay_fp = "relay-vps-ed25519-node987654321";
+    let _relay_fp = "relay-vps-ed25519-node987654321";
     let _exit_fp = "exit-ed25519-residential-host1";
 
     let exit_client_shared_key = [0x42u8; 32];
@@ -235,12 +235,14 @@ async fn test_wan_symmetric_relay_return_path_envelope_e2e() {
     // Relay forwarding task: mimics `src/main.rs:4160-4172`
     tokio::spawn(async move {
         while let Some(raw_frame) = exit_to_relay_rx.recv().await {
-            let relay = parse_relay_header(&raw_frame).expect("Relay parses RLY! envelope from Exit");
+            let relay =
+                parse_relay_header(&raw_frame).expect("Relay parses RLY! envelope from Exit");
             assert_eq!(relay.next_hop_fingerprint, client_fp);
             assert_eq!(relay.remaining_hops, 1);
 
             // Relay peals/rewraps header for the final hop (remaining_hops = 0)
-            let rewrapped = build_relay_packet(&relay.next_hop_fingerprint, 0, &relay.inner_payload);
+            let rewrapped =
+                build_relay_packet(&relay.next_hop_fingerprint, 0, &relay.inner_payload);
             let _ = relay_to_client_tx.send(rewrapped);
         }
     });
@@ -275,14 +277,18 @@ async fn test_wan_symmetric_relay_return_path_envelope_e2e() {
         .expect("Exit transmits return packet to Relay");
 
     // Client receives relayed frame
-    let client_recvd_frame = tokio::time::timeout(Duration::from_secs(2), relay_to_client_rx.recv())
-        .await
-        .expect("Timeout waiting for relayed OK")
-        .expect("Packet delivered to client");
+    let client_recvd_frame =
+        tokio::time::timeout(Duration::from_secs(2), relay_to_client_rx.recv())
+            .await
+            .expect("Timeout waiting for relayed OK")
+            .expect("Packet delivered to client");
 
     let relay_hdr = parse_relay_header(&client_recvd_frame).expect("Client parses RLY! header");
     assert_eq!(relay_hdr.next_hop_fingerprint, client_fp);
-    assert_eq!(relay_hdr.remaining_hops, 0, "Final hop to client must have 0 hops remaining");
+    assert_eq!(
+        relay_hdr.remaining_hops, 0,
+        "Final hop to client must have 0 hops remaining"
+    );
 
     let client_inner = &relay_hdr.inner_payload;
     assert!(client_inner.len() >= 20 + 16);

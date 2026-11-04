@@ -39,8 +39,8 @@ pub mod orbit;
 pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
-pub mod relay;
 pub mod reassembly;
+pub mod relay;
 #[cfg(feature = "research")]
 pub mod rendezvous;
 pub mod sdr_bridge;
@@ -920,16 +920,22 @@ pub fn try_build_gtf_v2_frame(
         let mut seed = h.counter
             ^ h.epoch.rotate_left(17)
             ^ u64::from_le_bytes([
-                h.nonce[0], h.nonce[1], h.nonce[2], h.nonce[3],
-                h.nonce[4], h.nonce[5], h.nonce[6], h.nonce[7],
+                h.nonce[0], h.nonce[1], h.nonce[2], h.nonce[3], h.nonce[4], h.nonce[5], h.nonce[6],
+                h.nonce[7],
             ])
             ^ u64::from_le_bytes([
-                h.session_hash[0], h.session_hash[1], h.session_hash[2], h.session_hash[3],
-                h.nonce[8], h.nonce[9], h.nonce[10], h.nonce[11],
+                h.session_hash[0],
+                h.session_hash[1],
+                h.session_hash[2],
+                h.session_hash[3],
+                h.nonce[8],
+                h.nonce[9],
+                h.nonce[10],
+                h.nonce[11],
             ])
             ^ u64::from_le_bytes([
-                h.tail[0], h.tail[1], h.tail[2], h.tail[3],
-                h.tail[4], h.tail[5], h.tail[6], h.tail[7],
+                h.tail[0], h.tail[1], h.tail[2], h.tail[3], h.tail[4], h.tail[5], h.tail[6],
+                h.tail[7],
             ])
             ^ ((h.shard_index as u64) << 40)
             ^ 0x9E37_79B9_7F4A_7C15;

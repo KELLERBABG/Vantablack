@@ -10,8 +10,8 @@
 //!   TCP FIN/RST, DNS queries, or real-time interactive UDP packets.
 //! - Zero-allocation in-place parity generation via `l4_rs::encode_parity_slice`.
 
-use std::time::{Duration, Instant};
 use crate::ghost::layers::l4_rs;
+use std::time::{Duration, Instant};
 
 /// Maximum payload capacity of one coding group (2 data shards x 492 bytes).
 pub const COALESCE_TARGET_BYTES: usize = 984;
@@ -134,7 +134,8 @@ impl CoalescingQueue {
         while offset < data.len() {
             let space = self.max_batch_size.saturating_sub(self.buffer.len());
             let to_take = (data.len() - offset).min(space);
-            self.buffer.extend_from_slice(&data[offset..offset + to_take]);
+            self.buffer
+                .extend_from_slice(&data[offset..offset + to_take]);
             offset += to_take;
 
             if self.buffer.len() >= self.max_batch_size {
