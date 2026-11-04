@@ -754,10 +754,6 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
         Diagnostics
       </button>
-      <button class="nav-tab" data-tab="tab-leaderboard" onclick="switchTab('tab-leaderboard')">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94A5.01 5.01 0 0 0 11 15.9V19H7v2h10v-2h-4v-3.1a5.01 5.01 0 0 0 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>
-        Leaderboard
-      </button>
       <button class="nav-tab" data-tab="tab-settings" onclick="switchTab('tab-settings')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
         Settings
@@ -927,70 +923,7 @@
         </div>
       </div>
 
-      <!-- TAB 4: MESH HALL OF FAME / LEADERBOARD -->
-      <div class="tab-pane" id="tab-leaderboard">
-        <div class="section-header" style="margin-bottom: 16px;">
-          <div>
-            <span class="section-title">Mesh Hall of Fame</span>
-            <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Community Proof-of-Forwarding &amp; Shard-Repair ranking across the global swarm.</div>
-          </div>
-        </div>
-
-        <!-- Standings / My Rank Card -->
-        <div class="stats-grid" style="margin-bottom: 18px;">
-          <div class="stat-card">
-            <span class="stat-label">Score Points</span>
-            <span class="stat-val" style="color: #fbbf24; font-size: 17px;" id="lb-my-score">0 pts</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">Rank Badge</span>
-            <span class="stat-val" style="color: var(--accent); font-size: 17px;" id="lb-my-badge">Mesh Cadet</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">Relayed Traffic</span>
-            <span class="stat-val" style="color: var(--emerald); font-size: 17px;" id="lb-my-relayed">0 B</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">Mesh Uptime</span>
-            <span class="stat-val" style="color: #38bdf8; font-size: 17px;" id="lb-my-uptime">00:00:00</span>
-          </div>
-        </div>
-
-        <!-- Opt-In & Nickname Control -->
-        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-            <div>
-              <div style="font-weight: 600; font-size: 14px; color: var(--text);">Public Swarm Participation</div>
-              <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Publish your cryptographic node statistics to the decentralized mesh leaderboard.</div>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" id="lb-optin-toggle" onchange="toggleLeaderboardOptin(this.checked)">
-              <span class="slider"></span>
-            </label>
-          </div>
-
-          <div style="display: flex; gap: 12px; align-items: flex-start; border-top: 1px solid var(--border-subtle); padding-top: 14px;">
-            <div style="flex: 1;">
-              <input type="text" id="lb-nickname-input" class="text-input" style="width: 100%; box-sizing: border-box;" placeholder="Choose a public nickname (3-16 characters)" oninput="validateNicknameLive(this.value)">
-              <div id="lb-nick-feedback" style="font-size: 11px; margin-top: 6px; color: var(--text-dim);">Only alphanumeric, hyphens and underscores allowed. Real names and profanity are blocked.</div>
-            </div>
-            <button class="action-btn" id="btn-save-nickname" style="padding: 10px 20px; font-size: 13px; height: 38px; white-space: nowrap;" onclick="saveNicknameNow()">Save Nickname</button>
-          </div>
-        </div>
-
-        <!-- Leaderboard Table -->
-        <div style="background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;">
-          <div style="padding: 14px 20px; border-bottom: 1px solid var(--border-subtle); font-weight: 600; font-size: 12px; letter-spacing: 0.6px; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
-            <span>TOP NODES IN SWARM</span>
-            <span style="cursor: pointer; color: var(--accent); font-size: 12px; transition: opacity 0.2s;" onclick="refreshLeaderboard()" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">↻ Refresh</span>
-          </div>
-          <div id="leaderboard-table-body" style="padding: 8px 16px;">
-            <!-- Rows rendered by JS -->
-          </div>
-        </div>
-      </div>
-
-      <!-- TAB 5: SETTINGS -->
+      <!-- TAB 4: SETTINGS -->
       <div class="tab-pane" id="tab-settings">
         <div class="section-header">
           <span class="section-title">Mesh Configuration</span>
@@ -1199,10 +1132,6 @@
 
       const btn = document.querySelector(`.nav-bar .nav-tab[data-tab="${tabId}"]`);
       if (btn) btn.classList.add('active');
-
-      if (tabId === 'tab-leaderboard') {
-        refreshLeaderboard();
-      }
     }
 
     function formatBytes(bytes) {
@@ -1557,7 +1486,7 @@
       console.log('Setting:', key, value);
     }
 
-    // ── Leaderboard & Research Settings Logic ──
+    // ── Research Settings Logic ──
     async function loadSettings() {
       try {
         const res = await fetch('/api/settings', { headers: pinHeaders() });
@@ -1583,14 +1512,6 @@
           const el = document.getElementById('toggle-abos');
           if (el) el.checked = Boolean(data.abos_skywave_enabled);
         }
-        if (data.leaderboard_opt_in !== undefined) {
-          const el = document.getElementById('lb-optin-toggle');
-          if (el) el.checked = Boolean(data.leaderboard_opt_in);
-        }
-        if (data.leaderboard_nickname) {
-          const el = document.getElementById('lb-nickname-input');
-          if (el) el.value = data.leaderboard_nickname;
-        }
       } catch (e) {
         console.warn('Failed to load settings', e);
       }
@@ -1605,137 +1526,6 @@
         });
       } catch (e) {
         console.warn('Failed to save research setting', key, e);
-      }
-    }
-
-    function validateNicknameLive(val) {
-      const fb = document.getElementById('lb-nick-feedback');
-      const btn = document.getElementById('btn-save-nickname');
-      const trimmed = val.trim();
-      if (!trimmed) {
-        fb.innerText = 'Only alphanumeric, hyphens and underscores allowed. Real names and profanity are blocked.';
-        fb.style.color = 'var(--text-dim)';
-        if (btn) btn.disabled = false;
-        return;
-      }
-      if (trimmed.length < 3) {
-        fb.innerText = '⚠️ Nickname too short (minimum 3 characters)';
-        fb.style.color = 'var(--rose)';
-        if (btn) btn.disabled = true;
-        return;
-      }
-      if (trimmed.length > 16) {
-        fb.innerText = '⚠️ Nickname too long (maximum 16 characters)';
-        fb.style.color = 'var(--rose)';
-        if (btn) btn.disabled = true;
-        return;
-      }
-      if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
-        fb.innerText = '⚠️ Only letters, numbers, hyphens and underscores allowed (no spaces)';
-        fb.style.color = 'var(--rose)';
-        if (btn) btn.disabled = true;
-        return;
-      }
-      fb.innerText = '✓ Valid community nickname format';
-      fb.style.color = 'var(--emerald)';
-      if (btn) btn.disabled = false;
-    }
-
-    async function toggleLeaderboardOptin(checked) {
-      try {
-        await fetch('/api/leaderboard/optin', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ opt_in: checked })
-        });
-        refreshLeaderboard();
-      } catch (e) {
-        console.warn('Failed to toggle optin', e);
-      }
-    }
-
-    async function saveNicknameNow() {
-      const input = document.getElementById('lb-nickname-input');
-      const fb = document.getElementById('lb-nick-feedback');
-      const nick = input.value.trim();
-      try {
-        const res = await fetch('/api/leaderboard/optin', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ opt_in: true, nickname: nick })
-        });
-        const data = await res.json();
-        if (data.success) {
-          fb.innerText = '✓ Nickname saved successfully!';
-          fb.style.color = 'var(--emerald)';
-          const optinToggle = document.getElementById('lb-optin-toggle');
-          if (optinToggle) optinToggle.checked = true;
-          refreshLeaderboard();
-        } else {
-          fb.innerText = '❌ ' + (data.error || 'Invalid nickname');
-          fb.style.color = 'var(--rose)';
-        }
-      } catch (e) {
-        fb.innerText = '❌ Failed to reach node API';
-        fb.style.color = 'var(--rose)';
-      }
-    }
-
-    async function refreshLeaderboard() {
-      try {
-        const res = await fetch('/api/leaderboard', { headers: pinHeaders() });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!data.success) return;
-
-        if (data.my_entry) {
-          const my = data.my_entry;
-          const badgeEl = document.getElementById('lb-my-badge');
-          if (badgeEl) badgeEl.innerText = my.rank_badge;
-          const scoreEl = document.getElementById('lb-my-score');
-          if (scoreEl) scoreEl.innerText = `${my.score.toLocaleString()} pts`;
-          const scoreHeaderEl = document.getElementById('lb-header-score');
-          if (scoreHeaderEl) scoreHeaderEl.innerText = `${my.score.toLocaleString()} pts`;
-          const relayedEl = document.getElementById('lb-my-relayed');
-          if (relayedEl) relayedEl.innerText = formatBytes(my.relayed_bytes);
-          const repairedEl = document.getElementById('lb-my-repaired');
-          if (repairedEl) repairedEl.innerText = `${my.repaired_shards} Shards`;
-          const uptimeEl = document.getElementById('lb-my-uptime');
-          if (uptimeEl) uptimeEl.innerText = formatDuration(my.uptime_secs);
-        }
-
-        const tbody = document.getElementById('leaderboard-table-body');
-        if (!tbody) return;
-        const entries = data.entries || [];
-        if (entries.length === 0) {
-          tbody.innerHTML = '<div style="padding: 18px; text-align: center; color: var(--text-dim); font-size: 13px;">No ranked nodes yet in this epoch. Be the first to relay shards!</div>';
-          return;
-        }
-
-        tbody.innerHTML = entries.map((entry, idx) => {
-          const rank = idx + 1;
-          const rankColor = rank === 1 ? '#fbbf24' : (rank === 2 ? '#94a3b8' : (rank === 3 ? '#d97706' : 'var(--text-dim)'));
-          const rankIcon = rank === 1 ? '🥇' : (rank === 2 ? '🥈' : (rank === 3 ? '🥉' : `#${rank}`));
-          const displayName = entry.nickname ? escapeHtml(entry.nickname) : `Node-${entry.fingerprint.slice(0, 8)}`;
-          return `
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 8px; border-bottom: 1px solid var(--border-subtle); font-size: 13px;">
-              <div style="display: flex; align-items: center; gap: 12px;">
-                <span style="font-weight: 700; width: 28px; text-align: center; color: ${rankColor}; font-size: 14px;">${rankIcon}</span>
-                <div>
-                  <div style="font-weight: 600; color: var(--text);">${displayName}</div>
-                  <div style="font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);">${escapeHtml(entry.fingerprint.slice(0, 16))}...</div>
-                </div>
-              </div>
-              <div style="display: flex; align-items: center; gap: 16px;">
-                <span class="peer-badge" style="font-size: 11px; background: rgba(56, 189, 248, 0.1); color: var(--accent); border-color: rgba(56, 189, 248, 0.25);">${escapeHtml(entry.rank_badge)}</span>
-                <span style="font-size: 12px; color: var(--text-muted); width: 80px; text-align: right;">${formatBytes(entry.relayed_bytes)}</span>
-                <span style="font-weight: 700; color: #fbbf24; width: 70px; text-align: right; font-family: var(--font-mono);">${entry.score.toLocaleString()} pts</span>
-              </div>
-            </div>
-          `;
-        }).join('');
-      } catch (e) {
-        console.warn('Leaderboard refresh error', e);
       }
     }
 
@@ -1856,9 +1646,8 @@
     // Auto-check for updates 3 seconds after page load
     setTimeout(checkUpdateManual, 3000);
 
-    // Initial load for research settings and leaderboard standings
+    // Initial load for research settings
     loadSettings();
-    refreshLeaderboard();
 
     // Polling loop
     refreshStatus();

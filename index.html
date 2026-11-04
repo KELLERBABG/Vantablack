@@ -796,12 +796,12 @@
 
         <div class="feature-row">
           <div class="feature-meta">
-            <span class="feature-tag">Community &amp; Incentives</span>
-            <h3>Mesh Hall of Fame &amp; Tit-for-Tat QoS</h3>
+            <span class="feature-tag">Symmetric Onion Routing</span>
+            <h3>Multi-hop circuit isolation</h3>
           </div>
           <div class="feature-body">
-            <p>Gamified proof-of-forwarding and autonomous shard-repair leaderboard. Nodes build verified reputations, climb from Relay Scout to Apex Vanguard, and earn prioritized reciprocal bandwidth credits via bilateral tit-for-tat enforcement &mdash; with opt-in custom nicknames and zero centralized accounts.</p>
-            <div class="feature-detail">Ed25519-signed 24h epoch checkpoints &bull; Bilateral reciprocal credits &bull; Zero tracking</div>
+            <p>End-to-end layered onion forwarding across intermediary carrier nodes. All return traffic &mdash; including connection acknowledgments and server response streams &mdash; is encrypted symmetrically and relayed through the middle hop, completely isolating the initiator from the exit gateway with zero direct IP contact.</p>
+            <div class="feature-detail">Symmetric Return-Path &bull; XChaCha20-Poly1305 E2E sealing &bull; Complete IP isolation</div>
           </div>
         </div>
 
@@ -974,7 +974,7 @@
                 <div class="feature-name">Anonymity &amp; Egress Forwarding</div>
                 <div class="feature-desc">Can the destination or exit node discover who originally sent the traffic?</div>
               </td>
-              <td class="col-ggn-val"><strong>Clean-Room 3-Hop Onion Routing (RLY!) + Ephemeral Cryptographic Vouchers</strong></td>
+              <td class="col-ggn-val"><strong>Clean-Room 3-Hop Onion Routing (RLY!) + Symmetric Multi-Hop Return Path (`Exit -> Relay -> Client`)</strong></td>
               <td>None (Exit node sees true client IP)</td>
               <td>None (Exit node sees Tailscale identity)</td>
               <td>3-Hop TCP Circuits (Slow, circuit stalls)</td>

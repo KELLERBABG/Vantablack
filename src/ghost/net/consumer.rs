@@ -309,10 +309,6 @@ pub struct ConsumerSettings {
     pub abos_skywave_enabled: bool,
     /// Quantum Entanglement Layer (post-quantum crypto routing) enabled.
     pub qel_enabled: bool,
-    /// Opt-in to community mesh leaderboard / Hall of Fame.
-    pub leaderboard_opt_in: bool,
-    /// Optional community nickname (3-16 chars, alphanumeric).
-    pub leaderboard_nickname: Option<String>,
 }
 
 impl Default for ConsumerSettings {
@@ -327,8 +323,6 @@ impl Default for ConsumerSettings {
             jurisdiction_tag: "any".to_string(),
             abos_skywave_enabled: false,
             qel_enabled: true,
-            leaderboard_opt_in: false,
-            leaderboard_nickname: None,
         }
     }
 }
@@ -462,88 +456,6 @@ impl ConsumerSettings {
     /// Whether the user has explicitly renamed this peer.
     pub fn has_custom_name(&self, fingerprint: &str) -> bool {
         self.device_names.contains_key(fingerprint.trim())
-    }
-}
-
-/// Validate a community leaderboard nickname.
-///
-/// Rules:
-/// - 3 to 16 characters
-/// - Whitelist `[a-zA-Z0-9_-]`
-/// - Leetspeak & homoglyph normalization (`0->o`, `1->i`, `3->e`, `4->a`, `@->a`, `5->s`, `$->s`, etc.)
-/// - Offensive & reserved word blocklist
-pub fn validate_nickname(raw: &str) -> Result<String, &'static str> {
-    let trimmed = raw.trim();
-    if trimmed.len() < 3 {
-        return Err("Nickname must be at least 3 characters long");
-    }
-    if trimmed.len() > 16 {
-        return Err("Nickname cannot exceed 16 characters");
-    }
-    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-        return Err("Nickname may only contain alphanumeric characters, underscores, and hyphens");
-    }
-
-    let mut norm = String::with_capacity(trimmed.len());
-    for c in trimmed.chars() {
-        let lower = c.to_ascii_lowercase();
-        let ch = match lower {
-            '0' => 'o',
-            '1' | '!' | '|' => 'i',
-            '3' => 'e',
-            '4' | '@' => 'a',
-            '5' | '$' => 's',
-            '7' => 't',
-            '8' => 'b',
-            other => other,
-        };
-        norm.push(ch);
-    }
-
-    const BLOCKED_WORDS: &[&str] = &[
-        "admin", "root", "system", "moderator", "official", "staff",
-        "hitler", "nazi", "nigger", "nigga", "fag", "faggot",
-        "cunt", "bitch", "whore", "slut", "pedop", "isis",
-    ];
-    for bad in BLOCKED_WORDS {
-        if norm.contains(bad) {
-            return Err("Nickname contains disallowed or offensive words");
-        }
-    }
-
-    Ok(trimmed.to_string())
-}
-
-/// A community mesh leaderboard entry for the "Mesh Hall of Fame".
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LeaderboardEntry {
-    pub fingerprint: String,
-    pub nickname: Option<String>,
-    pub relayed_bytes: u64,
-    pub repaired_shards: u64,
-    pub uptime_secs: u64,
-    pub rank_badge: String,
-    pub score: u64,
-}
-
-impl LeaderboardEntry {
-    pub fn calculate_badge(score: u64) -> &'static str {
-        if score >= 1_000_000 {
-            "Apex Vanguard"
-        } else if score >= 250_000 {
-            "Quantum Sentinel"
-        } else if score >= 50_000 {
-            "Mesh Operative"
-        } else if score >= 5_000 {
-            "Relay Scout"
-        } else {
-            "Mesh Cadet"
-        }
-    }
-
-    pub fn compute_score(relayed_bytes: u64, repaired_shards: u64, uptime_secs: u64) -> u64 {
-        // 1 point per 64 KB relayed, 100 points per repaired shard, 1 point per 60s uptime
-        (relayed_bytes / 65536) + (repaired_shards * 100) + (uptime_secs / 60)
     }
 }
 
@@ -719,37 +631,5 @@ mod tests {
         assert_eq!(partial.bypass, vec!["x.de".to_string()]);
         assert_eq!(partial.jurisdiction_tag, "any");
         assert_eq!(partial.qel_enabled, true);
-        assert_eq!(partial.leaderboard_opt_in, false);
-    }
-
-    #[test]
-    fn test_nickname_validation_and_content_filter() {
-        assert!(validate_nickname("ab").is_err(), "too short");
-        assert!(validate_nickname("a_very_long_nickname_exceeding_limits").is_err(), "too long");
-        assert!(validate_nickname("Max Mustermann").is_err(), "no spaces / real name format");
-        assert!(validate_nickname("user!name").is_err(), "no exclamation marks");
-
-        // Valid nicknames
-        assert_eq!(validate_nickname("NightHawk").unwrap(), "NightHawk");
-        assert_eq!(validate_nickname("node_42").unwrap(), "node_42");
-        assert_eq!(validate_nickname("cypher-punk").unwrap(), "cypher-punk");
-
-        // Leetspeak & bad words
-        assert!(validate_nickname("admin").is_err());
-        assert!(validate_nickname("4dm1n").is_err(), "leetspeak admin");
-        assert!(validate_nickname("r00t").is_err(), "leetspeak root");
-        assert!(validate_nickname("@dmin").is_err(), "homoglyph admin");
-    }
-
-    #[test]
-    fn test_leaderboard_score_and_badge_calculation() {
-        let score = LeaderboardEntry::compute_score(65536 * 10, 5, 120);
-        // 10 + 500 + 2 = 512
-        assert_eq!(score, 512);
-        assert_eq!(LeaderboardEntry::calculate_badge(100), "Mesh Cadet");
-        assert_eq!(LeaderboardEntry::calculate_badge(5_000), "Relay Scout");
-        assert_eq!(LeaderboardEntry::calculate_badge(50_000), "Mesh Operative");
-        assert_eq!(LeaderboardEntry::calculate_badge(250_000), "Quantum Sentinel");
-        assert_eq!(LeaderboardEntry::calculate_badge(1_000_000), "Apex Vanguard");
     }
 }

@@ -314,35 +314,7 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
     assert!(!final_bypass.contains(&target_bypass_rule.to_string()));
     println!("PASS: Split-tunnel config write/read/persist/remove cycle verified");
 
-    // ── Test 5b: Leaderboard & Research Settings API ───────────────────────
-    let (code, lb_init) = http_request(web_port, "GET", "/api/leaderboard", None);
-    assert_eq!(code, 200);
-    assert_eq!(lb_init["success"], true);
-    assert!(lb_init["my_entry"].is_object());
-    assert_eq!(lb_init["opt_in"], false);
-
-    // Opt-in with invalid nickname (too short)
-    let bad_optin = serde_json::json!({ "opt_in": true, "nickname": "ab" });
-    let (code, bad_resp) = http_request(web_port, "POST", "/api/leaderboard/optin", Some(&bad_optin));
-    assert_eq!(code, 200);
-    assert_eq!(bad_resp["success"], false);
-    assert!(bad_resp["error"].is_string());
-
-    // Opt-in with valid nickname
-    let good_optin = serde_json::json!({ "opt_in": true, "nickname": "ApexScout_42" });
-    let (code, good_resp) = http_request(web_port, "POST", "/api/leaderboard/optin", Some(&good_optin));
-    assert_eq!(code, 200);
-    assert_eq!(good_resp["success"], true);
-    assert_eq!(good_resp["opt_in"], true);
-    assert_eq!(good_resp["nickname"], "ApexScout_42");
-
-    // Verify GET /api/leaderboard reflects opt-in
-    let (_, lb_after) = http_request(web_port, "GET", "/api/leaderboard", None);
-    assert_eq!(lb_after["opt_in"], true);
-    assert_eq!(lb_after["nickname"], "ApexScout_42");
-    assert_eq!(lb_after["my_entry"]["nickname"], "ApexScout_42");
-
-    // Mutate research settings via POST /api/settings
+    // ── Test 5b: Research Settings API ───────────────────────
     let research_payload = serde_json::json!({
         "stego_carrier_mode": true,
         "energy_ledger_enabled": true,
@@ -355,7 +327,7 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
     assert_eq!(r_resp["energy_ledger_enabled"], true);
     assert_eq!(r_resp["jurisdiction_tag"], "eu");
     assert_eq!(r_resp["abos_skywave_enabled"], true);
-    println!("PASS: Leaderboard and Research Settings API verified");
+    println!("PASS: Research Settings API verified");
 
     // ── Test 6: SOCKS5 End-to-End Live Proxy Data Flow ────────────────────
     // Add 127.0.0.1 to split-tunnel bypass so the SOCKS5 proxy relays directly locally

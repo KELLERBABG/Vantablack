@@ -124,7 +124,38 @@ Under these combined conditions, onion-routed multi-hop shards maintain sub-seco
 
 ---
 
-## 5. Replay & Timing Attack Mitigations
+## 5. Symmetric Multi-Hop Return-Path (`Exit -> Relay -> Client`)
+
+Earlier single-direction onion designs suffer from an asymmetric return-path vulnerability: while the initiator's outbound packets travel through intermediate relays (`Client -> Relay -> Exit`), server response datagrams from the exit node frequently flow directly to the client's public IP. This exposes the client's residential IP to the exit operator and fails over symmetric CGNAT / mobile hotspots.
+
+Vantablack enforces a **strictly symmetric bidirectional onion return-path**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Client (:1082 / :1083)
+    participant Relay as Middle Relay
+    participant Exit as Exit Node
+    actor Target as Remote Target / WAN
+
+    Client->>Relay: RLY! [Exit_FP || Inner_Encrypted(STREAM!)]
+    Relay->>Exit: Peels outer layer -> delivers STREAM! (records via_relay)
+    Exit->>Target: Establishes TCP Egress Stream
+    Target-->>Exit: TCP SYN-ACK / Data Stream
+    Note over Exit: Seals response with exit_key via XChaCha20-Poly1305<br/>Wraps in RLY! [Client_FP || Response_Payload]
+    Exit->>Relay: Dispatches RLY! envelope back to Relay
+    Relay->>Client: Peels outer relay layer -> forwards to Client
+    Note over Client: Authenticates inner exit_key<br/>Demuxes stream into local SOCKS5 socket
+```
+
+1. **Stateful Relay Binding:** When `handle_exit_connect` parses an incoming `STREAM!` request arriving via a relay, it captures the intermediary node's identity as `via_relay: Option<String>`.
+2. **End-to-End Inner Sealing:** All response traffic &mdash; including connection acknowledgments (`OK!{stream_id}!`) and incoming TCP payload chunks &mdash; is encrypted with the client's ephemeral `exit_key` using XChaCha20-Poly1305.
+3. **Outer Envelope Dispatch:** The exit wraps this sealed response in a `RLY!` envelope addressed to the original client fingerprint, dispatched via `build_relay_packet` exclusively through `via_relay`.
+4. **Complete IP Isolation:** The exit node and the client node **never exchange a single direct IP packet**. Both see only the intermediary relay, completely eliminating correlation and penetrating symmetric NAT without port-forwarding.
+
+---
+
+## 6. Replay & Timing Attack Mitigations
 
 - **64-Bit Replay Sliding Window (`SessionGuard`):** Every node maintains an atomic sliding window bitmask. Replayed onion packets are discarded before entering decryption buffers.
 - **Layer 5 Traffic Shaping Jitter:** Privacy frames are a constant 576 bytes — a fixed 64-byte keyed jitter tail (HMAC-derived and authenticated as AEAD associated data) plus Poisson cover traffic, defeating both passive packet-length fingerprinting and the silence channel.

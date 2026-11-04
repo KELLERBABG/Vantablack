@@ -41,7 +41,9 @@ Instead of funneling traffic through a central VPN provider where it can be moni
   - `127.0.0.1:1081` (**1-Hop Fast Path**): Direct low-latency path for high-throughput trusted streams.
   - `127.0.0.1:1082` (**2-Hop Circuit**): `Client -> Relay -> Exit`.
   - `127.0.0.1:1083` (**Strict 3-Hop Onion**): Hard requirement for 3 distinct hops; immediately rejects with `0x05 Connection Refused` if swarm size $N < 3$ to prevent silent deanonymization.
+* **Symmetric Multi-Hop Return Path (`Exit -> Relay -> Client`):** True bidirectional circuit isolation. Return packets (`OK!{stream_id}!` connection acks and TCP egress chunks) are sealed with the client's `exit_key` via XChaCha20-Poly1305 and packed into `RLY!` envelopes back through the middle hop. The Exit and Client never exchange a single direct IP packet, completely defeating asymmetric deanonymization and traversing symmetric CGNAT seamlessly.
 * **Credit-Based Stream Flow Control:** Features a 64 KB sliding window per sub-stream to eliminate bufferbloat over multi-carrier and multi-hop paths.
+* **Autonomous Tit-for-Tat QoS Reciprocity:** Peer-to-peer reciprocity engine. Nodes that forward traffic or repair damaged Reed-Solomon shards earn prioritized bandwidth credits during high swarm congestion with zero centralized coordinators.
 * **Self-Healing & Chaos Resilience:** Autonomous multi-path failover seamlessly switches around severed carrier links with zero packet loss or connection drops.
 
 ---
