@@ -137,7 +137,8 @@ jobs:
             ggn-*.tar.gz
             dist/*.exe
             *.deb
-          generate_release_notes: true
+          body_path: CHANGELOG.md
+          generate_release_notes: false
           draft: false
           prerelease: false
         env:
@@ -204,7 +205,8 @@ jobs:
         with:
           files: |
             vantablack-*-android.apk
-          generate_release_notes: true
+          body_path: CHANGELOG.md
+          generate_release_notes: false
           draft: false
           prerelease: false
         env:
