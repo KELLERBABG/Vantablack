@@ -29,6 +29,7 @@ __pycache__/
 .freebuff/
 *freebuff*
 .keller/
+DEV/
 *.bundle
 PROTOTYPE.md
 config.env

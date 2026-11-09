@@ -15,7 +15,7 @@
 
 <br>
 
-[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**SOTA Benchmark**](docs/SOTA.md) &bull; [**Cryptography Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) &bull; [**Onion Routing Architecture**](docs/ONION_ARCHITECTURE.md) &bull; [**LAN over WAN**](docs/LAN_OVER_WAN.md) &bull; [**Configuration Reference**](docs/config.env.example) &bull; [**Free Software**](FREE_SOFTWARE.md)
+[**Technical Specifications**](docs/SPECIFICATIONS.md) &bull; [**SOTA Benchmark**](docs/SOTA.md) &bull; [**Cryptography Deep Dive**](docs/CRYPTOGRAPHY_DEEP_DIVE.md) &bull; [**Onion Routing Architecture**](docs/ONION_ARCHITECTURE.md) &bull; [**LAN over WAN**](docs/LAN_OVER_WAN.md) &bull; [**Configuration Reference**](docs/config.env.example)
 
 </div>
 
@@ -444,7 +444,7 @@ Two research subsystems are fully wired into the daemon's live fallback ladder a
 
 ### Dormant Research Primitives (gated behind `--features research`)
 
-The `src/ghost/net/` tree also ships 15 unit-tested research modules that are **not invoked by the node's data path** and are excluded from default builds behind the opt-in `research` Cargo feature (`cargo test --lib --features research`). See [`docs/DORMANT_MODULES.md`](docs/DORMANT_MODULES.md) for the full inventory:
+The `src/ghost/net/` tree also ships 15 unit-tested research modules that are **not invoked by the node's data path** and are excluded from default builds behind the opt-in `research` Cargo feature (`cargo test --lib --features research`):
 
 `bandwidth_voucher`, `collective_defense` (k-anonymous regional threat aggregation), `dead_drop` (blind commitment-addressed storage with Poisson decay), `diffusion` (epidemic emergency shard dispersal), `dtn_reconcile` (Merkle anti-entropy after partitions), `energy_currency` (signed erasure-repair credit proofs), `entropy_beacon` (threshold public randomness), `mesh_archive` (content-hashed public RS(2,1) archives), `model_gossip` (federated cover-traffic parameter learning), `pow` (Equihash-style bandwidth Sybil filter), `rendezvous` (blinded introduction points), `sharded_compute` (RS-sharded inference with ASN diversity), `sovereign_cloud` (jurisdiction-tagged storage placement), `stego_physics` (physical side-channel shard carriage: acoustic/thermal/optical — modulation math only, no device I/O), `universal_tunnel` (multi-protocol censorship encapsulation).
 
@@ -452,7 +452,4 @@ The `src/ghost/net/` tree also ships 15 unit-tested research modules that are **
 
 Vantablack is open-source software distributed under the [MIT License](LICENSE).
 
-Every capability a build contains is available to everyone who has that build:
-there is no activation step, no license key, no entitlement check and no payment
-path anywhere in the product — see
-[**Free software — no license gate, no payments**](FREE_SOFTWARE.md).
+Every capability a build contains is available to everyone who has that build: there is no activation step, no license key, no entitlement check and no payment path anywhere in the product.
