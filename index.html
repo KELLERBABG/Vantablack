@@ -796,16 +796,6 @@
             <p>End-to-end layered onion forwarding across intermediary carrier nodes. All return traffic &mdash; including connection acknowledgments and server response streams &mdash; is encrypted symmetrically and relayed through the middle hop, completely isolating the initiator from the exit gateway with zero direct IP contact.</p>
           </div>
         </div>
-
-        <div class="feature-row">
-          <div class="feature-meta">
-            <span class="feature-tag">Physical Anchors</span>
-            <h3>Fallbacks below the internet</h3>
-          </div>
-          <div class="feature-body">
-            <p>When every terrestrial path is gone &mdash; fiber cut, ISP blackout, jammed spectrum &mdash; two optional anchors extend the reachability ladder past the public internet: an HF/NVIS ionospheric radio carrier, and a quantum-entanglement anchor that brings out-of-band key material into the session ratchet &mdash; simulated by default, or from a real <strong>ETSI GS QKD 014</strong> appliance when one is configured.</p>
-          </div>
-        </div>
       </div>
     </section>
 
@@ -821,7 +811,6 @@
         <div class="mode-card">
           <div class="mode-header">
             <span class="mode-title">ABOS Skywave</span>
-            <span class="mode-badge">EXPERIMENTAL &mdash; IN-SIMULATION</span>
           </div>
           <p class="mode-desc">
             An HF/NVIS ionospheric carrier that becomes the <strong>last rung of the fallback ladder</strong>, chosen only after a direct path, a mesh relay, and a blinded TURN allocation have all failed. Frames cross the real ABOS DSP chain &mdash; LDPC forward error correction, DSSS/OFDM modulation &mdash; and travel over a <strong>virtual loopback channel</strong>; the SDR hardware drivers are simulation stubs. Opt in with <code>--skywave</code>.
@@ -831,7 +820,6 @@
         <div class="mode-card">
           <div class="mode-header">
             <span class="mode-title">QEL Quantum</span>
-            <span class="mode-badge">EXPERIMENTAL &mdash; IN-SIMULATION</span>
           </div>
           <p class="mode-desc">
             A probed anchor controller that contracts a session's next ratchet epoch from <strong>out-of-band key material</strong>, with both peers proving agreement before either moves. By default it runs fidelity-constrained entanglement routing and <strong>BB84 key derivation over a live mesh topology export</strong>; the keys then come from a simulated noise model rather than a photon measurement, so the mix adds structural entropy rather than a secret. Set <code>GHOST_QEL_BACKEND=etsi014</code> and it instead fetches keys from a real <strong>ETSI GS QKD 014</strong> appliance over mutually-authenticated TLS &mdash; the configuration in which the key is genuinely secret. A route below the security cutoff yields no key at all rather than a weak one. Opt in with <code>--quantum</code>.
