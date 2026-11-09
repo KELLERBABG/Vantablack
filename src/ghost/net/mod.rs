@@ -300,10 +300,10 @@ impl BeaconGridEpoch {
 
     /// Advance epoch to next monotonic cycle.
     pub fn tick(&mut self, next_entropy_slice: &[u8]) {
-        self.cycle_count += 1;
+        self.cycle_count = self.cycle_count.wrapping_add(1);
         if self.cycle_count >= 10 {
             // 10 beacon cycles form an epoch grid step
-            self.grid_epoch += 1;
+            self.grid_epoch = self.grid_epoch.wrapping_add(1);
             self.cycle_count = 0;
         }
         // Fold entropy
@@ -523,13 +523,16 @@ impl DialectSession {
         let wrapped = CamouflageWrapper::wrap(payload, current);
         self.messages_sent = self.messages_sent.saturating_add(1);
 
-        if self.messages_sent.is_multiple_of(self.rotation_interval)
+        if self.rotation_interval > 0
+            && self.messages_sent.is_multiple_of(self.rotation_interval)
             && self.supported_dialects.len() > 1
         {
             // Rotate to next dialect
             if let Some(pos) = self.supported_dialects.iter().position(|&d| d == current) {
-                let next_idx = (pos + 1) % self.supported_dialects.len();
-                self.active_dialect = self.supported_dialects[next_idx];
+                let next_idx = (pos.wrapping_add(1)) % self.supported_dialects.len();
+                if let Some(&dialect) = self.supported_dialects.get(next_idx) {
+                    self.active_dialect = dialect;
+                }
             }
         }
 
@@ -1071,6 +1074,9 @@ impl AckEngine {
 
     /// Register a sent packet for ACK tracking with its AEAD auth tag and session hash.
     pub fn register(&mut self, seq: u32, data: Bytes, auth_tag: [u8; 16], session_hash: [u8; 4]) {
+        if self.pending.is_empty() {
+            return;
+        }
         let idx = (seq as usize) % self.pending.len();
         self.pending[idx] = Some(AckEntry {
             seq,
@@ -1084,6 +1090,9 @@ impl AckEngine {
 
     /// Process an incoming ACK. Returns true if the ACK was valid.
     pub fn on_ack(&mut self, seq: u32) -> bool {
+        if self.pending.is_empty() {
+            return false;
+        }
         let idx = (seq as usize) % self.pending.len();
         if let Some(ref entry) = self.pending[idx] {
             if entry.seq == seq {
@@ -1122,7 +1131,7 @@ impl AckEngine {
         for slot in self.pending.iter_mut() {
             if let Some(ref mut entry) = slot {
                 if now.duration_since(entry.sent_at) > timeout && entry.retries < 5 {
-                    entry.retries += 1;
+                    entry.retries = entry.retries.saturating_add(1);
                     entry.sent_at = now;
                     retransmit.push((entry.seq, entry.data.clone()));
                 } else if entry.retries >= 5 {
@@ -1145,7 +1154,7 @@ impl AckEngine {
         for slot in self.pending.iter_mut() {
             if let Some(ref mut entry) = slot {
                 if now.duration_since(entry.sent_at) > timeout && entry.retries < 5 {
-                    entry.retries += 1;
+                    entry.retries = entry.retries.saturating_add(1);
                     entry.sent_at = now;
                     retransmit.push((
                         entry.seq,
@@ -1291,7 +1300,7 @@ impl FlowController {
     /// Create a new flow controller.
     /// transit_rate_mbps: megabits per second for transit traffic.
     pub fn new(transit_rate_mbps: u64) -> Self {
-        let bytes_per_sec = transit_rate_mbps * 125_000; // Mbps → bytes/sec
+        let bytes_per_sec = transit_rate_mbps.saturating_mul(125_000); // Mbps → bytes/sec
         Self {
             transit_bucket: AtomicU64::new(bytes_per_sec), // start full
             transit_rate: AtomicU64::new(bytes_per_sec),
@@ -1344,7 +1353,7 @@ impl FlowController {
     /// `replenish` then ignored: it kept computing credit from the rate the
     /// constructor had been given, so retuning a live node silently did nothing.)
     pub fn set_transit_rate_mbps(&self, mbps: u64) {
-        self.set_transit_rate_bps(mbps * 125_000);
+        self.set_transit_rate_bps(mbps.saturating_mul(125_000));
     }
 
     /// Set the transit rate from a measured or modelled rate, bytes per second.

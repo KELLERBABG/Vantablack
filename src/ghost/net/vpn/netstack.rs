@@ -675,38 +675,58 @@ fn spawn_proxy(
 /// (kind 2), fixes the checksum, and leaves non-TCP or option-less packets
 /// untouched. Returns true when the packet was modified.
 fn clamp_mss(pkt: &mut [u8], ihl: usize) -> bool {
-    if pkt.len() < ihl + 20 || pkt[9] != 6 {
+    let tcp_min = match ihl.checked_add(20) {
+        Some(v) => v,
+        None => return false,
+    };
+    if pkt.len() < tcp_min || pkt.get(9).copied() != Some(6) {
         return false;
     }
-    let doff = ((pkt[ihl + 12] >> 4) as usize) * 4;
-    if doff < 20 || pkt.len() < ihl + doff {
+    let doff_byte = match pkt.get(ihl + 12) {
+        Some(b) => *b,
+        None => return false,
+    };
+    let doff = ((doff_byte >> 4) as usize) * 4;
+    let end = match ihl.checked_add(doff) {
+        Some(v) => v,
+        None => return false,
+    };
+    if doff < 20 || pkt.len() < end {
         return false;
     }
-    let mut off = ihl + 20;
-    let end = ihl + doff;
-    while off + 1 < end {
+    let mut off = tcp_min;
+    while off.checked_add(1).is_some_and(|next| next < end) {
         let kind = pkt[off];
         if kind == 0 {
             break; // EOL
         }
         if kind == 1 {
-            off += 1;
+            off = off.saturating_add(1);
             continue; // NOP
         }
-        let len = pkt[off + 1] as usize;
-        if len < 2 || off + len > end {
+        let len = match pkt.get(off + 1) {
+            Some(&l) => l as usize,
+            None => break,
+        };
+        let next_off = match off.checked_add(len) {
+            Some(v) => v,
+            None => break,
+        };
+        if len < 2 || next_off > end {
             break; // malformed — leave the packet alone
         }
         if kind == 2 && len == 4 {
-            let mss = u16::from_be_bytes([pkt[off + 2], pkt[off + 3]]);
-            if mss > OVERLAY_MSS {
-                pkt[off + 2..off + 4].copy_from_slice(&OVERLAY_MSS.to_be_bytes());
-                fix_checksums(pkt, ihl, true);
-                return true;
+            if let Some(mss_slice) = pkt.get(off + 2..off + 4) {
+                let mss = u16::from_be_bytes([mss_slice[0], mss_slice[1]]);
+                if mss > OVERLAY_MSS {
+                    pkt[off + 2..off + 4].copy_from_slice(&OVERLAY_MSS.to_be_bytes());
+                    fix_checksums(pkt, ihl, true);
+                    return true;
+                }
             }
             return false;
         }
-        off += len;
+        off = next_off;
     }
     false
 }
@@ -748,7 +768,7 @@ fn nat_ingress(
                 return None; // port space exhausted — SYN dropped, client retries
             }
             let l = *next_port;
-            *next_port += 1;
+            *next_port = next_port.saturating_add(1);
             nat.insert(tuple, l);
             l
         }
@@ -802,18 +822,29 @@ pub fn nat_egress(pkt: &[u8], reverse: &HashMap<u16, Tuple>) -> Option<Vec<u8>> 
 }
 
 fn fix_checksums(pkt: &mut [u8], ihl: usize, is_tcp: bool) {
+    if pkt.len() < 12 || pkt.len() < ihl {
+        return;
+    }
     pkt[10] = 0;
     pkt[11] = 0;
     let sum = internet_checksum(&pkt[..ihl]);
     pkt[10] = (sum >> 8) as u8;
     pkt[11] = (sum & 0xFF) as u8;
-    let csum_off = ihl + if is_tcp { 16 } else { 6 };
-    if pkt.len() < csum_off + 2 {
+    let delta = if is_tcp { 16 } else { 6 };
+    let csum_off = match ihl.checked_add(delta) {
+        Some(v) => v,
+        None => return,
+    };
+    let csum_end = match csum_off.checked_add(2) {
+        Some(v) => v,
+        None => return,
+    };
+    if pkt.len() < csum_end {
         return;
     }
     pkt[csum_off] = 0;
     pkt[csum_off + 1] = 0;
-    let l4_len = pkt.len() - ihl;
+    let l4_len = pkt.len().saturating_sub(ihl);
     let mut buf = Vec::with_capacity(12 + l4_len);
     buf.extend_from_slice(&pkt[12..20]);
     buf.push(0);

@@ -190,7 +190,10 @@ impl DisjointRouteConstraint {
     }
 
     pub fn can_assign_all_shards(&self, shard_count: usize) -> bool {
-        self.used_planes.len() + shard_count <= 5
+        self.used_planes
+            .len()
+            .checked_add(shard_count)
+            .is_some_and(|sum| sum <= 5)
     }
 }
 

@@ -185,8 +185,11 @@ impl CoalescingQueue {
         d0[..first_len].copy_from_slice(&self.buffer[..first_len]);
 
         if self.buffer.len() > half {
-            let second_len = (self.buffer.len() - half).min(half);
-            d1[..second_len].copy_from_slice(&self.buffer[half..half + second_len]);
+            let second_len = (self.buffer.len().saturating_sub(half)).min(half);
+            let end = half.saturating_add(second_len).min(self.buffer.len());
+            if let Some(slice) = self.buffer.get(half..end) {
+                d1[..slice.len()].copy_from_slice(slice);
+            }
         }
 
         if (payload_len as usize) < self.max_batch_size {

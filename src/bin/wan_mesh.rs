@@ -243,6 +243,10 @@ fn dec_join_tamper_resistant(
     direction: NonceDirection,
     shards: &[Option<Vec<u8>>],
 ) -> (Option<Vec<u8>>, Option<usize>) {
+    if shards.len() < 3 {
+        return (None, None);
+    }
+
     let present_indices: Vec<usize> = shards
         .iter()
         .enumerate()
@@ -255,9 +259,12 @@ fn dec_join_tamper_resistant(
 
     // Helper closure to attempt reconstruction and AEAD decryption for a pair of shards (idx_a, idx_b)
     let try_pair = |idx_a: usize, idx_b: usize| -> Option<Vec<u8>> {
+        if idx_a >= shards.len() || idx_b >= shards.len() {
+            return None;
+        }
         let mut pair_shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
-        pair_shards[idx_a] = shards[idx_a].clone();
-        pair_shards[idx_b] = shards[idx_b].clone();
+        pair_shards[idx_a] = shards.get(idx_a)?.clone();
+        pair_shards[idx_b] = shards.get(idx_b)?.clone();
 
         let m = pair_shards
             .iter()
@@ -271,15 +278,17 @@ fn dec_join_tamper_resistant(
         }
 
         if l4_rs::reconstruct(&mut pair_shards).is_ok() {
-            let a = pair_shards[0].as_ref()?;
-            let b = pair_shards[1].as_ref()?;
+            let a = pair_shards.first()?.as_ref()?;
+            let b = pair_shards.get(1)?.as_ref()?;
             let mut merged = [a.as_slice(), b.as_slice()].concat();
             if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok()
                 && merged.len() >= 2
             {
                 let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
-                if 2 + len <= merged.len() {
-                    return Some(merged[2..2 + len].to_vec());
+                if let Some(end) = len.checked_add(2) {
+                    if end <= merged.len() {
+                        return Some(merged[2..end].to_vec());
+                    }
                 }
             }
         }
@@ -366,7 +375,7 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
     loop {
         let (len, _src) = socket.recv_from(&mut buf).await?;
         if len >= 7 {
-            pkt_counter += 1;
+            pkt_counter = pkt_counter.wrapping_add(1);
             let hops_remaining = buf[0];
             let next_ip = std::net::Ipv4Addr::new(buf[1], buf[2], buf[3], buf[4]);
             let next_port = u16::from_be_bytes([buf[5], buf[6]]);
@@ -376,9 +385,9 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
 
             // Byzantine Tampering Simulation:
             // Corrupt in-flight shard payload every 3 packets to demonstrate cryptographic tamper isolation
-            if tamper_enabled && pkt_counter.is_multiple_of(3) && payload.len() > 10 {
+            let p_len = payload.len();
+            if tamper_enabled && pkt_counter.is_multiple_of(3) && p_len >= 10 {
                 println!("!!! [BYZANTINE ATTACK] Intercepted in-flight shard packet! Injected 4-byte corruption into encrypted payload...");
-                let p_len = payload.len();
                 payload[p_len - 1] ^= 0xFF;
                 payload[p_len - 2] ^= 0xAA;
                 payload[p_len - 3] ^= 0x55;
@@ -440,7 +449,7 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
 
     loop {
         let mut shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
-        let mut received_count = 0;
+        let mut received_count: usize = 0;
         let mut current_cycle: u64 = 0;
         let start_wait = Instant::now();
 
@@ -507,7 +516,7 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                             unframe(gtf_raw).unwrap_or_else(|| gtf_raw.to_vec())
                         };
                         shards[shard_idx] = Some(unpadded);
-                        received_count += 1;
+                        received_count = received_count.saturating_add(1);
                         println!("[EXIT] Cycle #{}: Received Multi-Hop Shard #{} ({} bytes GTF wire frame) from {}",
                             current_cycle, shard_idx, len - 9, src);
                     }
@@ -542,7 +551,7 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
 
             // Layer 6 Session Guard: Anti-Replay Sliding Window Bitmask Check
             if !session_guard.check_and_update(tx_ctr) {
-                replay_blocked_total += 1;
+                replay_blocked_total = replay_blocked_total.saturating_add(1);
                 println!("!!! [EXIT REPLAY DEFENSE ALERT #{}] REPLAY ATTACK BLOCKED! Counter {} already registered in sliding window bitmask. Packet dropped.",
                     replay_blocked_total, tx_ctr);
                 continue;
@@ -576,7 +585,7 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                     _ => b"HTTP/1.1 200 OK\r\nServer: gws\r\n\r\n".to_vec(),
                 };
 
-                let return_ctr = tx_ctr + 1;
+                let return_ctr = tx_ctr.wrapping_add(1);
                 let (ret_shards, _) = enc_split_gtf(
                     &active_key,
                     return_ctr,
@@ -869,7 +878,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
     let exit_addr = "172.28.1.20:8000".parse::<SocketAddr>()?;
 
     loop {
-        cycle += 1;
+        cycle = cycle.wrapping_add(1);
         let is_carrier_3_severed = cycle % 10 >= 5; // Chaos monkey severs Carrier 3 every 5 of 10 cycles
 
         println!(
@@ -972,7 +981,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                             session_hash = compute_session_hash(&session_key);
                             pq_handshake_done = true;
                             if cycle > 1 {
-                                rekey_count += 1;
+                                rekey_count = rekey_count.saturating_add(1);
                             }
                             println!("[CLIENT PQ-KEM] Quantum-Resistant Ephemeral Key Established! Session Hash: {}",
                                 hex::encode(session_hash));
@@ -981,29 +990,35 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                     _ => {
                         println!("[CLIENT PQ-KEM] Fallback to deterministic hybrid derivation for standalone flight test.");
                         let (_e_x_sec, e_x_pub) = generate_x25519_keypair();
-                        let parsed_hs = parse_handshake_pdu(&hs_pdu).unwrap();
-                        let (ky_ct, _ky_ss) = kyber_encapsulate(&parsed_hs.kyber_pub).unwrap();
-                        let mut e_x_arr = [0u8; 32];
-                        e_x_arr.copy_from_slice(e_x_pub.as_bytes());
-                        let resp_pdu = build_response_pdu(
-                            &identity.public_key_bytes(),
-                            |m| identity.sign(m).to_bytes(),
-                            &e_x_arr,
-                            &ky_ct,
-                        );
-                        let parsed_resp = parse_response_pdu(&resp_pdu).unwrap();
-                        let client_xs = c_x_sec
-                            .diffie_hellman(&x25519_dalek::PublicKey::from(parsed_resp.x25519_pub));
-                        let client_ky_ct =
-                            ml_kem::kem::Ciphertext::<ml_kem::MlKem512>::from(parsed_resp.kyber_ct);
-                        let client_ky_ss = c_ky_dk.decapsulate(&client_ky_ct);
-                        session_key = derive_hybrid_master_key_with_psk(
-                            client_xs.as_bytes(),
-                            client_ky_ss.as_slice(),
-                            None,
-                        );
-                        session_hash = compute_session_hash(&session_key);
-                        pq_handshake_done = true;
+                        if let Some(parsed_hs) = parse_handshake_pdu(&hs_pdu) {
+                            if let Ok((ky_ct, _ky_ss)) = kyber_encapsulate(&parsed_hs.kyber_pub) {
+                                let mut e_x_arr = [0u8; 32];
+                                e_x_arr.copy_from_slice(e_x_pub.as_bytes());
+                                let resp_pdu = build_response_pdu(
+                                    &identity.public_key_bytes(),
+                                    |m| identity.sign(m).to_bytes(),
+                                    &e_x_arr,
+                                    &ky_ct,
+                                );
+                                if let Some(parsed_resp) = parse_response_pdu(&resp_pdu) {
+                                    let client_xs = c_x_sec.diffie_hellman(
+                                        &x25519_dalek::PublicKey::from(parsed_resp.x25519_pub),
+                                    );
+                                    let client_ky_ct =
+                                        ml_kem::kem::Ciphertext::<ml_kem::MlKem512>::from(
+                                            parsed_resp.kyber_ct,
+                                        );
+                                    let client_ky_ss = c_ky_dk.decapsulate(&client_ky_ct);
+                                    session_key = derive_hybrid_master_key_with_psk(
+                                        client_xs.as_bytes(),
+                                        client_ky_ss.as_slice(),
+                                        None,
+                                    );
+                                    session_hash = compute_session_hash(&session_key);
+                                    pq_handshake_done = true;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1098,7 +1113,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         // Await Return Shards
         let mut rx_buf = vec![0u8; 4096];
         let mut return_shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
-        let mut rx_count = 0;
+        let mut rx_count: usize = 0;
         let mut rtts = [0u64; 3];
         let wait_return = Instant::now();
 
@@ -1126,7 +1141,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                         };
                         return_shards[shard_idx] = Some(unpadded);
                         rtts[shard_idx] = shard_rtt;
-                        rx_count += 1;
+                        rx_count = rx_count.saturating_add(1);
                         println!("[CLIENT] Arrived: Return Shard #{} from {} (Multi-Hop Kernel RTT: {} ms, GTF {} bytes)",
                             shard_idx, from, shard_rtt, gtf_return.len());
                     }
@@ -1137,7 +1152,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         let mut lines = Vec::new();
         let mut byzantine_msg = String::new();
         let status = if rx_count >= 2 {
-            let return_ctr = tx_ctr + 1;
+            let return_ctr = tx_ctr.wrapping_add(1);
             let (decrypted, corrupted_idx) = dec_join_tamper_resistant(
                 &session_key,
                 return_ctr,
@@ -1156,7 +1171,7 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
 
             let is_replay = !client_session_guard.check_and_update(return_ctr);
             if is_replay {
-                replay_attacks_blocked += 1;
+                replay_attacks_blocked = replay_attacks_blocked.saturating_add(1);
                 println!("!!! [CLIENT REPLAY ALERT #{}] Replayed counter {} rejected by L6 Sliding Window!", replay_attacks_blocked, return_ctr);
                 lines.push(format!("REPLAY ATTACK BLOCKED (Counter {})", return_ctr));
                 format!(

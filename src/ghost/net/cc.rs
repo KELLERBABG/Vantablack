@@ -544,7 +544,7 @@ impl Bbr {
     /// every acknowledgement would walk the whole cycle inside one RTT and make
     /// the pacing rate oscillate at ACK rate.
     fn advance_round(&mut self, peak_in_flight: u64) {
-        self.round_count += 1;
+        self.round_count = self.round_count.wrapping_add(1);
         let grew = self.max_bw >= self.bw_at_round_start * 1.25;
         match self.state {
             BbrState::Startup => {
@@ -553,7 +553,7 @@ impl Bbr {
                 if grew {
                     self.rounds_without_growth = 0;
                 } else {
-                    self.rounds_without_growth += 1;
+                    self.rounds_without_growth = self.rounds_without_growth.saturating_add(1);
                 }
                 self.bw_at_round_start = self.max_bw;
                 if self.rounds_without_growth >= 3 && self.max_bw > 0.0 {
@@ -576,13 +576,14 @@ impl Bbr {
                 self.rounds_without_growth = if grew {
                     0
                 } else {
-                    self.rounds_without_growth + 1
+                    self.rounds_without_growth.saturating_add(1)
                 };
                 self.bw_at_round_start = self.max_bw;
                 // Walk the gain cycle: one round probing up to test for more
                 // headroom, one probing down to give the queue back, then cruise.
                 if grew {
-                    self.probe_bw_cycle = (self.probe_bw_cycle + 1) % BBR_PROBE_BW_GAINS.len();
+                    self.probe_bw_cycle =
+                        (self.probe_bw_cycle.wrapping_add(1)) % BBR_PROBE_BW_GAINS.len();
                     self.pacing_gain = BBR_PROBE_BW_GAINS[self.probe_bw_cycle];
                 }
             }
@@ -899,7 +900,7 @@ impl AckEngine {
         Self {
             mss,
             controller: CongestionController::new(algorithm, mss),
-            pacer: Pacer::new(INIT_CWND as f64 / 0.1, INIT_CWND.max(2 * mss)),
+            pacer: Pacer::new(INIT_CWND as f64 / 0.1, INIT_CWND.max(mss.saturating_mul(2))),
             outstanding: VecDeque::new(),
             in_flight: 0,
             next_seq: 0,
@@ -966,7 +967,7 @@ impl AckEngine {
     pub fn send_allowance(&mut self, now: CcClock) -> u64 {
         let window = self.cwnd().saturating_sub(self.in_flight);
         if window == 0 {
-            self.stats.cwnd_limited += 1;
+            self.stats.cwnd_limited = self.stats.cwnd_limited.saturating_add(1);
             return 0;
         }
         self.refresh_pacer(now);
@@ -985,16 +986,16 @@ impl AckEngine {
     /// enforce the window, it accounts for the send.
     pub fn on_send(&mut self, bytes: u64, now: CcClock) -> u64 {
         let seq = self.next_seq;
-        self.next_seq += 1;
+        self.next_seq = self.next_seq.wrapping_add(1);
         self.pacer.consume(bytes as f64);
-        self.in_flight += bytes;
+        self.in_flight = self.in_flight.saturating_add(bytes);
         self.outstanding.push_back(Outstanding {
             seq,
             bytes,
             sent_at: now,
         });
-        self.stats.segments_sent += 1;
-        self.stats.bytes_sent += bytes;
+        self.stats.segments_sent = self.stats.segments_sent.saturating_add(1);
+        self.stats.bytes_sent = self.stats.bytes_sent.saturating_add(bytes);
         self.controller.set_in_flight(self.in_flight);
         seq
     }
@@ -1009,9 +1010,9 @@ impl AckEngine {
             }
             self.outstanding.pop_front();
             self.in_flight = self.in_flight.saturating_sub(front.bytes);
-            outcome.newly_acked += front.bytes;
-            self.stats.segments_acked += 1;
-            self.stats.bytes_acked += front.bytes;
+            outcome.newly_acked = outcome.newly_acked.saturating_add(front.bytes);
+            self.stats.segments_acked = self.stats.segments_acked.saturating_add(1);
+            self.stats.bytes_acked = self.stats.bytes_acked.saturating_add(front.bytes);
             // The RTT of the *oldest* newly acknowledged segment is Karn-safe:
             // it cannot belong to a retransmission.
             let sample = now.saturating_sub(front.sent_at);
@@ -1034,8 +1035,8 @@ impl AckEngine {
             );
             self.controller.set_in_flight(self.in_flight);
         } else {
-            self.stats.duplicate_acks += 1;
-            self.duplicate_acks += 1;
+            self.stats.duplicate_acks = self.stats.duplicate_acks.saturating_add(1);
+            self.duplicate_acks = self.duplicate_acks.saturating_add(1);
             if self.duplicate_acks >= DUP_ACK_THRESHOLD {
                 outcome = self.declare_loss(now, outcome);
             }
@@ -1050,7 +1051,7 @@ impl AckEngine {
     pub fn on_timeout(&mut self, now: CcClock) -> AckOutcome {
         let mut outcome = self.declare_loss(now, AckOutcome::default());
         outcome.loss = true;
-        self.stats.timeouts += 1;
+        self.stats.timeouts = self.stats.timeouts.saturating_add(1);
         self.backoff_shift = (self.backoff_shift + 1).min(6);
         self.duplicate_acks = 0;
         outcome.flight_cleared = self.outstanding.is_empty();
@@ -1063,7 +1064,7 @@ impl AckEngine {
         if !self.in_loss_episode {
             self.in_loss_episode = true;
             self.controller.on_loss(now);
-            self.stats.loss_events += 1;
+            self.stats.loss_events = self.stats.loss_events.saturating_add(1);
             outcome.recovery_entered = true;
         }
         self.refresh_pacer(now);

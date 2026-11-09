@@ -171,6 +171,9 @@ impl GhostNode {
 
     /// Route an incoming packet to a worker thread (round-robin).
     pub fn dispatch_packet(&self, packet: Vec<u8>, src: SocketAddr) {
+        if self.workers.is_empty() {
+            return;
+        }
         let idx = self.worker_idx.fetch_add(1, Ordering::Relaxed) % self.workers.len();
         if let Err(e) = self.workers[idx].send((packet, src)) {
             debug!("Worker channel full: {}", e);

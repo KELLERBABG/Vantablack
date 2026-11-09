@@ -254,6 +254,9 @@ impl XdpDispatcher {
     /// In a real eBPF/XDP implementation, this would run on the NIC.
     /// Here we simulate the same logic in software.
     pub fn route_packet<'a>(&self, packet: &ZeroCopyPacket<'a>) -> usize {
+        if self.num_workers == 0 || self.dispatch_table.is_empty() {
+            return 0;
+        }
         let hash_byte = packet.session_hash[0] as usize;
         let worker_id = hash_byte % self.num_workers;
         let table_idx = hash_byte % self.dispatch_table.len();
@@ -426,15 +429,15 @@ impl DopplerShiftSimulator {
         let shift_frac = self.doppler_fraction().abs();
         // Simulate bit errors: at 7500 m/s, ~0.0025% of bits may flip
         let error_rate = shift_frac * 0.1; // Simplified model
-        let total_bits = data.len() * 8;
+        let total_bits = data.len().saturating_mul(8);
         let _expected_errors = (total_bits as f64 * error_rate) as usize;
-        let mut errors = 0;
+        let mut errors: usize = 0;
 
         for (i, byte) in data.iter_mut().enumerate() {
             // Flip some bits based on the shift
             if (i as f64 * error_rate).fract() < error_rate {
                 *byte ^= 0x01;
-                errors += 1;
+                errors = errors.saturating_add(1);
             }
         }
         errors
@@ -443,11 +446,11 @@ impl DopplerShiftSimulator {
     /// Simulate a plasma wake effect: burst of errors at the leading edge.
     pub fn apply_plasma_wake(&self, data: &mut [u8]) -> usize {
         let wake_length = (data.len() / 10).max(1); // First 10% of packet
-        let mut errors = 0;
+        let mut errors: usize = 0;
         for (i, byte) in data.iter_mut().take(wake_length).enumerate() {
             if i % 2 == 0 {
                 *byte ^= 0xFF;
-                errors += 8;
+                errors = errors.saturating_add(8);
             }
         }
         errors

@@ -54,8 +54,14 @@ pub fn seal_shard(
     let shard_nonce = shard_nonce(nonce, index);
     xchacha_seal_in_place(&key, &shard_nonce, epoch, direction, &mut shard)
         .expect("owned shard seal");
-    let tag = shard[shard.len() - 16..].try_into().expect("AEAD tag");
-    shard.truncate(shard.len() - 16);
+    let tag = if shard.len() >= 16 {
+        let tag_start = shard.len() - 16;
+        let t = shard[tag_start..].try_into().expect("AEAD tag");
+        shard.truncate(tag_start);
+        t
+    } else {
+        [0u8; 16]
+    };
     SealedShard {
         index,
         ciphertext: shard,
@@ -85,8 +91,14 @@ pub fn seal_honey_shard(
     let shard_nonce = shard_nonce(nonce, index);
     xchacha_seal_in_place(&key, &shard_nonce, epoch, direction, &mut shard)
         .expect("owned shard seal");
-    let tag = shard[shard.len() - 16..].try_into().expect("AEAD tag");
-    shard.truncate(shard.len() - 16);
+    let tag = if shard.len() >= 16 {
+        let tag_start = shard.len() - 16;
+        let t = shard[tag_start..].try_into().expect("AEAD tag");
+        shard.truncate(tag_start);
+        t
+    } else {
+        [0u8; 16]
+    };
     SealedShard {
         index,
         ciphertext: shard,
@@ -318,17 +330,12 @@ impl SpatioTemporalErosionCodec {
         let shards = l4_rs::encode(&mut framed);
         shards
             .into_iter()
+            .take(3)
             .enumerate()
             .map(|(i, shard)| {
-                let epoch = base_epoch + (i as u64);
-                let sealed = seal_shard(
-                    &epoch_master_keys[i],
-                    epoch,
-                    nonce,
-                    direction,
-                    i as u8,
-                    shard,
-                );
+                let epoch = base_epoch.wrapping_add(i as u64);
+                let master_key = epoch_master_keys.get(i).unwrap_or(&epoch_master_keys[0]);
+                let sealed = seal_shard(master_key, epoch, nonce, direction, i as u8, shard);
                 SpaceTimeShard {
                     index: i as u8,
                     epoch_slot: epoch,

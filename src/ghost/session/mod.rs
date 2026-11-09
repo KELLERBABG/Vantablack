@@ -1189,7 +1189,8 @@ impl Session {
         let (counter, key) = ratchet.advance_seal(self.seal_direction());
         let due = ratchet.count_seal();
         drop(ratchet);
-        self.tx_counter.store(counter + 1, Ordering::Relaxed);
+        self.tx_counter
+            .store(counter.wrapping_add(1), Ordering::Relaxed);
         if due {
             self.forced_ratchet_due.store(true, Ordering::Relaxed);
         }

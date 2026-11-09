@@ -122,8 +122,8 @@ impl ReassemblyBuffer {
 
         // Fast-path: Both D0 and D1 are present (no Galois math needed)
         if (slot.received_mask & 0b0000_0011) == 0b0000_0011 {
-            let d0 = slot.shards[0].as_ref().unwrap();
-            let d1 = slot.shards[1].as_ref().unwrap();
+            let d0 = slot.shards.first()?.as_ref()?;
+            let d1 = slot.shards.get(1)?.as_ref()?;
 
             let mut out = Vec::with_capacity(total_len);
             let first_take = total_len.min(SHARD_PAYLOAD_BYTES);

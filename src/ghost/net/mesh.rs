@@ -392,12 +392,12 @@ impl NatHolePuncher {
     /// learned about from its beacon, so the same discipline ICE uses for a
     /// direct path opens this mapping. Returns how many were sent.
     pub async fn send_relay_keepalives(&self, sock: &UdpSocket, relays: &[SocketAddr]) -> usize {
-        let mut sent = 0;
+        let mut sent = 0usize;
         for addr in relays {
             let keepalive =
                 stun::Message::binding_indication(stun::TransactionId::random()).encode();
             match sock.send_to(&keepalive, addr).await {
-                Ok(_) => sent += 1,
+                Ok(_) => sent = sent.saturating_add(1),
                 Err(e) => debug!(relay = %addr, "relay pinhole keepalive failed: {e}"),
             }
         }
@@ -484,7 +484,7 @@ impl PathMetrics {
             self.srtt_us = self.srtt_us * (1.0 - ALPHA) + sample_us * ALPHA;
             self.min_rtt_us = self.min_rtt_us.min(sample_us);
         }
-        self.samples += 1;
+        self.samples = self.samples.saturating_add(1);
         self.last_updated = Instant::now();
     }
 
@@ -492,7 +492,7 @@ impl PathMetrics {
     pub fn observe_loss(&mut self) {
         const BETA: f64 = 0.1;
         self.loss_rate = self.loss_rate * (1.0 - BETA) + BETA;
-        self.loss_events += 1;
+        self.loss_events = self.loss_events.saturating_add(1);
         // Floor at one MSS so the window can never reach zero and stall the path
         // outright; a stalled window is indistinguishable from a dead path.
         self.cwnd = (self.cwnd / 2).max(cc::DEFAULT_MSS);
@@ -922,7 +922,7 @@ impl TitForTatEnforcer {
     pub fn forwarded_for(&self, peer_fp: &str, bytes: u64) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let mut record = self.reciprocity.entry(key).or_default();
-        record.bytes_forwarded_for_them += bytes;
+        record.bytes_forwarded_for_them = record.bytes_forwarded_for_them.saturating_add(bytes);
         record.update_ratio();
         record.last_activity = Instant::now();
     }
@@ -931,8 +931,8 @@ impl TitForTatEnforcer {
     pub fn forwarded_by(&self, peer_fp: &str, bytes: u64) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let mut record = self.reciprocity.entry(key).or_default();
-        record.bytes_forwarded_for_us += bytes;
-        record.shards_relayed_for_us += 1;
+        record.bytes_forwarded_for_us = record.bytes_forwarded_for_us.saturating_add(bytes);
+        record.shards_relayed_for_us = record.shards_relayed_for_us.saturating_add(1);
         record.update_ratio();
         record.last_activity = Instant::now();
     }
@@ -941,7 +941,7 @@ impl TitForTatEnforcer {
     pub fn dropped_for(&self, peer_fp: &str) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let mut record = self.reciprocity.entry(key).or_default();
-        record.shards_dropped_for_them += 1;
+        record.shards_dropped_for_them = record.shards_dropped_for_them.saturating_add(1);
         record.update_ratio();
     }
 
@@ -1158,6 +1158,12 @@ impl ExitIpRotator {
 
     /// Get the next egress address (round-robin) with a dynamic source port.
     pub fn get_next_socket_addr(&self, target_port: u16) -> std::net::SocketAddr {
+        if self.egress_ips.is_empty() {
+            return std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                target_port,
+            );
+        }
         let idx = self
             .current_idx
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1386,7 +1392,11 @@ pub async fn forward_to_exit_tunnel(
     // Extract auth tag from the last 16 bytes of the ciphertext
     let tag = if framed.len() >= 16 {
         let mut t = [0u8; 16];
-        t.copy_from_slice(&framed[framed.len() - 16..]);
+        if let Some(slice) = framed.get(framed.len().saturating_sub(16)..) {
+            if slice.len() == 16 {
+                t.copy_from_slice(slice);
+            }
+        }
         t
     } else {
         [0u8; 16]

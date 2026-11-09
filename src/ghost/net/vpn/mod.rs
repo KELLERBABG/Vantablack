@@ -794,7 +794,10 @@ impl VpnIngress {
             return OpenOutcome::AuthFail; // dead era
         }
         let mut body = wire[TUNNEL_HDR_LEN..].to_vec();
-        let split = body.len() - 16;
+        if body.len() < 16 {
+            return OpenOutcome::AuthFail;
+        }
+        let split = body.len().saturating_sub(16);
         let tag_bytes = body.split_off(split);
         let mut tag = chacha20poly1305::Tag::default();
         tag.copy_from_slice(&tag_bytes);

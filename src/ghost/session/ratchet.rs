@@ -131,7 +131,7 @@ impl MsgChain {
         let (next, key) = kdf_ck(&self.chain);
         self.chain.zeroize();
         self.chain = next;
-        self.pos += 1;
+        self.pos = self.pos.wrapping_add(1);
         key
     }
 
@@ -497,7 +497,7 @@ impl SessionRatchet {
         self.to_init = p.to_init.clone();
 
         self.epoch = p.epoch;
-        self.steps += 1;
+        self.steps = self.steps.wrapping_add(1);
         self.frames_in_epoch = 0;
         true
     }
@@ -515,7 +515,7 @@ impl SessionRatchet {
     /// Count a frame sealed in the current epoch; `true` means the session is due
     /// to ratchet.
     pub fn count_seal(&mut self) -> bool {
-        self.frames_in_epoch += 1;
+        self.frames_in_epoch = self.frames_in_epoch.saturating_add(1);
         self.frames_in_epoch >= RATCHET_INTERVAL
     }
 
@@ -532,7 +532,7 @@ impl SessionRatchet {
     ) -> (u64, [u8; 32]) {
         let (_root, chain_to_resp, chain_to_init) =
             kdf_rk_hybrid(&self.root_key, &secrets.dh, &secrets.kem);
-        let epoch = self.epoch + 1;
+        let epoch = self.epoch.wrapping_add(1);
         let chain = match direction {
             NonceDirection::InitiatorToResponder => chain_to_resp,
             NonceDirection::ResponderToInitiator => chain_to_init,
@@ -563,8 +563,8 @@ impl SessionRatchet {
         self.root_key.zeroize();
         self.root_key = new_root;
 
-        self.epoch += 1;
-        self.steps += 1;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.steps = self.steps.wrapping_add(1);
         self.frames_in_epoch = 0;
         let next = self.epoch;
 
@@ -600,7 +600,7 @@ impl SessionRatchet {
         self.root_key.zeroize();
         self.root_key = new_root;
 
-        self.epoch += 1;
+        self.epoch = self.epoch.wrapping_add(1);
         self.frames_in_epoch = 0;
         let next = self.epoch;
 

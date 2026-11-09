@@ -94,7 +94,12 @@ pub const CHANNEL_NUMBER_MAX: u16 = 0x7FFF;
 /// Short-term credentials (ICE) use the password directly; TURN servers always
 /// use the long-term form.
 pub fn long_term_key(username: &str, realm: &str, password: &str) -> [u8; 16] {
-    let mut input = Vec::with_capacity(username.len() + realm.len() + password.len() + 2);
+    let cap = username
+        .len()
+        .saturating_add(realm.len())
+        .saturating_add(password.len())
+        .saturating_add(2);
+    let mut input = Vec::with_capacity(cap);
     input.extend_from_slice(username.as_bytes());
     input.push(b':');
     input.extend_from_slice(realm.as_bytes());
@@ -646,7 +651,10 @@ impl Message {
         }
 
         // MESSAGE-INTEGRITY: length counts the attribute we are about to add.
-        let mi_total = out.len() - HEADER_LEN + INTEGRITY_SIZE;
+        let mi_total = out
+            .len()
+            .saturating_sub(HEADER_LEN)
+            .saturating_add(INTEGRITY_SIZE);
         out[2..4].copy_from_slice(&(mi_total as u16).to_be_bytes());
         let mut mac =
             Hmac::<Sha1>::new_from_slice(key).map_err(|_| StunError::Malformed("bad HMAC key"))?;
@@ -657,7 +665,10 @@ impl Message {
         out.extend_from_slice(&tag);
 
         // FINGERPRINT: length now counts the integrity and fingerprint attrs.
-        let fp_total = out.len() - HEADER_LEN + FINGERPRINT_SIZE;
+        let fp_total = out
+            .len()
+            .saturating_sub(HEADER_LEN)
+            .saturating_add(FINGERPRINT_SIZE);
         out[2..4].copy_from_slice(&(fp_total as u16).to_be_bytes());
         let crc = crc32_ieee(&out) ^ FINGERPRINT_XOR;
         out.extend_from_slice(&attr::FINGERPRINT.to_be_bytes());
@@ -879,7 +890,10 @@ fn find_raw_attribute(buf: &[u8], want: u16) -> Option<(usize, usize)> {
 pub fn verify_integrity(buf: &[u8], key: &[u8]) -> Result<(), StunError> {
     let (off, _) =
         find_raw_attribute(buf, attr::MESSAGE_INTEGRITY).ok_or(StunError::MissingIntegrity)?;
-    if off + INTEGRITY_SIZE > buf.len() || off < HEADER_LEN {
+    let end = off
+        .checked_add(INTEGRITY_SIZE)
+        .ok_or(StunError::BadIntegrity)?;
+    if end > buf.len() || off < HEADER_LEN {
         return Err(StunError::BadIntegrity);
     }
     let covered_len = (off - HEADER_LEN + INTEGRITY_SIZE) as u16;
@@ -891,7 +905,11 @@ pub fn verify_integrity(buf: &[u8], key: &[u8]) -> Result<(), StunError> {
     mac.update(&buf[4..off]);
     let mut expected = [0u8; 20];
     expected.copy_from_slice(&mac.finalize().into_bytes());
-    let actual = &buf[off + 4..off + 24];
+    let actual_start = off.checked_add(4).ok_or(StunError::BadIntegrity)?;
+    let actual_end = off.checked_add(24).ok_or(StunError::BadIntegrity)?;
+    let actual = buf
+        .get(actual_start..actual_end)
+        .ok_or(StunError::BadIntegrity)?;
     if expected.as_slice() == actual {
         Ok(())
     } else {
@@ -907,7 +925,10 @@ pub fn verify_integrity(buf: &[u8], key: &[u8]) -> Result<(), StunError> {
 pub fn verify_fingerprint(buf: &[u8]) -> Result<(), StunError> {
     let (off, _) =
         find_raw_attribute(buf, attr::FINGERPRINT).ok_or(StunError::MissingFingerprint)?;
-    if off + FINGERPRINT_SIZE > buf.len() || off < HEADER_LEN {
+    let end = off
+        .checked_add(FINGERPRINT_SIZE)
+        .ok_or(StunError::BadFingerprint)?;
+    if end > buf.len() || off < HEADER_LEN {
         return Err(StunError::BadFingerprint);
     }
     let covered_len = (off - HEADER_LEN + FINGERPRINT_SIZE) as u16;

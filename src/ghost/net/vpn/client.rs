@@ -348,7 +348,7 @@ pub mod resilience {
                     }
                     let due = self.last_attempt.map(|t| t + self.backoff()).unwrap_or(now);
                     if now >= due {
-                        self.attempts += 1;
+                        self.attempts = self.attempts.saturating_add(1);
                         self.last_attempt = Some(now);
                         Action::Rehandshake {
                             attempt: self.attempts,
@@ -382,7 +382,7 @@ pub mod resilience {
             if now < due {
                 return Action::Nothing;
             }
-            self.attempts += 1;
+            self.attempts = self.attempts.saturating_add(1);
             self.last_attempt = Some(now);
             Action::Rehandshake {
                 attempt: self.attempts,

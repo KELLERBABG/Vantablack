@@ -411,7 +411,7 @@ impl SkywaveBridge {
             return;
         }
         let mut telem = self.telemetry.write();
-        telem.rx_packet_count += 1;
+        telem.rx_packet_count = telem.rx_packet_count.saturating_add(1);
         let _ = INGRESS_SOFT_CAPACITY;
         let _ = self.ingress_tx.send(data.to_vec());
     }
@@ -473,8 +473,8 @@ impl SkywaveBridge {
             })?;
             {
                 let mut telem = self.telemetry.write();
-                telem.tx_packet_count += 1;
-                telem.tx_dsp_bytes += payload.len() as u64;
+                telem.tx_packet_count = telem.tx_packet_count.saturating_add(1);
+                telem.tx_dsp_bytes = telem.tx_dsp_bytes.saturating_add(payload.len() as u64);
             }
             self.ship_to_carrier(payload).await;
             return Ok(payload.to_vec());
@@ -486,8 +486,8 @@ impl SkywaveBridge {
         );
         {
             let mut telem = self.telemetry.write();
-            telem.tx_packet_count += 1;
-            telem.tx_dsp_bytes += payload.len() as u64;
+            telem.tx_packet_count = telem.tx_packet_count.saturating_add(1);
+            telem.tx_dsp_bytes = telem.tx_dsp_bytes.saturating_add(payload.len() as u64);
         }
         self.ship_to_carrier(payload).await;
         Ok(payload.to_vec())

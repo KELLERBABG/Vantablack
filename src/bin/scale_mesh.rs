@@ -67,7 +67,7 @@ fn dec_join(
     direction: NonceDirection,
     shards: &mut [Option<Vec<u8>>],
 ) -> Option<Vec<u8>> {
-    if shards.iter().filter(|s| s.is_some()).count() < 2 {
+    if shards.len() < 2 || shards.iter().filter(|s| s.is_some()).count() < 2 {
         return None;
     }
     let m = shards
@@ -81,15 +81,17 @@ fn dec_join(
         }
     }
     if l4_rs::reconstruct(shards).is_ok() {
-        let a = shards[0].as_ref()?;
-        let b = shards[1].as_ref()?;
+        let a = shards.first()?.as_ref()?;
+        let b = shards.get(1)?.as_ref()?;
         let mut merged = [a.as_slice(), b.as_slice()].concat();
         if decrypt_in_place_with_context(key, ctr, session_hash, direction, &mut merged).is_ok()
             && merged.len() >= 2
         {
             let len = u16::from_be_bytes([merged[0], merged[1]]) as usize;
-            if 2 + len <= merged.len() {
-                return Some(merged[2..2 + len].to_vec());
+            if let Some(end) = len.checked_add(2) {
+                if end <= merged.len() {
+                    return Some(merged[2..end].to_vec());
+                }
             }
         }
     }
@@ -210,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ]);
 
     loop {
-        cycle += 1;
+        cycle = cycle.wrapping_add(1);
         println!(
             "\n================================================================================"
         );
@@ -470,7 +472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => b"HTTP/1.1 200 OK\r\nDate: mesh-fallback\r\n\r\n".to_vec()
         };
 
-        let return_ctr = tx_ctr + 1;
+        let return_ctr = tx_ctr.wrapping_add(1);
         let (return_shards, _return_tag) = enc_split(
             &exit_master,
             return_ctr,

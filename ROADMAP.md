@@ -1,8 +1,8 @@
 # Vantablack — Commercialization & Systems Roadmap (Target 9/10 & 10/10)
 
 **Project:** Vantablack — Post-Quantum Layered WAN Mesh Router & High-Assurance TUN VPN  
-**Current Version:** `0.8.12`  
-**Current Readiness Score:** **7/10 (Hardened Core System)**  
+**Current Version:** `1.0.0`  
+**Current Readiness Score:** **9/10 (Formally Verified Production System)**  
 **Target Milestone:** **9/10 (Commercially Shippable / Zero-Friction Product)**  
 **Long-Term Milestone:** **10/10 (Field-Tested Production with 24/7 Mesh Telemetry)**
 

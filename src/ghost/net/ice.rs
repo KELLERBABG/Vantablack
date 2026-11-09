@@ -473,7 +473,9 @@ impl CandidatePair {
 /// Pair priority for the controlling agent: `2^32·min(G,D) + 2·max(G,D) + (G>D)`.
 fn pair_priority_minmax(g: u32, d: u32) -> u64 {
     let (lo, hi) = if g < d { (g, d) } else { (d, g) };
-    (2u64 << 31) * lo as u64 + 2 * hi as u64 + u64::from(g > d)
+    ((1u64 << 32).wrapping_mul(lo as u64))
+        .wrapping_add((hi as u64).wrapping_mul(2))
+        .wrapping_add(u64::from(g > d))
 }
 
 /// Pair priority computed for `role` (RFC 8445 §6.1.2.3: `G` is the controlling
@@ -927,7 +929,7 @@ impl IceAgent {
             .max_by_key(|(_, p)| p.priority)
             .map(|(i, _)| i)?;
         self.pairs[idx].state = PairState::InProgress;
-        self.pairs[idx].attempts += 1;
+        self.pairs[idx].attempts = self.pairs[idx].attempts.saturating_add(1);
         Some(idx)
     }
 
@@ -1081,7 +1083,7 @@ impl IceAgent {
             return false;
         }
         if let Some(p) = self.pairs.get_mut(idx) {
-            p.attempts += 1;
+            p.attempts = p.attempts.saturating_add(1);
         }
         true
     }
@@ -1166,7 +1168,7 @@ impl IceAgent {
                     None,
                 );
                 self.remote_candidates.push(prflx.clone());
-                self.discovered_prflx += 1;
+                self.discovered_prflx = self.discovered_prflx.saturating_add(1);
                 debug!(from = %from, "ICE: learned peer-reflexive candidate");
                 let local = self
                     .local_candidates
@@ -1185,7 +1187,7 @@ impl IceAgent {
                 pair.priority =
                     pair_priority_for(self.role, pair.local.priority, pair.remote.priority);
                 self.pairs.push(pair);
-                self.pairs.len() - 1
+                self.pairs.len().saturating_sub(1)
             }
         };
 

@@ -1173,7 +1173,7 @@ pub async fn apply_github_update() -> Result<String, String> {
     {
         let installer_path = temp_installer.to_string_lossy().to_string();
         std::process::Command::new("cmd")
-            .args(&[
+            .args([
                 "/c",
                 "start",
                 "",

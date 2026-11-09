@@ -245,7 +245,10 @@ impl LocalPeerCache {
                 "invalid peer cache header",
             ));
         }
-        let count = u32::from_be_bytes(raw[9..13].try_into().unwrap()) as usize;
+        let count_slice: [u8; 4] = raw[9..13]
+            .try_into()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let count = u32::from_be_bytes(count_slice) as usize;
         let mut at = 13;
         let mut peers = Vec::with_capacity(count);
 
@@ -253,7 +256,10 @@ impl LocalPeerCache {
             if at + 2 > raw.len() {
                 break;
             }
-            let len = u16::from_be_bytes(raw[at..at + 2].try_into().unwrap()) as usize;
+            let len_slice: [u8; 2] = raw[at..at + 2]
+                .try_into()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            let len = u16::from_be_bytes(len_slice) as usize;
             at += 2;
             if at + len > raw.len() {
                 break;

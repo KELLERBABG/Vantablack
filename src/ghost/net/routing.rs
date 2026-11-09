@@ -393,27 +393,27 @@ impl ContactPlan {
     pub fn select_thermal_heterogeneous_triple(
         candidates: &[Journey],
     ) -> Option<(Journey, Journey, Journey)> {
-        if candidates.len() < 3 {
+        let n = candidates.len();
+        if n < 3 {
             return None;
         }
         let mut best_triple = None;
         let mut best_score = 0;
-        for i in 0..candidates.len() {
-            for j in (i + 1)..candidates.len() {
-                for k in (j + 1)..candidates.len() {
+        for i in 0..n.saturating_sub(2) {
+            for j in (i.saturating_add(1))..n.saturating_sub(1) {
+                for k in (j.saturating_add(1))..n {
+                    let c_i = candidates.get(i)?;
+                    let c_j = candidates.get(j)?;
+                    let c_k = candidates.get(k)?;
                     let classes = [
-                        candidates[i].primary_energy_class(),
-                        candidates[j].primary_energy_class(),
-                        candidates[k].primary_energy_class(),
+                        c_i.primary_energy_class(),
+                        c_j.primary_energy_class(),
+                        c_k.primary_energy_class(),
                     ];
                     let score = energy_heterogeneity_score(&classes);
                     if score > best_score {
                         best_score = score;
-                        best_triple = Some((
-                            candidates[i].clone(),
-                            candidates[j].clone(),
-                            candidates[k].clone(),
-                        ));
+                        best_triple = Some((c_i.clone(), c_j.clone(), c_k.clone()));
                         if score == 3 {
                             return best_triple;
                         }
@@ -506,7 +506,7 @@ impl ContactPlan {
         if step_secs <= 0.0 || horizon_secs <= 0.0 {
             return 0;
         }
-        let mut added = 0;
+        let mut added: usize = 0;
         let mut window: Option<(Timestamp, Timestamp, f64)> = None;
         let mut t = t_start;
         while t <= t_start + horizon_secs {
@@ -519,13 +519,13 @@ impl ContactPlan {
                 }
             } else if let Some((start, last_seen, delay)) = window.take() {
                 self.push_ground_contact(sat, ground_node, start, last_seen, delay, rate_bps);
-                added += 1;
+                added = added.saturating_add(1);
             }
             t += step_secs;
         }
         if let Some((start, last_seen, delay)) = window.take() {
             self.push_ground_contact(sat, ground_node, start, last_seen, delay, rate_bps);
-            added += 1;
+            added = added.saturating_add(1);
         }
         added
     }

@@ -943,7 +943,7 @@ impl QuantumAnchorController {
                     info!(
                         peer = %peer_fp,
                         key_id = %key.key_id,
-                        bits = key.material.len() * 8,
+                        bits = key.material.len().saturating_mul(8),
                         "qel: epoch key acquired from the QKD appliance"
                     );
                     QelOutcome {

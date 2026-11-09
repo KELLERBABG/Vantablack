@@ -218,17 +218,24 @@ impl SphinxShardOnion {
             aead::{Aead, KeyInit},
             ChaCha20Poly1305, Nonce,
         };
+        use rand::RngCore;
+        let mut rng = rand::thread_rng();
 
         let mut exit_plaintext = Vec::with_capacity(2 + shard_data.len());
         exit_plaintext.push(shard_idx);
         exit_plaintext.push(shard_data.len() as u8);
         exit_plaintext.extend_from_slice(shard_data);
 
+        // PEN-2 fix: fresh random 96-bit nonce per hop eliminates keystream reuse
+        let mut exit_nonce = [0u8; 12];
+        rng.fill_bytes(&mut exit_nonce);
         let exit_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
-        let exit_nonce = Nonce::from_slice(&[0x33u8; 12]);
-        let exit_sealed = exit_cipher
-            .encrypt(exit_nonce, exit_plaintext.as_ref())
+        let exit_ct = exit_cipher
+            .encrypt(Nonce::from_slice(&exit_nonce), exit_plaintext.as_ref())
             .expect("seal exit");
+        let mut exit_sealed = Vec::with_capacity(12 + exit_ct.len());
+        exit_sealed.extend_from_slice(&exit_nonce);
+        exit_sealed.extend_from_slice(&exit_ct);
 
         let mut middle_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + exit_sealed.len());
         let mut exit_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
@@ -237,11 +244,15 @@ impl SphinxShardOnion {
         middle_plaintext.extend_from_slice(&exit_hop_bytes);
         middle_plaintext.extend_from_slice(&exit_sealed);
 
+        let mut middle_nonce = [0u8; 12];
+        rng.fill_bytes(&mut middle_nonce);
         let middle_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(middle_key));
-        let middle_nonce = Nonce::from_slice(&[0x22u8; 12]);
-        let middle_sealed = middle_cipher
-            .encrypt(middle_nonce, middle_plaintext.as_ref())
+        let middle_ct = middle_cipher
+            .encrypt(Nonce::from_slice(&middle_nonce), middle_plaintext.as_ref())
             .expect("seal middle");
+        let mut middle_sealed = Vec::with_capacity(12 + middle_ct.len());
+        middle_sealed.extend_from_slice(&middle_nonce);
+        middle_sealed.extend_from_slice(&middle_ct);
 
         let mut guard_plaintext = Vec::with_capacity(SPHINX_MAX_HOP_NAME + middle_sealed.len());
         let mut middle_hop_bytes = [0u8; SPHINX_MAX_HOP_NAME];
@@ -251,13 +262,15 @@ impl SphinxShardOnion {
         guard_plaintext.extend_from_slice(&middle_hop_bytes);
         guard_plaintext.extend_from_slice(&middle_sealed);
 
+        let mut guard_nonce = [0u8; 12];
+        rng.fill_bytes(&mut guard_nonce);
         let guard_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(guard_key));
-        // PEN-2 NOTE: fixed nonce remains; a nonce-in-frame wire change is required to fix
-        // keystream reuse without breaking peel_hop. See REPORT.md.
-        let guard_nonce = Nonce::from_slice(&[0x11u8; 12]);
-        let guard_sealed = guard_cipher
-            .encrypt(guard_nonce, guard_plaintext.as_ref())
+        let guard_ct = guard_cipher
+            .encrypt(Nonce::from_slice(&guard_nonce), guard_plaintext.as_ref())
             .expect("seal guard");
+        let mut guard_sealed = Vec::with_capacity(12 + guard_ct.len());
+        guard_sealed.extend_from_slice(&guard_nonce);
+        guard_sealed.extend_from_slice(&guard_ct);
 
         // Fixed-size 576-byte frame: 2-byte inner length prefix + ciphertext + random padding
         // PEN-4 fix: reject rather than silently truncate.
@@ -274,8 +287,7 @@ impl SphinxShardOnion {
         let copy_len = guard_sealed.len();
         out[2..2 + copy_len].copy_from_slice(&guard_sealed);
         // PEN-3 fix: keyed/random filler instead of deterministic arithmetic sequence
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut out[2 + copy_len..]);
+        rng.fill_bytes(&mut out[2 + copy_len..]);
         out
     }
 
@@ -296,17 +308,14 @@ impl SphinxShardOnion {
             ciphertext
         };
 
-        let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(hop_key));
-        // Try candidate nonces for guard or middle
-        let nonces = [[0x11u8; 12], [0x22u8; 12]];
-        let mut decrypted = None;
-        for n in &nonces {
-            if let Ok(pt) = cipher.decrypt(Nonce::from_slice(n), payload_to_decrypt) {
-                decrypted = Some(pt);
-                break;
-            }
+        if payload_to_decrypt.len() < 12 {
+            return None;
         }
-        let pt = decrypted?;
+        let nonce = Nonce::from_slice(&payload_to_decrypt[..12]);
+        let ct = &payload_to_decrypt[12..];
+
+        let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(hop_key));
+        let pt = cipher.decrypt(nonce, ct).ok()?;
         if pt.len() < SPHINX_MAX_HOP_NAME {
             return None;
         }
@@ -330,9 +339,14 @@ impl SphinxShardOnion {
             ChaCha20Poly1305, Nonce,
         };
 
+        if ciphertext.len() < 12 {
+            return None;
+        }
+        let nonce = Nonce::from_slice(&ciphertext[..12]);
+        let ct = &ciphertext[12..];
+
         let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
-        let nonce = Nonce::from_slice(&[0x33u8; 12]);
-        let pt = cipher.decrypt(nonce, ciphertext).ok()?;
+        let pt = cipher.decrypt(nonce, ct).ok()?;
         if pt.len() < 2 {
             return None;
         }
@@ -955,7 +969,7 @@ impl BundleBuffer {
             bundles.retain(|b| {
                 let keep = b.created_at.elapsed() < cutoff;
                 if !keep {
-                    expired += 1;
+                    expired = expired.saturating_add(1);
                 }
                 keep
             });
@@ -1084,7 +1098,11 @@ pub async fn try_forward_relay(
     // RS-encode the encrypted payload
     let tag = if framed.len() >= 16 {
         let mut t = [0u8; 16];
-        t.copy_from_slice(&framed[framed.len() - 16..]);
+        if let Some(slice) = framed.get(framed.len().saturating_sub(16)..) {
+            if slice.len() == 16 {
+                t.copy_from_slice(slice);
+            }
+        }
         t
     } else {
         [0u8; 16]

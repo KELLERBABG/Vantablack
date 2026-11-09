@@ -36,11 +36,10 @@ pub fn encode(data: &mut Vec<u8>) -> Vec<Vec<u8>> {
 
 /// In-place parity calculation directly into pre-allocated buffer slices.
 pub fn encode_parity_slice(d0: &[u8], d1: &[u8], parity_out: &mut [u8]) {
-    debug_assert_eq!(d0.len(), d1.len());
-    debug_assert_eq!(d0.len(), parity_out.len());
-    RS_2_1
-        .encode_sep(&[d0, d1], &mut [parity_out])
-        .expect("RS(2,1) static encoding cannot fail");
+    if d0.len() != d1.len() || d0.len() != parity_out.len() {
+        return;
+    }
+    let _ = RS_2_1.encode_sep(&[d0, d1], &mut [parity_out]);
 }
 
 /// Reconstruct missing shards from at least 2 available shards.

@@ -535,7 +535,7 @@ pub fn calculate_shannon_entropy(data: &[u8]) -> f64 {
     }
     let mut freq = [0usize; 256];
     for &b in data {
-        freq[b as usize] += 1;
+        freq[b as usize] = freq[b as usize].saturating_add(1);
     }
     let len = data.len() as f64;
     let mut entropy = 0.0;
@@ -561,7 +561,7 @@ pub fn calculate_chi_square_uniformity(data: &[u8]) -> (f64, f64) {
     }
     let mut freq = [0usize; 256];
     for &b in data {
-        freq[b as usize] += 1;
+        freq[b as usize] = freq[b as usize].saturating_add(1);
     }
     let len = data.len() as f64;
     let expected = len / 256.0;
@@ -891,7 +891,7 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
         {
             return None;
         }
-        let mut at = 17;
+        let mut at: usize = 17;
         let mut supported = Vec::with_capacity(count);
         for _ in 0..count {
             let suite = HybridCipherSuite::from_wire_id(*data.get(at)?)?;
@@ -899,41 +899,43 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
                 return None;
             }
             supported.push(suite);
-            at += 1;
+            at = at.checked_add(1)?;
         }
         let x_start = at;
-        let x_end = x_start + 32;
+        let x_end = x_start.checked_add(32)?;
         let x25519_pub: [u8; 32] = data.get(x_start..x_end)?.try_into().ok()?;
         at = x_end;
         let mut kyber_keys = Vec::with_capacity(count);
         for _ in 0..count {
             let suite = HybridCipherSuite::from_wire_id(*data.get(at)?)?;
-            at += 1;
-            let len2 = u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?) as usize;
-            at += 2;
+            at = at.checked_add(1)?;
+            let len2 =
+                u16::from_be_bytes(data.get(at..at.checked_add(2)?)?.try_into().ok()?) as usize;
+            at = at.checked_add(2)?;
             if len2 != suite_key_len(suite) || kyber_keys.iter().any(|(s, _)| *s == suite) {
                 return None;
             }
-            let key = data.get(at..at + len2)?.to_vec();
-            at += len2;
+            let key = data.get(at..at.checked_add(len2)?)?.to_vec();
+            at = at.checked_add(len2)?;
             kyber_keys.push((suite, key));
         }
-        let identity_pk: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
-        at += 32;
-        let pq_commitment: [u8; 32] = data.get(at..at + 32)?.try_into().ok()?;
-        at += 32;
+        let identity_pk: [u8; 32] = data.get(at..at.checked_add(32)?)?.try_into().ok()?;
+        at = at.checked_add(32)?;
+        let pq_commitment: [u8; 32] = data.get(at..at.checked_add(32)?)?.try_into().ok()?;
+        at = at.checked_add(32)?;
         // New PDUs include a reserved 0x00 byte before the signature; old PDUs
         // do not. Accept both.
         if at < len && data[at] == 0x00 {
-            if !allow_reserved || len != at + 1 + 64 {
+            if !allow_reserved || len != at.checked_add(1)?.checked_add(64)? {
                 return None;
             }
-            at += 1;
-        } else if len != at + 64 {
+            at = at.checked_add(1)?;
+        } else if len != at.checked_add(64)? {
             return None;
         }
-        let signature: [u8; 64] = data.get(at..at + 64)?.try_into().ok()?;
-        if at + 64 != len
+        let sig_end = at.checked_add(64)?;
+        let signature: [u8; 64] = data.get(at..sig_end)?.try_into().ok()?;
+        if sig_end != len
             || kyber_keys.iter().map(|(s, _)| s).collect::<Vec<_>>()
                 != supported.iter().collect::<Vec<_>>()
         {

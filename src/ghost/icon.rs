@@ -29,21 +29,25 @@ pub struct IconRgba {
 }
 
 fn u16le(data: &[u8], off: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(data.get(off..off + 2)?.try_into().ok()?))
+    let end = off.checked_add(2)?;
+    Some(u16::from_le_bytes(data.get(off..end)?.try_into().ok()?))
 }
 
 fn u32le(data: &[u8], off: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(data.get(off..off + 4)?.try_into().ok()?))
+    let end = off.checked_add(4)?;
+    Some(u32::from_le_bytes(data.get(off..end)?.try_into().ok()?))
 }
 
 fn i32le(data: &[u8], off: usize) -> Option<i32> {
-    Some(i32::from_le_bytes(data.get(off..off + 4)?.try_into().ok()?))
+    let end = off.checked_add(4)?;
+    Some(i32::from_le_bytes(data.get(off..end)?.try_into().ok()?))
 }
 
 /// Decode one DIB-form ICO entry into RGBA, or `None` if it uses a form this
 /// module does not implement.
 fn decode_dib(data: &[u8], offset: usize) -> Option<IconRgba> {
-    if data.get(offset..offset + 8) == Some(b"\x89PNG\r\n\x1a\n") {
+    let png_end = offset.checked_add(8)?;
+    if data.get(offset..png_end) == Some(b"\x89PNG\r\n\x1a\n") {
         tracing::debug!("Icon entry is PNG-compressed; not supported, skipping");
         return None;
     }
@@ -51,12 +55,12 @@ fn decode_dib(data: &[u8], offset: usize) -> Option<IconRgba> {
     if header_size < 40 {
         return None;
     }
-    let width = i32le(data, offset + 4)?;
+    let width = i32le(data, offset.checked_add(4)?)?;
     // An ICO's BITMAPINFOHEADER declares twice the real height: the XOR bitmap
     // and the AND mask are stacked.
-    let doubled_height = i32le(data, offset + 8)?;
-    let bit_count = u16le(data, offset + 14)?;
-    let compression = u32le(data, offset + 16)?;
+    let doubled_height = i32le(data, offset.checked_add(8)?)?;
+    let bit_count = u16le(data, offset.checked_add(14)?)?;
+    let compression = u32le(data, offset.checked_add(16)?)?;
     if width <= 0 || doubled_height <= 0 || compression != 0 || bit_count != 32 {
         tracing::debug!(
             width,
@@ -72,20 +76,28 @@ fn decode_dib(data: &[u8], offset: usize) -> Option<IconRgba> {
         return None;
     }
 
-    let pixels =
-        data.get(offset + header_size..offset + header_size + (width * height * 4) as usize)?;
-    let mut rgba = vec![0u8; (width * height * 4) as usize];
+    let pixel_bytes = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+    let pixel_start = offset.checked_add(header_size)?;
+    let pixel_end = pixel_start.checked_add(pixel_bytes)?;
+    let pixels = data.get(pixel_start..pixel_end)?;
+    let mut rgba = vec![0u8; pixel_bytes];
     for y in 0..height {
         // DIB rows are stored bottom-up.
-        let src_row = ((height - 1 - y) * width * 4) as usize;
-        let dst_row = (y * width * 4) as usize;
+        let inv_y = (height.saturating_sub(1).saturating_sub(y)) as usize;
+        let src_row = inv_y.checked_mul(width as usize)?.checked_mul(4)?;
+        let dst_row = (y as usize).checked_mul(width as usize)?.checked_mul(4)?;
         for x in 0..width as usize {
-            let s = src_row + x * 4;
-            let d = dst_row + x * 4;
-            rgba[d] = pixels[s + 2]; // B -> R
-            rgba[d + 1] = pixels[s + 1]; // G
-            rgba[d + 2] = pixels[s]; // R -> B
-            rgba[d + 3] = pixels[s + 3]; // A
+            let x4 = x.checked_mul(4)?;
+            let s = src_row.checked_add(x4)?;
+            let d = dst_row.checked_add(x4)?;
+            if s.checked_add(3)? < pixels.len() && d.checked_add(3)? < rgba.len() {
+                rgba[d] = pixels[s + 2]; // B -> R
+                rgba[d + 1] = pixels[s + 1]; // G
+                rgba[d + 2] = pixels[s]; // R -> B
+                rgba[d + 3] = pixels[s + 3]; // A
+            }
         }
     }
     Some(IconRgba {
