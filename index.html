@@ -707,7 +707,6 @@
         <div class="mode-card">
           <div class="mode-header">
             <span class="mode-title">Private Network</span>
-            <span class="mode-badge">YOUR DEVICES ONLY</span>
           </div>
           <p class="mode-desc">
             A closed network for your own machines, protected by your private key. <strong>Only devices you approve can join</strong> &mdash; everyone else is ignored.
@@ -717,7 +716,6 @@
         <div class="mode-card">
           <div class="mode-header">
             <span class="mode-title">Public Swarm</span>
-            <span class="mode-badge">OPEN MESH</span>
           </div>
           <p class="mode-desc">
             An open mesh where devices help bounce encrypted traffic for each other. <strong>More participants make it harder to block</strong> &mdash; a practical way around censorship.
@@ -746,7 +744,6 @@
           </div>
           <div class="feature-body">
             <p>Connect home servers, workstations, edge hardware, and cloud VPS instances into a single flat private network. Devices find each other automatically across NAT firewalls, home routers, and changing IP addresses without opening router ports or exposing services to the public internet.</p>
-            <div class="feature-detail">Works across any carrier or provider &bull; Zero firewall reconfiguration required</div>
           </div>
         </div>
 
@@ -757,7 +754,6 @@
           </div>
           <div class="feature-body">
             <p>Outbound traffic is mathematically divided across multiple independent carrier paths simultaneously. A listener observing any single network link or tap sees only undecipherable random slices. Even if a link is completely severed or drops out mid-stream, remaining paths deliver the full message intact with zero retransmission delay.</p>
-            <div class="feature-detail">Survives carrier drops and transit failures automatically</div>
           </div>
         </div>
 
@@ -768,7 +764,6 @@
           </div>
           <div class="feature-body">
             <p>All sessions negotiate keys using hybrid post-quantum lattice cryptography (ML-KEM-768, FIPS 203) combined with classical X25519 curve algorithms, picking the strongest suite both peers support. Traffic captured today remains protected against future quantum decryption. Session master keys exist only in volatile RAM while active and are never written to disk or swap storage.</p>
-            <div class="feature-detail">Standardized primitives &bull; Session keys never touch disk &bull; Formally verified (ProVerif 2.05)</div>
           </div>
         </div>
 
@@ -779,7 +774,6 @@
           </div>
           <div class="feature-body">
             <p>No central servers, user accounts, or company databases exist to be compromised, seized, or subjected to downtime. Nodes authenticate each other directly via cryptographic public keys, with no third-party coordinator or vendor middleman in the data path.</p>
-            <div class="feature-detail">Zero telemetry &bull; No analytics &bull; Self-organizing mesh operation</div>
           </div>
         </div>
 
@@ -790,7 +784,6 @@
           </div>
           <div class="feature-body">
             <p>Store and exchange encrypted data asynchronously without central servers or rendezvous points. Destinations are addressed by cryptographic hash commitments; hosts store blind ciphertext with zero knowledge of content or recipients, while adaptive Poisson decay and Merkle anti-entropy reconcile partitions automatically.</p>
-            <div class="feature-detail">Serverless blind storage &bull; Merkle blackout reconciliation &bull; Zero metadata at rest</div>
           </div>
         </div>
 
@@ -801,7 +794,6 @@
           </div>
           <div class="feature-body">
             <p>End-to-end layered onion forwarding across intermediary carrier nodes. All return traffic &mdash; including connection acknowledgments and server response streams &mdash; is encrypted symmetrically and relayed through the middle hop, completely isolating the initiator from the exit gateway with zero direct IP contact.</p>
-            <div class="feature-detail">Symmetric Return-Path &bull; XChaCha20-Poly1305 E2E sealing &bull; Complete IP isolation</div>
           </div>
         </div>
 
@@ -811,8 +803,7 @@
             <h3>Fallbacks below the internet</h3>
           </div>
           <div class="feature-body">
-            <p>When every terrestrial path is gone &mdash; fiber cut, ISP blackout, jammed spectrum &mdash; two optional anchors extend the reachability ladder past the public internet: an HF/NVIS ionospheric radio carrier, and a quantum-entanglement anchor that brings out-of-band key material into the session ratchet &mdash; simulated by default, or from a real <strong>ETSI GS QKD 014</strong> appliance when one is configured. Both are opt-in, both report honestly which mode they are in, and neither is required for normal operation.</p>
-            <div class="feature-detail">Opt-in &bull; Experimental &bull; In-simulation by default, with a real QKD appliance backend &bull; Never required for standard WAN operation</div>
+            <p>When every terrestrial path is gone &mdash; fiber cut, ISP blackout, jammed spectrum &mdash; two optional anchors extend the reachability ladder past the public internet: an HF/NVIS ionospheric radio carrier, and a quantum-entanglement anchor that brings out-of-band key material into the session ratchet &mdash; simulated by default, or from a real <strong>ETSI GS QKD 014</strong> appliance when one is configured.</p>
           </div>
         </div>
       </div>
@@ -852,7 +843,7 @@
     <!-- STATE OF THE ART (SOTA) COMPARISON TABLE -->
     <section id="sota">
       <div class="section-head">
-        <span class="section-tag">Competitive Architecture &bull; Undisputed SOTA</span>
+        <span class="section-tag">Competitive Architecture</span>
         <h2>How Vantablack Compares</h2>
         <p>Vantablack was engineered from first principles to exceed WireGuard, Tailscale, Tor, and commercial VPNs simultaneously across post-quantum defense, loss resilience, and zero-trust decentralization.</p>
       </div>
@@ -862,7 +853,7 @@
           <thead>
             <tr>
               <th class="col-feature">Capability &amp; Plain English Purpose</th>
-              <th class="col-ggn">Vantablack<span class="sota-badge">SOTA</span></th>
+              <th class="col-ggn">Vantablack</th>
               <th>WireGuard</th>
               <th>Tailscale</th>
               <th>Tor Network</th>
@@ -1037,7 +1028,7 @@
             macOS &bull; Linux Releases &nearr;
           </a>
         </div>
-        <div style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">Zero admin privileges needed &bull; Per-user install &bull; Portable &bull; Open Source &bull; Free code signing provided by <a href="https://signpath.io/" target="_blank" rel="noopener" style="color: var(--accent);">SignPath.io</a>, certificate by <a href="https://signpath.org/" target="_blank" rel="noopener" style="color: var(--accent);">SignPath Foundation</a></div>
+        <div style="font-size: 12px; color: var(--text-dim); margin-top: 4px;">Free code signing provided by <a href="https://signpath.io/" target="_blank" rel="noopener" style="color: var(--accent);">SignPath.io</a>, certificate by <a href="https://signpath.org/" target="_blank" rel="noopener" style="color: var(--accent);">SignPath Foundation</a></div>
       </div>
 
       <div class="section-head" style="margin-top: 48px;">
