@@ -1,17 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#38bdf8" />
-      <stop offset="100%" stop-color="#1e293b" />
-    </linearGradient>
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="6" result="blur" />
-      <feComposite in="SourceGraphic" in2="blur" operator="over" />
-    </filter>
-  </defs>
-  <rect width="128" height="128" rx="28" fill="#040812" stroke="#38bdf8" stroke-width="2" stroke-opacity="0.3"/>
-  <rect x="6" y="6" width="116" height="116" rx="22" fill="none" stroke="url(#grad)" stroke-width="1.5" stroke-opacity="0.6"/>
-  <g transform="translate(32, 32) scale(2.66)" fill="none" stroke="url(#grad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
-    <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z" />
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Vantablack - Keller Systems">
+  <rect width="128" height="128" rx="28" fill="#05070a" stroke="#1b2534" stroke-width="2"/>
+  <rect x="28" y="24" width="20" height="80" rx="4" fill="#f8fafc"/>
+  <path d="M58 62 L88 24 H104 L70 66 Z" fill="#10b981"/>
+  <path d="M70 62 L104 104 H88 L58 66 Z" fill="#059669"/>
 </svg>
