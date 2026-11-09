@@ -52,7 +52,7 @@
   <!-- Typography -->
   <text x="315" y="195" font-family="'Space Grotesk', -apple-system, sans-serif" font-size="64" font-weight="700" fill="#f8fafc" letter-spacing="-1.5">ABOS</text>
   <text x="317" y="240" font-family="'Space Grotesk', -apple-system, sans-serif" font-size="20" font-weight="500" fill="#38bdf8" letter-spacing="1">Atmospheric Broadcast OS</text>
-  <text x="317" y="272" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="400" fill="#64748b" letter-spacing="1">DECENTRALIZED NVIS SDR MESH &bull; RUST WORKSPACE</text>
+  <text x="317" y="272" font-family="'JetBrains Mono', monospace" font-size="13" font-weight="400" fill="#64748b" letter-spacing="1">DECENTRALIZED NVIS SDR MESH &#8226; RUST WORKSPACE</text>
 
   <!-- Border -->
   <rect x="1" y="1" width="1198" height="398" fill="none" stroke="#1e293b" stroke-width="1"/>
