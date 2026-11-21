@@ -99,7 +99,7 @@ impl FallbackPath {
 /// where the datagram has to arrive. A peer that advertises no relay candidate is
 /// not reachable through TURN at all, because nothing of ours can create a
 /// mapping in its NAT toward a server it never contacted.
-fn is_lan_addr(addr: &SocketAddr) -> bool {
+pub(crate) fn is_lan_addr(addr: &SocketAddr) -> bool {
     match addr.ip() {
         std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
         std::net::IpAddr::V6(ip) => ip.is_loopback(),

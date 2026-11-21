@@ -210,6 +210,8 @@ const MAX_PENDING_HANDSHAKES: usize = 512;
 
 /// Peer Exchange gossip frame magic — encrypted payload prefix.
 const GHOST_PEX_MAGIC: &[u8] = b"GHOST_PEX_____";
+/// Peer Exchange v2 gossip frame magic — batches of signed `PeerDescriptorV2`.
+const GHOST_PEX_V2_MAGIC: &[u8] = b"GHOST_PEX2____";
 /// Authenticated goodbye / reroute control notification sent when a node
 /// disconnects or deactivates the mesh.
 pub(crate) const GHOST_BYE_MAGIC: &[u8] = b"GHOST_BYE_____";
@@ -1703,6 +1705,11 @@ struct RxContext {
     socket: Arc<UdpSocket>,
     /// True while the user has the mesh activated in the control center.
     connected: Arc<std::sync::atomic::AtomicBool>,
+    /// NAT hole-puncher for installing ICE offers received via PEX v2.
+    nat_puncher: Option<Arc<vantablack::ghost::net::mesh::NatHolePuncher>>,
+    /// Verified v2 peer descriptors learned from cache, mailbox, or PEX v2.
+    known_descriptors:
+        Option<Arc<DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>>>,
 }
 
 impl RxContext {
@@ -1877,6 +1884,8 @@ impl RxContext {
         let rot = self.rotator.clone();
         let relay_role = self.relay_role.clone();
         let fallback_state = self.fallback.clone();
+        let nat_puncher = self.nat_puncher.clone();
+        let known_descriptors = self.known_descriptors.clone();
         let vpn = self.vpn.clone();
         let psk = self.psk;
         tokio::spawn(async move {
@@ -1904,6 +1913,8 @@ impl RxContext {
                 rot.as_deref(),
                 relay_role.as_deref(),
                 fallback_state.as_deref(),
+                nat_puncher.as_ref(),
+                known_descriptors.as_ref(),
             )
             .await;
         });
@@ -3109,6 +3120,10 @@ async fn handle_pkt(
     exit_rotator: Option<&ExitIpRotator>,
     relay_role: Option<&DerpRelay>,
     fallback_state: Option<&Fallback>,
+    nat_puncher: Option<&Arc<vantablack::ghost::net::mesh::NatHolePuncher>>,
+    known_descriptors: Option<
+        &Arc<DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>>,
+    >,
 ) {
     #[cfg(not(feature = "vpn"))]
     let _ = vpn_mode;
@@ -3989,8 +4004,53 @@ async fn handle_pkt(
         let trimmed = text.trim_end_matches('\0').to_string();
         tracing::info!(peer = %peer_fp, counter = ctr, "Decrypted: {trimmed}");
 
-        // Peer Exchange gossip: learn new peers from connected nodes
+        // Peer Exchange gossip: learn new peers from connected nodes (v2 signed descriptors + v1 fallback)
         if let Some(payload) = frame_payload(pt) {
+            if let Some(body) = payload.strip_prefix(GHOST_PEX_V2_MAGIC) {
+                if !body.is_empty() {
+                    let count = body[0] as usize;
+                    let mut pos = 1usize;
+                    let mut learned_any = false;
+                    for _ in 0..count {
+                        if pos + 2 > body.len() {
+                            break;
+                        }
+                        let len = u16::from_be_bytes([body[pos], body[pos + 1]]) as usize;
+                        pos += 2;
+                        if pos + len > body.len() {
+                            break;
+                        }
+                        if let Some(desc) =
+                            vantablack::ghost::net::discovery::PeerDescriptorV2::from_bytes(
+                                &body[pos..pos + len],
+                            )
+                        {
+                            if desc.verify(86400 * 7) && desc.fingerprint() != node.fingerprint() {
+                                install_peer_descriptor_v2(
+                                    &node,
+                                    sock,
+                                    peers,
+                                    pending_hs,
+                                    nat_puncher.map(|np| np.as_ref()),
+                                    fallback_state,
+                                    None,
+                                    known_descriptors.map(|kd| kd.as_ref()),
+                                    desc,
+                                )
+                                .await;
+                                learned_any = true;
+                            }
+                        }
+                        pos += len;
+                    }
+                    if learned_any {
+                        if let Some(kd) = known_descriptors {
+                            persist_peer_cache_v2(kd);
+                        }
+                    }
+                }
+                return;
+            }
             if payload.starts_with(GHOST_PEX_MAGIC) {
                 let body = &payload[GHOST_PEX_MAGIC.len()..];
                 if !body.is_empty() {
@@ -5020,13 +5080,310 @@ fn record_active_peer(sa: SocketAddr) {
     }
 }
 
+/// Map [`vantablack::ghost::net::mesh::NatType`] to the `PeerDescriptorV2` wire byte.
+fn nat_type_to_wire(nt: vantablack::ghost::net::mesh::NatType) -> u8 {
+    use vantablack::ghost::net::discovery::{
+        NAT_CONE, NAT_DIRECT, NAT_RESTRICTED, NAT_SYMMETRIC, NAT_UNKNOWN,
+    };
+    use vantablack::ghost::net::mesh::NatType;
+    match nt {
+        NatType::Direct => NAT_DIRECT,
+        NatType::Cone => NAT_CONE,
+        NatType::Restricted => NAT_RESTRICTED,
+        NatType::Symmetric => NAT_SYMMETRIC,
+        NatType::Unknown => NAT_UNKNOWN,
+    }
+}
+
+/// Build and sign this node's [`PeerDescriptorV2`] carrying current public endpoint,
+/// LAN addresses, mesh port, NAT classification, capabilities, and `IceOffer`.
+fn build_local_descriptor_v2(
+    nc: &GhostNode,
+    mesh_port: u16,
+    relay_enabled: bool,
+    exit_enabled: bool,
+    vpn_hub: bool,
+    offer_text: &std::sync::RwLock<String>,
+) -> vantablack::ghost::net::discovery::PeerDescriptorV2 {
+    use vantablack::ghost::net::discovery::{
+        PeerDescriptorV2, CAP_EXIT, CAP_QUIC, CAP_RELAY, CAP_VPN_HUB,
+    };
+    let wan_snap = vantablack::ghost::net::mesh::wan_telemetry_snapshot();
+    let lan_ip: std::net::IpAddr = detect_lan_ip()
+        .parse()
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let lan_sa = SocketAddr::new(lan_ip, mesh_port);
+    let endpoint = wan_snap.public_addr.unwrap_or(lan_sa);
+    let mut caps = 0u8;
+    if relay_enabled {
+        caps |= CAP_RELAY;
+    }
+    if exit_enabled {
+        caps |= CAP_EXIT;
+    }
+    if vpn_hub {
+        caps |= CAP_VPN_HUB;
+    }
+    if cfg!(feature = "quic") {
+        caps |= CAP_QUIC;
+    }
+    let ice_offer = offer_text
+        .read()
+        .ok()
+        .map(|s| s.clone())
+        .filter(|s| !s.is_empty());
+    PeerDescriptorV2::sign_new(
+        &nc.identity,
+        &nc.identity.pq_public_key_bytes(),
+        endpoint,
+        vec![lan_sa],
+        mesh_port,
+        nat_type_to_wire(wan_snap.nat_type),
+        caps,
+        ice_offer,
+    )
+}
+
+/// Persist all verified v2 peer descriptors in `known_descriptors` to `peers.bin`.
+fn persist_peer_cache_v2(
+    known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
+) {
+    let list: Vec<vantablack::ghost::net::discovery::PeerDescriptorV2> = known_descriptors
+        .iter()
+        .map(|e| e.value().clone())
+        .collect();
+    if list.is_empty() {
+        return;
+    }
+    let path = vantablack::ghost::paths::data_file("peers.bin");
+    if let Err(e) = vantablack::ghost::net::discovery::LocalPeerCache::save_v2(&path, &list) {
+        tracing::debug!(error = %e, "Discovery Tier 1: failed to persist peers.bin v2");
+    }
+}
+
+/// Install a verified [`PeerDescriptorV2`] into `known_descriptors`, `nat_puncher`,
+/// `fallback_routes` / `known_relays`, and initiate handshake / ICE punch if not yet connected.
+async fn install_peer_descriptor_v2(
+    node: &Arc<GhostNode>,
+    sock: &UdpSocket,
+    peers: &DashMap<String, SocketAddr>,
+    pending_hs: &PendingHandshakes,
+    nat_puncher: Option<&vantablack::ghost::net::mesh::NatHolePuncher>,
+    fallback: Option<&Fallback>,
+    known_relays: Option<&DashMap<String, SocketAddr>>,
+    known_descriptors: Option<
+        &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
+    >,
+    desc: vantablack::ghost::net::discovery::PeerDescriptorV2,
+) {
+    let fp = desc.fingerprint();
+    if fp == node.fingerprint() || !desc.verify(86400 * 7) {
+        return;
+    }
+    let is_relay = (desc.capabilities & vantablack::ghost::net::discovery::CAP_RELAY) != 0;
+    let is_exit = (desc.capabilities & vantablack::ghost::net::discovery::CAP_EXIT) != 0;
+
+    if let Some(kd) = known_descriptors {
+        let should_insert = kd
+            .get(&fp)
+            .map(|old| desc.timestamp >= old.timestamp)
+            .unwrap_or(true);
+        if should_insert {
+            kd.insert(fp.clone(), desc.clone());
+        }
+    }
+
+    if let Some(np) = nat_puncher {
+        if let Ok(local_sa) = node.local_addr.parse::<SocketAddr>() {
+            np.register_peer(&fp, desc.endpoint, local_sa);
+        }
+        if let Some(offer_str) = &desc.ice_offer {
+            if let Ok(offer) = vantablack::ghost::net::ice::IceOffer::decode(offer_str) {
+                np.set_ice_offer(&fp, offer);
+            }
+        }
+    }
+
+    if is_relay {
+        if let Some(kr) = known_relays {
+            kr.insert(fp.clone(), desc.endpoint);
+            let relay_count = kr.len();
+            vantablack::ghost::net::mesh::update_wan_telemetry(|snap| {
+                snap.relay_count = relay_count;
+            });
+        }
+        if let Some(fb) = fallback {
+            fb.record_relay(&fp, desc.endpoint);
+        }
+    }
+
+    vantablack::ghost::net::mesh::update_peer_telemetry(&fp, |t| {
+        t.is_exit = is_exit;
+    });
+
+    if !peers.contains_key(&fp) && !node.sessions.contains_key(&fp) {
+        initiate_handshake(node, sock, desc.endpoint, pending_hs).await;
+        for lan_ep in &desc.lan_endpoints {
+            if *lan_ep != desc.endpoint {
+                initiate_handshake(node, sock, *lan_ep, pending_hs).await;
+            }
+        }
+        if let Some(np) = nat_puncher {
+            if desc.ice_offer.is_some() && !np.is_connected(&fp) {
+                let _ = np.punch_hole(sock, &fp).await;
+            }
+        }
+    }
+}
+
+/// Sync per-peer WAN/transport telemetry from `nat_puncher` and `fallback_routes`
+/// into the control-plane snapshot consumed by `GET /api/topology`.
+fn sync_peer_topology_telemetry(
+    addrs: &DashMap<String, SocketAddr>,
+    nat_puncher: &vantablack::ghost::net::mesh::NatHolePuncher,
+    fallback: &Fallback,
+    known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
+    trusted_exits: &std::sync::RwLock<std::collections::HashSet<String>>,
+) {
+    let exits_guard = trusted_exits.read().ok();
+    let allow_all_exits = exits_guard
+        .as_ref()
+        .map(|s| s.contains("any"))
+        .unwrap_or(false);
+
+    for entry in addrs.iter() {
+        let fp = entry.key();
+        let addr = *entry.value();
+        let rtt_ms = nat_puncher
+            .selected_rtt(fp)
+            .map(|d| (d.as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
+        let fb_path = fallback.path(fp);
+        let desc_exit = known_descriptors
+            .get(fp)
+            .map(|d| (d.capabilities & vantablack::ghost::net::discovery::CAP_EXIT) != 0)
+            .unwrap_or(false);
+        let trusted_exit = exits_guard
+            .as_ref()
+            .map(|s| allow_all_exits || s.contains(fp))
+            .unwrap_or(false);
+
+        let (transport, via_relay_fp) = match fb_path {
+            Some(vantablack::ghost::net::fallback::FallbackPath::MeshRelay {
+                relay_fp, ..
+            }) => ("mesh_relay", Some(relay_fp)),
+            Some(vantablack::ghost::net::fallback::FallbackPath::Turn { .. }) => ("turn", None),
+            Some(vantablack::ghost::net::fallback::FallbackPath::Skywave { .. }) => {
+                ("skywave", None)
+            }
+            Some(vantablack::ghost::net::fallback::FallbackPath::Direct) | None => {
+                let is_lan = match addr.ip() {
+                    std::net::IpAddr::V4(v4) => {
+                        v4.is_private() || v4.is_loopback() || v4.is_link_local()
+                    }
+                    std::net::IpAddr::V6(v6) => v6.is_loopback(),
+                };
+                if is_lan {
+                    ("direct_lan", None)
+                } else {
+                    ("direct_wan_ice", None)
+                }
+            }
+        };
+
+        vantablack::ghost::net::mesh::update_peer_telemetry(fp, |t| {
+            if rtt_ms.is_some() {
+                t.rtt_ms = rtt_ms;
+            }
+            t.transport = Some(transport.to_string());
+            t.via_relay_fp = via_relay_fp;
+            if desc_exit || trusted_exit {
+                t.is_exit = true;
+            }
+        });
+    }
+}
+
+/// Publish this node's signed [`PeerDescriptorV2`] to `GHOST_RENDEZVOUS_URL` and
+/// fetch/install swarm peers via [`BlindMailboxClient`].
+async fn blind_rendezvous_sync(
+    rendezvous_url: &str,
+    nc: &Arc<GhostNode>,
+    addrs: &Arc<DashMap<String, SocketAddr>>,
+    pending_hs: &PendingHandshakes,
+    nat_puncher: &Arc<vantablack::ghost::net::mesh::NatHolePuncher>,
+    fallback_routes: &Arc<Fallback>,
+    known_relays: &Arc<DashMap<String, SocketAddr>>,
+    known_descriptors: &Arc<DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>>,
+    mesh_port: u16,
+    relay_enabled: bool,
+    exit_enabled: bool,
+    vpn_hub: bool,
+    offer_text: &Arc<std::sync::RwLock<String>>,
+) {
+    let client = match vantablack::ghost::net::discovery::BlindMailboxClient::new() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "Discovery Tier 3: failed to build BlindMailboxClient");
+            return;
+        }
+    };
+    let swarm_secret =
+        std::env::var("GHOST_SWARM_SECRET").unwrap_or_else(|_| "vantablack-genesis-v1".to_string());
+    let local_desc = build_local_descriptor_v2(
+        nc,
+        mesh_port,
+        relay_enabled,
+        exit_enabled,
+        vpn_hub,
+        offer_text,
+    );
+    if let Err(e) = client
+        .publish_descriptor(rendezvous_url, swarm_secret.as_bytes(), &local_desc)
+        .await
+    {
+        tracing::warn!(error = %e, "Discovery Tier 3: blind mailbox publish failed");
+    }
+    match client
+        .fetch_descriptors(rendezvous_url, swarm_secret.as_bytes())
+        .await
+    {
+        Ok(peers) => {
+            let count = peers.len();
+            for desc in peers {
+                install_peer_descriptor_v2(
+                    nc,
+                    &nc.socket,
+                    addrs,
+                    pending_hs,
+                    Some(nat_puncher.as_ref()),
+                    Some(fallback_routes.as_ref()),
+                    Some(known_relays.as_ref()),
+                    Some(known_descriptors.as_ref()),
+                    desc,
+                )
+                .await;
+            }
+            persist_peer_cache_v2(known_descriptors);
+            tracing::info!(
+                count,
+                "Discovery Tier 3: synchronized blind rendezvous descriptors"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Discovery Tier 3: blind mailbox fetch failed");
+        }
+    }
+}
+
 /// Send a Peer Exchange (PEX) gossip message to `dest_fp` over their session,
-/// advertising our currently known active peer endpoints.
+/// sending signed `GHOST_PEX2____` batches of `PeerDescriptorV2` when available
+/// alongside backward-compatible `GHOST_PEX_____` v1 frames.
 async fn send_pex(
     node: &Arc<GhostNode>,
     sock: &Arc<UdpSocket>,
     dest_fp: &str,
     peers: &Arc<DashMap<String, SocketAddr>>,
+    known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
 ) {
     let Some(sess) = node.sessions.get(dest_fp) else {
         return;
@@ -5035,7 +5392,40 @@ async fn send_pex(
         Some(a) => a,
         None => return,
     };
-    // Build PEX payload: [GHOST_PEX_____][count u8][fp_hex 16B + addr_str + NUL ...]
+    let ctx = SealCtx::from_session(&sess);
+    drop(sess);
+
+    // PEX v2: batches of signed PeerDescriptorV2 bounded to <= 2200B per frame.
+    let v2_batch: Vec<Vec<u8>> = known_descriptors
+        .iter()
+        .filter(|e| e.key() != dest_fp)
+        .take(MAX_PEX_PEERS)
+        .map(|e| e.value().to_bytes())
+        .collect();
+    if !v2_batch.is_empty() {
+        let mut payload_v2 = GHOST_PEX_V2_MAGIC.to_vec();
+        payload_v2.push(0u8);
+        let mut count_v2: u8 = 0;
+        for raw in &v2_batch {
+            let Ok(len_u16) = u16::try_from(raw.len()) else {
+                continue;
+            };
+            if payload_v2.len() + 2 + raw.len() > 2200 && count_v2 > 0 {
+                break;
+            }
+            payload_v2.extend_from_slice(&len_u16.to_be_bytes());
+            payload_v2.extend_from_slice(raw);
+            count_v2 = count_v2.saturating_add(1);
+        }
+        if count_v2 > 0 {
+            payload_v2[GHOST_PEX_V2_MAGIC.len()] = count_v2;
+            let (f, tag) = enc_split(&ctx, &payload_v2);
+            send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
+            tracing::debug!(to = %dest_fp, peers = count_v2, "PEX v2: sent signed descriptor batch");
+        }
+    }
+
+    // Build legacy PEX v1 payload for backward compatibility: [GHOST_PEX_____][count u8][fp_hex 16B + addr_str + NUL ...]
     let mut payload = GHOST_PEX_MAGIC.to_vec();
     let peer_list: Vec<(String, SocketAddr)> = peers
         .iter()
@@ -5043,6 +5433,9 @@ async fn send_pex(
         .take(MAX_PEX_PEERS)
         .map(|e| (e.key().clone(), *e.value()))
         .collect();
+    if peer_list.is_empty() {
+        return;
+    }
     payload.push(peer_list.len() as u8);
     for (fp, addr) in &peer_list {
         let fp_bytes = fp.as_bytes();
@@ -5054,8 +5447,6 @@ async fn send_pex(
         payload.extend_from_slice(addr_str.as_bytes());
         payload.push(0u8);
     }
-    let ctx = SealCtx::from_session(&sess);
-    drop(sess);
     let (f, tag) = enc_split(&ctx, &payload);
     send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
     tracing::debug!(to = %dest_fp, peers = peer_list.len(), "PEX: sent peer list");
@@ -5090,20 +5481,68 @@ pub(crate) fn broadcast_goodbye(nc: &GhostNode, addrs: &DashMap<String, SocketAd
     addrs.clear();
 }
 
-/// Zero-Knowledge 3-Tier bootstrap: checks authenticated local disk cache (`peers.bin`)
-/// first, then falls back to blinded rendezvous queries without exposing peer IDs.
-async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr> {
-    // Tier 1: Local authenticated disk cache (zero network footprint)
+/// Tier-1 authenticated peer cache loader (`peers.bin` v2 -> legacy v1 -> plaintext `peers.cache`).
+fn load_tier1_peer_cache() -> (
+    Vec<vantablack::ghost::net::discovery::PeerDescriptorV2>,
+    Vec<SocketAddr>,
+) {
     let peer_cache_path = vantablack::ghost::paths::data_file("peers.bin");
-    if let Ok(cached) = vantablack::ghost::net::discovery::LocalPeerCache::load(&peer_cache_path) {
-        if !cached.is_empty() {
-            let addrs: Vec<SocketAddr> = cached.iter().map(|p| p.endpoint).collect();
+    if let Ok(v2_cached) =
+        vantablack::ghost::net::discovery::LocalPeerCache::load_v2(&peer_cache_path)
+    {
+        if !v2_cached.is_empty() {
+            tracing::info!(
+                count = v2_cached.len(),
+                "Discovery Tier 1: Loaded verified v2 peer descriptors from peers.bin"
+            );
+            return (v2_cached, Vec::new());
+        }
+    }
+    if let Ok(v1_cached) = vantablack::ghost::net::discovery::LocalPeerCache::load(&peer_cache_path)
+    {
+        if !v1_cached.is_empty() {
+            let addrs: Vec<SocketAddr> = v1_cached.iter().map(|p| p.endpoint).collect();
             tracing::info!(
                 count = addrs.len(),
-                "Discovery Tier 1: Loaded authenticated peer endpoints from local disk cache (peers.bin)"
+                "Discovery Tier 1: Loaded legacy v1 peer endpoints from peers.bin"
             );
-            return addrs;
+            return (Vec::new(), addrs);
         }
+    }
+    let legacy_cache_path = vantablack::ghost::paths::data_file("peers.cache");
+    if let Ok(raw) = std::fs::read_to_string(&legacy_cache_path) {
+        let addrs: Vec<SocketAddr> = raw
+            .lines()
+            .filter_map(|l| l.trim().parse::<SocketAddr>().ok())
+            .collect();
+        if !addrs.is_empty() {
+            tracing::info!(
+                count = addrs.len(),
+                "Discovery Tier 1: Loaded fallback peer endpoints from peers.cache"
+            );
+            return (Vec::new(), addrs);
+        }
+    }
+    (Vec::new(), Vec::new())
+}
+
+/// Zero-Knowledge 3-Tier bootstrap: checks authenticated local disk cache (`peers.bin`)
+/// first, then falls back to legacy HTTP bootstrap when `GHOST_RENDEZVOUS_URL` is unset.
+async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr> {
+    // Tier 1: Local authenticated disk cache (zero network footprint)
+    let (v2_cached, legacy_addrs) = load_tier1_peer_cache();
+    if !v2_cached.is_empty() {
+        return v2_cached.into_iter().map(|d| d.endpoint).collect();
+    }
+    if !legacy_addrs.is_empty() {
+        return legacy_addrs;
+    }
+    if std::env::var("GHOST_RENDEZVOUS_URL")
+        .ok()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return Vec::new();
     }
 
     // Tier 3: Zero-knowledge blinded rendezvous discovery
@@ -5808,6 +6247,14 @@ async fn run_node(
     // Relay-capable peers discovered via beacons, tracked on EVERY node (A2)
     // regardless of whether `GHOST_RELAY=1` is enabled on this node.
     let known_relays: Arc<DashMap<String, SocketAddr>> = Arc::new(DashMap::new());
+    // Verified PeerDescriptorV2 cache shared across Tier-1 cache, Tier-3 blind mailbox, and PEX v2.
+    let known_descriptors: Arc<
+        DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
+    > = Arc::new(DashMap::new());
+    #[cfg(feature = "vpn")]
+    let vpn_hub_active = matches!(vpn_mode.as_ref(), Some(VpnMode::Hub(_)));
+    #[cfg(not(feature = "vpn"))]
+    let vpn_hub_active = false;
     // Peers an operator declared radio-only (`GHOST_SKYWAVE_ONLY`). Populated
     // below, before anything can check a candidate pair, and read wherever a
     // measured path would otherwise supersede a declared one.
@@ -6061,18 +6508,71 @@ async fn run_node(
         fp = nc.fingerprint(),
         host = lan_host
     );
+    vantablack::ghost::net::mesh::set_local_node_offer(
+        mesh_port,
+        our_offer_text.read().ok().map(|s| s.clone()),
+    );
 
     let scan_interval_secs = Arc::new(AtomicU32::new(3600)); // Default 1 hour
     let scan_notify = Arc::new(tokio::sync::Notify::new());
 
-    // HTTP bootstrap: register with the global tracker and connect to known peers
+    // Discovery bootstrap: Tier-1 `peers.bin` v2 (with legacy fallback) + Tier-3 BlindMailboxClient
+    // when `GHOST_RENDEZVOUS_URL` is configured, else legacy `http_bootstrap`.
     {
         let nc_boot = Arc::clone(&nc);
+        let addrs_boot = Arc::clone(&addrs);
         let pending_boot = Arc::clone(&pending_hs);
+        let np_boot = Arc::clone(&nat_puncher);
+        let fb_boot = Arc::clone(&fallback_routes);
+        let kr_boot = Arc::clone(&known_relays);
+        let kd_boot = Arc::clone(&known_descriptors);
+        let offer_boot = Arc::clone(&our_offer_text);
         let mesh_port_boot = mesh_port;
         tokio::spawn(async move {
             // Small delay to let the UDP socket settle
             tokio::time::sleep(Duration::from_millis(500)).await;
+            let (v2_cached, legacy_addrs) = load_tier1_peer_cache();
+            for desc in v2_cached {
+                install_peer_descriptor_v2(
+                    &nc_boot,
+                    &nc_boot.socket,
+                    &addrs_boot,
+                    &pending_boot,
+                    Some(np_boot.as_ref()),
+                    Some(fb_boot.as_ref()),
+                    Some(kr_boot.as_ref()),
+                    Some(kd_boot.as_ref()),
+                    desc,
+                )
+                .await;
+            }
+            for peer_addr in legacy_addrs {
+                initiate_handshake(&nc_boot, &nc_boot.socket, peer_addr, &pending_boot).await;
+            }
+
+            if let Ok(rz_url) = std::env::var("GHOST_RENDEZVOUS_URL") {
+                let rz_url = rz_url.trim().to_string();
+                if !rz_url.is_empty() {
+                    blind_rendezvous_sync(
+                        &rz_url,
+                        &nc_boot,
+                        &addrs_boot,
+                        &pending_boot,
+                        &np_boot,
+                        &fb_boot,
+                        &kr_boot,
+                        &kd_boot,
+                        mesh_port_boot,
+                        relay_enabled,
+                        is_exit_node,
+                        vpn_hub_active,
+                        &offer_boot,
+                    )
+                    .await;
+                    return;
+                }
+            }
+
             let bootstrap_peers =
                 http_bootstrap(mesh_port_boot, Some(&nc_boot.fingerprint())).await;
             for peer_addr in bootstrap_peers {
@@ -6210,6 +6710,9 @@ async fn run_node(
         let addrs = Arc::clone(&addrs);
         let pending_hs = Arc::clone(&pending_hs);
         let known_relays_tx = Arc::clone(&known_relays);
+        let known_descriptors_tx = Arc::clone(&known_descriptors);
+        let fb_tx = Arc::clone(&fallback_routes);
+        let exits_tx = Arc::clone(&trusted_exits);
         tokio::spawn(async move {
             let beacon_sock = match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,
@@ -6233,14 +6736,52 @@ async fn run_node(
                 bootstrap_counter = bootstrap_counter.wrapping_add(1);
                 if bootstrap_counter.is_multiple_of(10) {
                     let nc2 = Arc::clone(&nc);
+                    let addrs2 = Arc::clone(&addrs);
                     let pending2 = Arc::clone(&pending_hs);
+                    let np2 = Arc::clone(&nat_p);
+                    let fb2 = Arc::clone(&fb_tx);
+                    let kr2 = Arc::clone(&known_relays_tx);
+                    let kd2 = Arc::clone(&known_descriptors_tx);
+                    let offers2 = Arc::clone(&offers);
                     let port2 = mesh_port;
                     tokio::spawn(async move {
+                        if let Ok(rz_url) = std::env::var("GHOST_RENDEZVOUS_URL") {
+                            let rz_url = rz_url.trim().to_string();
+                            if !rz_url.is_empty() {
+                                blind_rendezvous_sync(
+                                    &rz_url,
+                                    &nc2,
+                                    &addrs2,
+                                    &pending2,
+                                    &np2,
+                                    &fb2,
+                                    &kr2,
+                                    &kd2,
+                                    port2,
+                                    advertises_relay,
+                                    is_exit_node,
+                                    vpn_hub_active,
+                                    &offers2,
+                                )
+                                .await;
+                                return;
+                            }
+                        }
                         let peers = http_bootstrap(port2, Some(&nc2.fingerprint())).await;
                         for addr in peers {
                             initiate_handshake(&nc2, &nc2.socket, addr, &pending2).await;
                         }
                     });
+                }
+                sync_peer_topology_telemetry(
+                    &addrs,
+                    &nat_p,
+                    &fb_tx,
+                    &known_descriptors_tx,
+                    &exits_tx,
+                );
+                if bootstrap_counter.is_multiple_of(6) {
+                    persist_peer_cache_v2(&known_descriptors_tx);
                 }
                 let secs = nc.keepalive_interval_secs.load(Ordering::Relaxed);
                 let interval = Duration::from_secs(secs.clamp(1, 300));
@@ -6360,7 +6901,7 @@ async fn run_node(
                     // Send PEX gossip to all currently connected peers
                     let peer_fps: Vec<String> = addrs.iter().map(|e| e.key().clone()).collect();
                     for dest_fp in peer_fps {
-                        send_pex(&nc, &nc.socket, &dest_fp, &addrs).await;
+                        send_pex(&nc, &nc.socket, &dest_fp, &addrs, &known_descriptors_tx).await;
                     }
                 }
                 sleep(interval).await;
@@ -6747,6 +7288,8 @@ async fn run_node(
         dispatcher: Arc::new(net::dispatcher::LocklessDispatcher::new(4, 1024)),
         socket: nc.socket.clone(),
         connected: Arc::clone(&consumer_connected),
+        nat_puncher: Some(Arc::clone(&nat_puncher)),
+        known_descriptors: Some(Arc::clone(&known_descriptors)),
     });
     // Graceful shutdown watcher: broadcast GHOST_BYE to all connected peers
     // when Ctrl+C arrives or the desktop UI / tray sets `nc.running = false`.
@@ -6890,9 +7433,11 @@ async fn run_node(
                     offer_agent_candidates,
                     true,
                 );
+                let encoded_offer = updated.encode();
                 if let Ok(mut w) = offer_text_probe.write() {
-                    *w = updated.encode();
+                    *w = encoded_offer.clone();
                 }
+                vantablack::ghost::net::mesh::set_local_node_offer(mesh_port, Some(encoded_offer));
                 vantablack::ghost::net::mesh::update_wan_telemetry(|snap| {
                     snap.public_addr = Some(pub_addr);
                     snap.nat_type = nt;
@@ -8553,6 +9098,8 @@ mod ratchet_live_tests {
             dispatcher: Arc::new(net::dispatcher::LocklessDispatcher::new(1, 256)),
             socket: Arc::clone(&node.socket),
             connected: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            nat_puncher: None,
+            known_descriptors: None,
         })
     }
 

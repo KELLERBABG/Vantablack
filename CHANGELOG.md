@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.4.0] - 2026-11-21 - End-to-End WAN Discovery, Live Telemetry & Invite Wiring
+
+- **Blind WAN Discovery & Tier-1 Cache Wiring (`src/main.rs`):** Wired `LocalPeerCache::{load_v2, save_v2}` (`peers.bin` with legacy `peers.cache` fallback), `BlindMailboxClient` (`GHOST_RENDEZVOUS_URL`, preserving `http_bootstrap` fallback only when unset), and signed `GHOST_PEX2____` (`PeerDescriptorV2`) gossip alongside backward-compatible `GHOST_PEX_____` v1 frames, installing peer `IceOffer`s into `NatHolePuncher` and `CAP_RELAY` peers into `Fallback`.
+- **Live WAN Telemetry & `vb://2.` / `vb-net://` Invites (`src/ghost/net/mesh.rs`, `src/control.rs`, `assets/wan_dashboard.html`):** Connected `wan_telemetry_snapshot()` and per-peer `PeerTopologyTelemetry` (`public_addr`, `nat_type`, `stun_ok`, `upnp_ok`, `relay_count`, `relayed_peer_count`, `rtt_ms`, `transport`, `via_relay_fp`) into `GET /api/topology` and `GET /api/status`; added PIN-protected `GET /api/invite`, `vb://2.` / `vb-net://` support in `POST /api/peers/add`, and a "Copy Signed `vb://` Invite" button in the Pairing Studio.
+- **Full Cross-Subsystem E2E Tests (`tests/wan_full_e2e.rs`):** Added end-to-end integration tests covering blind-mailbox publish/fetch with zero plaintext leakage on the wire, `LocalPeerCache` v2 roundtrip & Tier-1 boot, live `/api/topology` telemetry, and `GET /api/invite` + `POST /api/peers/add` pairing.
+
+---
+
 ## [1.3.0] - 2026-11-21 - Single-Socket WAN Transport, Relay Discovery & Safe Exits
 
 - **Single-Socket STUN/ICE Mux (`src/ghost/net/stun.rs`, `src/ghost/net/ice.rs`, `src/ghost/net/mesh.rs`, `src/main.rs`):** Eliminated split `nat_socket`; STUN discovery, UPnP/NAT-PMP mapping, ICE checks, ~25s NAT keepalives, and GTF frames now share `nc.socket` via bounded `broadcast` STUN demuxing (`is_stun_packet`, `gather_reflexive_mux`), with `NatHolePuncher::nominated_addr` routing and initiating handshakes on ICE nomination.

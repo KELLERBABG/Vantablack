@@ -1223,17 +1223,20 @@
               </div>
             </div>
             <div class="pair-field full">
-              <span class="pair-label">Signed Pairing URI (vb://)</span>
+              <span class="pair-label">Signed Pairing URI (vb://2.)</span>
               <div class="pair-input-box">
                 <span class="pair-val" id="hub-pair-uri">Detecting...</span>
                 <button class="copy-btn" onclick="copyTextField('hub-pair-uri', 'copy-uri-text')">
                   <span id="copy-uri-text">Copy</span>
                 </button>
+                <button class="copy-btn" id="btn-copy-signed-invite" onclick="copySignedVbInvite()" style="margin-left: 6px; border-color: var(--accent); color: var(--accent);">
+                  <span id="copy-signed-invite-text">Copy Signed vb:// Invite</span>
+                </button>
               </div>
             </div>
           </div>
           <div class="input-row" style="margin-bottom: 0; margin-top: 2px;">
-            <input type="text" id="quick-add-peer-input" class="text-input" placeholder="Paste peer IP:Port or signed vb://... URI to connect">
+            <input type="text" id="quick-add-peer-input" class="text-input" placeholder="Paste peer IP:Port, signed vb://..., or vb-net://... invite">
             <button class="action-btn" onclick="connectPeerFromInput('quick-add-peer-input')">Connect Peer</button>
           </div>
         </div>
@@ -2170,10 +2173,17 @@
         socks_ok: Boolean(data.socks_listening),
         vpn_available: Boolean(data.vpn_available),
         carrier_enabled: Boolean(data.carrier && data.carrier.enabled),
+        stun_ok: Boolean(data.stun_ok),
+        upnp_ok: Boolean(data.upnp_ok),
+        relay_count: data.relay_count || 0,
         peer_count: data.peers_count || 0,
         active_sessions: sessions,
         swarm_hops_available: Math.min(3, sessions)
-      }, { nat_type: 'Detecting', socks_port: data.socks_port || 1080 });
+      }, {
+        nat_type: data.nat_type || 'Detecting',
+        public_addr: data.public_addr || null,
+        socks_port: data.socks_port || 1080
+      });
     }
 
     function updateReadinessPipeline(wr, selfInfo) {
@@ -2187,8 +2197,11 @@
         if (sub) sub.textContent = text;
       };
 
-      setStep('pipe-step-socket', wr.socket_ok ? 'ok' : 'warn', 'pipe-socket-sub', wr.socket_ok ? (wr.carrier_enabled ? 'UDP + QUIC Ready' : 'UDP Active') : 'Offline');
-      setStep('pipe-step-discovery', wr.lan_discovery_ok ? 'ok' : 'warn', 'pipe-discovery-sub', `${wr.peer_count || 0} Discovered`);
+      const stunPart = wr.stun_ok ? ' · STUN OK' : '';
+      const upnpPart = wr.upnp_ok ? ' · UPnP' : '';
+      setStep('pipe-step-socket', wr.socket_ok ? 'ok' : 'warn', 'pipe-socket-sub', wr.socket_ok ? ((wr.carrier_enabled ? 'UDP + QUIC' : 'UDP Active') + stunPart + upnpPart) : 'Offline');
+      const relayPart = (wr.relay_count || 0) > 0 ? ` · ${wr.relay_count} Relay` : '';
+      setStep('pipe-step-discovery', wr.lan_discovery_ok ? 'ok' : 'warn', 'pipe-discovery-sub', `${wr.peer_count || 0} Discovered${relayPart}`);
       const hops = wr.swarm_hops_available || 0;
       setStep('pipe-step-quorum', hops >= 1 ? 'ok' : 'warn', 'pipe-quorum-sub', `${hops} / 3 Hops (${wr.active_sessions || 0} active)`);
       const port = (selfInfo && selfInfo.socks_port) || nodeState.socks_port || 1080;
@@ -2562,6 +2575,34 @@
           </div>
         `;
       }).join('');
+    }
+
+    async function copySignedVbInvite() {
+      const label = document.getElementById('copy-signed-invite-text');
+      try {
+        const res = await fetch('/api/invite', { headers: pinHeaders() });
+        if (res.status === 401) {
+          openPinModal('Enter PIN to generate signed vb:// invite.');
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok || !data.vb_uri) {
+          showToast(data.error || 'Could not generate signed invite.', 'error');
+          return;
+        }
+        const uriEl = document.getElementById('hub-pair-uri');
+        if (uriEl) uriEl.innerText = data.vb_uri;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(data.vb_uri);
+        }
+        if (label) {
+          label.textContent = 'Copied!';
+          setTimeout(() => { label.textContent = 'Copy Signed vb:// Invite'; }, 1800);
+        }
+        showToast('Signed vb://2. invite copied to clipboard.', 'success');
+      } catch (e) {
+        showToast('Invite generation failed: ' + e.message, 'error');
+      }
     }
 
     async function connectPeerFromInput(inputId) {

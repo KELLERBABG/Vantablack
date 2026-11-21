@@ -15,7 +15,15 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vantablack::ghost::layers::l10_qel::{self, QelAnchorState, QuantumRouteResult};
 use vantablack::ghost::net::consumer::{self, ConsumerSettings};
-use vantablack::ghost::net::discovery::{PeerDescriptor, VB_URI_PREFIX};
+use vantablack::ghost::net::discovery::{
+    LocalPeerCache, NetworkInvite, PeerDescriptor, PeerDescriptorV2, CAP_EXIT, CAP_QUIC, CAP_RELAY,
+    CAP_VPN_HUB, NAT_CONE, NAT_DIRECT, NAT_RESTRICTED, NAT_SYMMETRIC, NAT_UNKNOWN,
+    VB_NET_URI_PREFIX, VB_URI_PREFIX, VB_V2_URI_PREFIX,
+};
+use vantablack::ghost::net::mesh::{
+    local_node_offer, peer_telemetry_snapshot, remove_peer_telemetry, update_peer_telemetry,
+    wan_telemetry_snapshot, NatType,
+};
 use vantablack::ghost::GhostNode;
 
 /// Port the HTTP control center listens on (`GHOST_WEB_PORT`, else the legacy
@@ -339,6 +347,7 @@ pub fn build_topology_json(
         .collect();
 
     let swarm_hops_available = sessions_count.min(3);
+    let wan_snap = wan_telemetry_snapshot();
     let self_transport = self_hint
         .transport
         .as_deref()
@@ -375,6 +384,10 @@ pub fn build_topology_json(
             "socks_ok": socks_listening,
             "vpn_available": vpn_available,
             "carrier_enabled": carrier.enabled(),
+            "stun_ok": wan_snap.stun_server.is_some(),
+            "upnp_ok": wan_snap.upnp_mapped,
+            "relay_count": wan_snap.relay_count,
+            "relayed_peer_count": wan_snap.relayed_peer_count,
             "peer_count": addrs.len(),
             "active_sessions": sessions_count,
             "swarm_hops_available": swarm_hops_available,
@@ -401,6 +414,62 @@ pub fn build_proxy_pac(socks_port: u16) -> String {
          \x20 return \"SOCKS5 127.0.0.1:{socks_port}; DIRECT\";\n\
          }}\n"
     )
+}
+
+/// Map [`NatType`] into the wire byte used by [`PeerDescriptorV2`].
+fn nat_type_to_code(nt: NatType) -> u8 {
+    match nt {
+        NatType::Direct => NAT_DIRECT,
+        NatType::Cone => NAT_CONE,
+        NatType::Restricted => NAT_RESTRICTED,
+        NatType::Symmetric => NAT_SYMMETRIC,
+        NatType::Unknown => NAT_UNKNOWN,
+    }
+}
+
+/// Human-readable NAT label for `/api/topology` and `/api/status`.
+fn nat_type_label(nt: NatType) -> &'static str {
+    match nt {
+        NatType::Unknown => "Detecting",
+        other => other.as_str(),
+    }
+}
+
+/// Compute advertised [`PeerDescriptorV2`] capability bitflags for this node.
+fn local_capability_flags(vpn_role: &str) -> u8 {
+    let env_true = |key: &str| {
+        std::env::var(key)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    };
+    let mut caps = 0u8;
+    if env_true("GHOST_RELAY") {
+        caps |= CAP_RELAY;
+    }
+    if vpn_role == "hub" || env_true("GHOST_EXIT") {
+        caps |= CAP_EXIT;
+    }
+    if vpn_role == "hub" {
+        caps |= CAP_VPN_HUB;
+    }
+    if cfg!(feature = "quic") {
+        caps |= CAP_QUIC;
+    }
+    caps
+}
+
+/// Upsert a verified [`PeerDescriptorV2`] into Tier-1 disk cache (`peers.bin`).
+fn record_peer_cache_v2_entry(desc: PeerDescriptorV2) {
+    let peers_bin = vantablack::ghost::paths::data_file("peers.bin");
+    let mut list = LocalPeerCache::load_v2(&peers_bin).unwrap_or_default();
+    if let Some(existing) = list.iter_mut().find(|d| d.ed25519_pk == desc.ed25519_pk) {
+        if desc.timestamp >= existing.timestamp {
+            *existing = desc;
+        }
+    } else {
+        list.push(desc);
+    }
+    let _ = LocalPeerCache::save_v2(&peers_bin, &list);
 }
 
 /// Append a peer endpoint to `peers.cache` if not already present.
@@ -648,7 +717,8 @@ pub fn spawn_control_center(
                                     } else if !pin_ok
                                         && (req.starts_with("GET /api/peers")
                                             || req.starts_with("GET /api/wan_telemetry")
-                                            || req.starts_with("GET /api/topology"))
+                                            || req.starts_with("GET /api/topology")
+                                            || req.starts_with("GET /api/invite"))
                                     {
                                         // These reads carry peer or node fingerprints and
                                         // have no liveness role, so a missing PIN denies
@@ -666,8 +736,33 @@ pub fn spawn_control_center(
                                         let settings_now = cs_ref.read().clone();
                                         let lan_discovery_ok =
                                             nc_ref.beacon_enabled.load(Ordering::Relaxed);
-                                        let self_hint = TopologySelfHint::default();
-                                        let peer_hints = std::collections::HashMap::new();
+                                        let wan_snap = wan_telemetry_snapshot();
+                                        let self_hint = TopologySelfHint {
+                                            public_addr: wan_snap
+                                                .public_addr
+                                                .map(|a| a.to_string()),
+                                            nat_type: Some(
+                                                nat_type_label(wan_snap.nat_type).to_string(),
+                                            ),
+                                            ..TopologySelfHint::default()
+                                        };
+                                        let peer_hints: std::collections::HashMap<
+                                            String,
+                                            TopologyPeerHint,
+                                        > = peer_telemetry_snapshot()
+                                            .into_iter()
+                                            .map(|(fp, t)| {
+                                                (
+                                                    fp,
+                                                    TopologyPeerHint {
+                                                        rtt_ms: t.rtt_ms,
+                                                        via_relay_fp: t.via_relay_fp,
+                                                        transport: t.transport,
+                                                        is_exit: t.is_exit,
+                                                    },
+                                                )
+                                            })
+                                            .collect();
                                         let body = build_topology_json(
                                             &nc_ref,
                                             &addrs_ref,
@@ -683,6 +778,49 @@ pub fn spawn_control_center(
                                             &self_hint,
                                             &peer_hints,
                                         )
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("GET /api/invite") {
+                                        let wan_snap = wan_telemetry_snapshot();
+                                        let (offer_port, ice_offer) = local_node_offer();
+                                        let mesh_port = if offer_port != 0 {
+                                            offer_port
+                                        } else {
+                                            nc_ref
+                                                .socket
+                                                .local_addr()
+                                                .map(|a| a.port())
+                                                .unwrap_or(55225)
+                                        };
+                                        let lan_sa = lan_host_ref.parse::<SocketAddr>().ok();
+                                        let lan_endpoints: Vec<SocketAddr> =
+                                            lan_sa.into_iter().collect();
+                                        let endpoint =
+                                            wan_snap.public_addr.or(lan_sa).unwrap_or_else(|| {
+                                                SocketAddr::from(([127, 0, 0, 1], mesh_port))
+                                            });
+                                        let caps = local_capability_flags(vpn_role);
+                                        let nat_code = nat_type_to_code(wan_snap.nat_type);
+                                        let desc = PeerDescriptorV2::sign_new(
+                                            &nc_ref.identity,
+                                            &nc_ref.identity.pq_public_key_bytes(),
+                                            endpoint,
+                                            lan_endpoints,
+                                            mesh_port,
+                                            nat_code,
+                                            caps,
+                                            ice_offer,
+                                        );
+                                        let body = serde_json::json!({
+                                            "success": true,
+                                            "vb_uri": desc.to_uri(),
+                                            "fingerprint": desc.fingerprint(),
+                                            "endpoint": desc.endpoint.to_string(),
+                                            "mesh_port": desc.mesh_port,
+                                            "nat_type": nat_type_label(wan_snap.nat_type),
+                                            "capabilities": desc.capabilities,
+                                            "has_ice_offer": desc.ice_offer.is_some(),
+                                        })
                                         .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /proxy.pac ")
@@ -724,6 +862,7 @@ pub fn spawn_control_center(
                                             })
                                             .collect();
 
+                                        let wan_snap = wan_telemetry_snapshot();
                                         let route_mode_active =
                                             match settings_now.route_mode.as_str() {
                                                 consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
@@ -733,6 +872,11 @@ pub fn spawn_control_center(
                                         "version": env!("CARGO_PKG_VERSION"),
                                         "connected": is_conn,
                                         "mode": current_mode,
+                                        "nat_type": nat_type_label(wan_snap.nat_type),
+                                        "public_addr": if pin_ok { wan_snap.public_addr.map(|a| serde_json::json!(a.to_string())).unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null },
+                                        "stun_ok": wan_snap.stun_server.is_some(),
+                                        "upnp_ok": wan_snap.upnp_mapped,
+                                        "relay_count": wan_snap.relay_count,
                                         "network_id": if pin_ok { serde_json::json!(nc_ref.fingerprint()) } else { serde_json::Value::Null },
                                         "device_name": if pin_ok { serde_json::json!(settings_now.device_name(&nc_ref.fingerprint())) } else { serde_json::Value::Null },
                                         "device_os": consumer::local_os(),
@@ -812,7 +956,143 @@ pub fn spawn_control_center(
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("")
                                             .trim();
-                                        if addr_str.starts_with(VB_URI_PREFIX) {
+                                        if addr_str.starts_with(VB_V2_URI_PREFIX) {
+                                            match PeerDescriptorV2::from_uri(addr_str) {
+                                                Some(desc) if desc.verify(86400 * 7) => {
+                                                    let target_addr = desc.endpoint;
+                                                    let fp = desc.fingerprint();
+                                                    let is_exit =
+                                                        (desc.capabilities & CAP_EXIT) != 0;
+                                                    initiate_handshake(
+                                                        &nc_ref,
+                                                        &nc_ref.socket,
+                                                        target_addr,
+                                                        &phs_ref,
+                                                    )
+                                                    .await;
+                                                    for lan_ep in &desc.lan_endpoints {
+                                                        if *lan_ep != target_addr {
+                                                            initiate_handshake(
+                                                                &nc_ref,
+                                                                &nc_ref.socket,
+                                                                *lan_ep,
+                                                                &phs_ref,
+                                                            )
+                                                            .await;
+                                                        }
+                                                    }
+                                                    let endpoint_str = target_addr.to_string();
+                                                    record_peer_cache_entry(&endpoint_str);
+                                                    record_peer_cache_v2_entry(desc);
+                                                    update_peer_telemetry(&fp, |t| {
+                                                        t.is_exit = is_exit;
+                                                    });
+                                                    let body = serde_json::json!({
+                                                        "success": true,
+                                                        "address": endpoint_str,
+                                                        "fingerprint": fp,
+                                                        "uri_parsed": true,
+                                                        "version": 2,
+                                                        "message": format!("Handshake initiated with {} (verified vb://2. descriptor)", target_addr)
+                                                    })
+                                                    .to_string();
+                                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                                }
+                                                Some(_) => {
+                                                    let body = serde_json::json!({
+                                                        "success": false,
+                                                        "error": "Peer descriptor v2 signature or timestamp verification failed"
+                                                    })
+                                                    .to_string();
+                                                    (
+                                                        "HTTP/1.1 400 Bad Request",
+                                                        body,
+                                                        "application/json",
+                                                    )
+                                                }
+                                                None => {
+                                                    let body = serde_json::json!({
+                                                        "success": false,
+                                                        "error": "Invalid vb://2. peer descriptor URI"
+                                                    })
+                                                    .to_string();
+                                                    (
+                                                        "HTTP/1.1 400 Bad Request",
+                                                        body,
+                                                        "application/json",
+                                                    )
+                                                }
+                                            }
+                                        } else if addr_str.starts_with(VB_NET_URI_PREFIX) {
+                                            match NetworkInvite::from_uri(addr_str) {
+                                                Some(invite) => {
+                                                    if !invite.verify_bootstrap(86400 * 7) {
+                                                        let body = serde_json::json!({
+                                                            "success": false,
+                                                            "error": "Network invite bootstrap descriptor verification failed"
+                                                        })
+                                                        .to_string();
+                                                        (
+                                                            "HTTP/1.1 400 Bad Request",
+                                                            body,
+                                                            "application/json",
+                                                        )
+                                                    } else {
+                                                        let mut target_ep: Option<String> = None;
+                                                        let mut peer_fp: Option<String> = None;
+                                                        if let Some(bp) = invite.bootstrap_peer {
+                                                            let ep = bp.endpoint;
+                                                            let fp = bp.fingerprint();
+                                                            let is_exit =
+                                                                (bp.capabilities & CAP_EXIT) != 0;
+                                                            initiate_handshake(
+                                                                &nc_ref,
+                                                                &nc_ref.socket,
+                                                                ep,
+                                                                &phs_ref,
+                                                            )
+                                                            .await;
+                                                            let ep_str = ep.to_string();
+                                                            record_peer_cache_entry(&ep_str);
+                                                            record_peer_cache_v2_entry(bp);
+                                                            update_peer_telemetry(&fp, |t| {
+                                                                t.is_exit = is_exit;
+                                                            });
+                                                            target_ep = Some(ep_str);
+                                                            peer_fp = Some(fp);
+                                                        }
+                                                        let body = serde_json::json!({
+                                                            "success": true,
+                                                            "uri_parsed": true,
+                                                            "invite": true,
+                                                            "network_name": invite.network_name,
+                                                            "rendezvous_url": invite.rendezvous_url,
+                                                            "address": target_ep,
+                                                            "fingerprint": peer_fp,
+                                                            "message": "Network invite accepted"
+                                                        })
+                                                        .to_string();
+                                                        (
+                                                            "HTTP/1.1 200 OK",
+                                                            body,
+                                                            "application/json",
+                                                        )
+                                                    }
+                                                }
+                                                None => {
+                                                    let body = serde_json::json!({
+                                                        "success": false,
+                                                        "error": "Invalid vb-net:// network invite URI"
+                                                    })
+                                                    .to_string();
+                                                    (
+                                                        "HTTP/1.1 400 Bad Request",
+                                                        body,
+                                                        "application/json",
+                                                    )
+                                                }
+                                            }
+                                        } else if addr_str.starts_with(VB_URI_PREFIX) {
                                             match PeerDescriptor::from_uri(addr_str) {
                                                 Some(desc) if desc.verify(86400 * 7) => {
                                                     let target_addr = desc.endpoint;
@@ -924,6 +1204,7 @@ pub fn spawn_control_center(
                                             let had_session = nc_ref.sessions.remove(fp).is_some();
                                             let had_addr = addrs_ref.remove(fp).is_some();
                                             carrier_ref.forget(fp);
+                                            remove_peer_telemetry(fp);
                                             if let Some(ep) = endpoint {
                                                 phs_ref.remove(&ep.to_string());
                                             }

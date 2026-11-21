@@ -238,6 +238,73 @@ pub fn update_wan_telemetry<F: FnOnce(&mut WanTelemetrySnapshot)>(f: F) {
         .unwrap_or(0);
 }
 
+/// Per-peer runtime WAN/transport telemetry exported to `/api/topology`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PeerTopologyTelemetry {
+    pub rtt_ms: Option<f64>,
+    pub transport: Option<String>,
+    pub via_relay_fp: Option<String>,
+    pub is_exit: bool,
+}
+
+static PEER_TELEMETRY: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, PeerTopologyTelemetry>>,
+> = std::sync::OnceLock::new();
+
+fn peer_telemetry_cell(
+) -> &'static std::sync::RwLock<std::collections::HashMap<String, PeerTopologyTelemetry>> {
+    PEER_TELEMETRY.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// Update per-peer runtime telemetry for `fp` in place.
+pub fn update_peer_telemetry<F: FnOnce(&mut PeerTopologyTelemetry)>(fp: &str, f: F) {
+    let mut guard = peer_telemetry_cell()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    let entry = guard.entry(fp.to_string()).or_default();
+    f(entry);
+}
+
+/// Remove per-peer runtime telemetry when a peer is disconnected.
+pub fn remove_peer_telemetry(fp: &str) {
+    let mut guard = peer_telemetry_cell()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    guard.remove(fp);
+}
+
+/// Return a point-in-time snapshot of all per-peer WAN/transport telemetry.
+pub fn peer_telemetry_snapshot() -> std::collections::HashMap<String, PeerTopologyTelemetry> {
+    peer_telemetry_cell()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+static LOCAL_NODE_OFFER: std::sync::OnceLock<std::sync::RwLock<(u16, Option<String>)>> =
+    std::sync::OnceLock::new();
+
+fn local_node_offer_cell() -> &'static std::sync::RwLock<(u16, Option<String>)> {
+    LOCAL_NODE_OFFER.get_or_init(|| std::sync::RwLock::new((0, None)))
+}
+
+/// Record the local node's bound `mesh_port` and latest encoded `IceOffer`
+/// so control-plane invite endpoints (`GET /api/invite`) can embed them.
+pub fn set_local_node_offer(mesh_port: u16, ice_offer: Option<String>) {
+    let mut guard = local_node_offer_cell()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    *guard = (mesh_port, ice_offer);
+}
+
+/// Return the local node's `(mesh_port, ice_offer)` snapshot.
+pub fn local_node_offer() -> (u16, Option<String>) {
+    local_node_offer_cell()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// RAII guard removing a peer's `ufrag` from `active_ufrags` when `punch_hole` exits.
 struct ActiveUfragGuard {
     set: Arc<DashSet<String>>,
@@ -544,11 +611,26 @@ impl NatHolePuncher {
                 s.last_keepalive = Instant::now();
             }
             // The nominated pair's round trip is a real measurement; publish it
-            // so the contact plan can route on it.
-            if let Some(rtt) = agent.selected_pair_rtt() {
+            // so the contact plan and control-plane topology can route on it.
+            let measured_rtt_ms = agent.selected_pair_rtt().map(|rtt| {
                 debug!(peer = %fp, rtt_ms = rtt.as_millis(), "ICE: measured path RTT");
                 self.selected_rtts.insert(fp.to_string(), rtt);
-            }
+                rtt.as_secs_f64() * 1000.0
+            });
+            let is_lan_nom = nominated_remote
+                .map(|a| super::fallback::is_lan_addr(&a))
+                .unwrap_or(false);
+            update_peer_telemetry(fp, |t| {
+                if measured_rtt_ms.is_some() {
+                    t.rtt_ms = measured_rtt_ms;
+                }
+                t.transport = Some(if is_lan_nom {
+                    "direct_lan".to_string()
+                } else {
+                    "direct_wan_ice".to_string()
+                });
+                t.via_relay_fp = None;
+            });
             info!(peer = %fp, nominated = ?nominated_remote, "ICE: path established");
         } else {
             warn!(
