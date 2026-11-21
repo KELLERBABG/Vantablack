@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.2.0] - 2026-11-21 - Control Center API v2 & Interactive Mesh View UI
+
+- **Control Center REST API v2 (`src/control.rs`):** Added PIN-protected `GET /api/topology` (with `TopologySelfHint` / `TopologyPeerHint` snapshot structs), `GET /proxy.pac`, `vb://` URI decoding & signature verification in `POST /api/peers/add`, `POST /api/peers/disconnect` (session/carrier teardown with `GHOST_BYE_MAGIC`), `/api/mesh/scan` & `/api/mesh/config` aliases, and dynamic `version`, `multicast_addr` (`239.255.0.1:2270`), and `socks_ports` in `GET /api/status`.
+- **Interactive Mesh View & Dashboard Overhaul (`assets/wan_dashboard.html`):** Added zero-CDN inline SVG Ego-Graph (`tab-mesh`) with Ring 1 LAN/WAN & Ring 2 relayed arcs, toggleable Circuit Hop Overlay, `Ego Graph` / `Peer Table` switcher, filter chips, click-to-inspect Peer Drawer, WAN & NAT Readiness Pipeline card, Pairing Studio (`IP:Port` / `vb://`), Multi-Port SOCKS5 (`:1080`–`:1083`) + `/proxy.pac` copy + visual Split-Tunnel Bypass editor, Crypto/RS Pipeline Benchmark, styled in-app PIN Unlock Modal, and keyboard shortcuts (`1–5`, `Esc`).
+- **Control Center Integration Tests (`tests/control_center_api.rs`):** Added tests covering `/api/topology`, `/proxy.pac`, `/api/mesh/{scan,config}` aliases, `vb://` URI verification, peer disconnect, and `GHOST_PIN` enforcement.
+
+---
+
 ## [1.1.0] - 2026-11-21 - Zero-Knowledge WAN Discovery v2 & Testbed Repairs
 
 - **Random-Nonce Blind Rendezvous (`src/ghost/net/discovery.rs`):** Replaced static AEAD nonce in `BlindRendezvous` with fresh 12-byte `OsRng` nonces prepended to ciphertext, and added fixed-1024B chaff-padded `encrypt_blob`/`decrypt_blob` and `encrypt_descriptor_v2`/`decrypt_descriptor_v2`.

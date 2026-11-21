@@ -25,11 +25,13 @@
       --emerald-glow: 0 0 22px rgba(16, 185, 129, 0.4);
 
       --amber: #f59e0b;
+      --amber-dim: rgba(245, 158, 11, 0.12);
       --rose: #f43f5e;
+      --rose-dim: rgba(244, 63, 94, 0.14);
 
       --text: #f8fafc;
       --text-muted: #94a3b8;
-      --text-dim: #475569;
+      --text-dim: #64748b;
 
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
@@ -38,7 +40,8 @@
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
-    
+    input, textarea, select, code, .selectable { user-select: text; }
+
     body {
       background: var(--bg);
       color: var(--text);
@@ -87,12 +90,13 @@
     .brand-badge {
       font-size: 10px;
       font-weight: 600;
-      color: var(--text-dim);
+      color: var(--text-muted);
       background: var(--surface);
       border: 1px solid var(--border);
       padding: 1px 6px;
       border-radius: 4px;
       letter-spacing: 0.5px;
+      font-family: var(--font-mono);
     }
 
     .titlebar-status {
@@ -140,15 +144,8 @@
       transition: all 0.15s ease;
     }
 
-    .win-btn:hover {
-      background: var(--surface-hover);
-      color: var(--text);
-    }
-
-    .win-btn.close:hover {
-      background: var(--rose);
-      color: #fff;
-    }
+    .win-btn:hover { background: var(--surface-hover); color: var(--text); }
+    .win-btn.close:hover { background: var(--rose); color: #fff; }
 
     /* ——— Main Layout ——— */
     .app-body {
@@ -157,6 +154,7 @@
       flex-direction: column;
       overflow: hidden;
       background: radial-gradient(circle at 50% 10%, rgba(0, 240, 255, 0.03), transparent 60%);
+      position: relative;
     }
 
     /* ——— Top Navigation Bar ——— */
@@ -165,9 +163,10 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      padding: 12px 24px;
+      padding: 10px 20px;
       border-bottom: 1px solid var(--border-subtle);
       background: var(--bg);
+      flex-wrap: wrap;
     }
 
     .nav-tab {
@@ -177,24 +176,31 @@
       font-family: var(--font-sans);
       font-size: 13px;
       font-weight: 600;
-      padding: 7px 18px;
+      padding: 7px 15px;
       border-radius: var(--radius-sm);
       cursor: pointer;
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
       transition: all 0.2s ease;
     }
 
-    .nav-tab:hover {
-      color: var(--text);
-      background: var(--surface);
-    }
-
+    .nav-tab:hover { color: var(--text); background: var(--surface); }
     .nav-tab.active {
       color: var(--accent);
       background: var(--accent-dim);
       border-color: var(--border-glow);
+    }
+
+    .kbd-hint {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--text-dim);
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      padding: 0 5px;
+      border-radius: 4px;
+      line-height: 16px;
     }
 
     /* ——— Tab Content Panels ——— */
@@ -206,14 +212,12 @@
 
     .tab-pane {
       display: none;
-      max-width: 860px;
+      max-width: 920px;
       margin: 0 auto;
       animation: fadeIn 0.2s ease;
     }
 
-    .tab-pane.active {
-      display: block;
-    }
+    .tab-pane.active { display: block; }
 
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(4px); }
@@ -226,13 +230,13 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 16px 0 24px;
+      padding: 12px 0 20px;
       text-align: center;
     }
 
     .shield-btn {
-      width: 125px;
-      height: 125px;
+      width: 118px;
+      height: 118px;
       border-radius: 50%;
       background: var(--surface);
       border: 2px solid var(--border);
@@ -247,11 +251,7 @@
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
     }
 
-    .shield-btn:hover {
-      transform: scale(1.03);
-      border-color: var(--text-muted);
-    }
-
+    .shield-btn:hover { transform: scale(1.03); border-color: var(--text-muted); }
     .shield-btn.active {
       border-color: var(--emerald);
       box-shadow: var(--emerald-glow), 0 12px 40px rgba(0, 0, 0, 0.6);
@@ -259,8 +259,8 @@
     }
 
     .shield-icon {
-      width: 44px;
-      height: 44px;
+      width: 42px;
+      height: 42px;
       fill: var(--text-dim);
       transition: all 0.3s ease;
     }
@@ -274,22 +274,22 @@
       font-size: 20px;
       font-weight: 700;
       letter-spacing: -0.3px;
-      margin-top: 14px;
+      margin-top: 12px;
       color: var(--text);
     }
 
-    .hero-subtitle {
-      font-size: 12.5px;
-      color: var(--text-muted);
-      margin-top: 4px;
-    }
+    .hero-subtitle { font-size: 12.5px; color: var(--text-muted); margin-top: 4px; }
 
     /* ——— 4-Card Live Stats Grid ——— */
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 12px;
-      margin-top: 10px;
+      margin-top: 8px;
+    }
+
+    @media (max-width: 740px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
     }
 
     .stat-card {
@@ -303,9 +303,7 @@
       transition: border-color 0.2s ease;
     }
 
-    .stat-card:hover {
-      border-color: var(--border-glow);
-    }
+    .stat-card:hover { border-color: var(--border-glow); }
 
     .stat-label {
       font-size: 11px;
@@ -325,15 +323,99 @@
       white-space: nowrap;
     }
 
-    .stat-sub {
-      font-size: 11px;
-      color: var(--text-dim);
-      font-family: var(--font-mono);
+    .stat-sub { font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); }
+
+    /* ——— WAN & NAT Readiness Pipeline ——— */
+    .pipeline-card {
+      margin-top: 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 15px 18px;
     }
 
-    /* ——— Mobile Pairing Box ——— */
+    .pipeline-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .pipeline-steps {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+
+    @media (max-width: 720px) {
+      .pipeline-steps { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    .pipe-step {
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .pipe-step.ok { border-color: rgba(16, 185, 129, 0.45); background: rgba(16, 185, 129, 0.06); }
+    .pipe-step.warn { border-color: rgba(245, 158, 11, 0.45); background: rgba(245, 158, 11, 0.06); }
+
+    .pipe-step-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+    }
+
+    .pipe-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+
+    .pipe-step.ok .pipe-dot { background: var(--emerald); box-shadow: 0 0 8px var(--emerald); }
+    .pipe-step.warn .pipe-dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+
+    .pipe-step-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+    .pipe-step-sub { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
+    /* ——— Pills & Badges ——— */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface-raised);
+      color: var(--text-muted);
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+
+    .pill.emerald { color: var(--emerald); background: var(--emerald-dim); border-color: rgba(16, 185, 129, 0.35); }
+    .pill.cyan { color: var(--accent); background: var(--accent-dim); border-color: rgba(0, 240, 255, 0.35); }
+    .pill.amber { color: var(--amber); background: var(--amber-dim); border-color: rgba(245, 158, 11, 0.35); }
+    .pill.rose { color: var(--rose); background: var(--rose-dim); border-color: rgba(244, 63, 94, 0.35); }
+
+    /* ——— Pairing Card ——— */
     .pair-card {
-      margin-top: 16px;
+      margin-top: 14px;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -343,25 +425,9 @@
       gap: 12px;
     }
 
-    .pair-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .pair-title {
-      font-size: 13.5px;
-      font-weight: 700;
-      color: var(--text);
-      display: block;
-    }
-
-    .pair-subtitle {
-      font-size: 11.5px;
-      color: var(--text-muted);
-      display: block;
-      margin-top: 2px;
-    }
+    .pair-header { display: flex; align-items: center; gap: 10px; }
+    .pair-title { font-size: 13.5px; font-weight: 700; color: var(--text); display: block; }
+    .pair-subtitle { font-size: 11.5px; color: var(--text-muted); display: block; margin-top: 2px; }
 
     .pair-grid {
       display: grid;
@@ -369,12 +435,12 @@
       gap: 12px;
     }
 
-    .pair-field {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
+    @media (max-width: 640px) {
+      .pair-grid { grid-template-columns: 1fr; }
     }
 
+    .pair-field { display: flex; flex-direction: column; gap: 5px; }
+    .pair-field.full { grid-column: 1 / -1; }
     .pair-label {
       font-size: 10.5px;
       font-weight: 700;
@@ -402,6 +468,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      user-select: text;
     }
 
     .copy-btn {
@@ -420,48 +487,165 @@
       flex-shrink: 0;
     }
 
-    .copy-btn:hover {
-      background: var(--surface-hover);
-      color: var(--text);
-      border-color: var(--accent);
+    .copy-btn:hover { background: var(--surface-hover); color: var(--text); border-color: var(--accent); }
+
+    /* ——— Mesh View (Tab 2) ——— */
+    .mesh-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
     }
 
-    /* ——— Peer List & Cards (Tab 2) ——— */
+    .chip-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 3px;
+      border-radius: var(--radius-sm);
+    }
+
+    .chip-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 11.5px;
+      font-weight: 600;
+      padding: 5px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .chip-btn:hover { color: var(--text); background: var(--surface-hover); }
+    .chip-btn.active { color: var(--accent); background: var(--accent-dim); }
+    .chip-btn.amber.active { color: var(--amber); background: var(--amber-dim); }
+
+    .mesh-canvas-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .mesh-svg-wrap {
+      width: 100%;
+      background: radial-gradient(circle at 50% 50%, rgba(0, 240, 255, 0.045), rgba(3, 4, 7, 0.6) 72%);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      position: relative;
+    }
+
+    .mesh-svg-wrap svg {
+      width: 100%;
+      height: auto;
+      display: block;
+      min-height: 340px;
+      max-height: 460px;
+    }
+
+    .mesh-legend {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .legend-items { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .legend-line { width: 18px; height: 2px; display: inline-block; }
+    .legend-line.lan { background: var(--accent); }
+    .legend-line.wan { background: var(--emerald); }
+    .legend-line.relay { border-top: 2px dashed var(--amber); height: 0; }
+
+    .hop-overlay-bar {
+      margin-top: 10px;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .mesh-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+    }
+
+    .mesh-table th {
+      text-align: left;
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .mesh-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text);
+    }
+
+    .mesh-table tr:hover td { background: var(--surface-hover); cursor: pointer; }
+
+    @keyframes pulseRing {
+      0% { transform: scale(1); opacity: 0.65; }
+      70% { transform: scale(1.65); opacity: 0; }
+      100% { transform: scale(1.65); opacity: 0; }
+    }
+
+    .svg-pulse {
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: pulseRing 2.4s ease-out infinite;
+    }
+
+    /* ——— Peer List & Cards (Tab 3) ——— */
     .section-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
-    .section-title {
-      font-size: 16px;
-      font-weight: 700;
-      color: var(--text);
-    }
+    .section-title { font-size: 16px; font-weight: 700; color: var(--text); }
 
     .peer-card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 14px 18px;
+      padding: 13px 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 14px;
       margin-bottom: 10px;
       transition: all 0.2s ease;
+      cursor: pointer;
     }
 
-    .peer-card:hover {
-      border-color: var(--border-glow);
-    }
+    .peer-card:hover { border-color: var(--border-glow); background: var(--surface-raised); }
 
-    .peer-main {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
+    .peer-main { display: flex; align-items: center; gap: 14px; min-width: 0; }
 
     .peer-dot {
       width: 10px;
@@ -472,33 +656,14 @@
       flex-shrink: 0;
     }
 
-    .peer-dot.offline {
-      background: var(--text-dim);
-      box-shadow: none;
-    }
+    .peer-dot.offline { background: var(--text-dim); box-shadow: none; }
+    .peer-name { font-size: 14px; font-weight: 600; color: var(--text); }
+    .peer-addr { font-size: 11.5px; font-family: var(--font-mono); color: var(--text-muted); margin-top: 2px; }
 
-    .peer-name {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text);
-    }
-
-    .peer-addr {
-      font-size: 11.5px;
-      font-family: var(--font-mono);
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-
-    .peer-metrics {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      flex-shrink: 0;
-    }
+    .peer-metrics { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
 
     .peer-ping {
-      font-size: 12px;
+      font-size: 11.5px;
       font-family: var(--font-mono);
       color: var(--emerald);
       background: var(--emerald-dim);
@@ -508,15 +673,16 @@
 
     .peer-badge {
       font-size: 11px;
-      color: var(--text-dim);
+      color: var(--text-muted);
       background: var(--surface-raised);
       border: 1px solid var(--border);
       padding: 3px 9px;
       border-radius: 4px;
+      font-family: var(--font-mono);
     }
 
     .empty-state {
-      padding: 42px 24px;
+      padding: 36px 24px;
       text-align: center;
       color: var(--text-muted);
       font-size: 13px;
@@ -526,48 +692,71 @@
       line-height: 1.6;
     }
 
-    /* ——— Form Inputs ——— */
-    .input-row {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 18px;
-    }
+    /* ——— Form Inputs & Buttons ——— */
+    .input-row { display: flex; gap: 10px; margin-bottom: 14px; }
 
     .text-input {
       flex: 1;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      padding: 10px 14px;
+      padding: 9px 13px;
       color: var(--text);
       font-family: var(--font-mono);
-      font-size: 13px;
+      font-size: 12.5px;
       outline: none;
       transition: border-color 0.2s ease;
+      min-width: 0;
     }
 
-    .text-input:focus {
-      border-color: var(--accent);
-    }
+    .text-input:focus { border-color: var(--accent); }
 
     .action-btn {
       background: var(--accent);
       color: #020305;
       font-weight: 700;
-      font-size: 13px;
+      font-size: 12.5px;
       border: none;
       border-radius: var(--radius-sm);
-      padding: 0 20px;
+      padding: 9px 18px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .action-btn:hover { opacity: 0.92; box-shadow: var(--accent-glow); }
+    .action-btn:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
+
+    .secondary-btn {
+      background: var(--surface-raised);
+      color: var(--text);
+      border: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 12px;
+      border-radius: var(--radius-sm);
+      padding: 7px 14px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .secondary-btn:hover { background: var(--surface-hover); border-color: var(--accent); }
+
+    .danger-btn {
+      background: var(--rose-dim);
+      color: var(--rose);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      font-weight: 600;
+      font-size: 12px;
+      border-radius: var(--radius-sm);
+      padding: 7px 14px;
       cursor: pointer;
       transition: all 0.15s ease;
     }
 
-    .action-btn:hover {
-      opacity: 0.9;
-      box-shadow: var(--accent-glow);
-    }
+    .danger-btn:hover { background: var(--rose); color: #fff; }
 
-    /* ——— Live Diagnostics Cards (Tab 3) ——— */
+    /* ——— Live Diagnostics Cards (Tab 4) ——— */
     .diag-item {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -580,73 +769,133 @@
       margin-bottom: 10px;
     }
 
-    .diag-label {
-      font-size: 13px;
-      font-weight: 600;
-      color: var(--text);
-    }
-
-    .diag-sub {
-      font-size: 11.5px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-
+    .diag-label { font-size: 13px; font-weight: 600; color: var(--text); }
+    .diag-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
     .diag-val {
       font-family: var(--font-mono);
-      font-size: 13px;
+      font-size: 12.5px;
       color: var(--accent);
       background: var(--surface-raised);
       border: 1px solid var(--border);
       padding: 4px 10px;
       border-radius: 5px;
+      white-space: nowrap;
     }
 
-    /* ——— Settings Toggles (Tab 4) ——— */
+    .bench-card {
+      margin-top: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+
+    .bench-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 680px) {
+      .bench-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    .bench-metric {
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+    }
+
+    .bench-metric-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .bench-metric-val { font-size: 15px; font-weight: 700; font-family: var(--font-mono); color: var(--accent); margin-top: 4px; }
+
+    /* ——— Settings Toggles & Multi-Port SOCKS5 (Tab 5) ——— */
     .setting-item {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 16px 20px;
+      padding: 15px 18px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 20px;
-      margin-bottom: 12px;
+      gap: 18px;
+      margin-bottom: 10px;
     }
 
-    .setting-text {
+    .setting-text { display: flex; flex-direction: column; gap: 3px; flex: 1; }
+    .setting-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .setting-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+    .setting-desc { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+    .setting-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      margin-bottom: 14px;
+    }
+
+    .socks-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    @media (max-width: 720px) {
+      .socks-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    .socks-port-card {
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
       display: flex;
       flex-direction: column;
-      gap: 3px;
+      gap: 4px;
     }
 
-    .setting-title {
-      font-size: 14px;
-      font-weight: 600;
+    .socks-port-card.ready { border-color: rgba(16, 185, 129, 0.45); }
+    .socks-port-card.warn { border-color: rgba(245, 158, 11, 0.4); }
+
+    .bypass-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .bypass-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
       color: var(--text);
     }
 
-    .setting-desc {
-      font-size: 12px;
+    .bypass-tag button {
+      background: transparent;
+      border: none;
       color: var(--text-muted);
-      line-height: 1.4;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      padding: 0 2px;
     }
+
+    .bypass-tag button:hover { color: var(--rose); }
 
     /* Switch toggle */
-    .toggle {
-      position: relative;
-      width: 44px;
-      height: 24px;
-      flex-shrink: 0;
-    }
-
-    .toggle input {
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
-
+    .toggle { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
     .slider {
       position: absolute;
       cursor: pointer;
@@ -656,7 +905,6 @@
       border-radius: 999px;
       transition: all 0.2s ease;
     }
-
     .slider:before {
       position: absolute;
       content: "";
@@ -668,20 +916,127 @@
       border-radius: 50%;
       transition: all 0.2s ease;
     }
+    input:checked + .slider { background: var(--emerald); border-color: var(--emerald); }
+    input:checked + .slider:before { transform: translateX(20px); background: #fff; }
 
-    input:checked + .slider {
-      background: var(--emerald);
-      border-color: var(--emerald);
+    /* ——— Peer Inspector Drawer ——— */
+    .drawer-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 3, 5, 0.62);
+      z-index: 90;
+    }
+    .drawer-backdrop.open { display: block; }
+
+    .peer-drawer {
+      position: fixed;
+      top: 42px;
+      right: 0;
+      bottom: 0;
+      width: 380px;
+      max-width: 100vw;
+      background: var(--bg-alt);
+      border-left: 1px solid var(--border);
+      box-shadow: -12px 0 40px rgba(0, 0, 0, 0.7);
+      z-index: 95;
+      transform: translateX(100%);
+      transition: transform 0.22s ease;
+      display: flex;
+      flex-direction: column;
+      padding: 18px 20px;
+      overflow-y: auto;
     }
 
-    input:checked + .slider:before {
-      transform: translateX(20px);
-      background: #fff;
+    .peer-drawer.open { transform: translateX(0); }
+
+    .drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 14px;
     }
+
+    .drawer-row {
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .drawer-kv-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .drawer-kv {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 9px 11px;
+    }
+
+    /* ——— PIN Unlock Modal ——— */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 3, 5, 0.78);
+      backdrop-filter: blur(4px);
+      z-index: 110;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.open { display: flex; }
+
+    .modal-card {
+      width: 100%;
+      max-width: 400px;
+      background: var(--surface);
+      border: 1px solid var(--border-glow);
+      border-radius: var(--radius);
+      padding: 22px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), var(--accent-glow);
+    }
+
+    /* ——— Toast Stack ——— */
+    .toast-container {
+      position: fixed;
+      bottom: 48px;
+      right: 20px;
+      z-index: 120;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+      max-width: 360px;
+    }
+
+    .toast {
+      background: var(--surface-raised);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
+      color: var(--text);
+      font-size: 12.5px;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+      pointer-events: auto;
+      animation: fadeIn 0.18s ease;
+    }
+
+    .toast.success { border-left-color: var(--emerald); }
+    .toast.error { border-left-color: var(--rose); }
+    .toast.warn { border-left-color: var(--amber); }
 
     /* ——— Footer Info ——— */
     .app-footer {
-      padding: 10px 24px;
+      padding: 9px 24px;
       border-top: 1px solid var(--border-subtle);
       background: var(--bg-alt);
       display: flex;
@@ -689,6 +1044,8 @@
       justify-content: space-between;
       font-size: 11px;
       color: var(--text-dim);
+      gap: 10px;
+      flex-wrap: wrap;
     }
   </style>
 </head>
@@ -701,7 +1058,7 @@
         <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 2.18l7 3.12v4.7c0 4.54-3.05 8.78-7 9.88-3.95-1.1-7-5.34-7-9.88V6.3l7-3.12z"/>
       </svg>
       <span class="brand-name">VANTABLACK</span>
-      <span class="brand-badge" id="app-version">v0.8.21</span>
+      <span class="brand-badge" id="app-version">v{{VERSION}}</span>
       <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" class="brand-badge" style="text-decoration:none; cursor:pointer; color: var(--accent); border-color: rgba(0,240,255,0.3); pointer-events: auto;" title="Open GitHub Repository">GitHub ↗</a>
       <span id="titlebar-update-pill" onclick="triggerUpdateModal()" style="display: none; background: rgba(16,185,129,0.18); border: 1px solid #10b981; color: #10b981; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; cursor: pointer; pointer-events: auto;" title="Click to install update">⚡ Update Available</span>
       <div class="titlebar-status">
@@ -733,36 +1090,38 @@
       <button class="nav-tab active" id="btn-update-apply" style="padding: 4px 12px; font-size: 12px; background: #059669; border-color: #10b981; color: white;" onclick="applyUpdateNow()">
         Update & Restart Now ⚡
       </button>
-      <button class="nav-tab" style="padding: 4px 8px; font-size: 12px;" onclick="document.getElementById('update-banner').style.display='none'">
-        ✕
-      </button>
+      <button class="nav-tab" style="padding: 4px 8px; font-size: 12px;" onclick="document.getElementById('update-banner').style.display='none'">✕</button>
     </div>
   </div>
 
   <div class="app-body">
-    <!-- Top Navigation Bar -->
+    <!-- Top Navigation Bar (1–5 shortcuts) -->
     <div class="nav-bar">
       <button class="nav-tab active" data-tab="tab-shield" onclick="switchTab('tab-shield')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3z"/></svg>
-        Status
+        Status <span class="kbd-hint">1</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-mesh" onclick="switchTab('tab-mesh')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M6.8 7.5l3.5 3m7-3l-3.5 3m-7 6l3.5-3m7 3l-3.5-3" stroke="currentColor" stroke-width="1.6"/></svg>
+        Mesh View <span class="kbd-hint">2</span>
       </button>
       <button class="nav-tab" data-tab="tab-peers" onclick="switchTab('tab-peers')">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 3s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
-        Peers (<span id="nav-peer-count">0</span>)
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+        Peers (<span id="nav-peer-count">0</span>) <span class="kbd-hint">3</span>
       </button>
       <button class="nav-tab" data-tab="tab-metrics" onclick="switchTab('tab-metrics')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
-        Diagnostics
+        Diagnostics <span class="kbd-hint">4</span>
       </button>
       <button class="nav-tab" data-tab="tab-settings" onclick="switchTab('tab-settings')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
-        Settings
+        Settings <span class="kbd-hint">5</span>
       </button>
     </div>
 
     <!-- Viewport -->
     <div class="tab-viewport">
-      
+
       <!-- TAB 1: SHIELD / OVERVIEW -->
       <div class="tab-pane active" id="tab-shield">
         <div class="hero-container">
@@ -780,16 +1139,16 @@
           <div class="stat-card">
             <span class="stat-label">Download Rate</span>
             <span class="stat-val" style="color: var(--accent);" id="stat-speed-down">↓ 0 B/s</span>
-            <span class="stat-sub" id="stat-total-down">0.0 MB total</span>
+            <span class="stat-sub" id="stat-total-down">0 B total</span>
           </div>
           <div class="stat-card">
             <span class="stat-label">Upload Rate</span>
             <span class="stat-val" style="color: var(--emerald);" id="stat-speed-up">↑ 0 B/s</span>
-            <span class="stat-sub" id="stat-total-up">0.0 MB total</span>
+            <span class="stat-sub" id="stat-total-up">0 B total</span>
           </div>
           <div class="stat-card">
             <span class="stat-label">Mesh Peers</span>
-            <span class="stat-val" id="stat-peer-count">0</span>
+            <span class="stat-val" id="stat-peer-count">0 Online</span>
             <span class="stat-sub" id="stat-session-count">0 Active Sessions</span>
           </div>
           <div class="stat-card">
@@ -799,41 +1158,157 @@
           </div>
         </div>
 
-        <!-- Mobile Pairing & Connection Info -->
+        <!-- WAN & NAT Readiness Pipeline -->
+        <div class="pipeline-card">
+          <div class="pipeline-header">
+            <div>
+              <span class="pair-title">WAN &amp; NAT Readiness Pipeline</span>
+              <span class="pair-subtitle">Real-time readiness across transport, peer discovery, onion quorum, and local ingress</span>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+              <span class="pill cyan" id="nat-type-pill">NAT: Detecting</span>
+              <span class="pill" id="public-addr-pill" style="display: none;">Public: —</span>
+            </div>
+          </div>
+          <div class="pipeline-steps">
+            <div class="pipe-step" id="pipe-step-socket">
+              <div class="pipe-step-top"><span>1. Mesh Socket</span><span class="pipe-dot"></span></div>
+              <div class="pipe-step-title">UDP Transport</div>
+              <div class="pipe-step-sub" id="pipe-socket-sub">Checking...</div>
+            </div>
+            <div class="pipe-step" id="pipe-step-discovery">
+              <div class="pipe-step-top"><span>2. Discovery</span><span class="pipe-dot"></span></div>
+              <div class="pipe-step-title">LAN / WAN Peers</div>
+              <div class="pipe-step-sub" id="pipe-discovery-sub">Standby</div>
+            </div>
+            <div class="pipe-step" id="pipe-step-quorum">
+              <div class="pipe-step-top"><span>3. Swarm Quorum</span><span class="pipe-dot"></span></div>
+              <div class="pipe-step-title">Circuit Hops</div>
+              <div class="pipe-step-sub" id="pipe-quorum-sub">0 / 3 Hops</div>
+            </div>
+            <div class="pipe-step" id="pipe-step-ingress">
+              <div class="pipe-step-top"><span>4. Ingress</span><span class="pipe-dot"></span></div>
+              <div class="pipe-step-title">Proxy / VPN</div>
+              <div class="pipe-step-sub" id="pipe-ingress-sub">Checking...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mobile & Peer Pairing Studio -->
         <div class="pair-card">
           <div class="pair-header">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--accent)"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
             <div>
-              <span class="pair-title">Verbindung mit Android-App</span>
-              <span class="pair-subtitle">Im selben WLAN diese Werte auf deinem Smartphone eintragen:</span>
+              <span class="pair-title">Mobile &amp; Peer Pairing Studio</span>
+              <span class="pair-subtitle">Share your endpoint, fingerprint, or signed vb:// URI to pair another device on LAN or WAN</span>
             </div>
           </div>
           <div class="pair-grid">
             <div class="pair-field">
-              <span class="pair-label">HUB ENDPOINT (IP:PORT)</span>
+              <span class="pair-label">Node Endpoint (IP:Port)</span>
               <div class="pair-input-box">
                 <span class="pair-val" id="hub-endpoint">Detecting...</span>
-                <button class="copy-btn" id="copy-endpoint-btn" onclick="copyHubEndpoint()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                <button class="copy-btn" onclick="copyTextField('hub-endpoint', 'copy-endpoint-text')">
                   <span id="copy-endpoint-text">Copy</span>
                 </button>
               </div>
             </div>
             <div class="pair-field">
-              <span class="pair-label">HUB FINGERPRINT (HEX)</span>
+              <span class="pair-label">Node Fingerprint (Hex)</span>
               <div class="pair-input-box">
                 <span class="pair-val" id="hub-fingerprint">Detecting...</span>
-                <button class="copy-btn" id="copy-fp-btn" onclick="copyFingerprint()">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                <button class="copy-btn" onclick="copyTextField('hub-fingerprint', 'copy-fp-text')">
                   <span id="copy-fp-text">Copy</span>
                 </button>
               </div>
             </div>
+            <div class="pair-field full">
+              <span class="pair-label">Signed Pairing URI (vb://)</span>
+              <div class="pair-input-box">
+                <span class="pair-val" id="hub-pair-uri">Detecting...</span>
+                <button class="copy-btn" onclick="copyTextField('hub-pair-uri', 'copy-uri-text')">
+                  <span id="copy-uri-text">Copy</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="input-row" style="margin-bottom: 0; margin-top: 2px;">
+            <input type="text" id="quick-add-peer-input" class="text-input" placeholder="Paste peer IP:Port or signed vb://... URI to connect">
+            <button class="action-btn" onclick="connectPeerFromInput('quick-add-peer-input')">Connect Peer</button>
           </div>
         </div>
       </div>
 
-      <!-- TAB 2: PEERS -->
+      <!-- TAB 2: MESH VIEW (Interactive Local Ego-Graph & Peer Table) -->
+      <div class="tab-pane" id="tab-mesh">
+        <div class="section-header">
+          <div>
+            <span class="section-title">Interactive Mesh View</span>
+            <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 3px;" id="mesh-view-summary">Loading topology...</div>
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="secondary-btn" onclick="scanLanNow()">🔍 Scan LAN</button>
+            <button class="secondary-btn" onclick="refreshTopology()">Refresh</button>
+          </div>
+        </div>
+
+        <div class="mesh-toolbar">
+          <div class="chip-group" role="group" aria-label="View mode">
+            <button class="chip-btn active" id="btn-view-graph" onclick="setMeshViewMode('graph')">Ego Graph</button>
+            <button class="chip-btn" id="btn-view-table" onclick="setMeshViewMode('table')">Peer Table</button>
+          </div>
+
+          <div class="chip-group" role="group" aria-label="Peer filter">
+            <button class="chip-btn active" data-filter="all" onclick="setMeshFilter('all')">All</button>
+            <button class="chip-btn" data-filter="lan" onclick="setMeshFilter('lan')">LAN</button>
+            <button class="chip-btn" data-filter="wan" onclick="setMeshFilter('wan')">WAN</button>
+            <button class="chip-btn" data-filter="connected" onclick="setMeshFilter('connected')">Connected</button>
+          </div>
+
+          <button class="chip-btn amber" id="btn-hop-overlay" style="border: 1px solid var(--border); background: var(--surface);" onclick="toggleHopOverlay()">
+            🧅 Circuit Hop Overlay: OFF
+          </button>
+        </div>
+
+        <div class="mesh-canvas-card" id="mesh-graph-container">
+          <div class="mesh-svg-wrap">
+            <svg id="mesh-svg" viewBox="0 0 760 440" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+
+          <div class="hop-overlay-bar" id="hop-overlay-bar" style="display: none;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--text);">Circuit Hop Readiness</div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;" id="hop-overlay-pills"></div>
+          </div>
+
+          <div class="mesh-legend">
+            <div class="legend-items">
+              <span class="legend-item"><span class="legend-line lan"></span> Direct LAN</span>
+              <span class="legend-item"><span class="legend-line wan"></span> Direct WAN / QUIC</span>
+              <span class="legend-item"><span class="legend-line relay"></span> Relayed / Multi-Hop</span>
+            </div>
+            <span>Click any node to inspect, rename, or disconnect</span>
+          </div>
+        </div>
+
+        <div class="mesh-canvas-card" id="mesh-table-container" style="display: none; overflow-x: auto;">
+          <table class="mesh-table">
+            <thead>
+              <tr>
+                <th>Peer</th>
+                <th>Endpoint</th>
+                <th>Scope</th>
+                <th>Transport</th>
+                <th>State</th>
+                <th>RTT</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="mesh-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- TAB 3: PEERS -->
       <div class="tab-pane" id="tab-peers">
         <div class="section-header">
           <div>
@@ -841,14 +1316,14 @@
             <div id="mesh-topology-badge" style="font-size: 11px; color: var(--emerald); margin-top: 4px;">Private Mesh: Discovering...</div>
           </div>
           <div style="display: flex; gap: 8px;">
-            <button class="action-btn" style="padding: 6px 14px; font-size: 12px; background: #2563eb;" onclick="scanLanNow()" id="btn-scan-lan">🔍 Scan LAN for Nodes</button>
-            <button class="action-btn" style="padding: 6px 14px; font-size: 12px;" onclick="refreshStatus()">Refresh</button>
+            <button class="action-btn" style="padding: 6px 14px; font-size: 12px; background: #2563eb; color: #fff;" onclick="scanLanNow()" id="btn-scan-lan">🔍 Scan LAN for Nodes</button>
+            <button class="secondary-btn" onclick="refreshStatus()">Refresh</button>
           </div>
         </div>
 
-        <div style="display: flex; align-items: center; justify-content: space-between; background: var(--surface-raised); padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border);">
+        <div style="display: flex; align-items: center; justify-content: space-between; background: var(--surface-raised); padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border); gap: 10px; flex-wrap: wrap;">
           <span style="font-size: 12px; color: var(--text-muted);">Autonomous LAN Discovery Interval:</span>
-          <select id="scan-interval-select" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 4px 8px; border-radius: 6px; font-size: 12px;" onchange="updateScanInterval(this.value)">
+          <select id="scan-interval-select" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 5px 10px; border-radius: 6px; font-size: 12px;" onchange="updateScanInterval(this.value)">
             <option value="3600">Every 1 Hour (Standard)</option>
             <option value="14400">Every 4 Hours</option>
             <option value="0">Manual Scan Only</option>
@@ -856,22 +1331,22 @@
         </div>
 
         <div class="input-row">
-          <input type="text" id="add-peer-input" class="text-input" placeholder="Peer IP:Port (z. B. 192.168.178.50:2270)">
-          <button class="action-btn" onclick="addPeer()">Connect Peer</button>
+          <input type="text" id="add-peer-input" class="text-input" placeholder="Peer IP:Port or vb://... URI (e.g. 192.168.1.50:2270)">
+          <button class="action-btn" onclick="connectPeerFromInput('add-peer-input')">Connect Peer</button>
         </div>
 
         <div id="peer-list-container">
           <div class="empty-state">
             No external mesh peers connected yet.<br>
-            Smartphones and computers in your local Wi-Fi will appear here automatically when they connect.
+            Devices on your local network or paired via vb:// URI will appear here automatically.
           </div>
         </div>
       </div>
 
-      <!-- TAB 3: DIAGNOSTICS (Real Live Network Info) -->
+      <!-- TAB 4: DIAGNOSTICS (Real Live Network Info & Benchmark) -->
       <div class="tab-pane" id="tab-metrics">
         <div class="section-header">
-          <span class="section-title">Live Network & Socket Status</span>
+          <span class="section-title">Live Network &amp; Socket Status</span>
         </div>
 
         <div class="diag-item">
@@ -887,15 +1362,15 @@
             <div class="diag-label">Local SOCKS5 Ingress</div>
             <div class="diag-sub">Local application routing endpoint for browsers and apps</div>
           </div>
-          <span class="diag-val">127.0.0.1:1080 (TCP)</span>
+          <span class="diag-val" id="diag-socks-ingress">127.0.0.1:1080 (TCP)</span>
         </div>
 
         <div class="diag-item">
           <div>
             <div class="diag-label">LAN Multicast Beacon</div>
-            <div class="diag-sub">Automatic zero-config peer discovery in local Wi-Fi</div>
+            <div class="diag-sub">Automatic zero-config peer discovery on local Wi-Fi</div>
           </div>
-          <span class="diag-val">239.255.67.89:2270</span>
+          <span class="diag-val" id="diag-multicast-addr">239.255.0.1:2270</span>
         </div>
 
         <div class="diag-item">
@@ -909,7 +1384,7 @@
         <div class="diag-item">
           <div>
             <div class="diag-label">Packets Received</div>
-            <div class="diag-sub">Authenticated incoming datagrams unsealed & demuxed</div>
+            <div class="diag-sub">Authenticated incoming datagrams unsealed &amp; demuxed</div>
           </div>
           <span class="diag-val" id="diag-pkts-recv">0 pkts</span>
         </div>
@@ -921,18 +1396,100 @@
           </div>
           <span class="diag-val" style="color: var(--emerald);" id="diag-drops-val">0 drops</span>
         </div>
+
+        <!-- Built-in Crypto / RS Pipeline Benchmark -->
+        <div class="bench-card">
+          <div class="section-header" style="margin-bottom: 6px;">
+            <div>
+              <span class="setting-title">Crypto &amp; Reed-Solomon Pipeline Benchmark</span>
+              <div class="diag-sub">Measures live in-process XChaCha20-Poly1305 + RS(2,1) erasure coding throughput and latency</div>
+            </div>
+            <button class="action-btn" id="btn-pipeline-probe" onclick="runPipelineBenchmark()">Run Crypto / RS Benchmark</button>
+          </div>
+          <div id="bench-status-line" style="font-size: 11.5px; color: var(--text-muted); margin-top: 6px;">
+            Press "Run Crypto / RS Benchmark" to measure local sealing and shard encoding speed.
+          </div>
+          <div class="bench-grid" id="bench-results-grid" style="display: none;">
+            <div class="bench-metric">
+              <div class="bench-metric-label">Throughput</div>
+              <div class="bench-metric-val" id="bench-mbps">—</div>
+              <div class="stat-sub" id="bench-mbs">—</div>
+            </div>
+            <div class="bench-metric">
+              <div class="bench-metric-label">P50 Latency</div>
+              <div class="bench-metric-val" id="bench-p50">—</div>
+              <div class="stat-sub" id="bench-mean">—</div>
+            </div>
+            <div class="bench-metric">
+              <div class="bench-metric-label">P95 / P99</div>
+              <div class="bench-metric-val" id="bench-p99">—</div>
+              <div class="stat-sub" id="bench-minmax">—</div>
+            </div>
+            <div class="bench-metric">
+              <div class="bench-metric-label">Probe Payload</div>
+              <div class="bench-metric-val" id="bench-bytes">—</div>
+              <div class="stat-sub" id="bench-duration">—</div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- TAB 4: SETTINGS -->
+      <!-- TAB 5: SETTINGS -->
       <div class="tab-pane" id="tab-settings">
         <div class="section-header">
+          <span class="section-title">Multi-Port SOCKS5 &amp; Split-Tunnel</span>
+        </div>
+
+        <div class="setting-panel">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+            <div>
+              <div class="setting-title">Multi-Port Hop Listeners &amp; Proxy Auto-Config (PAC)</div>
+              <div class="setting-desc">Point browsers or OS proxy settings to a specific hop-count listener or the automatic PAC URL below.</div>
+            </div>
+            <span class="pill" id="socks-global-pill">DETECTING...</span>
+          </div>
+
+          <div class="socks-grid" id="socks-ports-grid">
+            <div class="socks-port-card"><span class="pair-label">:1080 Auto</span><span class="pill">Loading</span></div>
+            <div class="socks-port-card"><span class="pair-label">:1081 1-Hop</span><span class="pill">Loading</span></div>
+            <div class="socks-port-card"><span class="pair-label">:1082 2-Hop</span><span class="pill">Loading</span></div>
+            <div class="socks-port-card"><span class="pair-label">:1083 3-Hop</span><span class="pill">Loading</span></div>
+          </div>
+
+          <div style="margin-top: 12px;">
+            <span class="pair-label">Proxy Auto-Config (PAC) URL</span>
+            <div class="pair-input-box" style="margin-top: 5px;">
+              <span class="pair-val" id="pac-url-display">http://127.0.0.1:2270/proxy.pac</span>
+              <button class="copy-btn" onclick="copyTextField('pac-url-display', 'copy-pac-text')">
+                <span id="copy-pac-text">Copy PAC URL</span>
+              </button>
+            </div>
+          </div>
+
+          <div style="margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-subtle);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+              <span class="setting-title">Split-Tunnel Bypass List</span>
+              <span class="pill" id="bypass-count-pill">0 rules</span>
+            </div>
+            <div class="input-row" style="margin-bottom: 6px;">
+              <input type="text" id="bypass-add-input" class="text-input" placeholder="Host, *.wildcard, IP, or CIDR (e.g. *.local, 192.168.1.0/24)">
+              <button class="action-btn" onclick="addBypassRule()">Add Bypass</button>
+            </div>
+            <div class="bypass-list" id="bypass-list-container"></div>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top: 20px;">
           <span class="section-title">Mesh Configuration</span>
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Uniform 576B Stealth Framing</span>
-            <span class="setting-desc">Normalizes all datagrams to 576 bytes with authenticated trailing chaff to defeat Deep Packet Inspection (DPI).</span>
+            <div class="setting-title-row">
+              <span class="setting-title">Uniform 576B Stealth Framing Mode</span>
+              <span class="pill cyan" id="pill-mode-status">STEALTH</span>
+            </div>
+            <span class="setting-desc">Switches node mode between <code>stealth</code> (uniform 576B privacy framing) and <code>public</code>.</span>
           </div>
           <label class="toggle">
             <input type="checkbox" id="toggle-stealth" checked onchange="saveSetting('stealth', this.checked)">
@@ -942,19 +1499,19 @@
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Poisson Cover Traffic</span>
-            <span class="setting-desc">Emits synthetic decoy packets at an exponential random rate so network observers cannot detect browsing activity.</span>
+            <div class="setting-title-row">
+              <span class="setting-title">Poisson Cover Traffic</span>
+              <span class="pill" id="pill-cover-status">STANDBY · 2.0 Hz</span>
+            </div>
+            <span class="setting-desc">Emits synthetic decoy packets when peer sessions are active so observers cannot fingerprint browsing bursts.</span>
           </div>
-          <label class="toggle">
-            <input type="checkbox" id="toggle-poisson" checked onchange="saveSetting('poisson', this.checked)">
-            <span class="slider"></span>
-          </label>
+          <span class="peer-badge" id="badge-cover-rate">2.0 Hz</span>
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
             <span class="setting-title">Low-Latency Mode (Micro-Jitter)</span>
-            <span class="setting-desc">Flushes packet mix batches within 1ms with micro-jitter (ideal for VoIP, gaming, and real-time interactive terminals). <em>Trade-off:</em> Slightly reduces temporal batch mixing entropy compared to standard 20ms mix batching against global passive network observers.</span>
+            <span class="setting-desc">Flushes packet mix batches within 1ms with micro-jitter for interactive terminals and real-time streams.</span>
           </div>
           <label class="toggle">
             <input type="checkbox" id="toggle-low-latency" onchange="toggleLowLatency(this.checked)">
@@ -965,13 +1522,13 @@
         <div class="setting-item">
           <div class="setting-text">
             <span class="setting-title">Timing Batch Mix Window</span>
-            <span class="setting-desc">Accumulates and shuffles outbound packet shards across a randomized time window. Breaks temporal correlation between incoming and outgoing packets to defeat statistical timing analysis.</span>
+            <span class="setting-desc">Accumulates and shuffles outbound packet shards across a randomized time window to defeat timing correlation.</span>
           </div>
           <select id="select-mix-batch" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px;" onchange="updateMixBatch(this.value)">
-            <option value="1">1 ms (Ultra-Low Latency / Gaming)</option>
+            <option value="1">1 ms (Ultra-Low Latency)</option>
             <option value="5">5 ms (Fast Interactive)</option>
             <option value="10">10 ms (Balanced Interactive)</option>
-            <option value="20" selected>20 ms (Standard Privacy Mix — Default)</option>
+            <option value="20" selected>20 ms (Standard Privacy Mix)</option>
             <option value="50">50 ms (High-Entropy Mix)</option>
           </select>
         </div>
@@ -979,62 +1536,66 @@
         <div class="setting-item">
           <div class="setting-text">
             <span class="setting-title">Zero-Admin Userspace Mode</span>
-            <span class="setting-desc">Operates entirely in userspace without requiring root permissions, administrative elevation, or virtual TUN kernel drivers. Local traffic routes via SOCKS5 proxy on <code>127.0.0.1:1080</code> and DNS on <code>1053</code>.</span>
+            <span class="setting-desc">Operates in userspace via SOCKS5 without root elevation or TUN kernel drivers.</span>
           </div>
           <span id="badge-zero-admin" class="peer-badge" style="color: var(--emerald);">DETECTING...</span>
         </div>
 
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-title">Local SOCKS5 Proxy</span>
-            <span class="setting-desc">Provides an anonymous SOCKS5 proxy endpoint for web browsers and apps on <code>127.0.0.1:1080</code>.</span>
-          </div>
-          <span class="peer-badge" style="color: var(--emerald);">LISTENING :1080</span>
-        </div>
-
-        <div class="section-header" style="margin-top: 24px;">
+        <div class="section-header" style="margin-top: 22px;">
           <span class="section-title">Experimental &amp; Sovereign Layers</span>
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Quantum Entanglement Layer (QEL)</span>
-            <span class="setting-desc">Multi-layer Kyber / ML-KEM-768 post-quantum key encapsulation &amp; proactive Double Ratchet session mixing.</span>
+            <div class="setting-title-row">
+              <span class="setting-title">Quantum Entanglement Layer (QEL)</span>
+              <span class="pill" id="pill-qel-status">CHECKING...</span>
+            </div>
+            <span class="setting-desc">Post-quantum key routing anchor (<code>GHOST_QUANTUM=1</code>) &amp; Double Ratchet quantum mix.</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" id="toggle-qel" checked onchange="saveResearchSetting('qel_enabled', this.checked)">
+            <input type="checkbox" id="toggle-qel" checked onchange="saveSetting('qel_enabled', this.checked)">
             <span class="slider"></span>
           </label>
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Stego-in-Physics Waveform Carrier</span>
-            <span class="setting-desc">Injects redundant parity shards into acoustic/audio or physical carrier waveforms to cross airgaps and RF isolation barriers.</span>
+            <div class="setting-title-row">
+              <span class="setting-title">Stego-in-Physics Waveform Carrier</span>
+              <span class="pill" id="pill-stego-status">STANDBY</span>
+            </div>
+            <span class="setting-desc">Injects redundant parity shards into acoustic or physical carrier waveforms across airgaps.</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" id="toggle-stego" onchange="saveResearchSetting('stego_carrier_mode', this.checked)">
+            <input type="checkbox" id="toggle-stego" onchange="saveSetting('stego_carrier_mode', this.checked)">
             <span class="slider"></span>
           </label>
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Bilateral Energy Ledger &amp; Tit-for-Tat QoS</span>
-            <span class="setting-desc">Enforces reciprocal bandwidth and credit allocation: peers who repair shards or forward packets gain top QoS priority.</span>
+            <div class="setting-title-row">
+              <span class="setting-title">Bilateral Energy Ledger &amp; Tit-for-Tat QoS</span>
+              <span class="pill" id="pill-energy-status">STANDBY</span>
+            </div>
+            <span class="setting-desc">Enforces reciprocal bandwidth and credit allocation for forwarding and shard repair.</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" id="toggle-energy-ledger" onchange="saveResearchSetting('energy_ledger_enabled', this.checked)">
+            <input type="checkbox" id="toggle-energy-ledger" onchange="saveSetting('energy_ledger_enabled', this.checked)">
             <span class="slider"></span>
           </label>
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Sovereign Cloud (Jurisdiction Enforcement)</span>
+            <div class="setting-title-row">
+              <span class="setting-title">Sovereign Cloud (Jurisdiction Enforcement)</span>
+              <span class="pill" id="pill-jurisdiction-status">ANY</span>
+            </div>
             <span class="setting-desc">Restricts onion circuits and shard distribution exclusively to nodes within the chosen legal jurisdiction.</span>
           </div>
-          <select id="select-jurisdiction" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px;" onchange="saveResearchSetting('jurisdiction_tag', this.value)">
+          <select id="select-jurisdiction" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px;" onchange="saveSetting('jurisdiction_tag', this.value)">
             <option value="any">Any (Global Decentralized Swarm)</option>
             <option value="eu">EU Only (GDPR &amp; European Sovereignty)</option>
             <option value="ch">Switzerland (Swiss Cryptographic Vault)</option>
@@ -1044,46 +1605,36 @@
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Airborne Opportunistic Skywave (ABOS)</span>
-            <span class="setting-desc">High-frequency ionospheric reflection bridge (NVIS 2-12 MHz) for off-grid mesh survivability without Internet infrastructure.</span>
+            <div class="setting-title-row">
+              <span class="setting-title">Airborne Opportunistic Skywave (ABOS)</span>
+              <span class="pill" id="pill-abos-status">CHECKING...</span>
+            </div>
+            <span class="setting-desc">High-frequency ionospheric reflection bridge (NVIS 2–10 MHz) requiring <code>GHOST_SKYWAVE=1</code>.</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" id="toggle-abos" onchange="saveResearchSetting('abos_skywave_enabled', this.checked)">
+            <input type="checkbox" id="toggle-abos" onchange="saveSetting('abos_skywave_enabled', this.checked)">
             <span class="slider"></span>
           </label>
         </div>
 
         <div class="setting-item">
           <div class="setting-text">
-            <span class="setting-title">Minimize to System Tray</span>
-            <span class="setting-desc">Keep Vantablack running in the background when the window is closed.</span>
-          </div>
-          <label class="toggle">
-            <input type="checkbox" checked>
-            <span class="slider"></span>
-          </label>
-        </div>
-        <div class="setting-item">
-          <div class="setting-text">
-            <span class="setting-title">Repository & Source Code</span>
+            <span class="setting-title">Repository &amp; Source Code</span>
             <span class="setting-desc">Official GitHub repository, documentation, issue tracker, and release binaries.</span>
           </div>
-          <button class="nav-tab active" style="padding: 6px 14px;" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack')">
+          <button class="secondary-btn" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack')">
             GitHub Repository ↗
           </button>
         </div>
-        <div class="setting-item" style="border-top: 1px solid var(--border-subtle); padding-top: 16px;">
+
+        <div class="setting-item">
           <div class="setting-text">
             <span class="setting-title">Software Updates</span>
-            <span class="setting-desc" id="setting-update-desc">Automatically check for and install newer versions with zero setup wizards.</span>
+            <span class="setting-desc" id="setting-update-desc">Automatically check for and install newer versions.</span>
           </div>
           <div style="display: flex; gap: 8px; align-items: center;">
-            <button class="nav-tab active" id="btn-check-update" style="padding: 6px 14px;" onclick="checkUpdateManual()">
-              Check for Updates
-            </button>
-            <button class="btn btn-connect" id="btn-apply-update" style="display: none; padding: 6px 14px; background: #059669; color: white;" onclick="applyUpdateNow()">
-              Install Update 🚀
-            </button>
+            <button class="secondary-btn" id="btn-check-update" onclick="checkUpdateManual()">Check for Updates</button>
+            <button class="action-btn" id="btn-apply-update" style="display: none; background: var(--emerald); color: #fff;" onclick="applyUpdateNow()">Install Update 🚀</button>
           </div>
         </div>
       </div>
@@ -1092,19 +1643,115 @@
 
     <!-- App Footer -->
     <div class="app-footer">
-      <span>Vantablack v0.8.21 • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a> • <a href="#" onclick="checkUpdateManual(); return false;" style="color: #38bdf8; text-decoration: none; cursor: pointer;" id="footer-update-link">Check for Updates</a></span>
+      <span>Vantablack <span id="footer-version">v{{VERSION}}</span> • Autonomous Post-Quantum WAN Mesh • <a href="https://github.com/KELLERBABG/Vantablack" target="_blank" onclick="nativeSend('open_url:https://github.com/KELLERBABG/Vantablack'); return false;" style="color: var(--accent); text-decoration: none; cursor: pointer;">github.com/KELLERBABG/Vantablack ↗</a> • <a href="#" onclick="checkUpdateManual(); return false;" style="color: #38bdf8; text-decoration: none; cursor: pointer;" id="footer-update-link">Check for Updates</a></span>
       <span>Uptime: <span id="footer-uptime">00:00:00</span></span>
     </div>
   </div>
 
+  <!-- Peer Inspector Drawer -->
+  <div class="drawer-backdrop" id="peer-drawer-backdrop" onclick="closePeerDrawer()"></div>
+  <aside class="peer-drawer" id="peer-drawer" aria-label="Peer Inspector">
+    <div class="drawer-header">
+      <div>
+        <div class="section-title" id="drawer-peer-name">Peer Inspector</div>
+        <div style="margin-top: 4px; display: flex; gap: 6px; align-items: center;" id="drawer-peer-pills"></div>
+      </div>
+      <button class="secondary-btn" style="padding: 5px 10px;" onclick="closePeerDrawer()" title="Close (Esc)">✕</button>
+    </div>
+
+    <div class="drawer-row">
+      <span class="pair-label">Fingerprint</span>
+      <div class="pair-input-box">
+        <span class="pair-val" id="drawer-peer-fp">—</span>
+        <button class="copy-btn" onclick="copyTextField('drawer-peer-fp', 'drawer-copy-fp-btn')"><span id="drawer-copy-fp-btn">Copy</span></button>
+      </div>
+    </div>
+
+    <div class="drawer-row">
+      <span class="pair-label">Endpoint</span>
+      <div class="pair-input-box">
+        <span class="pair-val" id="drawer-peer-addr">—</span>
+        <button class="copy-btn" onclick="copyTextField('drawer-peer-addr', 'drawer-copy-addr-btn')"><span id="drawer-copy-addr-btn">Copy</span></button>
+      </div>
+    </div>
+
+    <div class="drawer-kv-grid">
+      <div class="drawer-kv">
+        <div class="pair-label">Scope</div>
+        <div class="stat-val" style="font-size: 13.5px; margin-top: 3px;" id="drawer-peer-scope">—</div>
+      </div>
+      <div class="drawer-kv">
+        <div class="pair-label">Transport</div>
+        <div class="stat-val" style="font-size: 13.5px; margin-top: 3px;" id="drawer-peer-transport">—</div>
+      </div>
+      <div class="drawer-kv">
+        <div class="pair-label">RTT</div>
+        <div class="stat-val" style="font-size: 13.5px; margin-top: 3px;" id="drawer-peer-rtt">—</div>
+      </div>
+      <div class="drawer-kv">
+        <div class="pair-label">Platform</div>
+        <div class="stat-val" style="font-size: 13.5px; margin-top: 3px;" id="drawer-peer-os">—</div>
+      </div>
+    </div>
+
+    <div class="drawer-row">
+      <span class="pair-label">Rename Device</span>
+      <div class="input-row" style="margin-bottom: 0;">
+        <input type="text" id="drawer-rename-input" class="text-input" placeholder="Friendly device name">
+        <button class="action-btn" onclick="renameInspectedPeer()">Save</button>
+      </div>
+    </div>
+
+    <div style="margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 10px;">
+      <button class="secondary-btn" onclick="closePeerDrawer()">Close</button>
+      <button class="danger-btn" id="drawer-disconnect-btn" onclick="disconnectInspectedPeer()">Disconnect Peer</button>
+    </div>
+  </aside>
+
+  <!-- Styled In-App PIN Unlock Modal -->
+  <div class="modal-backdrop" id="pin-modal" role="dialog" aria-modal="true" aria-labelledby="pin-modal-title">
+    <div class="modal-card">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+        <span class="section-title" id="pin-modal-title">Console PIN Required</span>
+        <button class="secondary-btn" style="padding: 3px 9px;" onclick="dismissPinModal()">✕</button>
+      </div>
+      <p style="font-size: 12.5px; color: var(--text-muted); line-height: 1.5; margin-bottom: 14px;">
+        This node is protected by <code>GHOST_PIN</code>. Enter your PIN for this session to unlock pairing material, topology, and controls.
+      </p>
+      <form onsubmit="submitPinModal(event)">
+        <input type="password" id="pin-modal-input" class="text-input" style="width: 100%; margin-bottom: 10px;" placeholder="Enter console PIN" autocomplete="off">
+        <div id="pin-modal-error" style="display: none; color: var(--rose); font-size: 12px; margin-bottom: 10px;"></div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <button type="button" class="secondary-btn" onclick="dismissPinModal()">Cancel</button>
+          <button type="submit" class="action-btn">Unlock Console</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
   <script>
     let isConnected = false;
     let nodeState = {};
+    let topologyState = null;
+    let anchorsState = null;
+    let settingsState = null;
     let prevBytesSent = null;
     let prevBytesRecv = null;
     let prevTimestamp = null;
 
-    // Native IPC Bridge
+    let meshViewMode = 'graph';
+    let meshFilter = 'all';
+    let showHopOverlay = false;
+    let inspectedFingerprint = null;
+
+    const PIN_KEY = 'ggn-console-pin';
+    let pinModalDismissed = false;
+    let isFetchingStatus = false;
+
+    // ── Native IPC Bridge ──
     function nativeSend(action) {
       if (window.ipc && window.ipc.postMessage) {
         window.ipc.postMessage(action);
@@ -1113,7 +1760,6 @@
       }
     }
 
-    // Drag handle wiring
     const dragBar = document.getElementById('drag-handle');
     if (dragBar) {
       dragBar.addEventListener('mousedown', (e) => {
@@ -1122,24 +1768,71 @@
       });
     }
 
-    // Tab Switching
+    // ── Toast Notifications ──
+    function showToast(message, kind) {
+      const container = document.getElementById('toast-container');
+      if (!container) return;
+      const el = document.createElement('div');
+      el.className = 'toast ' + (kind || '');
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transition = 'opacity 0.2s ease';
+        setTimeout(() => el.remove(), 220);
+      }, 3400);
+    }
+
+    // ── Tab Switching & Keyboard Shortcuts (1–5, Esc) ──
+    const TAB_ORDER = ['tab-shield', 'tab-mesh', 'tab-peers', 'tab-metrics', 'tab-settings'];
+
     function switchTab(tabId) {
       document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.nav-bar .nav-tab').forEach(el => el.classList.remove('active'));
-      
       const target = document.getElementById(tabId);
       if (target) target.classList.add('active');
-
       const btn = document.querySelector(`.nav-bar .nav-tab[data-tab="${tabId}"]`);
       if (btn) btn.classList.add('active');
+
+      if (tabId === 'tab-mesh') {
+        refreshTopology();
+      } else if (tabId === 'tab-settings') {
+        loadSettings();
+        refreshAnchors();
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closePeerDrawer();
+        dismissPinModal();
+        return;
+      }
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      const tag = (document.activeElement && document.activeElement.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const idx = parseInt(e.key, 10);
+      if (idx >= 1 && idx <= TAB_ORDER.length) {
+        switchTab(TAB_ORDER[idx - 1]);
+      }
+    });
+
+    // ── Formatters & Helpers ──
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function formatBytes(bytes) {
       if (!bytes || bytes === 0) return '0 B';
       const k = 1024;
       const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return (bytes / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+      const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
+      return (bytes / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1) + ' ' + sizes[i];
     }
 
     function formatDuration(secs) {
@@ -1150,41 +1843,104 @@
       return [h, m, s].map(v => String(v).padStart(2, '0')).join(':');
     }
 
-    function copyHubEndpoint() {
-      const ep = document.getElementById('hub-endpoint').innerText;
-      if (ep && ep !== 'Detecting...') {
-        navigator.clipboard.writeText(ep).then(() => {
-          const btn = document.getElementById('copy-endpoint-text');
-          btn.innerText = 'Copied!';
-          setTimeout(() => btn.innerText = 'Copy', 2000);
-        });
+    function copyTextField(sourceId, labelId) {
+      const el = document.getElementById(sourceId);
+      const val = el ? el.innerText.trim() : '';
+      if (!val || val === 'Detecting...' || val === '—' || val === 'Unavailable (PIN locked)') {
+        showToast('Nothing available to copy yet.', 'warn');
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(val).then(() => {
+          const btn = document.getElementById(labelId);
+          if (btn) {
+            const orig = btn.innerText;
+            btn.innerText = 'Copied!';
+            setTimeout(() => { btn.innerText = orig; }, 1800);
+          }
+          showToast('Copied to clipboard.', 'success');
+        }).catch(() => showToast('Clipboard write blocked.', 'error'));
       }
     }
 
-    function copyFingerprint() {
-      const fp = document.getElementById('hub-fingerprint').innerText;
-      if (fp && fp !== 'Detecting...') {
-        navigator.clipboard.writeText(fp).then(() => {
-          const btn = document.getElementById('copy-fp-text');
-          btn.innerText = 'Copied!';
-          setTimeout(() => btn.innerText = 'Copy', 2000);
-        });
+    // ── PIN Management & Styled Modal ──
+    function storedPin() {
+      return sessionStorage.getItem(PIN_KEY);
+    }
+
+    function pinHeaders(extra) {
+      const headers = Object.assign({}, extra || {});
+      const pin = storedPin();
+      if (pin) headers['X-Pin'] = pin;
+      return headers;
+    }
+
+    function openPinModal(errorMsg) {
+      const modal = document.getElementById('pin-modal');
+      const errEl = document.getElementById('pin-modal-error');
+      const input = document.getElementById('pin-modal-input');
+      if (!modal) return;
+      if (errorMsg && errEl) {
+        errEl.textContent = errorMsg;
+        errEl.style.display = 'block';
+      } else if (errEl) {
+        errEl.style.display = 'none';
+      }
+      modal.classList.add('open');
+      if (input) setTimeout(() => input.focus(), 40);
+    }
+
+    function dismissPinModal() {
+      const modal = document.getElementById('pin-modal');
+      if (modal) modal.classList.remove('open');
+      pinModalDismissed = true;
+    }
+
+    async function submitPinModal(ev) {
+      ev.preventDefault();
+      const input = document.getElementById('pin-modal-input');
+      const pin = input ? input.value.trim() : '';
+      if (!pin) return;
+      sessionStorage.setItem(PIN_KEY, pin);
+      pinModalDismissed = false;
+
+      try {
+        const res = await fetch('/api/status', { headers: pinHeaders() });
+        const data = await res.json();
+        if (data.pin_required) {
+          sessionStorage.removeItem(PIN_KEY);
+          openPinModal('Invalid PIN. Please verify and try again.');
+          return;
+        }
+        document.getElementById('pin-modal').classList.remove('open');
+        if (input) input.value = '';
+        showToast('Console unlocked.', 'success');
+        refreshStatus();
+        refreshTopology();
+        loadSettings();
+      } catch (e) {
+        openPinModal('Could not reach node to verify PIN.');
       }
     }
 
+    // ── Connect Shield Toggle ──
     async function toggleConnect() {
       const targetState = !isConnected;
       updateUIState(targetState);
       try {
-        await fetch('/api/connect', {
+        const res = await fetch('/api/connect', {
           method: 'POST',
           headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ connected: targetState })
         });
+        if (res.status === 401) {
+          openPinModal('Enter PIN to toggle mesh state.');
+        }
       } catch (e) {
-        console.warn('Connect API failed', e);
+        showToast('Connect toggle failed: ' + e.message, 'error');
       }
       refreshStatus();
+      refreshTopology();
     }
 
     function updateUIState(connected) {
@@ -1214,30 +1970,7 @@
       }
     }
 
-    // The daemon enforces GHOST_PIN on every mutating request and redacts the
-    // identity fields of its read endpoints without one (src/control.rs). The
-    // page used to send no X-Pin at all, so with a PIN set every button here
-    // failed and the pairing values came back null.
-    //
-    // sessionStorage, not localStorage: docs/SPECIFICATIONS.md specifies a
-    // prompt once per session, and a console PIN has no business outliving the
-    // tab it was typed in.
-    const PIN_KEY = 'ggn-console-pin';
-
-    function storedPin() {
-      return sessionStorage.getItem(PIN_KEY);
-    }
-
-    function pinHeaders(extra) {
-      const headers = Object.assign({}, extra || {});
-      const pin = storedPin();
-      if (pin) headers['X-Pin'] = pin;
-      return headers;
-    }
-
-    let pinPrompted = false;
-    let isFetchingStatus = false;
-
+    // ── Core Status Polling ──
     async function refreshStatus() {
       if (isFetchingStatus) return;
       isFetchingStatus = true;
@@ -1252,38 +1985,48 @@
         if (!res.ok) return;
         const data = await res.json();
 
-        // /api/status stays 200 without a PIN and redacts identity instead of
-        // failing (src/control.rs), so pin_required is the tell, not the status
-        // code.
-        if (data.pin_required && !pinPrompted) {
-          pinPrompted = true;
-          const pin = prompt('This node has a console PIN. Enter it to see the pairing values.');
-          if (pin) {
-            sessionStorage.setItem(PIN_KEY, pin);
-            return refreshStatus();
+        if (data.pin_required) {
+          if (!pinModalDismissed && !document.getElementById('pin-modal').classList.contains('open')) {
+            openPinModal();
           }
         }
         nodeState = data;
 
+        // Dynamic version badge & footer
+        if (data.version) {
+          const vStr = 'v' + data.version;
+          const badge = document.getElementById('app-version');
+          if (badge) badge.innerText = vStr;
+          const fVer = document.getElementById('footer-version');
+          if (fVer) fVer.innerText = vStr;
+        }
+
         updateUIState(Boolean(data.connected));
 
-        // Pairing values
+        // Pairing values & diagnostics
         if (data.host) {
           document.getElementById('hub-endpoint').innerText = data.host;
           document.getElementById('diag-mesh-socket').innerText = data.host + ' (UDP)';
         }
-        if (data.network_id) {
-          document.getElementById('hub-fingerprint').innerText = data.network_id;
+        document.getElementById('hub-fingerprint').innerText = data.network_id || (data.pin_required ? 'Unavailable (PIN locked)' : 'Detecting...');
+        document.getElementById('hub-pair-uri').innerText = data.pair_uri || (data.pin_required ? 'Unavailable (PIN locked)' : 'Not generated');
+
+        if (data.multicast_addr) {
+          const mc = document.getElementById('diag-multicast-addr');
+          if (mc) mc.innerText = data.multicast_addr;
+        }
+        const socksPort = data.socks_port || 1080;
+        const socksIngress = document.getElementById('diag-socks-ingress');
+        if (socksIngress) {
+          socksIngress.innerText = `127.0.0.1:${socksPort} (TCP ${data.socks_listening ? 'Listening' : 'Off'})`;
         }
 
-        // Peers
         const count = data.peers_count || 0;
         const sessions = data.active_sessions || 0;
         document.getElementById('stat-peer-count').innerText = count + ' Online';
         document.getElementById('nav-peer-count').innerText = count;
         document.getElementById('stat-session-count').innerText = `${sessions} Active Sessions`;
 
-        // Throughput & Speed
         const tp = data.throughput || data.traffic;
         if (tp) {
           const sent = tp.bytes_sent || 0;
@@ -1313,7 +2056,6 @@
           document.getElementById('diag-pkts-recv').innerText = (tp.packets_recv || 0).toLocaleString() + ' pkts';
         }
 
-        // Uptime
         if (data.uptime_seconds !== undefined) {
           const formatted = formatDuration(data.uptime_seconds);
           document.getElementById('stat-uptime').innerText = formatted;
@@ -1334,6 +2076,33 @@
           if (sel && !sel.matches(':focus') && pm.scan_interval_secs !== undefined) {
             sel.value = String(pm.scan_interval_secs);
           }
+        }
+
+        // Settings sync from /api/status
+        if (data.mode) {
+          const isStealth = data.mode === 'stealth';
+          const ts = document.getElementById('toggle-stealth');
+          if (ts && !ts.matches(':focus')) ts.checked = isStealth;
+          const modePill = document.getElementById('pill-mode-status');
+          if (modePill) {
+            modePill.textContent = data.mode.toUpperCase();
+            modePill.className = 'pill ' + (isStealth ? 'cyan' : 'emerald');
+          }
+        }
+        if (data.traffic) {
+          const coverPill = document.getElementById('pill-cover-status');
+          const hz = data.traffic.cover_traffic_rate_hz || 2.0;
+          if (coverPill) {
+            if (data.traffic.cover_traffic_active) {
+              coverPill.textContent = `ACTIVE · ${hz.toFixed(1)} Hz`;
+              coverPill.className = 'pill emerald';
+            } else {
+              coverPill.textContent = `STANDBY · 0 sessions`;
+              coverPill.className = 'pill';
+            }
+          }
+          const coverRate = document.getElementById('badge-cover-rate');
+          if (coverRate) coverRate.textContent = `${hz.toFixed(1)} Hz`;
         }
 
         if (data.low_latency !== undefined) {
@@ -1357,12 +2126,715 @@
           }
         }
 
+        renderSocks5Panel(data);
         renderPeers(data.peers || []);
-
+        updateReadinessPipelineFromStatus(data);
       } catch (e) {
-        // Node starting up
+        // Node starting up or unreachable
       } finally {
         isFetchingStatus = false;
+      }
+    }
+
+    // ── Topology Polling & Rendering (Mesh View + Readiness Pipeline) ──
+    async function refreshTopology() {
+      try {
+        const res = await fetch('/api/topology', { headers: pinHeaders() });
+        if (res.status === 401) {
+          renderMeshEmpty('Console PIN required to inspect live mesh topology.');
+          return;
+        }
+        if (!res.ok) return;
+        const topo = await res.json();
+        topologyState = topo;
+
+        if (topo.wan_readiness) {
+          updateReadinessPipeline(topo.wan_readiness, topo.self);
+        }
+        renderMeshView();
+        if (inspectedFingerprint) {
+          const found = findPeerByFingerprint(inspectedFingerprint);
+          if (found) populatePeerDrawer(found);
+        }
+      } catch (e) {
+        // Ignore transient network errors during startup
+      }
+    }
+
+    function updateReadinessPipelineFromStatus(data) {
+      if (topologyState && topologyState.wan_readiness) return;
+      const sessions = data.active_sessions || 0;
+      updateReadinessPipeline({
+        socket_ok: true,
+        lan_discovery_ok: Boolean(data.connected),
+        socks_ok: Boolean(data.socks_listening),
+        vpn_available: Boolean(data.vpn_available),
+        carrier_enabled: Boolean(data.carrier && data.carrier.enabled),
+        peer_count: data.peers_count || 0,
+        active_sessions: sessions,
+        swarm_hops_available: Math.min(3, sessions)
+      }, { nat_type: 'Detecting', socks_port: data.socks_port || 1080 });
+    }
+
+    function updateReadinessPipeline(wr, selfInfo) {
+      const setStep = (id, state, subId, text) => {
+        const el = document.getElementById(id);
+        const sub = document.getElementById(subId);
+        if (el) {
+          el.classList.remove('ok', 'warn');
+          if (state) el.classList.add(state);
+        }
+        if (sub) sub.textContent = text;
+      };
+
+      setStep('pipe-step-socket', wr.socket_ok ? 'ok' : 'warn', 'pipe-socket-sub', wr.socket_ok ? (wr.carrier_enabled ? 'UDP + QUIC Ready' : 'UDP Active') : 'Offline');
+      setStep('pipe-step-discovery', wr.lan_discovery_ok ? 'ok' : 'warn', 'pipe-discovery-sub', `${wr.peer_count || 0} Discovered`);
+      const hops = wr.swarm_hops_available || 0;
+      setStep('pipe-step-quorum', hops >= 1 ? 'ok' : 'warn', 'pipe-quorum-sub', `${hops} / 3 Hops (${wr.active_sessions || 0} active)`);
+      const port = (selfInfo && selfInfo.socks_port) || nodeState.socks_port || 1080;
+      const ingressOk = Boolean(wr.socks_ok || wr.vpn_available);
+      const ingressText = wr.vpn_available ? `VPN + :${port}` : (wr.socks_ok ? `SOCKS5 :${port}` : 'Inactive');
+      setStep('pipe-step-ingress', ingressOk ? 'ok' : 'warn', 'pipe-ingress-sub', ingressText);
+
+      const natPill = document.getElementById('nat-type-pill');
+      if (natPill && selfInfo && selfInfo.nat_type) {
+        natPill.textContent = 'NAT: ' + selfInfo.nat_type;
+      }
+      const pubPill = document.getElementById('public-addr-pill');
+      if (pubPill) {
+        if (selfInfo && selfInfo.public_addr) {
+          pubPill.textContent = 'Public: ' + selfInfo.public_addr;
+          pubPill.style.display = 'inline-flex';
+        } else {
+          pubPill.style.display = 'none';
+        }
+      }
+    }
+
+    function setMeshViewMode(mode) {
+      meshViewMode = mode;
+      document.getElementById('btn-view-graph').classList.toggle('active', mode === 'graph');
+      document.getElementById('btn-view-table').classList.toggle('active', mode === 'table');
+      document.getElementById('mesh-graph-container').style.display = mode === 'graph' ? 'block' : 'none';
+      document.getElementById('mesh-table-container').style.display = mode === 'table' ? 'block' : 'none';
+      renderMeshView();
+    }
+
+    function setMeshFilter(filter) {
+      meshFilter = filter;
+      document.querySelectorAll('[data-filter]').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-filter') === filter);
+      });
+      renderMeshView();
+    }
+
+    function toggleHopOverlay() {
+      showHopOverlay = !showHopOverlay;
+      const btn = document.getElementById('btn-hop-overlay');
+      if (btn) {
+        btn.classList.toggle('active', showHopOverlay);
+        btn.textContent = showHopOverlay ? '🧅 Circuit Hop Overlay: ON' : '🧅 Circuit Hop Overlay: OFF';
+      }
+      const bar = document.getElementById('hop-overlay-bar');
+      if (bar) bar.style.display = showHopOverlay ? 'flex' : 'none';
+      renderMeshView();
+    }
+
+    function filteredTopologyPeers() {
+      const peers = (topologyState && topologyState.peers) ? topologyState.peers : [];
+      return peers.filter(p => {
+        if (meshFilter === 'lan') return p.scope === 'lan';
+        if (meshFilter === 'wan') return p.scope === 'wan';
+        if (meshFilter === 'connected') return Boolean(p.connected);
+        return true;
+      });
+    }
+
+    function renderMeshEmpty(msg) {
+      const svg = document.getElementById('mesh-svg');
+      if (!svg) return;
+      svg.innerHTML = `
+        <circle cx="380" cy="220" r="120" fill="none" stroke="#1a2333" stroke-dasharray="4 4"/>
+        <circle cx="380" cy="220" r="188" fill="none" stroke="#1a2333" stroke-dasharray="4 6"/>
+        <text x="380" y="224" text-anchor="middle" fill="#94a3b8" font-size="13" font-family="sans-serif">${escapeHtml(msg)}</text>`;
+    }
+
+    function renderMeshView() {
+      if (!topologyState) return;
+      const selfInfo = topologyState.self || {};
+      const wr = topologyState.wan_readiness || {};
+      const allPeers = topologyState.peers || [];
+      const peers = filteredTopologyPeers();
+
+      const summary = document.getElementById('mesh-view-summary');
+      if (summary) {
+        summary.textContent = `${allPeers.length} Peer(s) • ${wr.active_sessions || 0} Active Session(s) • ${wr.swarm_hops_available || 0}-Hop Ready`;
+      }
+
+      // Hop readiness pills
+      const hopPills = document.getElementById('hop-overlay-pills');
+      if (hopPills) {
+        const hopsAvail = wr.swarm_hops_available || 0;
+        hopPills.innerHTML = [1, 2, 3].map(h => {
+          const ok = hopsAvail >= h;
+          return `<span class="pill ${ok ? 'emerald' : 'amber'}">${h}-Hop ${ok ? 'READY' : `NEEDS ${h} PEERS`}</span>`;
+        }).join('');
+      }
+
+      if (meshViewMode === 'graph') {
+        renderMeshSvg(selfInfo, peers, wr);
+      } else {
+        renderMeshTable(peers);
+      }
+    }
+
+    function renderMeshSvg(selfInfo, peers, wr) {
+      const svg = document.getElementById('mesh-svg');
+      if (!svg) return;
+
+      const cx = 380;
+      const cy = 220;
+      const ring1R = 122;
+      const ring2R = 188;
+
+      const ring1Peers = peers.filter(p => p.transport !== 'relayed');
+      const ring2Peers = peers.filter(p => p.transport === 'relayed');
+
+      let parts = [];
+      parts.push(`
+        <defs>
+          <filter id="glow-cyan" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="3" result="blur"/>
+            <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <circle cx="${cx}" cy="${cy}" r="${ring1R}" fill="none" stroke="#1a2333" stroke-width="1"/>
+        <circle cx="${cx}" cy="${cy}" r="${ring2R}" fill="none" stroke="#141c2b" stroke-width="1" stroke-dasharray="5 5"/>
+        <text x="${cx}" y="${cy - ring1R - 6}" text-anchor="middle" fill="#475569" font-size="10" font-family="monospace">RING 1 · DIRECT LAN / WAN</text>
+        <text x="${cx}" y="${cy - ring2R - 6}" text-anchor="middle" fill="#475569" font-size="10" font-family="monospace">RING 2 · RELAYED / MULTI-HOP</text>
+      `);
+
+      const coords = [];
+      const placeRing = (list, radius, startAngle) => {
+        const n = list.length;
+        list.forEach((p, idx) => {
+          const angle = startAngle + (2 * Math.PI * idx) / Math.max(1, n);
+          const x = cx + radius * Math.cos(angle);
+          const y = cy + radius * Math.sin(angle);
+          coords.push({ peer: p, x, y });
+        });
+      };
+
+      placeRing(ring1Peers, ring1R, -Math.PI / 2);
+      placeRing(ring2Peers, ring2R, -Math.PI / 2 + Math.PI / 6);
+
+      // Links
+      coords.forEach(({ peer, x, y }) => {
+        let color = '#10b981';
+        let dash = '';
+        if (peer.transport === 'relayed') {
+          color = '#f59e0b';
+          dash = 'stroke-dasharray="6 4"';
+        } else if (peer.scope === 'lan' || peer.transport === 'direct_lan') {
+          color = '#00f0ff';
+        }
+        const opacity = peer.connected ? '0.85' : '0.35';
+        const width = peer.connected ? '2.2' : '1.4';
+        parts.push(`<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${color}" stroke-width="${width}" stroke-opacity="${opacity}" ${dash}/>`);
+      });
+
+      // Optional Circuit Hop Overlay arcs across active peers
+      if (showHopOverlay) {
+        const activeCoords = coords.filter(c => c.peer.connected).slice(0, 3);
+        if (activeCoords.length >= 2) {
+          for (let i = 0; i < activeCoords.length - 1; i++) {
+            const a = activeCoords[i];
+            const b = activeCoords[i + 1];
+            const mx = (a.x + b.x) / 2;
+            const my = (a.y + b.y) / 2 - 22;
+            parts.push(`<path d="M ${a.x.toFixed(1)} ${a.y.toFixed(1)} Q ${mx.toFixed(1)} ${my.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="4 3" stroke-opacity="0.9"/>`);
+          }
+        }
+      }
+
+      // Peer nodes
+      coords.forEach(({ peer, x, y }) => {
+        const isLan = peer.scope === 'lan' || peer.transport === 'direct_lan';
+        const isRelay = peer.transport === 'relayed';
+        const stroke = isRelay ? '#f59e0b' : (isLan ? '#00f0ff' : '#10b981');
+        const fill = peer.connected ? '#0f172a' : '#090d16';
+        const label = (peer.name || peer.fingerprint || 'Peer').slice(0, 18);
+        const tag = `${(peer.scope || 'wan').toUpperCase()} · ${peer.transport || 'udp'}${peer.rtt_ms != null ? ' · ' + peer.rtt_ms + 'ms' : ''}`;
+        const fpEsc = escapeHtml(peer.fingerprint);
+
+        parts.push(`
+          <g class="mesh-node" style="cursor: pointer;" onclick="openPeerDrawer('${fpEsc}')">
+            <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="20" fill="${fill}" stroke="${stroke}" stroke-width="${peer.connected ? 2.4 : 1.5}"/>
+            <circle cx="${(x + 14).toFixed(1)}" cy="${(y - 14).toFixed(1)}" r="4.5" fill="${peer.connected ? '#10b981' : '#475569'}" stroke="#030407" stroke-width="1.5"/>
+            <text x="${x.toFixed(1)}" y="${(y + 4).toFixed(1)}" text-anchor="middle" fill="#f8fafc" font-size="10" font-weight="700" font-family="monospace">${escapeHtml((peer.fingerprint || '').slice(0, 4).toUpperCase())}</text>
+            <text x="${x.toFixed(1)}" y="${(y + 33).toFixed(1)}" text-anchor="middle" fill="#f8fafc" font-size="11" font-weight="600">${escapeHtml(label)}</text>
+            <text x="${x.toFixed(1)}" y="${(y + 46).toFixed(1)}" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-family="monospace">${escapeHtml(tag)}</text>
+          </g>
+        `);
+      });
+
+      // Center YOU node
+      const selfName = (selfInfo.name || 'Local Node').slice(0, 18);
+      const selfFp = (selfInfo.fingerprint || '').slice(0, 8);
+      const natLabel = `${selfInfo.nat_type || 'Detecting'} · ${selfInfo.mode || 'public'}`;
+      const pulseCircle = isConnected
+        ? `<circle cx="${cx}" cy="${cy}" r="30" fill="none" stroke="#10b981" stroke-width="2" class="svg-pulse"/>`
+        : '';
+
+      parts.push(`
+        <g>
+          ${pulseCircle}
+          <circle cx="${cx}" cy="${cy}" r="28" fill="#0b1220" stroke="${isConnected ? '#10b981' : '#00f0ff'}" stroke-width="2.5" filter="url(#glow-cyan)"/>
+          <text x="${cx}" y="${cy - 2}" text-anchor="middle" fill="#f8fafc" font-size="12" font-weight="800" letter-spacing="1">YOU</text>
+          <text x="${cx}" y="${cy + 12}" text-anchor="middle" fill="#00f0ff" font-size="9" font-family="monospace">${escapeHtml(selfFp)}</text>
+          <text x="${cx}" y="${cy + 43}" text-anchor="middle" fill="#f8fafc" font-size="11.5" font-weight="700">${escapeHtml(selfName)}</text>
+          <text x="${cx}" y="${cy + 56}" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-family="monospace">${escapeHtml(natLabel)}</text>
+        </g>
+      `);
+
+      if (peers.length === 0) {
+        parts.push(`<text x="${cx}" y="418" text-anchor="middle" fill="#94a3b8" font-size="12">No peers match the current filter — click "Scan LAN" or connect a peer via IP:Port or vb:// URI.</text>`);
+      }
+
+      svg.innerHTML = parts.join('');
+    }
+
+    function renderMeshTable(peers) {
+      const tbody = document.getElementById('mesh-table-body');
+      if (!tbody) return;
+      if (peers.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color: var(--text-muted); padding: 24px;">No peers match the current filter.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = peers.map(p => {
+        const fpEsc = escapeHtml(p.fingerprint);
+        return `
+          <tr onclick="openPeerDrawer('${fpEsc}')">
+            <td>
+              <div style="font-weight: 600;">${escapeHtml(p.name || 'Peer')}</div>
+              <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim);">${fpEsc}</div>
+            </td>
+            <td style="font-family: var(--font-mono);">${escapeHtml(p.address)}</td>
+            <td><span class="pill ${p.scope === 'lan' ? 'cyan' : 'emerald'}">${escapeHtml((p.scope || 'wan').toUpperCase())}</span></td>
+            <td style="font-family: var(--font-mono);">${escapeHtml(p.transport || 'udp')}</td>
+            <td><span class="pill ${p.connected ? 'emerald' : ''}">${p.connected ? 'CONNECTED' : 'DISCOVERED'}</span></td>
+            <td style="font-family: var(--font-mono);">${p.rtt_ms != null ? p.rtt_ms + ' ms' : '—'}</td>
+            <td>
+              <button class="secondary-btn" style="padding: 4px 10px;" onclick="event.stopPropagation(); openPeerDrawer('${fpEsc}')">Inspect</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // ── Peer Inspector Drawer ──
+    function findPeerByFingerprint(fp) {
+      if (topologyState && Array.isArray(topologyState.peers)) {
+        const found = topologyState.peers.find(p => p.fingerprint === fp);
+        if (found) return found;
+      }
+      if (nodeState && Array.isArray(nodeState.peers)) {
+        return nodeState.peers.find(p => p.fingerprint === fp) || null;
+      }
+      return null;
+    }
+
+    function openPeerDrawer(fp) {
+      const peer = findPeerByFingerprint(fp);
+      if (!peer) return;
+      inspectedFingerprint = fp;
+      populatePeerDrawer(peer);
+      document.getElementById('peer-drawer-backdrop').classList.add('open');
+      document.getElementById('peer-drawer').classList.add('open');
+    }
+
+    function populatePeerDrawer(peer) {
+      document.getElementById('drawer-peer-name').textContent = peer.name || 'Peer Inspector';
+      document.getElementById('drawer-peer-fp').textContent = peer.fingerprint || '—';
+      document.getElementById('drawer-peer-addr').textContent = peer.address || '—';
+      document.getElementById('drawer-peer-scope').textContent = (peer.scope || 'unknown').toUpperCase();
+      document.getElementById('drawer-peer-transport').textContent = peer.transport || (peer.connected ? 'direct' : 'discovered');
+      document.getElementById('drawer-peer-rtt').textContent = peer.rtt_ms != null ? `${peer.rtt_ms} ms` : (peer.latency_ms != null ? `${peer.latency_ms} ms` : '—');
+      document.getElementById('drawer-peer-os').textContent = peer.os || 'unknown';
+      const renameInput = document.getElementById('drawer-rename-input');
+      if (renameInput && document.activeElement !== renameInput) {
+        renameInput.value = peer.name || '';
+      }
+      const pills = document.getElementById('drawer-peer-pills');
+      if (pills) {
+        pills.innerHTML = `
+          <span class="pill ${peer.connected ? 'emerald' : ''}">${peer.connected ? 'ONLINE' : 'DISCOVERED'}</span>
+          <span class="pill ${peer.scope === 'lan' ? 'cyan' : 'emerald'}">${escapeHtml((peer.scope || 'wan').toUpperCase())}</span>
+        `;
+      }
+    }
+
+    function closePeerDrawer() {
+      inspectedFingerprint = null;
+      const bd = document.getElementById('peer-drawer-backdrop');
+      const dr = document.getElementById('peer-drawer');
+      if (bd) bd.classList.remove('open');
+      if (dr) dr.classList.remove('open');
+    }
+
+    async function renameInspectedPeer() {
+      if (!inspectedFingerprint) return;
+      const input = document.getElementById('drawer-rename-input');
+      const newName = input ? input.value.trim() : '';
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ set_device_name: { [inspectedFingerprint]: newName } })
+        });
+        const data = await res.json();
+        if (!res.ok || data.success === false) {
+          showToast(data.error || 'Failed to rename peer.', 'error');
+          return;
+        }
+        showToast('Device name updated.', 'success');
+        await Promise.all([refreshStatus(), refreshTopology()]);
+      } catch (e) {
+        showToast('Rename failed: ' + e.message, 'error');
+      }
+    }
+
+    async function disconnectInspectedPeer() {
+      if (!inspectedFingerprint) return;
+      await disconnectPeerByFingerprint(inspectedFingerprint);
+      closePeerDrawer();
+    }
+
+    async function disconnectPeerByFingerprint(fp) {
+      try {
+        const res = await fetch('/api/peers/disconnect', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ fingerprint: fp })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showToast(data.error || 'Failed to disconnect peer.', 'error');
+          return;
+        }
+        showToast(`Disconnected peer ${fp.slice(0, 8)}...`, 'success');
+        await Promise.all([refreshStatus(), refreshTopology()]);
+      } catch (e) {
+        showToast('Disconnect failed: ' + e.message, 'error');
+      }
+    }
+
+    // ── Peers Tab & Add Peer Studio ──
+    function renderPeers(peers) {
+      const container = document.getElementById('peer-list-container');
+      if (!container) return;
+      if (!peers || peers.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            No external mesh peers connected yet.<br>
+            Devices on your local network or paired via vb:// URI will appear here automatically.
+          </div>`;
+        return;
+      }
+
+      container.innerHTML = peers.map(p => {
+        const fpEsc = escapeHtml(p.fingerprint);
+        return `
+          <div class="peer-card" onclick="openPeerDrawer('${fpEsc}')">
+            <div class="peer-main">
+              <span class="peer-dot ${p.connected ? '' : 'offline'}"></span>
+              <div>
+                <div class="peer-name">${escapeHtml(p.name || 'Anonymous Node')}</div>
+                <div class="peer-addr">${escapeHtml(p.address || 'Unknown')} • ${fpEsc}</div>
+              </div>
+            </div>
+            <div class="peer-metrics">
+              ${p.scope ? `<span class="pill ${p.scope === 'lan' ? 'cyan' : 'emerald'}">${escapeHtml(p.scope.toUpperCase())}</span>` : ''}
+              ${p.latency_ms !== null && p.latency_ms !== undefined ? `<span class="peer-ping">${p.latency_ms} ms</span>` : ''}
+              <span class="peer-badge">${escapeHtml(p.role || (p.connected ? 'Active Mesh Peer' : 'Discovered Peer'))}</span>
+              <button class="danger-btn" style="padding: 4px 9px; font-size: 11px;" onclick="event.stopPropagation(); disconnectPeerByFingerprint('${fpEsc}')">Disconnect</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function connectPeerFromInput(inputId) {
+      const input = document.getElementById(inputId);
+      const target = input ? input.value.trim() : '';
+      if (!target) {
+        showToast('Enter a peer IP:Port or signed vb:// URI.', 'warn');
+        return;
+      }
+      showToast('Connecting to peer...', '');
+      try {
+        const res = await fetch('/api/peers/add', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ address: target })
+        });
+        const data = await res.json();
+        if (res.status === 401) {
+          openPinModal('Enter PIN to add peers.');
+          return;
+        }
+        if (!res.ok || !data.success) {
+          showToast('Error: ' + (data.error || 'Could not add peer'), 'error');
+          return;
+        }
+        if (input) input.value = '';
+        showToast(data.message || 'Handshake initiated.', 'success');
+        setTimeout(() => {
+          refreshStatus();
+          refreshTopology();
+        }, 400);
+      } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+      }
+    }
+
+    async function scanLanNow() {
+      const btn = document.getElementById('btn-scan-lan');
+      if (btn) {
+        btn.innerText = 'Scanning...';
+        btn.disabled = true;
+      }
+      try {
+        const res = await fetch('/api/scan', { method: 'POST', headers: pinHeaders() });
+        if (res.status === 401) {
+          openPinModal('Enter PIN to trigger LAN scan.');
+        } else if (res.ok) {
+          showToast('LAN discovery sweep triggered.', 'success');
+        }
+      } catch (e) {
+        showToast('LAN scan failed: ' + e.message, 'error');
+      } finally {
+        setTimeout(() => {
+          if (btn) {
+            btn.innerText = '🔍 Scan LAN for Nodes';
+            btn.disabled = false;
+          }
+          refreshStatus();
+          refreshTopology();
+        }, 1000);
+      }
+    }
+
+    async function updateScanInterval(val) {
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ private_mesh_scan_interval_secs: parseInt(val, 10) })
+        });
+        if (res.ok) showToast('Scan interval saved.', 'success');
+      } catch (e) {
+        showToast('Scan interval update failed: ' + e.message, 'error');
+      }
+    }
+
+    // ── Multi-Port SOCKS5 & Split-Tunnel Panel ──
+    function renderSocks5Panel(data) {
+      const basePort = data.socks_port || 1080;
+      const listening = Boolean(data.socks_listening);
+      const sessions = data.active_sessions || 0;
+
+      const globalPill = document.getElementById('socks-global-pill');
+      if (globalPill) {
+        globalPill.textContent = listening ? `LISTENING :${basePort}–:${basePort + 3}` : 'SOCKS5 DISABLED';
+        globalPill.className = 'pill ' + (listening ? 'emerald' : 'amber');
+      }
+
+      const pacEl = document.getElementById('pac-url-display');
+      if (pacEl) {
+        const httpPort = window.location.port || '2270';
+        pacEl.textContent = `http://127.0.0.1:${httpPort}/proxy.pac`;
+      }
+
+      const defs = [
+        { offset: 0, label: 'Auto (Adaptive)', minSessions: 0, readyLabel: 'Ready' },
+        { offset: 1, label: '1-Hop Fast Path', minSessions: 1, readyLabel: '1-Hop Ready' },
+        { offset: 2, label: '2-Hop Circuit', minSessions: 2, readyLabel: '2-Hop Ready' },
+        { offset: 3, label: 'Strict 3-Hop Onion', minSessions: 3, readyLabel: '3-Hop Ready' }
+      ];
+
+      const grid = document.getElementById('socks-ports-grid');
+      if (grid) {
+        grid.innerHTML = defs.map(d => {
+          const p = basePort + d.offset;
+          const ok = listening && sessions >= d.minSessions;
+          const badgeText = !listening
+            ? 'Offline'
+            : (ok ? d.readyLabel : `Needs ≥${d.minSessions} peer${d.minSessions > 1 ? 's' : ''}`);
+          const cls = !listening ? '' : (ok ? 'ready' : 'warn');
+          const pillCls = !listening ? '' : (ok ? 'emerald' : 'amber');
+          return `
+            <div class="socks-port-card ${cls}">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-family:var(--font-mono); font-weight:700; font-size:13px;">:${p}</span>
+                <span class="pill ${pillCls}">${badgeText}</span>
+              </div>
+              <span style="font-size:11.5px; color:var(--text-muted);">${d.label}</span>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
+    function renderBypassList(rules) {
+      const container = document.getElementById('bypass-list-container');
+      const countPill = document.getElementById('bypass-count-pill');
+      const list = Array.isArray(rules) ? rules : [];
+      if (countPill) countPill.textContent = `${list.length} rule${list.length === 1 ? '' : 's'}`;
+      if (!container) return;
+      if (list.length === 0) {
+        container.innerHTML = `<span style="font-size: 11.5px; color: var(--text-dim);">No split-tunnel bypass rules configured.</span>`;
+        return;
+      }
+      container.innerHTML = list.map(r => `
+        <span class="bypass-tag">
+          <span>${escapeHtml(r)}</span>
+          <button type="button" title="Remove rule" onclick="removeBypassRule('${escapeHtml(r)}')">×</button>
+        </span>
+      `).join('');
+    }
+
+    async function addBypassRule() {
+      const input = document.getElementById('bypass-add-input');
+      const rule = input ? input.value.trim() : '';
+      if (!rule) return;
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ bypass_add: rule })
+        });
+        const data = await res.json();
+        if (!res.ok || data.success === false) {
+          showToast(data.error || 'Invalid bypass rule.', 'error');
+          return;
+        }
+        if (input) input.value = '';
+        renderBypassList(data.bypass || []);
+        showToast(`Added bypass rule: ${rule}`, 'success');
+      } catch (e) {
+        showToast('Failed to add bypass rule: ' + e.message, 'error');
+      }
+    }
+
+    async function removeBypassRule(rule) {
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ bypass_remove: rule })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          renderBypassList(data.bypass || []);
+          showToast(`Removed bypass rule: ${rule}`, 'success');
+        }
+      } catch (e) {
+        showToast('Failed to remove bypass rule: ' + e.message, 'error');
+      }
+    }
+
+    // ── Crypto / RS Pipeline Benchmark (Diagnostics) ──
+    async function runPipelineBenchmark() {
+      const btn = document.getElementById('btn-pipeline-probe');
+      const statusLine = document.getElementById('bench-status-line');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Running Benchmark...';
+      }
+      if (statusLine) statusLine.textContent = 'Executing in-process XChaCha20-Poly1305 + RS(2,1) benchmark...';
+
+      try {
+        const res = await fetch('/api/pipeline_probe', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ total_bytes: 2000000 })
+        });
+        if (res.status === 401) {
+          openPinModal('Enter PIN to run diagnostics benchmark.');
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok || data.status !== 'completed') {
+          showToast('Benchmark failed.', 'error');
+          return;
+        }
+        const grid = document.getElementById('bench-results-grid');
+        if (grid) grid.style.display = 'grid';
+
+        const mbps = Number(data.throughput_mbps || 0);
+        const mbs = mbps / 8;
+        document.getElementById('bench-mbps').textContent = `${mbps.toFixed(1)} Mbps`;
+        document.getElementById('bench-mbs').textContent = `${mbs.toFixed(2)} MB/s`;
+
+        const lat = data.latency_us || {};
+        document.getElementById('bench-p50').textContent = `${lat.p50 ?? '—'} µs`;
+        document.getElementById('bench-mean').textContent = `mean ${lat.mean ?? '—'} µs`;
+        document.getElementById('bench-p99').textContent = `${lat.p95 ?? '—'} / ${lat.p99 ?? '—'} µs`;
+        document.getElementById('bench-minmax').textContent = `min ${lat.min ?? '—'} · max ${lat.max ?? '—'} µs`;
+        document.getElementById('bench-bytes').textContent = formatBytes(data.total_bytes || 0);
+        document.getElementById('bench-duration').textContent = `${data.duration_ms ?? '—'} ms (${data.iterations || 0} chunks)`;
+        if (statusLine) statusLine.textContent = `Benchmark completed in ${data.duration_ms} ms.`;
+        showToast(`Benchmark complete: ${mbs.toFixed(1)} MB/s`, 'success');
+      } catch (e) {
+        if (statusLine) statusLine.textContent = 'Benchmark error: ' + e.message;
+        showToast('Benchmark failed: ' + e.message, 'error');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Run Crypto / RS Benchmark';
+        }
+      }
+    }
+
+    // ── Settings & Experimental Anchors ──
+    async function saveSetting(key, value) {
+      try {
+        if (key === 'stealth' || key === 'mode') {
+          const targetMode = typeof value === 'boolean' ? (value ? 'stealth' : 'public') : value;
+          const res = await fetch('/api/mode', {
+            method: 'POST',
+            headers: pinHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ mode: targetMode })
+          });
+          if (res.status === 401) {
+            openPinModal('Enter PIN to change settings.');
+            return;
+          }
+          if (res.ok) {
+            showToast(`Node mode set to ${targetMode}.`, 'success');
+            refreshStatus();
+          }
+          return;
+        }
+
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ [key]: value })
+        });
+        if (res.status === 401) {
+          openPinModal('Enter PIN to change settings.');
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          settingsState = Object.assign({}, settingsState || {}, data);
+          updateExperimentalPills();
+          showToast('Setting saved.', 'success');
+        }
+      } catch (e) {
+        showToast('Failed to save setting: ' + e.message, 'error');
       }
     }
 
@@ -1374,10 +2846,11 @@
           body: JSON.stringify({ low_latency: enabled, mix_batch_ms: enabled ? 1 : 20 })
         });
         const sel = document.getElementById('select-mix-batch');
-        if (sel) sel.value = enabled ? "1" : "20";
+        if (sel) sel.value = enabled ? '1' : '20';
         refreshStatus();
+        showToast(`Low-latency mode ${enabled ? 'enabled' : 'disabled'}.`, 'success');
       } catch (e) {
-        console.warn('Low latency toggle error', e);
+        showToast('Low latency toggle error: ' + e.message, 'error');
       }
     }
 
@@ -1392,106 +2865,18 @@
         const toggle = document.getElementById('toggle-low-latency');
         if (toggle) toggle.checked = (ms <= 1);
         refreshStatus();
+        showToast(`Mix batch window set to ${ms} ms.`, 'success');
       } catch (e) {
-        console.warn('Mix batch update error', e);
+        showToast('Mix batch update error: ' + e.message, 'error');
       }
     }
 
-    async function scanLanNow() {
-      const btn = document.getElementById('btn-scan-lan');
-      if (btn) {
-        btn.innerText = 'Scanning...';
-        btn.disabled = true;
-      }
-      try {
-        await fetch('/api/mesh/scan', { method: 'POST', headers: pinHeaders() });
-        setTimeout(() => {
-          if (btn) {
-            btn.innerText = '🔍 Scan LAN for Nodes';
-            btn.disabled = false;
-          }
-          refreshStatus();
-        }, 1200);
-      } catch (e) {
-        if (btn) {
-          btn.innerText = '🔍 Scan LAN for Nodes';
-          btn.disabled = false;
-        }
-      }
-    }
-
-    async function updateScanInterval(val) {
-      try {
-        await fetch('/api/mesh/config', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ scan_interval_secs: parseInt(val, 10) })
-        });
-      } catch (e) {
-        console.warn('Scan interval update error', e);
-      }
-    }
-
-    function renderPeers(peers) {
-      const container = document.getElementById('peer-list-container');
-      if (!peers || peers.length === 0) {
-        container.innerHTML = `
-          <div class="empty-state">
-            No external mesh peers connected yet.<br>
-            Smartphones and computers in your local Wi-Fi will appear here automatically when they connect.
-          </div>`;
-        return;
-      }
-
-      container.innerHTML = peers.map(p => `
-        <div class="peer-card">
-          <div class="peer-main">
-            <span class="peer-dot ${p.connected ? '' : 'offline'}"></span>
-            <div>
-              <div class="peer-name">${escapeHtml(p.name || 'Anonymous Node')}</div>
-              <div class="peer-addr">${escapeHtml(p.address || 'Unknown')}</div>
-            </div>
-          </div>
-          <div class="peer-metrics">
-            ${p.latency_ms !== null && p.latency_ms !== undefined ? `<span class="peer-ping">${p.latency_ms} ms</span>` : ''}
-            <span class="peer-badge">${escapeHtml(p.role || (p.connected ? 'Direct Peer' : 'Discovered'))}</span>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    async function addPeer() {
-      const input = document.getElementById('add-peer-input');
-      const target = input.value.trim();
-      if (!target) return;
-
-      try {
-        await fetch('/api/peers/add', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ address: target })
-        });
-        input.value = '';
-        setTimeout(refreshStatus, 400);
-      } catch (e) {
-        alert('Could not connect peer: ' + e.message);
-      }
-    }
-
-    function escapeHtml(s) {
-      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
-
-    function saveSetting(key, value) {
-      console.log('Setting:', key, value);
-    }
-
-    // ── Research Settings Logic ──
     async function loadSettings() {
       try {
         const res = await fetch('/api/settings', { headers: pinHeaders() });
         if (!res.ok) return;
         const data = await res.json();
+        settingsState = data;
         if (data.qel_enabled !== undefined) {
           const el = document.getElementById('toggle-qel');
           if (el) el.checked = Boolean(data.qel_enabled);
@@ -1512,24 +2897,86 @@
           const el = document.getElementById('toggle-abos');
           if (el) el.checked = Boolean(data.abos_skywave_enabled);
         }
+        renderBypassList(data.bypass || []);
+        updateExperimentalPills();
       } catch (e) {
         console.warn('Failed to load settings', e);
       }
     }
 
-    async function saveResearchSetting(key, value) {
+    async function refreshAnchors() {
       try {
-        await fetch('/api/settings', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ [key]: value })
-        });
+        const res = await fetch('/api/v1/anchors/status', { headers: pinHeaders() });
+        if (!res.ok) return;
+        anchorsState = await res.json();
+        updateExperimentalPills();
       } catch (e) {
-        console.warn('Failed to save research setting', key, e);
+        // Ignore
       }
     }
 
-    // Software Update Client
+    function updateExperimentalPills() {
+      const qelPill = document.getElementById('pill-qel-status');
+      if (qelPill) {
+        const q = anchorsState && anchorsState.qel_quantum;
+        if (q) {
+          const st = q.status || 'unprobed';
+          if (st === 'available') {
+            qelPill.textContent = 'AVAILABLE';
+            qelPill.className = 'pill emerald';
+          } else if (st === 'degraded') {
+            qelPill.textContent = 'DEGRADED';
+            qelPill.className = 'pill amber';
+          } else if (st === 'unprobed') {
+            qelPill.textContent = 'OPT-IN (GHOST_QUANTUM=1)';
+            qelPill.className = 'pill';
+          } else {
+            qelPill.textContent = st.toUpperCase();
+            qelPill.className = 'pill rose';
+          }
+        }
+      }
+
+      const abosPill = document.getElementById('pill-abos-status');
+      if (abosPill) {
+        const a = anchorsState && anchorsState.abos_skywave;
+        if (a) {
+          if (a.status === 'online') {
+            abosPill.textContent = a.synthetic ? 'ONLINE (SYNTHETIC)' : 'ONLINE (SDR)';
+            abosPill.className = a.synthetic ? 'pill amber' : 'pill emerald';
+          } else if (a.status === 'standby') {
+            abosPill.textContent = 'STANDBY';
+            abosPill.className = 'pill amber';
+          } else {
+            abosPill.textContent = 'OFFLINE (GHOST_SKYWAVE=1)';
+            abosPill.className = 'pill';
+          }
+        }
+      }
+
+      const stegoPill = document.getElementById('pill-stego-status');
+      if (stegoPill && settingsState) {
+        const on = Boolean(settingsState.stego_carrier_mode);
+        stegoPill.textContent = on ? 'CONFIGURED' : 'STANDBY';
+        stegoPill.className = 'pill ' + (on ? 'cyan' : '');
+      }
+
+      const energyPill = document.getElementById('pill-energy-status');
+      if (energyPill && settingsState) {
+        const on = Boolean(settingsState.energy_ledger_enabled);
+        energyPill.textContent = on ? 'CONFIGURED' : 'STANDBY';
+        energyPill.className = 'pill ' + (on ? 'cyan' : '');
+      }
+
+      const jurisPill = document.getElementById('pill-jurisdiction-status');
+      if (jurisPill && settingsState && settingsState.jurisdiction_tag) {
+        const j = String(settingsState.jurisdiction_tag).toUpperCase();
+        jurisPill.textContent = j === 'ANY' ? 'ANY (GLOBAL)' : j + ' ONLY';
+        jurisPill.className = 'pill ' + (j === 'ANY' ? '' : 'cyan');
+      }
+    }
+
+    // ── Software Update Client ──
     let latestUpdateInfo = null;
 
     async function checkUpdateManual() {
@@ -1551,9 +2998,7 @@
           if (footerLink) footerLink.innerText = `✓ Up to date (v${data.current_version})`;
           const desc = document.getElementById('setting-update-desc');
           if (desc) desc.innerText = `You are running the latest release (v${data.current_version}).`;
-          setTimeout(() => {
-            if (btn) btn.innerText = 'Check for Updates';
-          }, 3500);
+          setTimeout(() => { if (btn) btn.innerText = 'Check for Updates'; }, 3500);
         }
       } catch (e) {
         if (btn) btn.innerText = 'Check Failed';
@@ -1567,21 +3012,19 @@
         pill.innerText = `⚡ v${data.latest_version} Available`;
         pill.style.display = 'inline-block';
       }
-
       const banner = document.getElementById('update-banner');
       const bannerText = document.getElementById('update-banner-text');
       if (banner && bannerText) {
         bannerText.innerText = `Vantablack v${data.latest_version} is available (current: v${data.current_version}).`;
         banner.style.display = 'flex';
       }
-
       const applyBtn = document.getElementById('btn-apply-update');
       if (applyBtn) {
         applyBtn.innerText = `Install v${data.latest_version} 🚀`;
         applyBtn.style.display = 'inline-block';
       }
       const desc = document.getElementById('setting-update-desc');
-      if (desc) desc.innerText = `Release v${data.latest_version} is ready for automatic silent installation.`;
+      if (desc) desc.innerText = `Release v${data.latest_version} is ready for automatic installation.`;
     }
 
     function triggerUpdateModal() {
@@ -1595,34 +3038,21 @@
     async function applyUpdateNow() {
       const bannerBtn = document.getElementById('btn-update-apply');
       const applyBtn = document.getElementById('btn-apply-update');
-      if (bannerBtn) {
-        bannerBtn.innerText = '⏳ Downloading & Restarting...';
-        bannerBtn.disabled = true;
-      }
-      if (applyBtn) {
-        applyBtn.innerText = '⏳ Downloading & Restarting...';
-        applyBtn.disabled = true;
-      }
+      if (bannerBtn) { bannerBtn.innerText = '⏳ Downloading & Restarting...'; bannerBtn.disabled = true; }
+      if (applyBtn) { applyBtn.innerText = '⏳ Downloading & Restarting...'; applyBtn.disabled = true; }
 
       try {
         const res = await fetch('/api/update/apply', { method: 'POST', headers: pinHeaders() });
         const data = await res.json();
         if (data.success) {
-          alert('Update downloaded! Vantablack is restarting silently. Reconnecting automatically...');
+          showToast('Update downloaded. Restarting Vantablack...', 'success');
           pollForRestart();
         } else {
-          alert('Update failed: ' + (data.error || 'Unknown error'));
-          if (bannerBtn) {
-            bannerBtn.innerText = 'Update & Restart Now ⚡';
-            bannerBtn.disabled = false;
-          }
-          if (applyBtn) {
-            applyBtn.innerText = 'Install Update 🚀';
-            applyBtn.disabled = false;
-          }
+          showToast('Update failed: ' + (data.error || 'Unknown error'), 'error');
+          if (bannerBtn) { bannerBtn.innerText = 'Update & Restart Now ⚡'; bannerBtn.disabled = false; }
+          if (applyBtn) { applyBtn.innerText = 'Install Update 🚀'; applyBtn.disabled = false; }
         }
       } catch (e) {
-        // Node process exited to install, poll for the restarted node
         pollForRestart();
       }
     }
@@ -1643,22 +3073,26 @@
       }, 1500);
     }
 
-    // Auto-check for updates 3 seconds after page load
+    // ── Bootstrapping & Polling ──
     setTimeout(checkUpdateManual, 3000);
-
-    // Initial load for research settings
     loadSettings();
-
-    // Polling loop
+    refreshAnchors();
     refreshStatus();
-    setInterval(refreshStatus, 1200);
+    refreshTopology();
 
-    // Immediately wake up and refresh numbers when window is focused or restored from background
+    setInterval(refreshStatus, 1200);
+    setInterval(refreshTopology, 2500);
+    setInterval(refreshAnchors, 5000);
+
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) refreshStatus();
+      if (!document.hidden) {
+        refreshStatus();
+        refreshTopology();
+      }
     });
     window.addEventListener('focus', () => {
       refreshStatus();
+      refreshTopology();
     });
   </script>
 </body>

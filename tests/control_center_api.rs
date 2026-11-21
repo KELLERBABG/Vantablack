@@ -91,24 +91,28 @@ fn http_response_complete(buf: &[u8]) -> bool {
     buf.len() - (headers_end + 4) >= declared
 }
 
-/// Same as [`http_request`] with an explicit socket timeout — needed for
-/// endpoints that run a real subprocess (the QEL bridge spawns Python).
-fn http_request_timeout(
+/// Send an HTTP/1.1 request with optional extra headers and return `(status, headers, body)`.
+fn http_request_raw(
     port: u16,
     method: &str,
     path: &str,
     body: Option<&serde_json::Value>,
+    extra_headers: &[(&str, &str)],
     timeout: Duration,
-) -> (u16, serde_json::Value) {
+) -> (u16, String, String) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to control center");
     stream.set_read_timeout(Some(timeout)).unwrap();
     stream.set_write_timeout(Some(timeout)).unwrap();
 
     let body_str = body.map(|b| b.to_string()).unwrap_or_default();
     let content_len = body_str.len();
+    let mut extra = String::new();
+    for (k, v) in extra_headers {
+        extra.push_str(&format!("{k}: {v}\r\n"));
+    }
 
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {content_len}\r\nConnection: close\r\n\r\n{body_str}"
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra}Content-Type: application/json\r\nContent-Length: {content_len}\r\nConnection: close\r\n\r\n{body_str}"
     );
 
     stream.write_all(req.as_bytes()).expect("write request");
@@ -146,10 +150,22 @@ fn http_request_timeout(
         .expect("parse status code");
 
     let body_start = resp_str.find("\r\n\r\n").expect("body delimiter");
-    let body_part = &resp_str[body_start + 4..];
+    let headers_part = resp_str[..body_start].to_string();
+    let body_part = resp_str[body_start + 4..].to_string();
+    (status_code, headers_part, body_part)
+}
 
+/// Same as [`http_request`] with an explicit socket timeout — needed for
+/// endpoints that run a real subprocess (the QEL bridge spawns Python).
+fn http_request_timeout(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: Option<&serde_json::Value>,
+    timeout: Duration,
+) -> (u16, serde_json::Value) {
+    let (status_code, _, body_part) = http_request_raw(port, method, path, body, &[], timeout);
     let json_val = serde_json::from_str(body_part.trim()).unwrap_or(serde_json::Value::Null);
-
     (status_code, json_val)
 }
 
@@ -206,16 +222,22 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
     // ── Test 1: GET /api/status ───────────────────────────────────────────
     let (code, status) = http_request(web_port, "GET", "/api/status", None);
     assert_eq!(code, 200, "status code must be 200");
+    assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(status["mode"], "public");
     assert!(status["connected"].is_boolean());
     assert!(status["network_id"].is_string());
     assert_eq!(status["network_id"].as_str().unwrap().len(), 16);
     assert_eq!(status["socks_listening"], true);
     assert_eq!(status["socks_port"], socks_port);
+    assert_eq!(status["multicast_addr"], "239.255.0.1:2270");
+    assert_eq!(
+        status["socks_ports"],
+        serde_json::json!([socks_port, socks_port + 1, socks_port + 2, socks_port + 3])
+    );
     assert!(status["uptime_seconds"].as_u64().is_some());
     println!(
-        "PASS: GET /api/status validated: network_id={}",
-        status["network_id"]
+        "PASS: GET /api/status validated: network_id={}, version={}",
+        status["network_id"], status["version"]
     );
 
     // ── Test 2: GET /api/peers ────────────────────────────────────────────
@@ -631,6 +653,240 @@ fn test_qel_anchor_routes_a_real_key_over_a_mesh_export() {
         "PASS: QEL anchor routed a key — route_fid={route_fid:.4}, key_fid={key_fid:.4}, rounds={}",
         route["distillation_rounds"]
     );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Wait until the Control Center HTTP endpoint answers 200 on `GET /api/status`.
+fn wait_for_control_center(web_port: u16) {
+    let start_wait = Instant::now();
+    while start_wait.elapsed() < Duration::from_secs(12) {
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", web_port)) {
+            let req = b"GET /api/status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(req);
+            let mut buf = [0u8; 64];
+            if let Ok(n) = stream.read(&mut buf) {
+                if n > 0 && String::from_utf8_lossy(&buf[..n]).contains("200 OK") {
+                    return;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    panic!("Control Center HTTP API failed to start within 12s on port {web_port}");
+}
+
+#[test]
+fn test_mesh_ui_endpoints_topology_pac_aliases_vb_uri_and_disconnect() {
+    let bin_path = find_binary();
+    let web_port = get_free_port();
+    let socks_port = get_free_port();
+    let udp_port = get_free_port();
+
+    let temp_dir = std::env::temp_dir().join(format!("vanta_mesh_ui_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let consumer_config = temp_dir.join("consumer_settings.json");
+
+    let mut cmd = Command::new(&bin_path);
+    cmd.env("GHOST_NO_GUI", "1")
+        .env("GHOST_SOCKS5", "1")
+        .env("GHOST_WEB_PORT", web_port.to_string())
+        .env("GHOST_SOCKS5_PORT", socks_port.to_string())
+        .env("GHOST_UDP_PORT", udp_port.to_string())
+        .env("GHOST_DATA_DIR", &temp_dir)
+        .env("GHOST_CONSUMER_CONFIG", &consumer_config)
+        .env("GHOST_MODE", "public");
+
+    let child = cmd.spawn().expect("failed to spawn daemon");
+    let _guard = NodeProcessGuard { child };
+    wait_for_control_center(web_port);
+
+    // 1. GET /api/topology
+    let (code, topo) = http_request(web_port, "GET", "/api/topology", None);
+    assert_eq!(code, 200);
+    assert_eq!(topo["version"], env!("CARGO_PKG_VERSION"));
+    assert!(topo["self"]["fingerprint"].is_string());
+    assert_eq!(topo["self"]["socks_listening"], true);
+    assert_eq!(topo["self"]["socks_port"], socks_port);
+    assert_eq!(
+        topo["self"]["socks_ports"],
+        serde_json::json!([socks_port, socks_port + 1, socks_port + 2, socks_port + 3])
+    );
+    assert_eq!(topo["self"]["nat_type"], "Detecting");
+    assert!(topo["self"]["roles"].is_array());
+    assert!(topo["peers"].is_array());
+    assert_eq!(topo["wan_readiness"]["socket_ok"], true);
+    assert_eq!(topo["wan_readiness"]["socks_ok"], true);
+    assert_eq!(topo["wan_readiness"]["swarm_hops_available"], 0);
+
+    // 2. GET /proxy.pac
+    let (code, headers, pac_body) = http_request_raw(
+        web_port,
+        "GET",
+        "/proxy.pac",
+        None,
+        &[],
+        Duration::from_secs(5),
+    );
+    assert_eq!(code, 200);
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("application/x-ns-proxy-autoconfig"),
+        "PAC content-type missing: {headers}"
+    );
+    assert!(pac_body.contains("function FindProxyForURL(url, host)"));
+    assert!(pac_body.contains("return \"DIRECT\";"));
+    assert!(pac_body.contains(&format!("SOCKS5 127.0.0.1:{socks_port}; DIRECT")));
+
+    // 3. GET / dashboard HTML sanity
+    let (code, _, html) = http_request_raw(web_port, "GET", "/", None, &[], Duration::from_secs(5));
+    assert_eq!(code, 200);
+    assert!(html.contains(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+    assert!(html.contains("239.255.0.1:2270"));
+    assert!(html.contains("tab-mesh"));
+    assert!(!html.contains("v0.8.21"), "hardcoded v0.8.21 must be gone");
+    assert!(
+        !html.contains("Verbindung mit Android-App"),
+        "German copy must be removed"
+    );
+    assert!(
+        !html.contains("/api/mesh/scan"),
+        "broken /api/mesh/scan call must be removed from dashboard JS"
+    );
+
+    // 4. Backwards-compatible aliases: POST /api/mesh/scan & POST /api/mesh/config
+    let (code, scan_resp) = http_request(web_port, "POST", "/api/mesh/scan", None);
+    assert_eq!(code, 200);
+    assert_eq!(scan_resp["success"], true);
+
+    let cfg_payload = serde_json::json!({ "scan_interval_secs": 1800 });
+    let (code, cfg_resp) = http_request(web_port, "POST", "/api/mesh/config", Some(&cfg_payload));
+    assert_eq!(code, 200);
+    assert_eq!(cfg_resp["success"], true);
+    assert_eq!(cfg_resp["private_mesh_scan_interval_secs"], 1800);
+
+    // 5. POST /api/peers/add with signed vb:// URI (and tampered vb:// rejection)
+    let peer_id = vantablack::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
+    let kem_pk = [0x55u8; 1184];
+    let target_ep: std::net::SocketAddr = format!("127.0.0.1:{}", get_free_port()).parse().unwrap();
+    let desc = vantablack::ghost::net::discovery::PeerDescriptor::sign_new(
+        &peer_id,
+        &kem_pk,
+        target_ep,
+        vantablack::ghost::net::discovery::NAT_DIRECT,
+    );
+    let vb_uri = desc.to_uri();
+    let add_uri_payload = serde_json::json!({ "address": vb_uri });
+    let (code, add_uri_resp) =
+        http_request(web_port, "POST", "/api/peers/add", Some(&add_uri_payload));
+    assert_eq!(code, 200);
+    assert_eq!(add_uri_resp["success"], true);
+    assert_eq!(add_uri_resp["uri_parsed"], true);
+    assert_eq!(add_uri_resp["address"], target_ep.to_string());
+
+    // Tampered vb:// URI must fail signature verification cleanly with 400
+    let mut bad_desc = desc.clone();
+    bad_desc.signature[0] ^= 0xFF;
+    let bad_payload = serde_json::json!({ "address": bad_desc.to_uri() });
+    let (code, bad_resp) = http_request(web_port, "POST", "/api/peers/add", Some(&bad_payload));
+    assert_eq!(code, 400);
+    assert_eq!(bad_resp["success"], false);
+
+    // 6. POST /api/peers/disconnect
+    let (code, bad_disc) = http_request(
+        web_port,
+        "POST",
+        "/api/peers/disconnect",
+        Some(&serde_json::json!({})),
+    );
+    assert_eq!(code, 400);
+    assert_eq!(bad_disc["success"], false);
+
+    let (code, disc_resp) = http_request(
+        web_port,
+        "POST",
+        "/api/peers/disconnect",
+        Some(&serde_json::json!({ "fingerprint": peer_id.fingerprint() })),
+    );
+    assert_eq!(code, 200);
+    assert_eq!(disc_resp["success"], true);
+    assert_eq!(disc_resp["fingerprint"], peer_id.fingerprint());
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_topology_and_disconnect_enforce_ghost_pin() {
+    let bin_path = find_binary();
+    let web_port = get_free_port();
+    let udp_port = get_free_port();
+
+    let temp_dir = std::env::temp_dir().join(format!("vanta_pin_topo_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    let mut cmd = Command::new(&bin_path);
+    cmd.env("GHOST_NO_GUI", "1")
+        .env("GHOST_WEB_PORT", web_port.to_string())
+        .env("GHOST_UDP_PORT", udp_port.to_string())
+        .env("GHOST_DATA_DIR", &temp_dir)
+        .env("GHOST_PIN", "secret-pin-42")
+        .env("GHOST_MODE", "public");
+
+    let child = cmd.spawn().expect("failed to spawn daemon");
+    let _guard = NodeProcessGuard { child };
+    wait_for_control_center(web_port);
+
+    // Unauthenticated GET /api/topology -> 401
+    let (code, unauth) = http_request(web_port, "GET", "/api/topology", None);
+    assert_eq!(code, 401);
+    assert_eq!(unauth["pin_required"], true);
+
+    // Authenticated GET /api/topology -> 200
+    let (code, _, body) = http_request_raw(
+        web_port,
+        "GET",
+        "/api/topology",
+        None,
+        &[("X-Pin", "secret-pin-42")],
+        Duration::from_secs(5),
+    );
+    assert_eq!(code, 200);
+    let topo: serde_json::Value = serde_json::from_str(&body).expect("valid topology json");
+    assert!(topo["self"]["fingerprint"].is_string());
+
+    // Unauthenticated POST /api/peers/disconnect -> 401
+    let (code, _) = http_request(
+        web_port,
+        "POST",
+        "/api/peers/disconnect",
+        Some(&serde_json::json!({ "fingerprint": "deadbeef12345678" })),
+    );
+    assert_eq!(code, 401);
+
+    // Authenticated POST /api/peers/disconnect -> 200
+    let (code, _, disc_body) = http_request_raw(
+        web_port,
+        "POST",
+        "/api/peers/disconnect",
+        Some(&serde_json::json!({ "fingerprint": "deadbeef12345678" })),
+        &[("X-Pin", "secret-pin-42")],
+        Duration::from_secs(5),
+    );
+    assert_eq!(code, 200);
+    let disc: serde_json::Value = serde_json::from_str(&disc_body).expect("valid disconnect json");
+    assert_eq!(disc["success"], true);
+
+    // GET /proxy.pac remains reachable without X-Pin for browser PAC fetch
+    let (code, _, _) = http_request_raw(
+        web_port,
+        "GET",
+        "/proxy.pac",
+        None,
+        &[],
+        Duration::from_secs(5),
+    );
+    assert_eq!(code, 200);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

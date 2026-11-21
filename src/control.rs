@@ -1,12 +1,13 @@
 //! Control center and telemetry HTTP server for Vantablack.
 //!
-//! Provides the REST API (/api/status, /api/peers, /api/mode, /api/connect,
-//! /api/settings, /api/scan, /api/pipeline_probe), Prometheus /metrics,
-//! and the embedded HTML dashboard.
+//! Provides the REST API (/api/status, /api/peers, /api/peers/add,
+//! /api/peers/disconnect, /api/topology, /api/mode, /api/connect,
+//! /api/settings, /api/scan, /api/pipeline_probe), /proxy.pac, Prometheus
+//! /metrics, and the embedded HTML dashboard.
 
 use super::*;
 use crate::vpn::daemon::{vpn_export, VpnMode};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vantablack::ghost::layers::l10_qel::{self, QelAnchorState, QuantumRouteResult};
 use vantablack::ghost::net::consumer::{self, ConsumerSettings};
+use vantablack::ghost::net::discovery::{PeerDescriptor, VB_URI_PREFIX};
 use vantablack::ghost::GhostNode;
 
 /// Port the HTTP control center listens on (`GHOST_WEB_PORT`, else the legacy
@@ -197,11 +199,244 @@ pub fn peer_entry(
         "custom_name": settings.has_custom_name(fingerprint),
         "os": settings.device_os(fingerprint),
         "address": addr.to_string(),
+        "scope": classify_addr_scope(addr),
         "connected": has_session,
         "status": consumer::peer_status(has_session, true),
         "role": if has_session { "Active Mesh Peer" } else { "Discovered Peer" },
         "latency_ms": serde_json::Value::Null,
     })
+}
+
+/// Optional self-node telemetry override for `/api/topology`, allowing `wan-core`
+/// to supply live STUN/NAT/relay measurements without breaking the JSON schema.
+#[derive(Debug, Clone, Default)]
+pub struct TopologySelfHint {
+    pub public_addr: Option<String>,
+    pub nat_type: Option<String>,
+    pub rtt_ms: Option<f64>,
+    pub via_relay_fp: Option<String>,
+    pub transport: Option<String>,
+}
+
+/// Optional per-peer telemetry override for `/api/topology`.
+#[derive(Debug, Clone, Default)]
+pub struct TopologyPeerHint {
+    pub rtt_ms: Option<f64>,
+    pub via_relay_fp: Option<String>,
+    pub transport: Option<String>,
+    pub is_exit: bool,
+}
+
+/// Classify a socket address as `"lan"` (RFC1918, loopback, link-local, or ULA)
+/// or `"wan"` (globally routable).
+pub fn classify_addr_scope(addr: &SocketAddr) -> &'static str {
+    match addr.ip() {
+        IpAddr::V4(v4) => {
+            if v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() {
+                "lan"
+            } else {
+                "wan"
+            }
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            let is_ula = (first & 0xfe00) == 0xfc00;
+            let is_ll = (first & 0xffc0) == 0xfe80;
+            if v6.is_loopback() || v6.is_unspecified() || is_ula || is_ll {
+                "lan"
+            } else {
+                "wan"
+            }
+        }
+    }
+}
+
+/// Determine active roles advertised for the local node in `/api/topology`.
+pub fn local_node_roles(socks_listening: bool, vpn_role: &str) -> Vec<&'static str> {
+    let mut roles = vec!["mesh"];
+    if socks_listening {
+        roles.push("socks5");
+    }
+    let env_true = |key: &str| {
+        std::env::var(key)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    };
+    if vpn_role == "hub" || env_true("GHOST_EXIT") {
+        roles.push("exit");
+    }
+    if env_true("GHOST_RELAY") {
+        roles.push("relay");
+    }
+    match vpn_role {
+        "hub" => roles.push("vpn_hub"),
+        "client" => roles.push("vpn_client"),
+        _ => {}
+    }
+    roles
+}
+
+/// Build the `/api/topology` JSON document with optional `wan-core` telemetry hints.
+pub fn build_topology_json(
+    nc: &GhostNode,
+    addrs: &DashMap<String, SocketAddr>,
+    settings: &ConsumerSettings,
+    lan_host: &str,
+    mode: &str,
+    socks_listening: bool,
+    socks_port: u16,
+    vpn_role: &str,
+    vpn_available: bool,
+    carrier: &net::carrier::Carrier,
+    lan_discovery_ok: bool,
+    self_hint: &TopologySelfHint,
+    peer_hints: &std::collections::HashMap<String, TopologyPeerHint>,
+) -> serde_json::Value {
+    let self_fp = nc.fingerprint();
+    let sessions_count = nc.sessions.len();
+    let socks_ports = [
+        socks_port,
+        socks_port.saturating_add(1),
+        socks_port.saturating_add(2),
+        socks_port.saturating_add(3),
+    ];
+
+    let peers: Vec<serde_json::Value> = addrs
+        .iter()
+        .map(|entry| {
+            let fp = entry.key();
+            let addr = entry.value();
+            let scope = classify_addr_scope(addr);
+            let has_session = nc.sessions.contains_key(fp);
+            let hint = peer_hints.get(fp);
+            let transport = hint
+                .and_then(|h| h.transport.as_deref())
+                .unwrap_or_else(|| {
+                    if hint.and_then(|h| h.via_relay_fp.as_ref()).is_some() {
+                        "relayed"
+                    } else if carrier.covered(fp) {
+                        "carrier_quic"
+                    } else if scope == "lan" {
+                        "direct_lan"
+                    } else {
+                        "direct_wan"
+                    }
+                });
+            serde_json::json!({
+                "fingerprint": fp,
+                "name": settings.device_name(fp),
+                "os": settings.device_os(fp),
+                "address": addr.to_string(),
+                "scope": scope,
+                "transport": transport,
+                "connected": has_session,
+                "role": if has_session { "Active Mesh Peer" } else { "Discovered Peer" },
+                "rtt_ms": hint.and_then(|h| h.rtt_ms),
+                "is_exit": hint.map(|h| h.is_exit).unwrap_or(false),
+                "via_relay_fp": hint.and_then(|h| h.via_relay_fp.clone()),
+            })
+        })
+        .collect();
+
+    let swarm_hops_available = sessions_count.min(3);
+    let self_transport = self_hint
+        .transport
+        .as_deref()
+        .unwrap_or(if carrier.enabled() {
+            "carrier_quic"
+        } else {
+            "udp"
+        });
+
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "self": {
+            "fingerprint": self_fp,
+            "name": settings.device_name(&self_fp),
+            "os": consumer::local_os(),
+            "host": lan_host,
+            "mode": mode,
+            "roles": local_node_roles(socks_listening, vpn_role),
+            "socks_listening": socks_listening,
+            "socks_port": socks_port,
+            "socks_ports": socks_ports,
+            "vpn_role": vpn_role,
+            "carrier_enabled": carrier.enabled(),
+            "nat_type": self_hint.nat_type.as_deref().unwrap_or("Detecting"),
+            "public_addr": self_hint.public_addr,
+            "rtt_ms": self_hint.rtt_ms,
+            "via_relay_fp": self_hint.via_relay_fp,
+            "transport": self_transport,
+        },
+        "peers": peers,
+        "wan_readiness": {
+            "socket_ok": nc.running.load(Ordering::Relaxed),
+            "lan_discovery_ok": lan_discovery_ok,
+            "socks_ok": socks_listening,
+            "vpn_available": vpn_available,
+            "carrier_enabled": carrier.enabled(),
+            "peer_count": addrs.len(),
+            "active_sessions": sessions_count,
+            "swarm_hops_available": swarm_hops_available,
+        },
+    })
+}
+
+/// Build a `proxy.pac` script routing RFC1918 and localhost traffic `DIRECT`
+/// and all remaining traffic through `SOCKS5 127.0.0.1:<socks_port>; DIRECT`.
+pub fn build_proxy_pac(socks_port: u16) -> String {
+    format!(
+        "function FindProxyForURL(url, host) {{\n\
+         \x20 if (isPlainHostName(host) ||\n\
+         \x20     dnsDomainIs(host, \".local\") ||\n\
+         \x20     localHostOrDomainIs(host, \"localhost\") ||\n\
+         \x20     host === \"::1\" ||\n\
+         \x20     isInNet(host, \"127.0.0.0\", \"255.0.0.0\") ||\n\
+         \x20     isInNet(host, \"10.0.0.0\", \"255.0.0.0\") ||\n\
+         \x20     isInNet(host, \"172.16.0.0\", \"255.240.0.0\") ||\n\
+         \x20     isInNet(host, \"192.168.0.0\", \"255.255.0.0\") ||\n\
+         \x20     isInNet(host, \"169.254.0.0\", \"255.255.0.0\")) {{\n\
+         \x20   return \"DIRECT\";\n\
+         \x20 }}\n\
+         \x20 return \"SOCKS5 127.0.0.1:{socks_port}; DIRECT\";\n\
+         }}\n"
+    )
+}
+
+/// Append a peer endpoint to `peers.cache` if not already present.
+fn record_peer_cache_entry(addr_str: &str) {
+    let peers_cache = vantablack::ghost::paths::data_file("peers.cache");
+    if let Ok(mut current) = std::fs::read_to_string(&peers_cache) {
+        if !current.contains(addr_str) {
+            if !current.ends_with('\n') && !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(addr_str);
+            current.push('\n');
+            let _ = std::fs::write(&peers_cache, current);
+        }
+    } else {
+        let _ = std::fs::write(&peers_cache, format!("{}\n", addr_str));
+    }
+}
+
+/// Extract an optional `?port=<u16>` query parameter from a `/proxy.pac` request line,
+/// clamped to the node's own multi-port SOCKS5 range (`socks_port..=socks_port+3`).
+fn pac_port_from_request(req: &str, socks_port: u16) -> u16 {
+    let first_line = req.lines().next().unwrap_or("");
+    let path = first_line.split_whitespace().nth(1).unwrap_or("");
+    if let Some((_, query)) = path.split_once('?') {
+        for pair in query.split('&') {
+            if let Some(("port", val)) = pair.split_once('=') {
+                if let Ok(p) = val.parse::<u16>() {
+                    if p >= socks_port && p <= socks_port.saturating_add(3) {
+                        return p;
+                    }
+                }
+            }
+        }
+    }
+    socks_port
 }
 
 /// Spawns the Ghost Web Control Center and Telemetry HTTP service.
@@ -412,7 +647,8 @@ pub fn spawn_control_center(
                                         )
                                     } else if !pin_ok
                                         && (req.starts_with("GET /api/peers")
-                                            || req.starts_with("GET /api/wan_telemetry"))
+                                            || req.starts_with("GET /api/wan_telemetry")
+                                            || req.starts_with("GET /api/topology"))
                                     {
                                         // These reads carry peer or node fingerprints and
                                         // have no liveness role, so a missing PIN denies
@@ -425,6 +661,40 @@ pub fn spawn_control_center(
                                         })
                                         .to_string();
                                         ("HTTP/1.1 401 Unauthorized", body, "application/json")
+                                    } else if req.starts_with("GET /api/topology") {
+                                        let current_mode = mode_ref.read().clone();
+                                        let settings_now = cs_ref.read().clone();
+                                        let lan_discovery_ok =
+                                            nc_ref.beacon_enabled.load(Ordering::Relaxed);
+                                        let self_hint = TopologySelfHint::default();
+                                        let peer_hints = std::collections::HashMap::new();
+                                        let body = build_topology_json(
+                                            &nc_ref,
+                                            &addrs_ref,
+                                            &settings_now,
+                                            &lan_host_ref,
+                                            &current_mode,
+                                            socks_listening,
+                                            socks_port,
+                                            vpn_role,
+                                            vpn_available,
+                                            &carrier_ref,
+                                            lan_discovery_ok,
+                                            &self_hint,
+                                            &peer_hints,
+                                        )
+                                        .to_string();
+                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("GET /proxy.pac ")
+                                        || req.starts_with("GET /proxy.pac?")
+                                    {
+                                        let pac_port = pac_port_from_request(&req, socks_port);
+                                        let pac = build_proxy_pac(pac_port);
+                                        (
+                                            "HTTP/1.1 200 OK",
+                                            pac,
+                                            "application/x-ns-proxy-autoconfig",
+                                        )
                                     } else if req.starts_with("GET /api/status") {
                                         let is_conn = conn_ref.load(Ordering::Relaxed);
                                         let current_mode = mode_ref.read().clone();
@@ -460,18 +730,26 @@ pub fn spawn_control_center(
                                                 _ => socks_listening,
                                             };
                                         let body = serde_json::json!({
+                                        "version": env!("CARGO_PKG_VERSION"),
                                         "connected": is_conn,
                                         "mode": current_mode,
                                         "network_id": if pin_ok { serde_json::json!(nc_ref.fingerprint()) } else { serde_json::Value::Null },
                                         "device_name": if pin_ok { serde_json::json!(settings_now.device_name(&nc_ref.fingerprint())) } else { serde_json::Value::Null },
                                         "device_os": consumer::local_os(),
                                         "host": lan_host_ref,
+                                        "multicast_addr": format!("{}:{}", vantablack::ghost::net::BEACON_MULTICAST_ADDR, vantablack::ghost::net::BEACON_PORT),
                                         "pair_uri": if pin_ok { serde_json::json!(pair_uri_ref) } else { serde_json::Value::Null },
                                         "route_mode": settings_now.route_mode,
                                         "route_mode_active": route_mode_active,
                                         "bypass_count": settings_now.bypass.len(),
                                         "socks_listening": socks_listening,
                                         "socks_port": socks_port,
+                                        "socks_ports": [
+                                            socks_port,
+                                            socks_port.saturating_add(1),
+                                            socks_port.saturating_add(2),
+                                            socks_port.saturating_add(3),
+                                        ],
                                         "vpn_available": vpn_available,
                                         "pin_protected": has_pin,
                                         "pin_required": has_pin && !pin_ok,
@@ -534,59 +812,129 @@ pub fn spawn_control_center(
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("")
                                             .trim();
-                                        match addr_str.parse::<SocketAddr>() {
-                                            Ok(target_addr) => {
-                                                initiate_handshake(
-                                                    &nc_ref,
-                                                    &nc_ref.socket,
-                                                    target_addr,
-                                                    &phs_ref,
-                                                )
-                                                .await;
-                                                let peers_cache =
-                                                    vantablack::ghost::paths::data_file(
-                                                        "peers.cache",
-                                                    );
-                                                if let Ok(mut current) =
-                                                    std::fs::read_to_string(&peers_cache)
-                                                {
-                                                    if !current.contains(addr_str) {
-                                                        if !current.ends_with('\n')
-                                                            && !current.is_empty()
-                                                        {
-                                                            current.push('\n');
-                                                        }
-                                                        current.push_str(addr_str);
-                                                        current.push('\n');
-                                                        let _ =
-                                                            std::fs::write(&peers_cache, current);
-                                                    }
-                                                } else {
-                                                    let _ = std::fs::write(
-                                                        &peers_cache,
-                                                        format!("{}\n", addr_str),
-                                                    );
+                                        if addr_str.starts_with(VB_URI_PREFIX) {
+                                            match PeerDescriptor::from_uri(addr_str) {
+                                                Some(desc) if desc.verify(86400 * 7) => {
+                                                    let target_addr = desc.endpoint;
+                                                    initiate_handshake(
+                                                        &nc_ref,
+                                                        &nc_ref.socket,
+                                                        target_addr,
+                                                        &phs_ref,
+                                                    )
+                                                    .await;
+                                                    let endpoint_str = target_addr.to_string();
+                                                    record_peer_cache_entry(&endpoint_str);
+                                                    let body = serde_json::json!({
+                                                        "success": true,
+                                                        "address": endpoint_str,
+                                                        "uri_parsed": true,
+                                                        "message": format!("Handshake initiated with {} (verified vb:// descriptor)", target_addr)
+                                                    })
+                                                    .to_string();
+                                                    ("HTTP/1.1 200 OK", body, "application/json")
                                                 }
-                                                let body = serde_json::json!({
-                                                "success": true,
-                                                "address": addr_str,
-                                                "message": format!("Handshake initiated with {}", target_addr)
-                                            })
-                                            .to_string();
-                                                ("HTTP/1.1 200 OK", body, "application/json")
+                                                Some(_) => {
+                                                    let body = serde_json::json!({
+                                                        "success": false,
+                                                        "error": "Peer descriptor signature or timestamp verification failed"
+                                                    })
+                                                    .to_string();
+                                                    (
+                                                        "HTTP/1.1 400 Bad Request",
+                                                        body,
+                                                        "application/json",
+                                                    )
+                                                }
+                                                None => {
+                                                    let body = serde_json::json!({
+                                                        "success": false,
+                                                        "error": "Invalid vb:// peer descriptor URI"
+                                                    })
+                                                    .to_string();
+                                                    (
+                                                        "HTTP/1.1 400 Bad Request",
+                                                        body,
+                                                        "application/json",
+                                                    )
+                                                }
                                             }
-                                            Err(e) => {
-                                                let body = serde_json::json!({
+                                        } else {
+                                            match addr_str.parse::<SocketAddr>() {
+                                                Ok(target_addr) => {
+                                                    initiate_handshake(
+                                                        &nc_ref,
+                                                        &nc_ref.socket,
+                                                        target_addr,
+                                                        &phs_ref,
+                                                    )
+                                                    .await;
+                                                    record_peer_cache_entry(addr_str);
+                                                    let body = serde_json::json!({
+                                                        "success": true,
+                                                        "address": addr_str,
+                                                        "message": format!("Handshake initiated with {}", target_addr)
+                                                    })
+                                                    .to_string();
+                                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                                }
+                                                Err(e) => {
+                                                    let body = serde_json::json!({
+                                                        "success": false,
+                                                        "error": format!("Invalid address format '{}': {}", addr_str, e)
+                                                    })
+                                                    .to_string();
+                                                    (
+                                                        "HTTP/1.1 400 Bad Request",
+                                                        body,
+                                                        "application/json",
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else if req.starts_with("POST /api/peers/disconnect") {
+                                        let val = json_body(&req);
+                                        let fp = val
+                                            .get("fingerprint")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .trim();
+                                        if fp.is_empty() {
+                                            let body = serde_json::json!({
                                                 "success": false,
-                                                "error": format!("Invalid address format '{}': {}", addr_str, e)
+                                                "error": "Missing 'fingerprint'"
                                             })
                                             .to_string();
-                                                (
-                                                    "HTTP/1.1 400 Bad Request",
-                                                    body,
-                                                    "application/json",
-                                                )
+                                            ("HTTP/1.1 400 Bad Request", body, "application/json")
+                                        } else {
+                                            let endpoint = addrs_ref.get(fp).map(|e| *e.value());
+                                            let mut bye_sent = false;
+                                            if let Some(sess) = nc_ref.sessions.get(fp) {
+                                                if !sess.is_v1_wire() {
+                                                    if let Some(ep) = endpoint {
+                                                        let ctx = SealCtx::from_session(&sess);
+                                                        let frame =
+                                                            seal_single(&ctx, GHOST_BYE_MAGIC);
+                                                        let _ =
+                                                            nc_ref.socket.try_send_to(&frame, ep);
+                                                        bye_sent = true;
+                                                    }
+                                                }
                                             }
+                                            let had_session = nc_ref.sessions.remove(fp).is_some();
+                                            let had_addr = addrs_ref.remove(fp).is_some();
+                                            carrier_ref.forget(fp);
+                                            if let Some(ep) = endpoint {
+                                                phs_ref.remove(&ep.to_string());
+                                            }
+                                            let body = serde_json::json!({
+                                                "success": true,
+                                                "fingerprint": fp,
+                                                "evicted": had_session || had_addr,
+                                                "bye_sent": bye_sent,
+                                            })
+                                            .to_string();
+                                            ("HTTP/1.1 200 OK", body, "application/json")
                                         }
                                     } else if req.starts_with("GET /api/peers") {
                                         let settings_now = cs_ref.read().clone();
@@ -646,7 +994,9 @@ pub fn spawn_control_center(
                                         })
                                         .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("POST /api/scan") {
+                                    } else if req.starts_with("POST /api/scan")
+                                        || req.starts_with("POST /api/mesh/scan")
+                                    {
                                         scan_notify_ref.notify_waiters();
                                         let body = serde_json::json!({
                                             "success": true,
@@ -688,7 +1038,9 @@ pub fn spawn_control_center(
                                     })
                                     .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
-                                    } else if req.starts_with("POST /api/settings") {
+                                    } else if req.starts_with("POST /api/settings")
+                                        || req.starts_with("POST /api/mesh/config")
+                                    {
                                         let val = json_body(&req);
                                         let mut s = cs_ref.write();
                                         if let Some(r) =
@@ -711,10 +1063,13 @@ pub fn spawn_control_center(
                                         {
                                             vantablack::ghost::net::set_zero_admin(za);
                                         }
+                                        let mut bypass_err: Option<String> = None;
                                         if let Some(add) =
                                             val.get("bypass_add").and_then(|v| v.as_str())
                                         {
-                                            let _ = s.add_bypass(add);
+                                            if let Err(e) = s.add_bypass(add) {
+                                                bypass_err = Some(e);
+                                            }
                                         }
                                         if let Some(rem) =
                                             val.get("bypass_remove").and_then(|v| v.as_str())
@@ -723,6 +1078,7 @@ pub fn spawn_control_center(
                                         }
                                         if let Some(secs) = val
                                             .get("private_mesh_scan_interval_secs")
+                                            .or_else(|| val.get("scan_interval_secs"))
                                             .and_then(|v| v.as_u64())
                                         {
                                             scan_interval_ref.store(secs as u32, Ordering::Relaxed);
@@ -765,22 +1121,34 @@ pub fn spawn_control_center(
                                         {
                                             s.qel_enabled = qel;
                                         }
-                                        if !cp_ref.is_empty() {
+                                        if !cp_ref.is_empty() && bypass_err.is_none() {
                                             save_consumer_settings(&cp_ref, &s);
                                         }
-                                        let body = serde_json::json!({
-                                        "success": true,
-                                        "route_mode": s.route_mode,
-                                        "bypass_count": s.bypass.len(),
-                                        "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
-                                        "stego_carrier_mode": s.stego_carrier_mode,
-                                        "energy_ledger_enabled": s.energy_ledger_enabled,
-                                        "jurisdiction_tag": s.jurisdiction_tag,
-                                        "abos_skywave_enabled": s.abos_skywave_enabled,
-                                        "qel_enabled": s.qel_enabled,
-                                    })
-                                    .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                        if let Some(err_msg) = bypass_err {
+                                            let body = serde_json::json!({
+                                                "success": false,
+                                                "error": err_msg,
+                                                "bypass": s.bypass,
+                                                "bypass_count": s.bypass.len(),
+                                            })
+                                            .to_string();
+                                            ("HTTP/1.1 400 Bad Request", body, "application/json")
+                                        } else {
+                                            let body = serde_json::json!({
+                                                "success": true,
+                                                "route_mode": s.route_mode,
+                                                "bypass": s.bypass,
+                                                "bypass_count": s.bypass.len(),
+                                                "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
+                                                "stego_carrier_mode": s.stego_carrier_mode,
+                                                "energy_ledger_enabled": s.energy_ledger_enabled,
+                                                "jurisdiction_tag": s.jurisdiction_tag,
+                                                "abos_skywave_enabled": s.abos_skywave_enabled,
+                                                "qel_enabled": s.qel_enabled,
+                                            })
+                                            .to_string();
+                                            ("HTTP/1.1 200 OK", body, "application/json")
+                                        }
                                     } else if req.starts_with("GET /api/wan_telemetry") {
                                         let sent_bytes =
                                             nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
