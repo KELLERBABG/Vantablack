@@ -748,39 +748,84 @@ impl IceAgent {
                 Ok(Err(e)) => return Err(IceError::Io(e)),
                 Ok(Ok(v)) => v,
             };
-            // Only the STUN server we asked may answer; anything else belongs
-            // to whoever else owns this socket.
-            if from != server {
-                on_other(&buf[..n], from);
-                continue;
-            }
-            let Ok(msg) = Message::parse(&buf[..n]) else {
-                on_other(&buf[..n], from);
-                continue;
-            };
-            if msg.txid != txid
-                || msg.typ.method() != Method::BINDING
-                || msg.typ.class() != Class::SuccessResponse
+            if let Some(c) =
+                self.try_complete_reflexive(&buf[..n], from, server, txid, sock.local_addr()?)
             {
-                on_other(&buf[..n], from);
-                continue;
+                return Ok(c);
             }
-            // A reflexive address we cannot authenticate at least has to be a
-            // well-formed STUN message.
-            if stun::verify_fingerprint(&buf[..n]).is_err() {
-                debug!(from = %from, "ICE: STUN response failed FINGERPRINT");
-                on_other(&buf[..n], from);
-                continue;
-            }
-            let Some(mapped) = msg.xor_mapped_address() else {
-                on_other(&buf[..n], from);
-                continue;
-            };
-            let base = sock.local_addr()?;
-            let c = self.add_server_reflexive_candidate(base, mapped, Some(server));
-            info!(public = %mapped, "ICE: server-reflexive candidate discovered");
-            return Ok(c);
+            on_other(&buf[..n], from);
         }
+    }
+
+    /// Discover this agent's public mapping over a shared socket whose incoming
+    /// STUN datagrams are demuxed onto `rx` by the socket's receive loop.
+    pub async fn gather_reflexive_mux(
+        &mut self,
+        sock: &tokio::net::UdpSocket,
+        server: SocketAddr,
+        timeout: Duration,
+        rx: &mut tokio::sync::broadcast::Receiver<(Vec<u8>, SocketAddr)>,
+    ) -> Result<Candidate, IceError> {
+        let txid = TransactionId::random();
+        let request = Message::binding_request(txid).encode();
+        sock.send_to(&request, server).await?;
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let base = sock.local_addr()?;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                warn!(server = %server, "ICE: STUN binding request timed out");
+                return Err(IceError::GatherTimeout);
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Err(_) => return Err(IceError::GatherTimeout),
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    return Err(IceError::GatherTimeout);
+                }
+                Ok(Ok((pkt, from))) => {
+                    if let Some(c) = self.try_complete_reflexive(&pkt, from, server, txid, base) {
+                        return Ok(c);
+                    }
+                }
+            }
+        }
+    }
+
+    fn try_complete_reflexive(
+        &mut self,
+        pkt: &[u8],
+        from: SocketAddr,
+        server: SocketAddr,
+        txid: TransactionId,
+        base: SocketAddr,
+    ) -> Option<Candidate> {
+        // Only the STUN server we asked may answer; anything else belongs
+        // to whoever else owns this socket.
+        if from != server {
+            return None;
+        }
+        let msg = Message::parse(pkt).ok()?;
+        if msg.txid != txid
+            || msg.typ.method() != Method::BINDING
+            || msg.typ.class() != Class::SuccessResponse
+        {
+            return None;
+        }
+        // Verify FINGERPRINT when present; public STUN servers often omit the
+        // optional FINGERPRINT attribute on plain Binding responses.
+        match stun::verify_fingerprint(pkt) {
+            Ok(()) | Err(stun::StunError::MissingFingerprint) => {}
+            Err(_) => {
+                debug!(from = %from, "ICE: STUN response failed FINGERPRINT");
+                return None;
+            }
+        }
+        let mapped = msg.xor_mapped_address()?;
+        let c = self.add_server_reflexive_candidate(base, mapped, Some(server));
+        info!(public = %mapped, "ICE: server-reflexive candidate discovered");
+        Some(c)
     }
 
     /// Record a server-reflexive candidate whose address we already know.
@@ -1106,7 +1151,18 @@ impl IceAgent {
         }
 
         match msg.typ.class() {
-            Class::Request => self.handle_request(raw, &msg, from).map(Some),
+            Class::Request => {
+                // On a shared muxed socket, multiple peer agents share our
+                // local credentials; ignore requests addressed to a different peer's ufrag.
+                if let (Some(Attribute::Username(u)), Some(expected)) =
+                    (msg.get(0x0006), self.expected_incoming_username())
+                {
+                    if u.as_slice() != expected.as_bytes() {
+                        return Ok(None);
+                    }
+                }
+                self.handle_request(raw, &msg, from).map(Some)
+            }
             Class::SuccessResponse => self.handle_response(raw, &msg, from).map(Some),
             _ => Ok(None),
         }
@@ -2009,5 +2065,49 @@ mod tests {
         assert!(!a.can_retransmit(idx));
         assert!(!a.retransmit(idx));
         assert_eq!(a.pairs()[idx].attempts, 3);
+    }
+
+    #[test]
+    fn mismatched_username_request_is_ignored_on_shared_mux() {
+        let mut bob = agent_with_pairs(IceRole::Controlled);
+        let other_addr = sock("203.0.113.88:5555");
+        let mut msg = Message::binding_request(TransactionId::random());
+        msg.push(Attribute::Username(
+            format!("{}:charlieufrag", bob.local_credentials().ufrag).into_bytes(),
+        ));
+        let check = msg
+            .encode_with_integrity(bob.local_credentials().password.as_bytes())
+            .unwrap();
+        assert!(bob.handle_check(&check, other_addr).unwrap().is_none());
+        assert_eq!(bob.discovered_prflx(), 0);
+    }
+
+    #[tokio::test]
+    async fn gather_reflexive_mux_receives_stun_response_via_channel() {
+        let client_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_sock.local_addr().unwrap();
+        let server_sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server_sock.local_addr().unwrap();
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<(Vec<u8>, SocketAddr)>(16);
+        let mapped: SocketAddr = "198.51.100.42:51234".parse().unwrap();
+
+        let srv = tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            let (n, from) = server_sock.recv_from(&mut buf).await.unwrap();
+            let req = Message::parse(&buf[..n]).unwrap();
+            let resp = Message::binding_success(req.txid, mapped).encode();
+            let _ = tx.send((resp, server_addr));
+            assert_eq!(from, client_addr);
+        });
+
+        let mut agent = IceAgent::new(IceRole::Controlling);
+        let cand = agent
+            .gather_reflexive_mux(&client_sock, server_addr, Duration::from_secs(2), &mut rx)
+            .await
+            .expect("muxed STUN reflexive response should succeed");
+        assert_eq!(cand.addr, mapped);
+        assert_eq!(cand.ctype, CandidateType::ServerReflexive);
+        srv.await.unwrap();
     }
 }

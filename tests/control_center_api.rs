@@ -9,10 +9,12 @@
 //! 6. `GET /api/settings` & `POST /api/settings` (split-tunnel bypass add, disk persistence, remove).
 //! 7. Live SOCKS5 proxy RFC 1928 handshake and byte forwarding through split-tunnel bypass.
 
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 struct NodeProcessGuard {
@@ -26,10 +28,47 @@ impl Drop for NodeProcessGuard {
     }
 }
 
+/// Find a contiguous block of `count` free TCP ports, ensuring concurrent tests
+/// in this binary never overlap on multi-port SOCKS5 ranges (`base..base+4`).
+fn reserve_port_block(count: u16) -> u16 {
+    static USED: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    let mu = USED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut used = mu.lock().expect("port reservation lock");
+    for _ in 0..200 {
+        let base_listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let base = base_listener.local_addr().expect("local addr").port();
+        drop(base_listener);
+        let Some(end) = base.checked_add(count) else {
+            continue;
+        };
+        if (base..end).any(|p| used.contains(&p)) {
+            continue;
+        }
+        let mut listeners = Vec::with_capacity(count as usize);
+        let mut all_free = true;
+        for p in base..end {
+            match TcpListener::bind(("127.0.0.1", p)) {
+                Ok(l) => listeners.push(l),
+                Err(_) => {
+                    all_free = false;
+                    break;
+                }
+            }
+        }
+        drop(listeners);
+        if all_free {
+            for p in base..end {
+                used.insert(p);
+            }
+            return base;
+        }
+    }
+    panic!("failed to reserve {count} contiguous free TCP ports");
+}
+
 /// Find a free ephemeral TCP port.
 fn get_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    listener.local_addr().expect("local addr").port()
+    reserve_port_block(1)
 }
 
 /// Locate the vantablack binary compiled by cargo.
@@ -175,7 +214,7 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
     println!("Testing binary: {}", bin_path.display());
 
     let web_port = get_free_port();
-    let socks_port = get_free_port();
+    let socks_port = reserve_port_block(4);
     let udp_port = get_free_port();
 
     let temp_dir = std::env::temp_dir().join(format!("vanta_test_{}", std::process::id()));
@@ -190,6 +229,9 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
         .env("GHOST_UDP_PORT", udp_port.to_string())
         .env("GHOST_DATA_DIR", &temp_dir)
         .env("GHOST_CONSUMER_CONFIG", &consumer_config)
+        .env("GHOST_ZK_DISCOVERY", "1")
+        .env("GHOST_STUN", "off")
+        .env_remove("GHOST_PSK")
         .env("GHOST_MODE", "public");
 
     let child = cmd.spawn().expect("failed to spawn daemon");
@@ -458,6 +500,9 @@ fn test_anchors_api_surface() {
         .env("GHOST_DATA_DIR", &temp_dir)
         .env("GHOST_SKYWAVE", "1")
         .env("GHOST_QUANTUM", "1")
+        .env("GHOST_ZK_DISCOVERY", "1")
+        .env("GHOST_STUN", "off")
+        .env_remove("GHOST_PSK")
         .env("GHOST_MODE", "public");
 
     let child = cmd.spawn().expect("failed to spawn daemon");
@@ -575,6 +620,9 @@ fn test_qel_anchor_routes_a_real_key_over_a_mesh_export() {
         .env("GHOST_DATA_DIR", &temp_dir)
         .env("GHOST_QEL_TOPOLOGY", &topology)
         .env("GHOST_QUANTUM", "1")
+        .env("GHOST_ZK_DISCOVERY", "1")
+        .env("GHOST_STUN", "off")
+        .env_remove("GHOST_PSK")
         .env("GHOST_MODE", "public");
 
     let child = cmd.spawn().expect("failed to spawn daemon");
@@ -680,7 +728,7 @@ fn wait_for_control_center(web_port: u16) {
 fn test_mesh_ui_endpoints_topology_pac_aliases_vb_uri_and_disconnect() {
     let bin_path = find_binary();
     let web_port = get_free_port();
-    let socks_port = get_free_port();
+    let socks_port = reserve_port_block(4);
     let udp_port = get_free_port();
 
     let temp_dir = std::env::temp_dir().join(format!("vanta_mesh_ui_{}", std::process::id()));
@@ -695,6 +743,9 @@ fn test_mesh_ui_endpoints_topology_pac_aliases_vb_uri_and_disconnect() {
         .env("GHOST_UDP_PORT", udp_port.to_string())
         .env("GHOST_DATA_DIR", &temp_dir)
         .env("GHOST_CONSUMER_CONFIG", &consumer_config)
+        .env("GHOST_ZK_DISCOVERY", "1")
+        .env("GHOST_STUN", "off")
+        .env_remove("GHOST_PSK")
         .env("GHOST_MODE", "public");
 
     let child = cmd.spawn().expect("failed to spawn daemon");
@@ -831,6 +882,9 @@ fn test_topology_and_disconnect_enforce_ghost_pin() {
         .env("GHOST_UDP_PORT", udp_port.to_string())
         .env("GHOST_DATA_DIR", &temp_dir)
         .env("GHOST_PIN", "secret-pin-42")
+        .env("GHOST_ZK_DISCOVERY", "1")
+        .env("GHOST_STUN", "off")
+        .env_remove("GHOST_PSK")
         .env("GHOST_MODE", "public");
 
     let child = cmd.spawn().expect("failed to spawn daemon");

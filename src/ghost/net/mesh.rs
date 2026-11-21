@@ -9,8 +9,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use tokio::net::UdpSocket;
+use tokio::sync::broadcast;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
@@ -71,13 +72,188 @@ const STUN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Total budget for driving one ICE check list before declaring the path dead.
 const ICE_CHECK_BUDGET: Duration = Duration::from_secs(10);
 
+/// Default public STUN servers used when `GHOST_STUN_SERVER` is not set and
+/// `GHOST_STUN` is not disabled (`off`/`0`/`false`).
+pub const DEFAULT_STUN_SERVERS: &[&str] = &[
+    "stun.cloudflare.com:3478",
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+];
+
+/// Classified NAT behavior observed via STUN / UPnP probing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NatType {
+    /// Public address matches the local host interface address (no NAT translation).
+    Direct,
+    /// Endpoint-independent mapping (multiple STUN servers report the same external ip:port).
+    Cone,
+    /// Single external mapping observed that differs from the local interface address.
+    Restricted,
+    /// Multiple STUN servers report differing external ports/IPs for the same socket.
+    Symmetric,
+    /// STUN disabled, offline, or probe has not yet completed.
+    #[default]
+    Unknown,
+}
+
+impl NatType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NatType::Direct => "Direct",
+            NatType::Cone => "Cone",
+            NatType::Restricted => "Restricted",
+            NatType::Symmetric => "Symmetric",
+            NatType::Unknown => "Unknown",
+        }
+    }
+}
+
+/// Classify NAT behavior from the local socket/interface address and one or more
+/// server-reflexive addresses returned by distinct STUN servers for the same socket.
+pub fn classify_nat_type(
+    local_addr: Option<SocketAddr>,
+    reflexive_samples: &[SocketAddr],
+) -> NatType {
+    if reflexive_samples.is_empty() {
+        return NatType::Unknown;
+    }
+    let first = reflexive_samples[0];
+    if let Some(local) = local_addr {
+        if !local.ip().is_unspecified() && local.ip() == first.ip() && local.port() == first.port()
+        {
+            return NatType::Direct;
+        }
+    }
+    if reflexive_samples.len() >= 2 {
+        let same_mapping = reflexive_samples
+            .iter()
+            .all(|s| s.ip() == first.ip() && s.port() == first.port());
+        if same_mapping {
+            return NatType::Cone;
+        }
+        return NatType::Symmetric;
+    }
+    NatType::Restricted
+}
+
+/// Returns `true` when STUN probing is explicitly disabled via `GHOST_STUN=off|0|false|disabled`
+/// or `GHOST_STUN_SERVER=off|0|false`.
+pub fn stun_disabled_from_env() -> bool {
+    let stun_off = std::env::var("GHOST_STUN")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "off" | "0" | "false" | "disabled"
+            )
+        })
+        .unwrap_or(false);
+    let server_off = std::env::var("GHOST_STUN_SERVER")
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "off" | "0" | "false" | "disabled"
+            )
+        })
+        .unwrap_or(false);
+    stun_off || server_off
+}
+
+/// Resolve the configured (`GHOST_STUN_SERVER`) or default (`DEFAULT_STUN_SERVERS`)
+/// STUN server pool asynchronously. Never fails or blocks indefinitely when offline
+/// or DNS is unavailable; unreachable/unresolvable entries are skipped.
+pub async fn resolve_stun_pool(timeout_per_host: Duration, ipv4_only: bool) -> Vec<SocketAddr> {
+    if stun_disabled_from_env() {
+        return Vec::new();
+    }
+    let entries: Vec<String> = match std::env::var("GHOST_STUN_SERVER") {
+        Ok(val) if !val.trim().is_empty() => val
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => DEFAULT_STUN_SERVERS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+    };
+
+    let mut resolved = Vec::new();
+    for entry in entries {
+        if let Ok(sa) = entry.parse::<SocketAddr>() {
+            if (!ipv4_only || sa.is_ipv4()) && !resolved.contains(&sa) {
+                resolved.push(sa);
+            }
+            continue;
+        }
+        if let Ok(Ok(addrs)) =
+            tokio::time::timeout(timeout_per_host, tokio::net::lookup_host(&entry)).await
+        {
+            for sa in addrs {
+                if (!ipv4_only || sa.is_ipv4()) && !resolved.contains(&sa) {
+                    resolved.push(sa);
+                    break; // One address per STUN hostname keeps probing fast
+                }
+            }
+        }
+    }
+    resolved
+}
+
+/// Lightweight read-only WAN / NAT telemetry snapshot for the control plane and dashboards.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WanTelemetrySnapshot {
+    pub public_addr: Option<SocketAddr>,
+    pub nat_type: NatType,
+    pub stun_server: Option<SocketAddr>,
+    pub relay_count: usize,
+    pub relayed_peer_count: usize,
+    pub upnp_mapped: bool,
+    pub updated_unix_secs: u64,
+}
+
+static WAN_TELEMETRY: std::sync::OnceLock<std::sync::RwLock<WanTelemetrySnapshot>> =
+    std::sync::OnceLock::new();
+
+fn wan_telemetry_cell() -> &'static std::sync::RwLock<WanTelemetrySnapshot> {
+    WAN_TELEMETRY.get_or_init(|| std::sync::RwLock::new(WanTelemetrySnapshot::default()))
+}
+
+/// Return a point-in-time snapshot of the node's WAN / NAT telemetry.
+pub fn wan_telemetry_snapshot() -> WanTelemetrySnapshot {
+    wan_telemetry_cell()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Update the process-global WAN / NAT telemetry snapshot in place.
+pub fn update_wan_telemetry<F: FnOnce(&mut WanTelemetrySnapshot)>(f: F) {
+    let mut guard = wan_telemetry_cell()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    f(&mut guard);
+    guard.updated_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+}
+
+/// RAII guard removing a peer's `ufrag` from `active_ufrags` when `punch_hole` exits.
+struct ActiveUfragGuard {
+    set: Arc<DashSet<String>>,
+    ufrag: String,
+}
+
+impl Drop for ActiveUfragGuard {
+    fn drop(&mut self) {
+        self.set.remove(&self.ufrag);
+    }
+}
+
 /// NAT traversal coordinator.
 ///
 /// Holds the peer registry and drives the real ICE agent (`super::ice`) over
-/// STUN (`super::stun`). The previous implementation in this type sent five
-/// `GHOST_HPUNCH_` blobs plus `port+1..=5` guesses and then set
-/// `connected = true` without checking for any response — it reported success
-/// unconditionally. Checks are now authenticated and a pair only succeeds when
+/// STUN (`super::stun`). Checks are authenticated and a pair only succeeds when
 /// the peer answers.
 pub struct NatHolePuncher {
     /// Known NAT peers keyed by fingerprint.
@@ -86,6 +262,8 @@ pub struct NatHolePuncher {
     stun_server: Option<SocketAddr>,
     /// Our public address as last discovered by STUN.
     public_addr: std::sync::Mutex<Option<SocketAddr>>,
+    /// Classified NAT type from STUN probing.
+    nat_type: std::sync::Mutex<NatType>,
     /// Per-peer ICE offers (credentials + candidates) received over signalling.
     offers: Arc<DashMap<String, ice::IceOffer>>,
     /// Our own ICE credentials. Fixed for the process and advertised in every
@@ -98,6 +276,14 @@ pub struct NatHolePuncher {
     /// that actually returned, and [`super::routing::ContactPlan`] consumes it so
     /// CGR routes on measurements instead of assumptions.
     selected_rtts: Arc<DashMap<String, Duration>>,
+    /// Remote socket address of each peer's nominated ICE candidate pair.
+    nominated_addrs: Arc<DashMap<String, SocketAddr>>,
+    /// Optional broadcast sender carrying demuxed STUN/ICE datagrams from a shared
+    /// mesh UDP socket (`nc.socket`). When `None`, methods read `sock.recv_from` directly.
+    stun_mux: Option<broadcast::Sender<(Vec<u8>, SocketAddr)>>,
+    /// Remote `ufrag`s currently being driven by `drive_checks` so the background
+    /// inbound STUN responder does not double-answer them.
+    active_ufrags: Arc<DashSet<String>>,
 }
 
 impl Default for NatHolePuncher {
@@ -106,10 +292,14 @@ impl Default for NatHolePuncher {
             peers: Arc::new(DashMap::new()),
             stun_server: None,
             public_addr: std::sync::Mutex::new(None),
+            nat_type: std::sync::Mutex::new(NatType::Unknown),
             offers: Arc::new(DashMap::new()),
             local_credentials: ice::IceCredentials::generate(),
             local_fingerprint: None,
             selected_rtts: Arc::new(DashMap::new()),
+            nominated_addrs: Arc::new(DashMap::new()),
+            stun_mux: None,
+            active_ufrags: Arc::new(DashSet::new()),
         }
     }
 }
@@ -120,12 +310,20 @@ impl NatHolePuncher {
     }
 
     /// Initialize with a STUN server for public address discovery.
-    ///
-    /// This is used, not decorative: [`Self::discover_public_addr`] sends a real
-    /// RFC 8489 Binding request to it. (The field previously existed, was stored,
-    /// and was never read by anything.)
     pub fn with_stun_server(mut self, stun_addr: SocketAddr) -> Self {
         self.stun_server = Some(stun_addr);
+        self
+    }
+
+    /// Update the configured STUN server after construction.
+    pub fn set_stun_server(&mut self, stun_addr: SocketAddr) {
+        self.stun_server = Some(stun_addr);
+    }
+
+    /// Attach a STUN/ICE demux channel so `NatHolePuncher` shares `nc.socket`
+    /// without calling `recv_from` on it directly.
+    pub fn with_stun_mux(mut self, tx: broadcast::Sender<(Vec<u8>, SocketAddr)>) -> Self {
+        self.stun_mux = Some(tx);
         self
     }
 
@@ -137,6 +335,26 @@ impl NatHolePuncher {
     /// Our public (server-reflexive) address, once STUN has reported one.
     pub fn public_addr(&self) -> Option<SocketAddr> {
         *self.public_addr.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record a discovered public address.
+    pub fn set_public_addr(&self, addr: SocketAddr) {
+        *self.public_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
+    }
+
+    /// The classified NAT type, if probed.
+    pub fn nat_type(&self) -> NatType {
+        *self.nat_type.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Record the classified NAT type.
+    pub fn set_nat_type(&self, nat_type: NatType) {
+        *self.nat_type.lock().unwrap_or_else(|e| e.into_inner()) = nat_type;
+    }
+
+    /// Remote `SocketAddr` of the nominated ICE pair for `fp`, if established.
+    pub fn nominated_addr(&self, fp: &str) -> Option<SocketAddr> {
+        self.nominated_addrs.get(fp).map(|a| *a.value())
     }
 
     /// Measured RTT of the nominated path to `fp`, once a check has completed.
@@ -174,15 +392,25 @@ impl NatHolePuncher {
         self.offers.get(fp).map(|o| o.clone())
     }
 
-    /// Learn our public mapping from the configured STUN server.
-    ///
-    /// Returns `None` when no server is configured or it does not answer.
-    pub async fn discover_public_addr(&self, sock: &UdpSocket) -> Option<SocketAddr> {
-        let server = self.stun_server?;
+    /// Learn our public mapping from `server` (using the mux channel if attached).
+    pub async fn discover_public_addr_from(
+        &self,
+        sock: &UdpSocket,
+        server: SocketAddr,
+    ) -> Option<SocketAddr> {
         let mut agent = ice::IceAgent::new(ice::IceRole::Controlling);
-        match agent.gather_reflexive(sock, server, STUN_TIMEOUT).await {
+        let res = match self.stun_mux.as_ref() {
+            Some(tx) => {
+                let mut rx = tx.subscribe();
+                agent
+                    .gather_reflexive_mux(sock, server, STUN_TIMEOUT, &mut rx)
+                    .await
+            }
+            None => agent.gather_reflexive(sock, server, STUN_TIMEOUT).await,
+        };
+        match res {
             Ok(c) => {
-                *self.public_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(c.addr);
+                self.set_public_addr(c.addr);
                 info!(public = %c.addr, "STUN: public address discovered");
                 Some(c.addr)
             }
@@ -191,6 +419,14 @@ impl NatHolePuncher {
                 None
             }
         }
+    }
+
+    /// Learn our public mapping from the configured STUN server.
+    ///
+    /// Returns `None` when no server is configured or it does not answer.
+    pub async fn discover_public_addr(&self, sock: &UdpSocket) -> Option<SocketAddr> {
+        let server = self.stun_server?;
+        self.discover_public_addr_from(sock, server).await
     }
 
     /// Register a peer discovered via beacon and attempt hole-punch.
@@ -229,6 +465,14 @@ impl NatHolePuncher {
             return false;
         };
 
+        // Subscribe before sending any STUN/ICE datagrams so early replies are not missed.
+        let mut mux_rx = self.stun_mux.as_ref().map(|tx| tx.subscribe());
+        self.active_ufrags.insert(offer.credentials.ufrag.clone());
+        let _active_guard = ActiveUfragGuard {
+            set: Arc::clone(&self.active_ufrags),
+            ufrag: offer.credentials.ufrag.clone(),
+        };
+
         // Roles must be agreed without negotiation. Comparing the two
         // fingerprints gives both sides the same answer; the peer's advertised
         // flag is only a fallback for when we do not know our own fingerprint.
@@ -262,13 +506,18 @@ impl NatHolePuncher {
                 return false;
             }
         }
-        // Reflexive candidate, when a STUN server is configured. This is what
-        // makes us reachable from behind NAT.
+        // Reflexive candidate, when a STUN server is configured.
         if let Some(server) = self.stun_server {
-            match agent.gather_reflexive(sock, server, STUN_TIMEOUT).await {
-                Ok(c) => {
-                    *self.public_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(c.addr);
+            let res = match mux_rx.as_mut() {
+                Some(rx) => {
+                    agent
+                        .gather_reflexive_mux(sock, server, STUN_TIMEOUT, rx)
+                        .await
                 }
+                None => agent.gather_reflexive(sock, server, STUN_TIMEOUT).await,
+            };
+            match res {
+                Ok(c) => self.set_public_addr(c.addr),
                 Err(e) => debug!(peer = %fp, "ICE: reflexive gathering failed: {e}"),
             }
         }
@@ -281,9 +530,16 @@ impl NatHolePuncher {
             return false;
         }
 
-        let established = self.drive_checks(sock, &mut agent).await;
+        let established = self.drive_checks(sock, &mut agent, mux_rx.as_mut()).await;
         if established {
+            let nominated_remote = agent.selected_pair().map(|p| p.remote.addr);
+            if let Some(remote_addr) = nominated_remote {
+                self.nominated_addrs.insert(fp.to_string(), remote_addr);
+            }
             if let Some(mut s) = self.peers.get_mut(fp) {
+                if let Some(remote_addr) = nominated_remote {
+                    s.public_addr = remote_addr;
+                }
                 s.connected = true;
                 s.last_keepalive = Instant::now();
             }
@@ -293,7 +549,7 @@ impl NatHolePuncher {
                 debug!(peer = %fp, rtt_ms = rtt.as_millis(), "ICE: measured path RTT");
                 self.selected_rtts.insert(fp.to_string(), rtt);
             }
-            info!(peer = %fp, "ICE: path established");
+            info!(peer = %fp, nominated = ?nominated_remote, "ICE: path established");
         } else {
             warn!(
                 peer = %fp,
@@ -303,14 +559,50 @@ impl NatHolePuncher {
         established
     }
 
+    /// Answer an inbound authenticated STUN Binding Request arriving on a shared
+    /// socket when no active `drive_checks` loop owns that peer's `ufrag`.
+    pub async fn try_respond_inbound_stun(&self, sock: &UdpSocket, raw: &[u8], from: SocketAddr) {
+        let Ok(msg) = stun::Message::parse(raw) else {
+            return;
+        };
+        if msg.typ.method() != stun::Method::BINDING || msg.typ.class() != stun::Class::Request {
+            return;
+        }
+        if let Some(stun::Attribute::Username(u)) = msg.get(0x0006) {
+            let Ok(u_str) = std::str::from_utf8(u) else {
+                return;
+            };
+            let Some((local_u, remote_u)) = u_str.split_once(':') else {
+                return;
+            };
+            if local_u != self.local_credentials.ufrag || self.active_ufrags.contains(remote_u) {
+                return;
+            }
+        }
+        if stun::verify_integrity(raw, self.local_credentials.password.as_bytes()).is_err() {
+            return;
+        }
+        let mut resp = stun::Message::binding_success(msg.txid, from);
+        if let Some(stun::Attribute::Username(u)) = msg.get(0x0006) {
+            resp.push(stun::Attribute::Username(u.clone()));
+        }
+        if let Ok(bytes) = resp.encode_with_integrity(self.local_credentials.password.as_bytes()) {
+            let _ = sock.send_to(&bytes, from).await;
+        }
+    }
+
     /// Send an authenticated check for each eligible pair until one succeeds,
-    /// processing inbound checks/responses as they arrive.
-    ///
-    /// Paced by the ICE retransmission timeout rather than spinning, and bounded
-    /// by [`ICE_CHECK_BUDGET`] so a black-holed path cannot hang the caller.
-    async fn drive_checks(&self, sock: &UdpSocket, agent: &mut ice::IceAgent) -> bool {
+    /// processing inbound checks/responses as they arrive (either from the mux
+    /// channel when sharing `nc.socket` or directly via `sock.recv_from`).
+    async fn drive_checks(
+        &self,
+        sock: &UdpSocket,
+        agent: &mut ice::IceAgent,
+        mut mux_rx: Option<&mut broadcast::Receiver<(Vec<u8>, SocketAddr)>>,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + ICE_CHECK_BUDGET;
         let mut buf = vec![0u8; 1500];
+        let mut last_rto_tick = tokio::time::Instant::now();
 
         loop {
             if agent.selected_pair().is_some() {
@@ -334,6 +626,7 @@ impl NatHolePuncher {
                             continue;
                         }
                     }
+                    last_rto_tick = tokio::time::Instant::now();
                 }
                 None if agent.is_exhausted() => return false,
                 None if agent.pairs().is_empty() => return false,
@@ -345,10 +638,27 @@ impl NatHolePuncher {
                 return agent.selected_pair().is_some();
             }
             let wait = remaining.min(ice::DEFAULT_RTO);
-            match tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
-                Err(_) => {}
-                Ok(Err(e)) => debug!("ICE: recv error: {e}"),
-                Ok(Ok((n, from))) => match agent.handle_check(&buf[..n], from) {
+            let received: Option<(Vec<u8>, SocketAddr)> = match mux_rx.as_deref_mut() {
+                Some(rx) => match tokio::time::timeout(wait, rx.recv()).await {
+                    Err(_) => None,
+                    Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                    Ok(Err(broadcast::error::RecvError::Closed)) => {
+                        return agent.selected_pair().is_some();
+                    }
+                    Ok(Ok(pkt)) => Some(pkt),
+                },
+                None => match tokio::time::timeout(wait, sock.recv_from(&mut buf)).await {
+                    Err(_) => None,
+                    Ok(Err(e)) => {
+                        debug!("ICE: recv error: {e}");
+                        None
+                    }
+                    Ok(Ok((n, from))) => Some((buf[..n].to_vec(), from)),
+                },
+            };
+
+            if let Some((pkt, from)) = received {
+                match agent.handle_check(&pkt, from) {
                     Ok(Some(outcome)) => {
                         if let Some(response) = outcome.response {
                             if let Err(e) = sock.send_to(&response, from).await {
@@ -356,9 +666,31 @@ impl NatHolePuncher {
                             }
                         }
                     }
-                    Ok(None) => {} // unrelated mesh traffic on the same socket
+                    Ok(None) => {} // unrelated traffic
                     Err(e) => debug!(peer = %from, "ICE: check rejected: {e}"),
-                },
+                }
+            } else if last_rto_tick.elapsed() >= ice::DEFAULT_RTO {
+                // Retransmit in-flight pairs once per RTO so an initial packet
+                // dropped before the peer's NAT pinhole opened still succeeds.
+                last_rto_tick = tokio::time::Instant::now();
+                let in_progress: Vec<usize> = agent
+                    .pairs()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.state == ice::PairState::InProgress)
+                    .map(|(i, _)| i)
+                    .collect();
+                let nominate = agent.role() == ice::IceRole::Controlling;
+                for idx in in_progress {
+                    if agent.retransmit(idx) {
+                        let dest = agent.pairs()[idx].remote.addr;
+                        if let Ok(check) = agent.build_check(idx, nominate) {
+                            let _ = sock.send_to(&check, dest).await;
+                        }
+                    } else {
+                        agent.fail_pair(idx);
+                    }
+                }
             }
         }
     }
@@ -839,6 +1171,25 @@ impl AdaptiveShardRouter {
             }
         }
         routes
+    }
+
+    /// Assign all RS(2,1) shards for a peer's encrypted message to `primary_fp`
+    /// directly rather than scattering shards encrypted under `primary_fp`'s
+    /// session key to unrelated peers.
+    pub fn assign_shards_to_primary(
+        &self,
+        primary_fp: &str,
+        shard_count: usize,
+    ) -> Vec<ShardRoute> {
+        let fitness = self.path_fitness(primary_fp);
+        (0..shard_count.min(3))
+            .map(|idx| ShardRoute {
+                peer_fingerprint: primary_fp.to_string(),
+                shard_index: idx as u8,
+                weight: fitness,
+                reliability: fitness,
+            })
+            .collect()
     }
 
     /// Check if we have enough reliable paths for RS reconstruction.
@@ -1773,5 +2124,57 @@ mod tests {
         // Fast peer should get shard 0 (highest priority)
         assert_eq!(routes[0].peer_fingerprint, "fast_peer");
         assert_eq!(routes[0].shard_index, 0);
+    }
+
+    #[test]
+    fn assign_shards_to_primary_never_scatters_to_other_peers() {
+        let router = AdaptiveShardRouter::new();
+        let routes = router.assign_shards_to_primary("primary_fp", 3);
+        assert_eq!(routes.len(), 3);
+        assert!(routes.iter().all(|r| r.peer_fingerprint == "primary_fp"));
+        assert_eq!(
+            routes.iter().map(|r| r.shard_index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn classify_nat_type_distinguishes_direct_cone_restricted_symmetric_and_unknown() {
+        let local: SocketAddr = "192.168.1.10:55225".parse().unwrap();
+        let pub_local: SocketAddr = "198.51.100.10:55225".parse().unwrap();
+        let mapped_a: SocketAddr = "198.51.100.10:41000".parse().unwrap();
+        let mapped_b: SocketAddr = "198.51.100.10:41001".parse().unwrap();
+
+        assert_eq!(classify_nat_type(Some(local), &[]), NatType::Unknown);
+        assert_eq!(
+            classify_nat_type(Some(pub_local), &[pub_local]),
+            NatType::Direct
+        );
+        assert_eq!(
+            classify_nat_type(Some(local), &[mapped_a]),
+            NatType::Restricted
+        );
+        assert_eq!(
+            classify_nat_type(Some(local), &[mapped_a, mapped_a]),
+            NatType::Cone
+        );
+        assert_eq!(
+            classify_nat_type(Some(local), &[mapped_a, mapped_b]),
+            NatType::Symmetric
+        );
+    }
+
+    #[test]
+    fn wan_telemetry_snapshot_updates_atomically() {
+        let addr: SocketAddr = "203.0.113.20:55225".parse().unwrap();
+        update_wan_telemetry(|snap| {
+            snap.public_addr = Some(addr);
+            snap.nat_type = NatType::Cone;
+            snap.relay_count = 2;
+        });
+        let snap = wan_telemetry_snapshot();
+        assert_eq!(snap.public_addr, Some(addr));
+        assert_eq!(snap.nat_type, NatType::Cone);
+        assert_eq!(snap.relay_count, 2);
     }
 }

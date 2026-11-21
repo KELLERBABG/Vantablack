@@ -49,6 +49,13 @@ pub const MAGIC_COOKIE: u32 = 0x2112_A442;
 /// Fixed header size: type(2) + length(2) + cookie(4) + transaction ID(12).
 pub const HEADER_LEN: usize = 20;
 
+/// Returns `true` if `buf` matches the RFC 8489 STUN/ICE datagram prefix:
+/// at least 20 bytes, top two bits zero (`0b00`), and magic cookie `0x2112A442`.
+#[inline]
+pub fn is_stun_packet(buf: &[u8]) -> bool {
+    buf.len() >= HEADER_LEN && (buf[0] & 0xC0) == 0 && buf[4..8] == [0x21, 0x12, 0xA4, 0x42]
+}
+
 /// `FINGERPRINT` is the CRC-32 of the message XORed with this constant
 /// (RFC 8489 §14.7).
 const FINGERPRINT_XOR: u32 = 0x5354_554E;
@@ -1291,5 +1298,24 @@ mod tests {
         let a = TransactionId::random();
         let b = TransactionId::random();
         assert_ne!(a.as_bytes(), b.as_bytes());
+    }
+
+    #[test]
+    fn is_stun_packet_demuxes_rfc8489_headers() {
+        let req = Message::binding_request(txid()).encode();
+        assert!(is_stun_packet(&req));
+        let ind = Message::binding_indication(txid()).encode();
+        assert!(is_stun_packet(&ind));
+
+        // Too short
+        assert!(!is_stun_packet(&req[..19]));
+        // Top two bits non-zero
+        let mut non_zero_top = req.clone();
+        non_zero_top[0] |= 0x40;
+        assert!(!is_stun_packet(&non_zero_top));
+        // Wrong magic cookie (e.g. GTF frame)
+        let mut bad_cookie = req.clone();
+        bad_cookie[4..8].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(!is_stun_packet(&bad_cookie));
     }
 }

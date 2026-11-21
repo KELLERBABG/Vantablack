@@ -44,12 +44,12 @@ use vantablack::ghost::{
     layers::{
         l0_identity,
         l1_kem::{
-            build_handshake_pdu, build_negotiated_handshake_pdu, build_negotiated_response_pdu,
-            build_response_pdu, build_response_pdu_suite, build_uniform_handshake_pdu,
-            build_uniform_response_pdu, derive_hybrid_master_key_with_psk,
-            derive_hybrid_master_key_with_suite, derive_hybrid_master_key_with_transcript,
-            generate_kyber768_keypair, generate_kyber_keypair, generate_x25519_keypair,
-            kyber768_decapsulate, kyber768_encapsulate, kyber_encapsulate, negotiate_cipher_suite,
+            build_negotiated_handshake_pdu, build_negotiated_response_pdu, build_response_pdu,
+            build_response_pdu_suite, build_uniform_handshake_pdu, build_uniform_response_pdu,
+            derive_hybrid_master_key_with_psk, derive_hybrid_master_key_with_suite,
+            derive_hybrid_master_key_with_transcript, generate_kyber768_keypair,
+            generate_kyber_keypair, generate_x25519_keypair, kyber768_decapsulate,
+            kyber768_encapsulate, kyber_encapsulate, negotiate_cipher_suite,
             negotiated_response_len, parse_handshake_pdu, parse_handshake_pdu_suite,
             parse_negotiated_handshake_pdu, parse_negotiated_response_pdu, parse_response_pdu,
             parse_response_pdu_suite, parse_uniform_handshake_pdu, parse_uniform_response_pdu,
@@ -946,56 +946,33 @@ pub(crate) async fn send3_adaptive(
             return Routed::Carrier;
         }
     }
-    let mut available: Vec<(String, SocketAddr)> = all_peers
-        .iter()
-        .map(|entry| (entry.key().clone(), *entry.value()))
-        .collect();
+    // Resolve primary_fp's direct destination without scattering shards
+    // encrypted under primary_fp's session key to unrelated peers (A3 Phase 1).
+    let target_addr = if primary_dst.port() != 0 {
+        *primary_dst
+    } else {
+        all_peers
+            .get(primary_fp)
+            .map(|entry| *entry.value())
+            .unwrap_or(*primary_dst)
+    };
+    let _ = (plan, me);
+    let _fitness = router.path_fitness(primary_fp);
+    let routes = router.assign_shards_to_primary(primary_fp, f.len());
+    let mut disjoint_constraint = net::orbit::DisjointRouteConstraint::new();
 
-    if !available.iter().any(|(fp, _)| fp == primary_fp) {
-        available.push((primary_fp.to_string(), *primary_dst));
-    }
-
-    if available.len() > 1 {
-        // Prefer CGR ordering whenever the plan knows a route: peers are then
-        // taken in measured earliest-arrival order, and each accepted peer's
-        // transit nodes are barred from the later ones, so the shards cross
-        // genuinely separate parts of the mesh instead of three paths that share
-        // one relay. With no plan — or an empty one — fall back to path fitness:
-        // a plan that has not learned about a peer yet is a gap in our
-        // knowledge, not evidence that the peer is unreachable.
-        let selected = match plan.filter(|p| !p.is_empty()) {
-            Some(plan) => router.select_shard_targets_routed(
-                me,
-                &available,
-                plan,
-                unix_now_secs(),
-                router.shard_target_count(),
-            ),
-            None => router.select_shard_targets(&available),
-        };
-        let routes = router.assign_shards(&selected);
-        // Enforce the three-shard route budget before sending.  `Ground` is a
-        // deliberately repeatable plane (three independent authenticated peers
-        // are still useful on terrestrial links), but the constraint prevents a
-        // fourth shard from being added if RS changes its shard count later.
-        let mut disjoint_constraint = net::orbit::DisjointRouteConstraint::new();
+    if sock.local_addr().ok() == nc.socket.local_addr().ok() {
+        // Long-lived node-owned socket: preserve the cross-message mix queue
+        // while delivering all 3 RS shards strictly to primary_fp.
+        send3_mixed(Arc::clone(&nc.socket), &target_addr, ctx, f, tag).await;
+    } else {
         for route in routes {
             let idx = route.shard_index as usize;
             if idx >= f.len()
                 || !disjoint_constraint.reserve_plane(net::orbit::OrbitalPlane::Ground)
             {
-                tracing::debug!(
-                    shard = route.shard_index,
-                    peer = %route.peer_fingerprint,
-                    "mesh: shard omitted because the disjoint route budget is exhausted"
-                );
                 continue;
             }
-            let target_addr = selected
-                .iter()
-                .find(|(fp, _, _)| *fp == route.peer_fingerprint)
-                .map(|(_, addr, _)| *addr)
-                .unwrap_or(*primary_dst);
             if let Err(error) = send_gtf_v2(
                 sock,
                 &target_addr,
@@ -1014,11 +991,6 @@ pub(crate) async fn send3_adaptive(
                 );
             }
         }
-    } else {
-        // Fallback to direct send through the bounded cross-message mix queue.
-        // The queue carries complete opaque GTF frames, so it is safe even when
-        // the selected peer/session differs between neighboring messages.
-        send3_mixed(Arc::clone(&nc.socket), primary_dst, ctx, f, tag).await;
     }
     Routed::Direct
 }
@@ -2894,6 +2866,10 @@ const BEACON_SECTION_RELAY: &[u8; 4] = b"RLYC";
 /// post-quantum key — which is what stops a forger with the classical private key
 /// from substituting one of their own.
 const BEACON_SECTION_PQ_COMMIT: &[u8; 4] = b"PQK!";
+/// 2-byte big-endian `u16` carrying the sender's actual UDP mesh listening port (`nc.socket`).
+/// Allows peers discovering us via an ephemeral-port multicast `beacon_sock` to learn our real
+/// mesh port for relay candidates and handshakes.
+const BEACON_SECTION_PORT: &[u8; 4] = b"PORT";
 
 /// How long a measured direct contact stays valid before it must be re-observed.
 /// A NAT mapping is typically torn down after 30–120 s of silence, so a contact
@@ -2926,6 +2902,8 @@ struct BeaconSections<'a> {
     relay_capable: bool,
     /// SHA-256 commitment to the sender's post-quantum public key (P2-1).
     pq_commitment: Option<&'a [u8; 32]>,
+    /// Sender's real mesh UDP listening port (`nc.socket`).
+    mesh_port: Option<u16>,
 }
 
 /// Parse the trailing optional sections of a beacon.
@@ -2940,6 +2918,7 @@ fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
     let mut ice_offer = None;
     let mut relay_capable = false;
     let mut pq_commitment = None;
+    let mut mesh_port = None;
     while pos < amt {
         if pos + 6 > amt {
             return None;
@@ -2973,6 +2952,11 @@ fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
                 return None;
             }
             pq_commitment = buf[start..end].try_into().ok();
+        } else if magic == BEACON_SECTION_PORT {
+            if len != 2 {
+                return None;
+            }
+            mesh_port = Some(u16::from_be_bytes([buf[start], buf[start + 1]]));
         } else {
             return None;
         }
@@ -2983,6 +2967,7 @@ fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSections<'_>> {
         ice_offer,
         relay_capable,
         pq_commitment,
+        mesh_port,
     })
 }
 
@@ -3006,6 +2991,7 @@ fn build_beacon_packet(
     ice_offer: Option<&str>,
     relay_capable: bool,
     pq_commitment: Option<&[u8; 32]>,
+    mesh_port: Option<u16>,
 ) -> Vec<u8> {
     // Signed prefix: [16 magic][32 full Ed25519 pk][64 signature over pk].
     let mut buf = vec![0u8; BEACON_LEGACY_LEN];
@@ -3033,6 +3019,9 @@ fn build_beacon_packet(
     }
     if let Some(commitment) = pq_commitment {
         push_beacon_section(&mut buf, BEACON_SECTION_PQ_COMMIT, commitment);
+    }
+    if let Some(port) = mesh_port.filter(|&p| p != 0) {
+        push_beacon_section(&mut buf, BEACON_SECTION_PORT, &port.to_be_bytes());
     }
     buf
 }
@@ -5246,6 +5235,7 @@ async fn sweep_lan_subnet(
             None,
             false,
             Some(&pq_commit),
+            Some(mesh_port),
         );
         let mut targets: Vec<SocketAddr> = Vec::new();
         for s in &subnets_to_sweep {
@@ -5392,6 +5382,43 @@ fn main() -> anyhow::Result<()> {
     run_daemon(false, None)
 }
 
+/// Resolve whether this node serves as an exit and its initial `trusted_exits` allowlist.
+///
+/// Security invariant (C1): in `GHOST_MODE=public`, exit service fails CLOSED when
+/// neither `GHOST_EXIT=1` (or `GHOST_EXIT_NODE=1` / `GHOST_VPN=hub` / `--exit`) nor
+/// `GHOST_EXIT_ALLOWLIST` is explicitly set — `"any"` is NOT inserted automatically.
+/// Private/LAN modes preserve legacy open-exit defaults unless explicitly disabled.
+fn resolve_trusted_exits(
+    ghost_mode: &str,
+    exit_explicitly_on: bool,
+    exit_explicitly_off: bool,
+    allowlist_raw: Option<&str>,
+) -> (bool, std::collections::HashSet<String>) {
+    let mut set: std::collections::HashSet<String> = allowlist_raw
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let is_public_mode = ghost_mode.trim().eq_ignore_ascii_case("public");
+    let is_exit_node = if exit_explicitly_off {
+        false
+    } else if exit_explicitly_on {
+        true
+    } else {
+        !is_public_mode
+    };
+
+    if is_exit_node && set.is_empty() {
+        set.insert("any".to_string());
+    }
+    (is_exit_node, set)
+}
+
 /// Boot the node inside its own tokio runtime.
 fn run_daemon(
     suppress_browser: bool,
@@ -5475,13 +5502,13 @@ async fn run_node(
         .as_ref()
         .and_then(|h| hex::decode(h).ok())
         .and_then(|b| b.try_into().ok());
-    // Exit-node determination (enabled by default on desktop/server nodes so
-    // paired mobile and mesh VPN clients get WAN egress out of the box unless
-    // explicitly disabled via GHOST_VPN=client|off or GHOST_EXIT=0):
+    // Exit-node determination (C1): fail closed in GHOST_MODE=public unless
+    // explicitly enabled via GHOST_EXIT=1 / GHOST_EXIT_ALLOWLIST / --exit / GHOST_VPN=hub.
     let vpn_env_mode = std::env::var("GHOST_VPN")
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    let ghost_mode = std::env::var("GHOST_MODE").unwrap_or_else(|_| "public".to_string());
     let exit_explicitly_off = std::env::var("GHOST_EXIT")
         .map(|v| v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off"))
         .unwrap_or(false)
@@ -5489,15 +5516,21 @@ async fn run_node(
             vpn_env_mode.as_str(),
             "client" | "0" | "false" | "off" | "none" | "disabled"
         );
-    let is_exit_node = !exit_explicitly_off
-        || std::env::var("GHOST_EXIT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
+    let exit_explicitly_on = std::env::var("GHOST_EXIT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
         || std::env::var("GHOST_EXIT_NODE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
         || vpn_env_mode == "hub"
         || std::env::args().any(|arg| arg == "--exit" || arg == "--exit-node" || arg == "-e");
+    let allowlist_env = std::env::var("GHOST_EXIT_ALLOWLIST").ok();
+    let (is_exit_node, initial_trusted_exits) = resolve_trusted_exits(
+        &ghost_mode,
+        exit_explicitly_on,
+        exit_explicitly_off,
+        allowlist_env.as_deref(),
+    );
 
     let mut exit_ips: Vec<std::net::IpAddr> = std::env::var("GHOST_EXIT_IPS")
         .ok()
@@ -5544,18 +5577,9 @@ async fn run_node(
     };
 
     // Exit-node authorization: peers allowed to use THIS node as a SOCKS5
-    // exit. Closed by default (secure) — "any" opens it, or list fingerprints.
+    // exit. Closed by default in public mode — "any" opens it, or list fingerprints.
     let trusted_exits: Arc<std::sync::RwLock<std::collections::HashSet<String>>> =
-        Arc::new(std::sync::RwLock::new({
-            let mut set: std::collections::HashSet<String> = std::env::var("GHOST_EXIT_ALLOWLIST")
-                .ok()
-                .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
-                .unwrap_or_default();
-            if is_exit_node {
-                set.insert("any".to_string());
-            }
-            set
-        }));
+        Arc::new(std::sync::RwLock::new(initial_trusted_exits));
 
     // ── VPN (LAN-over-WAN / Exit Node) configuration ──
     let vpn_mode = init_vpn_mode_with_rotator(exit_rotator.clone())?;
@@ -5612,35 +5636,28 @@ async fn run_node(
         Arc::clone(&reputation_matrix),
     ));
 
-    // Category A — NAT traversal (ICE over STUN).
+    // Category A (A1 + A4) — Single-socket UDP multiplexing on `nc.socket`.
     //
-    // A STUN server is what makes a NATed node reachable: without one there is
-    // no server-reflexive address to advertise, so say so up front instead of
-    // letting hole-punching fail opaquely later.
+    // STUN reflexive discovery, UPnP/NAT-PMP port mapping, ICE connectivity checks,
+    // NAT keepalives, and GTF frames all share `nc.socket` so external NAT pinholes
+    // and advertised candidate ports match the mesh socket identically.
+    let (stun_tx, _) = tokio::sync::broadcast::channel::<(Vec<u8>, SocketAddr)>(256);
     let stun_server = std::env::var("GHOST_STUN_SERVER")
         .ok()
         .and_then(|v| v.parse::<SocketAddr>().ok());
-    let mut nat_puncher = vantablack::ghost::net::mesh::NatHolePuncher::new();
-    match stun_server {
-        Some(server) => {
-            tracing::info!(server = %server, "STUN: configured for NAT traversal");
-            nat_puncher = nat_puncher.with_stun_server(server);
-        }
-        None => tracing::warn!(
-            "STUN: no GHOST_STUN_SERVER set — public-address discovery and ICE \
-             reflexive candidates are unavailable; only direct/LAN paths will work"
-        ),
+    let mut nat_puncher =
+        vantablack::ghost::net::mesh::NatHolePuncher::new().with_stun_mux(stun_tx.clone());
+    if let Some(server) = stun_server {
+        tracing::info!(server = %server, "STUN: configured explicit server for NAT traversal");
+        nat_puncher = nat_puncher.with_stun_server(server);
+    } else if vantablack::ghost::net::mesh::stun_disabled_from_env() {
+        tracing::info!("STUN: disabled via GHOST_STUN=off");
+    } else {
+        tracing::info!("STUN: using async default STUN server pool for NAT discovery");
     }
     nat_puncher.set_local_fingerprint(nc.fingerprint());
 
-    // Dedicated NAT-traversal socket.
-    //
-    // ICE checks must not share the mesh's receive path: two tasks calling
-    // `recv_from` on one socket split datagrams nondeterministically, which is
-    // indistinguishable from random packet loss. The candidates below describe
-    // *this* socket, and the checks run on it.
-    let nat_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-    let nat_local = nat_socket.local_addr()?;
+    let mesh_local = nc.socket.local_addr()?;
     let probe_target = stun_server.unwrap_or_else(|| {
         format!("{}:{}", BEACON_MULTICAST_ADDR, BEACON_PORT)
             .parse()
@@ -5649,56 +5666,48 @@ async fn run_node(
     // A wildcard bind does not say which interface we would send from, so ask
     // the routing table (a UDP `connect` is a route lookup only).
     let host_candidate = match vantablack::ghost::net::ice::probe_local_addr(probe_target) {
-        Ok(a) => SocketAddr::new(a.ip(), nat_local.port()),
+        Ok(a) => SocketAddr::new(a.ip(), mesh_local.port()),
         Err(e) => {
             tracing::debug!(
                 "NAT traversal: route probe failed ({e}); advertising the bound address"
             );
-            nat_local
+            mesh_local
         }
     };
 
-    // Our advertised offer: stable credentials plus whatever candidates we can
-    // gather. Credentials must not rotate — a peer authenticates its checks
-    // against the credentials it received from us.
+    // Our advertised offer: stable credentials plus whatever candidates we gather.
     let mut offer_agent = vantablack::ghost::net::ice::IceAgent::new(
         vantablack::ghost::net::ice::IceRole::Controlling,
     );
     offer_agent.set_local_credentials(nat_puncher.local_credentials().clone());
     offer_agent.add_host_candidate(host_candidate, host_candidate);
-    if let Some(server) = stun_server {
-        match offer_agent
-            .gather_reflexive(&nat_socket, server, Duration::from_secs(3))
-            .await
-        {
-            Ok(c) => tracing::info!(public = %c.addr, "STUN: public address discovered"),
-            Err(e) => tracing::warn!(server = %server, "STUN: discovery failed: {e}"),
-        }
-    }
 
-    // Opportunistic: ask the local gateway to open the port for us.
-    // A granted mapping makes us reachable without either side punching anything,
-    // so the address becomes an ordinary candidate — it *is* our public address,
-    // however it was learned. Failure is the common case (UPnP disabled, CGNAT, an
-    // enterprise gateway) and is logged, not raised: ICE still runs.
-    if let std::net::IpAddr::V4(local_v4) = host_candidate.ip() {
-        match upnp::opportunistic_public_addr(local_v4, nat_local.port()).await {
+    // Opportunistic: ask the local gateway to open `mesh_local.port()` for us.
+    let upnp_public: Option<SocketAddr> = if let std::net::IpAddr::V4(local_v4) =
+        host_candidate.ip()
+    {
+        match upnp::opportunistic_public_addr(local_v4, mesh_local.port()).await {
             Some(public) => {
                 tracing::info!(
                     public = %public,
-                    "UPnP/NAT-PMP: gateway mapping granted — advertising it as a candidate"
+                    "UPnP/NAT-PMP: gateway mapping granted on mesh socket — advertising it as a candidate"
                 );
                 offer_agent.add_server_reflexive_candidate(host_candidate, public, None);
-                // A lease is not permanent, and a mapping that quietly expires
-                // leaves a candidate in our offer that no peer can reach.
-                let port = nat_local.port();
+                nat_puncher.set_public_addr(public);
+                let port = mesh_local.port();
                 tokio::spawn(async move {
                     upnp::renew_udp_mapping(local_v4, port).await;
                 });
+                Some(public)
             }
-            None => tracing::debug!("UPnP/NAT-PMP: {}", upnp::describe_attempt(None)),
+            None => {
+                tracing::debug!("UPnP/NAT-PMP: {}", upnp::describe_attempt(None));
+                None
+            }
         }
-    }
+    } else {
+        None
+    };
     // ── TURN allocation ──
     //
     // The last rung of the fallback ladder. Configured, never assumed: without
@@ -5796,6 +5805,9 @@ async fn run_node(
     // Which unreachable peers go through which relay. Empty until a punch fails,
     // and cleared the moment a direct path is measured again.
     let fallback_routes = Arc::new(Fallback::new(turn_path.clone()));
+    // Relay-capable peers discovered via beacons, tracked on EVERY node (A2)
+    // regardless of whether `GHOST_RELAY=1` is enabled on this node.
+    let known_relays: Arc<DashMap<String, SocketAddr>> = Arc::new(DashMap::new());
     // Peers an operator declared radio-only (`GHOST_SKYWAVE_ONLY`). Populated
     // below, before anything can check a candidate pair, and read wherever a
     // measured path would otherwise supersede a declared one.
@@ -5956,36 +5968,7 @@ async fn run_node(
                         if pending_hs.len() >= MAX_PENDING_HANDSHAKES {
                             continue;
                         }
-                        let ident = nc.identity.public_key_bytes();
-                        let (xs, xp) = {
-                            let xs =
-                                x25519_dalek::EphemeralSecret::random_from_rng(rand::thread_rng());
-                            let xp = x25519_dalek::PublicKey::from(&xs);
-                            (xs, xp)
-                        };
-                        let (kp, ks) = generate_kyber_keypair();
-                        let mut pdu = build_handshake_pdu(
-                            &ident,
-                            |d| nc.identity.sign(d).to_bytes(),
-                            &xp,
-                            &kp,
-                        );
-                        let raw = l4_rs::encode(&mut pdu);
-                        let tag = [0u8; 16];
-                        for (i, shard) in raw.iter().take(3).enumerate() {
-                            let _ = send_gtf(
-                                &nc.socket,
-                                t,
-                                [0, 0, 0, 0],
-                                0,
-                                i as u8,
-                                &frame_shard(shard),
-                                &tag,
-                                false,
-                            )
-                            .await;
-                        }
-                        pending_hs.insert(t.to_string(), PendingHandshake::Kem512(xs, ks));
+                        initiate_handshake(&nc, &nc.socket, *t, &pending_hs).await;
                         tracing::info!(seed = %t, "Bootstrap handshake sent");
                     }
                     sleep(Duration::from_secs(5)).await;
@@ -6220,13 +6203,13 @@ async fn run_node(
         let offers = Arc::clone(&our_offer_text);
         let router = Arc::clone(&shard_router);
         let nat_p = Arc::clone(&nat_puncher);
-        let nat_sock = Arc::clone(&nat_socket);
         let ledger = Arc::clone(&tft);
         let governor = Arc::clone(&transit_governor);
         let relay_role = relay_role.clone();
         let advertises_relay = relay_role.is_some();
         let addrs = Arc::clone(&addrs);
         let pending_hs = Arc::clone(&pending_hs);
+        let known_relays_tx = Arc::clone(&known_relays);
         tokio::spawn(async move {
             let beacon_sock = match UdpSocket::bind("0.0.0.0:0").await {
                 Ok(s) => s,
@@ -6282,19 +6265,13 @@ async fn run_node(
                         router.record_delivery(fp, delta, interval);
                     }
                 }
-                // Open (and hold open) a NAT mapping toward every relay we know.
-                // Without it the relay's forwarded frame is filtered before it can
-                // reach us, and the fallback would look like it had nowhere to go.
-                if let Some(relay) = relay_role.as_ref() {
-                    let addrs: Vec<SocketAddr> = relay
-                        .relay_candidates()
-                        .into_iter()
-                        .map(|(_, a)| a)
-                        .collect();
-                    if !addrs.is_empty() {
-                        let n = nat_p.send_relay_keepalives(&nat_sock, &addrs).await;
-                        tracing::debug!(relays = n, "NAT: relay pinholes refreshed");
-                    }
+                // Keep NAT mappings open on `nc.socket` toward all discovered relays,
+                // even on client nodes where `GHOST_RELAY` is not set.
+                let relay_addrs: Vec<SocketAddr> =
+                    known_relays_tx.iter().map(|e| *e.value()).collect();
+                if !relay_addrs.is_empty() {
+                    let n = nat_p.send_relay_keepalives(&nc.socket, &relay_addrs).await;
+                    tracing::debug!(relays = n, "NAT: relay pinholes refreshed on mesh socket");
                 }
 
                 let rate = governor.apply(&nc.flow_controller, &router.live_path_rates());
@@ -6374,6 +6351,7 @@ async fn run_node(
                         offer_text.as_deref(),
                         advertises_relay,
                         Some(&pq_commitment),
+                        Some(mesh_port),
                     );
                     if let Err(e) = beacon_sock.send_to(&beacon, mc_addr).await {
                         tracing::debug!("Beacon send error: {e}");
@@ -6400,10 +6378,10 @@ async fn run_node(
         let carrier_pins = Arc::clone(&carrier);
         let rl = Arc::clone(&revocation_list);
         let nat_p = Arc::clone(&nat_puncher);
-        let nat_sock = Arc::clone(&nat_socket);
         let router = Arc::clone(&shard_router);
         let relay_role = relay_role.clone();
         let routes = Arc::clone(&fallback_routes);
+        let known_relays = Arc::clone(&known_relays);
         let pinned_peers = Arc::clone(&skywave_only);
         tokio::spawn(async move {
             let zk_required = std::env::var("GHOST_ZK_DISCOVERY")
@@ -6470,13 +6448,14 @@ async fn run_node(
                     }
 
                     // Optional trailing sections (Phase 1 P1-1): a membership
-                    // proof, the sender's ICE offer, and whether the sender is
-                    // willing to relay.
+                    // proof, the sender's ICE offer, relay capability, and mesh port.
                     let mut advertises_relay = false;
+                    let mut advertised_port: Option<u16> = None;
                     let beacon_fp = hex::encode(&pk[..8]);
                     let peer_offer = match parse_beacon_sections(&buf, amt) {
                         Some(sections) => {
                             advertises_relay = sections.relay_capable;
+                            advertised_port = sections.mesh_port;
                             // Trust on first use (P2-1): a beacon names the sender's
                             // post-quantum key, and a later, different commitment for
                             // the same fingerprint is logged rather than adopted.
@@ -6524,32 +6503,38 @@ async fn run_node(
                             None
                         }
                     };
-                    let beacon_fp = hex::encode(&pk[..8]);
                     if beacon_fp == local_fp {
                         continue;
                     }
-                    tracing::info!(peer = %src, fingerprint = %beacon_fp, "Discovered via beacon");
+                    // Use the advertised mesh port (`nc.socket`) rather than the
+                    // ephemeral multicast `beacon_sock` source port when present (A2).
+                    let peer_mesh_addr = advertised_port
+                        .filter(|&p| p != 0)
+                        .map(|p| SocketAddr::new(src.ip(), p))
+                        .unwrap_or(src);
+                    tracing::info!(peer = %peer_mesh_addr, fingerprint = %beacon_fp, "Discovered via beacon");
 
                     if let Ok(local_sa) = nc.local_addr.parse::<SocketAddr>() {
-                        nat_p.register_peer(&beacon_fp, src, local_sa);
+                        nat_p.register_peer(&beacon_fp, peer_mesh_addr, local_sa);
                     }
 
-                    // Relay bookkeeping.
-                    //
-                    // A peer that advertises relay capability becomes a relay we
-                    // may use; its address is the one its beacon arrived from,
-                    // which is the socket it forwards on. A *verified* beacon is
-                    // also what authorizes a peer to relay through us: the
-                    // fingerprint is derived from the Ed25519 key the signature
-                    // just covered, so this is the same identity check the
-                    // auto-handshake below relies on, and the transit quota still
-                    // bounds what any one peer can push through us.
+                    // Relay bookkeeping (A2): track relay-capable peers on EVERY node,
+                    // even when `GHOST_RELAY` is not enabled locally. Only forwarding
+                    // incoming `BLND!` frames in `handle_pkt` is gated on `relay_role`.
+                    if advertises_relay {
+                        known_relays.insert(beacon_fp.clone(), peer_mesh_addr);
+                        routes.record_relay(&beacon_fp, peer_mesh_addr);
+                        let relay_count = known_relays.len();
+                        vantablack::ghost::net::mesh::update_wan_telemetry(|snap| {
+                            snap.relay_count = relay_count;
+                        });
+                        tracing::debug!(relay = %beacon_fp, addr = %peer_mesh_addr, "DERP: peer advertises relay capability");
+                    }
                     if let Some(relay) = relay_role.as_ref() {
                         if advertises_relay {
-                            relay.add_relay_candidate(&beacon_fp, src);
-                            tracing::debug!(relay = %beacon_fp, "DERP: peer advertises relay capability");
+                            relay.add_relay_candidate(&beacon_fp, peer_mesh_addr);
                         }
-                        relay.authorize(&beacon_fp, src);
+                        relay.authorize(&beacon_fp, peer_mesh_addr);
                     }
 
                     // Install the peer's offer and start authenticated checks.
@@ -6571,16 +6556,18 @@ async fn run_node(
                                 nat_p.set_ice_offer(&beacon_fp, offer);
                                 if !nat_p.is_connected(&beacon_fp) {
                                     let np = Arc::clone(&nat_p);
-                                    let sock = Arc::clone(&nat_sock);
+                                    let sock = Arc::clone(&nc.socket);
                                     let fp = beacon_fp.clone();
                                     let node = Arc::clone(&nc);
                                     let me = local_fp.clone();
                                     let r = Arc::clone(&router);
                                     let routes = Arc::clone(&routes);
-                                    let relay_candidates: Vec<(String, SocketAddr)> = relay_role
-                                        .as_ref()
-                                        .map(|r| r.relay_candidates())
-                                        .unwrap_or_default();
+                                    let peers_ice = Arc::clone(&peers);
+                                    let pending_ice = Arc::clone(&pending);
+                                    let relay_candidates: Vec<(String, SocketAddr)> = known_relays
+                                        .iter()
+                                        .map(|e| (e.key().clone(), *e.value()))
+                                        .collect();
                                     // Our own allocation is the transport; the
                                     // peer's is the destination.
                                     let turn_relayed = peer_turn;
@@ -6605,6 +6592,27 @@ async fn run_node(
                                             // A measured path supersedes any fallback: direct
                                             // is cheaper and is what the ladder prefers.
                                             routes.clear(&fp);
+                                            // Update peer routing with the nominated remote
+                                            // address and initiate handshake if no session exists.
+                                            if let Some(nominated_sa) = np.nominated_addr(&fp) {
+                                                peers_ice.insert(fp.clone(), nominated_sa);
+                                                if !node.sessions.contains_key(&fp)
+                                                    && pending_ice.len() < MAX_PENDING_HANDSHAKES
+                                                {
+                                                    initiate_handshake(
+                                                        &node,
+                                                        &node.socket,
+                                                        nominated_sa,
+                                                        &pending_ice,
+                                                    )
+                                                    .await;
+                                                    tracing::info!(
+                                                        peer = %fp,
+                                                        addr = %nominated_sa,
+                                                        "ICE: handshake initiated on nominated path"
+                                                    );
+                                                }
+                                            }
                                             // The completed check measured a round
                                             // trip, so register it as a real
                                             // contact: from here the CGR router
@@ -6694,33 +6702,8 @@ async fn run_node(
                             tracing::warn!("Pending-handshake table full — auto-handshake skipped");
                             continue;
                         }
-                        let t = src;
-                        let (xs, xp) = generate_x25519_keypair();
-                        let (kp, ks) = generate_kyber_keypair();
-                        let pdu = build_handshake_pdu(
-                            &nc.identity.public_key_bytes(),
-                            |d| nc.identity.sign(d).to_bytes(),
-                            &xp,
-                            &kp,
-                        );
-                        let mut c = pdu;
-                        let raw = l4_rs::encode(&mut c);
-                        let tag = [0u8; 16];
-                        for (i, shard) in raw.iter().take(3).enumerate() {
-                            let _ = send_gtf(
-                                &nc.socket,
-                                &t,
-                                [0, 0, 0, 0],
-                                0,
-                                i as u8,
-                                &frame_shard(shard),
-                                &tag,
-                                false,
-                            )
-                            .await;
-                        }
-                        pending.insert(t.to_string(), PendingHandshake::Kem512(xs, ks));
-                        tracing::info!(target = %t, fingerprint = %beacon_fp, "Auto-handshake sent");
+                        initiate_handshake(&nc, &nc.socket, peer_mesh_addr, &pending).await;
+                        tracing::info!(target = %peer_mesh_addr, fingerprint = %beacon_fp, "Auto-handshake sent");
                     }
                 }
             }
@@ -6798,15 +6781,179 @@ async fn run_node(
             }
         });
     }
+    // Single-socket UDP receive + RFC 8489 STUN/ICE demux loop (A1).
     {
         let rx = Arc::clone(&rx);
+        let stun_tx = stun_tx.clone();
         tokio::spawn(async move {
             let sock = Arc::clone(&rx.socket);
             let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
             while rx.node.running.load(Ordering::Relaxed) {
                 if let Ok((amt, src)) = sock.recv_from(&mut buf).await {
+                    if vantablack::ghost::net::stun::is_stun_packet(&buf[..amt]) {
+                        let _ = stun_tx.send((buf[..amt].to_vec(), src));
+                        continue;
+                    }
                     rx.ingest(&buf[..amt], src).await;
                 }
+            }
+        });
+    }
+
+    // Inbound STUN/ICE responder for peers when no `drive_checks` task owns their ufrag.
+    {
+        let nc_stun_resp = Arc::clone(&nc);
+        let np_resp = Arc::clone(&nat_puncher);
+        let mut stun_rx = stun_tx.subscribe();
+        tokio::spawn(async move {
+            while nc_stun_resp.running.load(Ordering::Relaxed) {
+                match stun_rx.recv().await {
+                    Ok((pkt, from)) => {
+                        np_resp
+                            .try_respond_inbound_stun(&nc_stun_resp.socket, &pkt, from)
+                            .await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
+    // Async default STUN pool resolution & NAT classification (A4).
+    // Runs asynchronously on `nc.socket` via `stun_tx` so offline/DNS-denied
+    // environments never block daemon startup.
+    {
+        let nc_stun = Arc::clone(&nc);
+        let stun_tx_probe = stun_tx.clone();
+        let nat_p_probe = Arc::clone(&nat_puncher);
+        let offer_text_probe = Arc::clone(&our_offer_text);
+        let mut offer_agent_candidates = offer_agent.local_candidates().to_vec();
+        let host_cand = host_candidate;
+        let upnp_mapped = upnp_public.is_some();
+        tokio::spawn(async move {
+            let pool = vantablack::ghost::net::mesh::resolve_stun_pool(
+                Duration::from_secs(2),
+                host_cand.is_ipv4(),
+            )
+            .await;
+            if pool.is_empty() {
+                if let Some(pub_addr) = upnp_public {
+                    let nt = vantablack::ghost::net::mesh::classify_nat_type(
+                        Some(host_cand),
+                        &[pub_addr],
+                    );
+                    nat_p_probe.set_nat_type(nt);
+                    vantablack::ghost::net::mesh::update_wan_telemetry(|snap| {
+                        snap.public_addr = Some(pub_addr);
+                        snap.nat_type = nt;
+                        snap.upnp_mapped = true;
+                    });
+                }
+                return;
+            }
+            let mut reflexive_samples = Vec::new();
+            let mut first_server = None;
+            let mut probe_agent = vantablack::ghost::net::ice::IceAgent::new(
+                vantablack::ghost::net::ice::IceRole::Controlling,
+            );
+            for server in pool.iter().copied().take(2) {
+                let mut rx = stun_tx_probe.subscribe();
+                match probe_agent
+                    .gather_reflexive_mux(&nc_stun.socket, server, Duration::from_secs(2), &mut rx)
+                    .await
+                {
+                    Ok(c) => {
+                        if first_server.is_none() {
+                            first_server = Some(server);
+                        }
+                        reflexive_samples.push(c.addr);
+                        if !offer_agent_candidates.iter().any(|e| e.addr == c.addr) {
+                            offer_agent_candidates.push(c);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(server = %server, "STUN: reflexive probe failed: {e}");
+                    }
+                }
+            }
+            if !reflexive_samples.is_empty() {
+                let pub_addr = reflexive_samples[0];
+                let nt = vantablack::ghost::net::mesh::classify_nat_type(
+                    Some(host_cand),
+                    &reflexive_samples,
+                );
+                nat_p_probe.set_public_addr(pub_addr);
+                nat_p_probe.set_nat_type(nt);
+                let updated = vantablack::ghost::net::ice::IceOffer::new(
+                    nat_p_probe.local_credentials().clone(),
+                    offer_agent_candidates,
+                    true,
+                );
+                if let Ok(mut w) = offer_text_probe.write() {
+                    *w = updated.encode();
+                }
+                vantablack::ghost::net::mesh::update_wan_telemetry(|snap| {
+                    snap.public_addr = Some(pub_addr);
+                    snap.nat_type = nt;
+                    snap.stun_server = first_server;
+                    snap.upnp_mapped = upnp_mapped;
+                });
+                tracing::info!(
+                    public = %pub_addr,
+                    nat_type = %nt.as_str(),
+                    "STUN: public address & NAT classification updated"
+                );
+            }
+        });
+    }
+
+    // Periodic ~25s NAT keepalive loop on `nc.socket` for active WAN peers and known relays (A1).
+    {
+        let nc_ka = Arc::clone(&nc);
+        let np_ka = Arc::clone(&nat_puncher);
+        let addrs_ka = Arc::clone(&addrs);
+        let relays_ka = Arc::clone(&known_relays);
+        let fb_ka = Arc::clone(&fallback_routes);
+        tokio::spawn(async move {
+            while nc_ka.running.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_secs(25)).await;
+                if !nc_ka.running.load(Ordering::Relaxed) {
+                    break;
+                }
+                np_ka.send_keepalives(&nc_ka.socket).await;
+
+                // Keep NAT mappings open for active WAN peers in `addrs` not tracked by ICE.
+                let wan_peers: Vec<SocketAddr> = addrs_ka
+                    .iter()
+                    .filter(|e| {
+                        let ip = e.value().ip();
+                        !np_ka.is_connected(e.key())
+                            && !ip.is_loopback()
+                            && !is_single_device_ip(ip)
+                    })
+                    .map(|e| *e.value())
+                    .collect();
+                for addr in wan_peers {
+                    let ka = vantablack::ghost::net::stun::Message::binding_indication(
+                        vantablack::ghost::net::stun::TransactionId::random(),
+                    )
+                    .encode();
+                    let _ = nc_ka.socket.send_to(&ka, addr).await;
+                }
+
+                let relay_addrs: Vec<SocketAddr> = relays_ka.iter().map(|e| *e.value()).collect();
+                if !relay_addrs.is_empty() {
+                    let _ = np_ka
+                        .send_relay_keepalives(&nc_ka.socket, &relay_addrs)
+                        .await;
+                }
+                let relay_count = relays_ka.len();
+                let relayed_peer_count = fb_ka.len();
+                vantablack::ghost::net::mesh::update_wan_telemetry(|snap| {
+                    snap.relay_count = relay_count;
+                    snap.relayed_peer_count = relayed_peer_count;
+                });
             }
         });
     }
@@ -7916,12 +8063,13 @@ mod beacon_section_tests {
 
     #[test]
     fn a_plain_beacon_keeps_the_legacy_112_byte_layout() {
-        let b = build_beacon_packet(&test_pk(), stub_signer, None, None, false, None);
+        let b = build_beacon_packet(&test_pk(), stub_signer, None, None, false, None, None);
         assert_eq!(b.len(), BEACON_LEGACY_LEN);
         assert_eq!(&b[..16], BEACON_PREFIX);
         let sections = parse_beacon_sections(&b, b.len()).expect("parses with no sections");
         assert!(sections.zk.is_none());
         assert!(sections.ice_offer.is_none());
+        assert!(sections.mesh_port.is_none());
     }
 
     #[test]
@@ -7938,6 +8086,7 @@ mod beacon_section_tests {
             Some(ZkAuthenticator::create_proof(&pk, &psk)),
             None,
             false,
+            None,
             None,
         );
         assert!(b.len() > BEACON_LEGACY_LEN);
@@ -7984,6 +8133,7 @@ mod beacon_section_tests {
             None,
             false,
             None,
+            None,
         );
         let sections = parse_beacon_sections(&b, b.len()).expect("the section must tile");
         let (ctx, pr) = sections.zk.expect("a membership proof is present");
@@ -8002,7 +8152,15 @@ mod beacon_section_tests {
     #[test]
     fn an_offer_beacon_round_trips_through_its_sections() {
         let offer = sample_offer(true);
-        let b = build_beacon_packet(&test_pk(), stub_signer, None, Some(&offer), false, None);
+        let b = build_beacon_packet(
+            &test_pk(),
+            stub_signer,
+            None,
+            Some(&offer),
+            false,
+            None,
+            None,
+        );
         assert!(b.len() > BEACON_LEGACY_LEN);
 
         let sections = parse_beacon_sections(&b, b.len()).expect("sections must tile exactly");
@@ -8033,6 +8191,7 @@ mod beacon_section_tests {
             Some(&offer),
             false,
             None,
+            None,
         );
         let sections = parse_beacon_sections(&b, b.len()).expect("both sections must parse");
 
@@ -8060,9 +8219,11 @@ mod beacon_section_tests {
             None,
             false,
             Some(&commitment),
+            Some(55225),
         );
         let sections = parse_beacon_sections(&b, b.len()).expect("the section must tile exactly");
         assert_eq!(sections.pq_commitment, Some(&commitment));
+        assert_eq!(sections.mesh_port, Some(55225));
         // And it is the commitment to *this* identity's key, so a verifier that
         // remembers it can check the key the peer later proves on the carrier.
         assert_eq!(
@@ -8070,7 +8231,7 @@ mod beacon_section_tests {
             l0_identity::pq_commitment(&identity.pq_public_key_bytes())
         );
         // A section with no commitment anywhere is not invented.
-        let plain = build_beacon_packet(&pk, stub_signer, None, None, false, None);
+        let plain = build_beacon_packet(&pk, stub_signer, None, None, false, None, None);
         assert_eq!(plain.len(), BEACON_LEGACY_LEN);
         assert!(parse_beacon_sections(&plain, plain.len())
             .expect("a bare beacon parses")
@@ -9666,5 +9827,143 @@ mod skywave_only_tests {
         );
         assert!(routes.path("bbbb1111bbbb1111").is_none());
         assert!(pinned.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod wan_core_unit_tests {
+    use super::*;
+
+    #[test]
+    fn public_mode_fails_closed_on_trusted_exits_by_default() {
+        // Public mode with no explicit GHOST_EXIT / GHOST_EXIT_ALLOWLIST must NOT insert "any".
+        let (is_exit, exits) = resolve_trusted_exits("public", false, false, None);
+        assert!(!is_exit);
+        assert!(exits.is_empty());
+
+        // Public mode with explicit GHOST_EXIT=1 opens exit.
+        let (is_exit, exits) = resolve_trusted_exits("public", true, false, None);
+        assert!(is_exit);
+        assert!(exits.contains("any"));
+
+        // Public mode with explicit allowlist only permits the allowlisted fingerprints.
+        let (is_exit, exits) = resolve_trusted_exits("public", false, false, Some("fp1, fp2"));
+        assert!(!is_exit);
+        assert!(!exits.contains("any"));
+        assert!(exits.contains("fp1"));
+        assert!(exits.contains("fp2"));
+
+        // Private/LAN mode preserves default open exit unless explicitly disabled.
+        let (is_exit, exits) = resolve_trusted_exits("private", false, false, None);
+        assert!(is_exit);
+        assert!(exits.contains("any"));
+
+        // Explicit off always disables exit even in private mode.
+        let (is_exit, exits) = resolve_trusted_exits("private", false, true, None);
+        assert!(!is_exit);
+        assert!(exits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send3_adaptive_delivers_all_3_shards_to_primary_fp_with_3_peers() {
+        let nc = Arc::new(GhostNode::new("127.0.0.1:0").await.unwrap());
+        let send_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let primary_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer2_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer3_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let primary_addr = primary_sock.local_addr().unwrap();
+        let peer2_addr = peer2_sock.local_addr().unwrap();
+        let peer3_addr = peer3_sock.local_addr().unwrap();
+
+        let all_peers: Arc<DashMap<String, SocketAddr>> = Arc::new(DashMap::new());
+        all_peers.insert("primary_fp".to_string(), primary_addr);
+        all_peers.insert("peer2_fp".to_string(), peer2_addr);
+        all_peers.insert("peer3_fp".to_string(), peer3_addr);
+
+        let router = vantablack::ghost::net::mesh::AdaptiveShardRouter::new();
+        let ctx = SealCtx {
+            key: [0x11; 32],
+            epoch: 0,
+            counter: 42,
+            nonce: [0x22; 12],
+            direction: NonceDirection::InitiatorToResponder,
+            session_hash: [0xAA, 0xBB, 0xCC, 0xDD],
+            ratchet_due: false,
+        };
+        let (shards, tag) = enc_split(&ctx, b"hello primary_fp");
+
+        let routed = send3_adaptive(
+            &nc,
+            &send_sock,
+            &primary_addr,
+            "primary_fp",
+            &ctx,
+            &shards,
+            &tag,
+            &router,
+            &all_peers,
+            None,
+            "me_fp",
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(routed, Routed::Direct);
+
+        let mut received_indices = Vec::new();
+        let mut buf = [0u8; 2048];
+        for _ in 0..3 {
+            let (amt, _) =
+                tokio::time::timeout(Duration::from_secs(1), primary_sock.recv_from(&mut buf))
+                    .await
+                    .expect("primary_fp must receive all 3 shards")
+                    .unwrap();
+            assert!(amt >= net::MIN_FRAME_SIZE);
+            received_indices.push(buf[net::OFFSET_SHARD_INDEX]);
+        }
+        received_indices.sort();
+        assert_eq!(received_indices, vec![0, 1, 2]);
+
+        // Unrelated peers must receive zero shards.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), peer2_sock.recv_from(&mut buf))
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(80), peer3_sock.recv_from(&mut buf))
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn relay_beacon_port_section_overrides_ephemeral_source_port() {
+        let identity = l0_identity::GhostIdentity::generate_fresh();
+        let pk = identity.public_key_bytes();
+        let pkt = build_beacon_packet(
+            &pk,
+            |d| identity.sign(d).to_bytes(),
+            None,
+            None,
+            true,
+            None,
+            Some(55225),
+        );
+        let sections = parse_beacon_sections(&pkt, pkt.len()).expect("valid sectioned beacon");
+        assert!(sections.relay_capable);
+        assert_eq!(sections.mesh_port, Some(55225));
+        let ephemeral_src: SocketAddr = "203.0.113.10:49876".parse().unwrap();
+        let resolved = sections
+            .mesh_port
+            .filter(|&p| p != 0)
+            .map(|p| SocketAddr::new(ephemeral_src.ip(), p))
+            .unwrap_or(ephemeral_src);
+        assert_eq!(
+            resolved,
+            "203.0.113.10:55225".parse::<SocketAddr>().unwrap()
+        );
     }
 }

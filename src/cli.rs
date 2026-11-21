@@ -12,36 +12,7 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
     }
     // Global runtime flags. The daemon reads the resolved environment variables,
     // so flags set here survive into `run_node` and subsystem daemons unchanged.
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        match a.as_str() {
-            "--quantum" => {
-                std::env::set_var("GHOST_QUANTUM", "1");
-            }
-            "--skywave" => {
-                std::env::set_var("GHOST_SKYWAVE", "1");
-            }
-            "--zero-admin" | "--userspace" => {
-                std::env::set_var("GHOST_ZERO_ADMIN", "1");
-                std::env::set_var("GHOST_SOCKS5", "1");
-                vantablack::ghost::net::set_zero_admin(true);
-            }
-            "--low-latency" | "--turbo" => {
-                std::env::set_var("GHOST_LOW_LATENCY", "1");
-                vantablack::ghost::net::set_low_latency(true);
-            }
-            "--mix-batch-ms" if i + 1 < args.len() => {
-                std::env::set_var("GHOST_MIX_BATCH_MS", &args[i + 1]);
-                if let Ok(ms) = args[i + 1].parse::<u64>() {
-                    vantablack::ghost::net::set_mix_batch_delay_ms(ms);
-                }
-                i += 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
+    apply_global_flags(&args);
     match args[1].as_str() {
         "split-key" | "split_key" => {
             let secret = if args.len() >= 3 {
@@ -127,6 +98,7 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             );
             println!("  --skywave                       Activate the ABOS skywave fallback carrier (GHOST_SKYWAVE=1)");
             println!("  --quantum                       Activate the QEL quantum anchor (GHOST_QUANTUM=1)");
+            println!("  --relay-only                    Run as a headless blind relay (GHOST_RELAY=1, GHOST_EXIT=0, GHOST_NO_GUI=1, GHOST_VPN=off)");
             println!("  ggn --version                   Show version information");
             println!("  ggn --help                      Show this help");
             println!();
@@ -135,5 +107,59 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
         }
 
         _ => None,
+    }
+}
+
+fn apply_global_flags(args: &[String]) {
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        match a.as_str() {
+            "--quantum" => {
+                std::env::set_var("GHOST_QUANTUM", "1");
+            }
+            "--skywave" => {
+                std::env::set_var("GHOST_SKYWAVE", "1");
+            }
+            "--relay-only" => {
+                std::env::set_var("GHOST_RELAY", "1");
+                std::env::set_var("GHOST_EXIT", "0");
+                std::env::set_var("GHOST_NO_GUI", "1");
+                std::env::set_var("GHOST_VPN", "off");
+            }
+            "--zero-admin" | "--userspace" => {
+                std::env::set_var("GHOST_ZERO_ADMIN", "1");
+                std::env::set_var("GHOST_SOCKS5", "1");
+                vantablack::ghost::net::set_zero_admin(true);
+            }
+            "--low-latency" | "--turbo" => {
+                std::env::set_var("GHOST_LOW_LATENCY", "1");
+                vantablack::ghost::net::set_low_latency(true);
+            }
+            "--mix-batch-ms" if i + 1 < args.len() => {
+                std::env::set_var("GHOST_MIX_BATCH_MS", &args[i + 1]);
+                if let Ok(ms) = args[i + 1].parse::<u64>() {
+                    vantablack::ghost::net::set_mix_batch_delay_ms(ms);
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_only_flag_sets_headless_blind_relay_env() {
+        let args = vec!["ggn".to_string(), "--relay-only".to_string()];
+        apply_global_flags(&args);
+        assert_eq!(std::env::var("GHOST_RELAY").as_deref(), Ok("1"));
+        assert_eq!(std::env::var("GHOST_EXIT").as_deref(), Ok("0"));
+        assert_eq!(std::env::var("GHOST_NO_GUI").as_deref(), Ok("1"));
+        assert_eq!(std::env::var("GHOST_VPN").as_deref(), Ok("off"));
     }
 }

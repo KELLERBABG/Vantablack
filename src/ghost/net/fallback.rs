@@ -254,6 +254,9 @@ impl FallbackRoutes {
 pub struct Fallback {
     routes: FallbackRoutes,
     turn: Option<Arc<TurnPath>>,
+    /// Relay-capable peers discovered on the mesh, tracked on every node
+    /// regardless of whether this node itself serves as a relay (`GHOST_RELAY`).
+    known_relays: DashMap<String, SocketAddr>,
 }
 
 impl Fallback {
@@ -261,7 +264,34 @@ impl Fallback {
         Fallback {
             routes: FallbackRoutes::new(),
             turn,
+            known_relays: DashMap::new(),
         }
+    }
+
+    /// Record or update a discovered relay-capable peer's mesh address.
+    pub fn record_relay(&self, relay_fp: &str, mesh_addr: SocketAddr) {
+        self.known_relays.insert(relay_fp.to_string(), mesh_addr);
+    }
+
+    /// Remove a peer from the discovered relay table.
+    pub fn remove_relay(&self, relay_fp: &str) {
+        self.known_relays.remove(relay_fp);
+    }
+
+    /// All discovered relay candidates, sorted deterministically by fingerprint.
+    pub fn relay_candidates(&self) -> Vec<(String, SocketAddr)> {
+        let mut out: Vec<(String, SocketAddr)> = self
+            .known_relays
+            .iter()
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Number of discovered relay candidates.
+    pub fn relay_count(&self) -> usize {
+        self.known_relays.len()
     }
 
     /// Record a peer's fallback path.
@@ -747,5 +777,21 @@ mod tests {
         // request at all, and folding the two together would make a legitimate
         // multi-hop path indistinguishable from abuse on the dashboard.
         assert_eq!(relay.stats(), (0, 0, 0));
+    }
+
+    #[test]
+    fn non_relay_node_tracks_and_selects_discovered_relays() {
+        let fb = Fallback::new(None);
+        fb.record_relay("relay-vps", addr("203.0.113.50:55225"));
+        assert_eq!(fb.relay_count(), 1);
+        let candidates = fb.relay_candidates();
+        let chosen = choose_fallback("client-a", "client-b", &candidates, None);
+        assert_eq!(
+            chosen,
+            Some(FallbackPath::MeshRelay {
+                relay_fp: "relay-vps".to_string(),
+                relay_addr: addr("203.0.113.50:55225"),
+            })
+        );
     }
 }

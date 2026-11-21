@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-11-21 - Single-Socket WAN Transport, Relay Discovery & Safe Exits
+
+- **Single-Socket STUN/ICE Mux (`src/ghost/net/stun.rs`, `src/ghost/net/ice.rs`, `src/ghost/net/mesh.rs`, `src/main.rs`):** Eliminated split `nat_socket`; STUN discovery, UPnP/NAT-PMP mapping, ICE checks, ~25s NAT keepalives, and GTF frames now share `nc.socket` via bounded `broadcast` STUN demuxing (`is_stun_packet`, `gather_reflexive_mux`), with `NatHolePuncher::nominated_addr` routing and initiating handshakes on ICE nomination.
+- **Decoupled Relay Discovery & `PORT` TLV (`src/ghost/net/fallback.rs`, `src/main.rs`):** Added `known_relays` and `Fallback::{record_relay, relay_candidates}` tracked on every node regardless of `GHOST_RELAY`, plus backward-compatible `PORT` (`BEACON_SECTION_PORT`) TLV for accurate `(src.ip(), advertised_mesh_port)` peer addressing.
+- **Primary-Only RS Shard Routing & NAT Pool (`src/ghost/net/mesh.rs`, `src/main.rs`):** Fixed `send3_adaptive` and added `AdaptiveShardRouter::assign_shards_to_primary` so all 3 Reed-Solomon shards target `primary_fp`; added async `DEFAULT_STUN_SERVERS` pool (`resolve_stun_pool`), `NatType` classification, and `WanTelemetrySnapshot`.
+- **Unified ML-KEM-768 Handshakes, Safe Exit Defaults & `--relay-only` (`src/main.rs`, `src/cli.rs`, `tests/wan_single_socket.rs`):** Replaced inline ML-KEM-512 `build_handshake_pdu` with `initiate_handshake`, made `resolve_trusted_exits` fail-closed in `GHOST_MODE=public` unless `GHOST_EXIT=1`/`GHOST_EXIT_ALLOWLIST` is set, added `--relay-only` CLI mode, and added `tests/wan_single_socket.rs`.
+
+---
+
 ## [1.2.0] - 2026-11-21 - Control Center API v2 & Interactive Mesh View UI
 
 - **Control Center REST API v2 (`src/control.rs`):** Added PIN-protected `GET /api/topology` (with `TopologySelfHint` / `TopologyPeerHint` snapshot structs), `GET /proxy.pac`, `vb://` URI decoding & signature verification in `POST /api/peers/add`, `POST /api/peers/disconnect` (session/carrier teardown with `GHOST_BYE_MAGIC`), `/api/mesh/scan` & `/api/mesh/config` aliases, and dynamic `version`, `multicast_addr` (`239.255.0.1:2270`), and `socks_ports` in `GET /api/status`.
