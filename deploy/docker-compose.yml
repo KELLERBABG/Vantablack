@@ -6,8 +6,8 @@
 #   3. Client (Shatter Router & Diffusion Initiator)
 #
 # Usage:
-#   docker compose up -d
-#   ./smoke_test.sh
+#   docker compose -f deploy/docker-compose.yml up -d
+#   bash scripts/smoke_test.sh
 
 version: '3.8'
 
@@ -15,7 +15,7 @@ services:
   mesh-hub:
     build:
       context: ..
-      dockerfile: Dockerfile.wan
+      dockerfile: docker/Dockerfile.wan
     container_name: ggn-ref-hub
     cap_add:
       - NET_ADMIN
@@ -32,7 +32,7 @@ services:
   mesh-relay:
     build:
       context: ..
-      dockerfile: Dockerfile.wan
+      dockerfile: docker/Dockerfile.wan
     container_name: ggn-ref-relay
     cap_add:
       - NET_ADMIN
@@ -51,7 +51,7 @@ services:
   mesh-client:
     build:
       context: ..
-      dockerfile: Dockerfile.wan
+      dockerfile: docker/Dockerfile.wan
     container_name: ggn-ref-client
     cap_add:
       - NET_ADMIN

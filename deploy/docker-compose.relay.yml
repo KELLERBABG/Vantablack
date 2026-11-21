@@ -1,0 +1,47 @@
+# Vantablack — Headless Blind Relay VPS Deployment
+#
+# Runs a dedicated `--relay-only` node (`ggn --relay-only`) that forwards
+# blind `BLND!` envelopes without acting as an exit node or opening a GUI.
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.relay.yml up -d --build
+#   docker compose -f deploy/docker-compose.relay.yml logs -f
+
+services:
+  ggn-relay:
+    build:
+      context: ..
+      dockerfile_inline: |
+        FROM rust:slim-bookworm AS builder
+        WORKDIR /app
+        RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+        COPY build.rs Cargo.toml Cargo.lock ./
+        COPY abos ./abos
+        COPY src ./src
+        COPY assets ./assets
+        RUN cargo build --release --bin ggn --no-default-features
+
+        FROM debian:bookworm-slim
+        RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+        COPY --from=builder /app/target/release/ggn /usr/local/bin/ggn
+        RUN chmod +x /usr/local/bin/ggn
+        ENTRYPOINT ["/usr/local/bin/ggn"]
+    container_name: ggn-relay-vps
+    restart: unless-stopped
+    command: ["--relay-only"]
+    environment:
+      - GHOST_RELAY=1
+      - GHOST_EXIT=0
+      - GHOST_NO_GUI=1
+      - GHOST_VPN=off
+      - GHOST_BIND=0.0.0.0:55225
+      - GHOST_WEB_PORT=2270
+      - GHOST_STUN=on
+    ports:
+      - "55225:55225/udp"
+      - "127.0.0.1:2270:2270/tcp"
+    volumes:
+      - ggn_relay_data:/root/.local/share/vantablack
+
+volumes:
+  ggn_relay_data:

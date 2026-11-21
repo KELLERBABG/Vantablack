@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-11-21 - Zero-Knowledge WAN Discovery v2 & Testbed Repairs
+
+- **Random-Nonce Blind Rendezvous (`src/ghost/net/discovery.rs`):** Replaced static AEAD nonce in `BlindRendezvous` with fresh 12-byte `OsRng` nonces prepended to ciphertext, and added fixed-1024B chaff-padded `encrypt_blob`/`decrypt_blob` and `encrypt_descriptor_v2`/`decrypt_descriptor_v2`.
+- **Signed PeerDescriptorV2 & Invite Links:** Added Ed25519-signed `PeerDescriptorV2` (`VBP2`), `vb://2.<b64>` and `NetworkInvite` (`vb-net://<b64>`) codecs, and `LocalPeerCache::{save_v2, load_v2}` (`VBPCACHE2`) with expiry and signature pruning while preserving v1 compatibility.
+- **Blind Mailbox Client & Cloudflare Worker (`deploy/worker/blind_rendezvous.js`, `deploy/worker/wrangler.toml`):** Added `BlindMailboxClient` (`publish_descriptor`, `fetch_descriptors` with `epoch_hour - 1` rollover/fallback) and a zero-logging KV-backed Cloudflare Worker (1024B max payload, 900s TTL, 32-entry slot cap).
+- **Deploy & Smoke-Testbed Repairs (`deploy/docker-compose*.yml`, `scripts/mesh_smoke_test.sh`, `scripts/smoke_test.sh`):** Fixed `docker/Dockerfile.wan` build paths, added headless `--relay-only` relay compose configuration, updated binary discovery (`ggn.exe`/`ggn`/`vantablack.exe`), and replaced stub smoke assertions with real container, socket, netem, and HTTP telemetry checks.
+
+---
+
 ## [1.0.0] - 2026-11-09 - Production Release: Formally Verified WAN Mesh
 
 ### 🛡️ Formal Verification & Mathematical Guarantees (Keller & ProVerif)

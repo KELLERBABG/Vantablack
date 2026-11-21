@@ -19,11 +19,25 @@ set -u
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 TMP="$ROOT/target/smoke_test_$$"
-BIN=""
-for d in "$ROOT/target/debug" "C:/Users/Public/ggn-target/debug"; do
-  if [ -f "$d/vantablack.exe" ]; then BIN="$d/vantablack.exe"; break; fi
-done
-[ -n "$BIN" ] || BIN="$(cargo metadata --format-version 1 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/vantablack.exe"
+find_bin() {
+  local dirs=("$ROOT/target/debug")
+  [ -n "${CARGO_TARGET_DIR:-}" ] && dirs+=("$CARGO_TARGET_DIR/debug")
+  dirs+=("C:/Users/Public/ggn-target/debug")
+  local meta_dir
+  meta_dir="$(cargo metadata --format-version 1 2>/dev/null | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+  [ -n "$meta_dir" ] && dirs+=("$meta_dir/debug")
+
+  for d in "${dirs[@]}"; do
+    for name in ggn.exe ggn vantablack.exe vantablack; do
+      if [ -f "$d/$name" ]; then
+        printf '%s' "$d/$name"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+BIN="$(find_bin || true)"
 
 # Unique ports per run so stale processes from previous runs can't interfere
 BASE=$(( ($$ % 20000) + 10000 ))
@@ -48,6 +62,7 @@ bad()  { printf '    [FAIL] %s\n' "$*"; FAIL=$((FAIL+1)); }
 
 say "building (debug)..."
 cargo build >/dev/null 2>&1 || { bad "cargo build"; exit 1; }
+[ -n "$BIN" ] || BIN="$(find_bin || true)"
 [ -f "$BIN" ] || { bad "binary missing: $BIN"; exit 1; }
 
 rm -rf "$TMP"; mkdir -p "$TMP/http" "$TMP/nodeA" "$TMP/nodeB"

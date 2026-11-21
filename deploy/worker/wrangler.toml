@@ -1,0 +1,22 @@
+# Vantablack — Self-Hostable Cloudflare Blind Mailbox Worker
+#
+# Deployment steps:
+#   1. Create KV namespaces:
+#        wrangler kv namespace create BLIND_SLOTS
+#        wrangler kv namespace create BLIND_SLOTS --preview
+#   2. Paste the returned IDs into `id` and `preview_id` below.
+#   3. Deploy:
+#        wrangler deploy
+
+name = "vantablack-blind-rendezvous"
+main = "blind_rendezvous.js"
+compatibility_date = "2024-11-01"
+
+# Zero-knowledge privacy invariant: keep invocation logging disabled.
+[observability]
+enabled = false
+
+[[kv_namespaces]]
+binding = "BLIND_SLOTS"
+id = "<REPLACE_WITH_KV_NAMESPACE_ID>"
+preview_id = "<REPLACE_WITH_PREVIEW_KV_ID>"
