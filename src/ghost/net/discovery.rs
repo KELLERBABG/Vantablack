@@ -1069,7 +1069,7 @@ impl BlindRendezvous {
 /// Zero-knowledge HTTP client for blind mailbox rendezvous workers.
 ///
 /// Only transmits opaque 1024-byte AEAD ciphertexts under deterministic slot hashes
-/// (`PUT /v1/slot/<slot_hex>`, `GET /v1/slot/<slot_hex>`) with zero plaintext IP,
+/// (`PUT /v2/slot/<slot_hex>/<ephemeral_id>`, `GET /v2/slot/<slot_hex>`) with zero plaintext IP,
 /// fingerprint, or port query parameters.
 #[derive(Clone, Debug)]
 pub struct BlindMailboxClient {
@@ -1132,6 +1132,57 @@ impl BlindMailboxClient {
             .await
     }
 
+    /// Generate a random 16-byte (32-hex-char) ephemeral subkey identifier.
+    pub fn generate_ephemeral_id() -> String {
+        let mut bytes = [0u8; 16];
+        OsRng.fill_bytes(&mut bytes);
+        hex::encode(bytes)
+    }
+
+    /// Compute a 16-bit proof-of-work nonce (`X-VB-PoW` header) bound to
+    /// `(slot_hex, ephemeral_id, body)`.
+    pub fn compute_pow_nonce(slot_hex: &str, ephemeral_id: &str, body: &[u8]) -> String {
+        let prefix = format!(
+            "{}:{}:",
+            slot_hex.to_ascii_lowercase(),
+            ephemeral_id.to_ascii_lowercase()
+        );
+        let mut nonce: u64 = 0;
+        loop {
+            let mut hasher = Sha256::new();
+            hasher.update(prefix.as_bytes());
+            hasher.update(nonce.to_be_bytes());
+            hasher.update(body);
+            let digest = hasher.finalize();
+            if digest[0] == 0 && digest[1] == 0 {
+                return hex::encode(nonce.to_be_bytes());
+            }
+            nonce = nonce.wrapping_add(1);
+        }
+    }
+
+    /// Verify a 16-bit proof-of-work nonce (`X-VB-PoW` header) against
+    /// `(slot_hex, ephemeral_id, body)`.
+    pub fn verify_pow_nonce(slot_hex: &str, ephemeral_id: &str, nonce_hex: &str, body: &[u8]) -> bool {
+        let Ok(nonce_bytes) = hex::decode(nonce_hex) else {
+            return false;
+        };
+        if nonce_bytes.len() != 8 {
+            return false;
+        }
+        let prefix = format!(
+            "{}:{}:",
+            slot_hex.to_ascii_lowercase(),
+            ephemeral_id.to_ascii_lowercase()
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(prefix.as_bytes());
+        hasher.update(&nonce_bytes);
+        hasher.update(body);
+        let digest = hasher.finalize();
+        digest[0] == 0 && digest[1] == 0
+    }
+
     /// Encrypt and publish a [`PeerDescriptorV2`] to an explicit `epoch_hour` slot.
     pub async fn publish_descriptor_at_epoch(
         &self,
@@ -1144,12 +1195,20 @@ impl BlindMailboxClient {
             Self::slot_hex_for_epoch(swarm_secret, epoch_hour, self.slot_index);
         let blob = BlindRendezvous::encrypt_descriptor_v2(&epoch_key, descriptor)
             .map_err(|e| e.to_string())?;
-        let url = format!("{}/v1/slot/{}", base_url.trim_end_matches('/'), slot_hex);
+        let ephemeral_id = Self::generate_ephemeral_id();
+        let pow_nonce = Self::compute_pow_nonce(&slot_hex, &ephemeral_id, &blob);
+        let url = format!(
+            "{}/v2/slot/{}/{}",
+            base_url.trim_end_matches('/'),
+            slot_hex,
+            ephemeral_id
+        );
 
         let resp = self
             .client
             .put(&url)
             .header("Content-Type", "application/octet-stream")
+            .header("X-VB-PoW", pow_nonce)
             .body(blob)
             .send()
             .await
@@ -1227,7 +1286,7 @@ impl BlindMailboxClient {
     ) -> Result<Vec<PeerDescriptorV2>, String> {
         let (slot_hex, epoch_key) =
             Self::slot_hex_for_epoch(swarm_secret, epoch_hour, self.slot_index);
-        let url = format!("{}/v1/slot/{}", base_url.trim_end_matches('/'), slot_hex);
+        let url = format!("{}/v2/slot/{}", base_url.trim_end_matches('/'), slot_hex);
 
         let resp = self
             .client
@@ -1427,5 +1486,45 @@ mod tests {
         let decoded_invite = NetworkInvite::from_uri(&invite_uri).expect("invite uri parse");
         assert_eq!(invite, decoded_invite);
         assert!(decoded_invite.verify_bootstrap(60));
+    }
+
+    #[test]
+    fn test_blind_mailbox_ephemeral_id_and_pow() {
+        let eph1 = BlindMailboxClient::generate_ephemeral_id();
+        let eph2 = BlindMailboxClient::generate_ephemeral_id();
+        assert_eq!(eph1.len(), 32);
+        assert_eq!(eph2.len(), 32);
+        assert_ne!(eph1, eph2);
+        assert!(eph1.chars().all(|c| c.is_ascii_hexdigit()));
+
+        let slot_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let body = vec![0x42u8; BLIND_MAILBOX_WIRE_LEN];
+        let nonce_hex = BlindMailboxClient::compute_pow_nonce(slot_hex, &eph1, &body);
+        assert_eq!(nonce_hex.len(), 16);
+        assert!(BlindMailboxClient::verify_pow_nonce(
+            slot_hex, &eph1, &nonce_hex, &body
+        ));
+
+        // Bound to slot_hex, ephemeral_id, and body.
+        assert!(!BlindMailboxClient::verify_pow_nonce(
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            &eph1,
+            &nonce_hex,
+            &body
+        ));
+        assert!(!BlindMailboxClient::verify_pow_nonce(
+            slot_hex, &eph2, &nonce_hex, &body
+        ));
+        let mut tampered_body = body.clone();
+        tampered_body[0] ^= 0x01;
+        assert!(!BlindMailboxClient::verify_pow_nonce(
+            slot_hex,
+            &eph1,
+            &nonce_hex,
+            &tampered_body
+        ));
+        assert!(!BlindMailboxClient::verify_pow_nonce(
+            slot_hex, &eph1, "not-hex", &body
+        ));
     }
 }

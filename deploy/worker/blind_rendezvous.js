@@ -12,7 +12,10 @@
 const MAX_BODY_BYTES = 1024;
 const SLOT_TTL_SECS = 900;
 const MAX_ENTRIES_PER_SLOT = 32;
-const SLOT_PATH_RE = /^\/v1\/slot\/([0-9a-fA-F]{64})$/;
+const SLOT_GET_PATH_RE = /^\/v2\/slot\/([0-9a-fA-F]{64})$/;
+const SLOT_PUT_PATH_RE = /^\/v2\/slot\/([0-9a-fA-F]{64})\/([0-9a-fA-F]{16,64})$/;
+const POW_HEADER = "x-vb-pow";
+const POW_NONCE_HEX_RE = /^[0-9a-fA-F]{16}$/;
 
 const COMMON_HEADERS = {
   "Cache-Control": "no-store",
@@ -37,34 +40,70 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+async function verifyPow(slotHex, ephemeralId, nonceHex, bodyBytes) {
+  if (!nonceHex || !POW_NONCE_HEX_RE.test(nonceHex)) {
+    return false;
+  }
+  const prefix = new TextEncoder().encode(`${slotHex}:${ephemeralId}:`);
+  const nonceBytes = hexToBytes(nonceHex);
+  const input = new Uint8Array(prefix.length + nonceBytes.length + bodyBytes.length);
+  input.set(prefix, 0);
+  input.set(nonceBytes, prefix.length);
+  input.set(bodyBytes, prefix.length + nonceBytes.length);
+
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
+  // 16-bit PoW: first 2 bytes must be zero.
+  return digest[0] === 0 && digest[1] === 0;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (request.method === "GET" && (url.pathname === "/health" || url.pathname === "/v1/health")) {
+    if (
+      request.method === "GET" &&
+      (url.pathname === "/health" || url.pathname === "/v1/health" || url.pathname === "/v2/health")
+    ) {
       return jsonResponse({ status: "ok" }, 200);
-    }
-
-    const match = SLOT_PATH_RE.exec(url.pathname);
-    if (!match) {
-      return jsonResponse({ error: "not found" }, 404);
     }
 
     if (!env || !env.BLIND_SLOTS) {
       return jsonResponse({ error: "BLIND_SLOTS KV binding not configured" }, 500);
     }
 
-    const slotKey = `slot:${match[1].toLowerCase()}`;
-
     if (request.method === "GET") {
-      const stored = await env.BLIND_SLOTS.get(slotKey, "json");
-      const blobs = Array.isArray(stored)
-        ? stored.filter((entry) => typeof entry === "string")
-        : [];
+      const match = SLOT_GET_PATH_RE.exec(url.pathname);
+      if (!match) {
+        return jsonResponse({ error: "not found" }, 404);
+      }
+
+      const slotHex = match[1].toLowerCase();
+      const prefix = `slot:${slotHex}:`;
+      const listed = await env.BLIND_SLOTS.list({ prefix, limit: MAX_ENTRIES_PER_SLOT });
+      const values = await Promise.all(
+        listed.keys.map((key) => env.BLIND_SLOTS.get(key.name, "text")),
+      );
+      const blobs = values.filter((entry) => typeof entry === "string" && entry.length > 0);
       return jsonResponse(blobs, 200);
     }
 
     if (request.method === "PUT") {
+      const match = SLOT_PUT_PATH_RE.exec(url.pathname);
+      if (!match) {
+        return jsonResponse({ error: "not found" }, 404);
+      }
+
+      const slotHex = match[1].toLowerCase();
+      const ephemeralId = match[2].toLowerCase();
+
       const contentLengthHeader = request.headers.get("content-length");
       if (contentLengthHeader !== null) {
         const declaredLen = Number(contentLengthHeader);
@@ -81,19 +120,16 @@ export default {
         return jsonResponse({ error: "payload too large" }, 413);
       }
 
-      const encoded = bytesToBase64(new Uint8Array(buf));
-      const existingRaw = await env.BLIND_SLOTS.get(slotKey, "json");
-      const bucket = Array.isArray(existingRaw)
-        ? existingRaw.filter((entry) => typeof entry === "string")
-        : [];
-
-      const deduped = bucket.filter((entry) => entry !== encoded);
-      deduped.push(encoded);
-      if (deduped.length > MAX_ENTRIES_PER_SLOT) {
-        deduped.splice(0, deduped.length - MAX_ENTRIES_PER_SLOT);
+      const bodyBytes = new Uint8Array(buf);
+      const powHeader = request.headers.get(POW_HEADER);
+      const powValid = await verifyPow(slotHex, ephemeralId, powHeader, bodyBytes);
+      if (!powValid) {
+        return jsonResponse({ error: "invalid or missing X-VB-PoW" }, 403);
       }
 
-      await env.BLIND_SLOTS.put(slotKey, JSON.stringify(deduped), {
+      const encoded = bytesToBase64(bodyBytes);
+      const subkey = `slot:${slotHex}:${ephemeralId}`;
+      await env.BLIND_SLOTS.put(subkey, encoded, {
         expirationTtl: SLOT_TTL_SECS,
       });
 
