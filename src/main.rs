@@ -219,6 +219,8 @@ fn wan_rate_limiter() -> &'static vantablack::ghost::net::relay::WanRateLimiter 
 const GHOST_PEX_MAGIC: &[u8] = b"GHOST_PEX_____";
 /// Peer Exchange v2 gossip frame magic — batches of signed `PeerDescriptorV2`.
 const GHOST_PEX_V2_MAGIC: &[u8] = b"GHOST_PEX2____";
+const GHOST_BTCR_GOSSIP_MAGIC: &[u8] = b"GHOST_BTCR____";
+const GHOST_FLEET_REVOKE_MAGIC: &[u8] = b"GHOST_REVOKE__";
 /// Authenticated goodbye / reroute control notification sent when a node
 /// disconnects or deactivates the mesh.
 pub(crate) const GHOST_BYE_MAGIC: &[u8] = b"GHOST_BYE_____";
@@ -4217,6 +4219,20 @@ async fn handle_pkt(
 
         // Peer Exchange gossip: learn new peers from connected nodes (v2 signed descriptors + v1 fallback)
         if let Some(payload) = frame_payload(pt) {
+            if let Some(body) = payload.strip_prefix(GHOST_BTCR_GOSSIP_MAGIC) {
+                let merged = vantablack::ghost::v2::btcr::ingest_gossip_batch(body);
+                if merged > 0 {
+                    tracing::debug!(peer = %peer_fp, merged, "BTCr gossip: merged bearer tickets");
+                }
+                return;
+            }
+            if let Some(body) = payload.strip_prefix(GHOST_FLEET_REVOKE_MAGIC) {
+                let merged = vantablack::ghost::v2::fleet::ingest_gossip_revocation_batch(body);
+                if merged > 0 {
+                    tracing::info!(peer = %peer_fp, merged, "Fleet gossip: merged signed revocations");
+                }
+                return;
+            }
             if let Some(body) = payload.strip_prefix(GHOST_PEX_V2_MAGIC) {
                 if !body.is_empty() {
                     let count = body[0] as usize;
@@ -5736,6 +5752,22 @@ async fn send_pex(
             send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
             tracing::debug!(to = %dest_fp, peers = count_v2, "PEX v2: sent signed descriptor batch");
         }
+    }
+
+    // Piggyback BTCr ticket wallet & Fleet revocation gossip over the same session.
+    let btcr_batch = vantablack::ghost::v2::btcr::export_gossip_batch(16);
+    if !btcr_batch.is_empty() {
+        let mut msg = GHOST_BTCR_GOSSIP_MAGIC.to_vec();
+        msg.extend_from_slice(&btcr_batch);
+        let (f, tag) = enc_split(&ctx, &msg);
+        send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
+    }
+    let rev_batch = vantablack::ghost::v2::fleet::export_gossip_revocation_batch();
+    if !rev_batch.is_empty() {
+        let mut msg = GHOST_FLEET_REVOKE_MAGIC.to_vec();
+        msg.extend_from_slice(&rev_batch);
+        let (f, tag) = enc_split(&ctx, &msg);
+        send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
     }
 
     // Build legacy PEX v1 payload for backward compatibility: [GHOST_PEX_____][count u8][fp_hex 16B + addr_str + NUL ...]

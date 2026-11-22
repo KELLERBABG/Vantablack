@@ -436,6 +436,435 @@ pub fn admit(
     Ok(pk)
 }
 
+// ── Live Revocation Gossip Store ────────────────────────────────────────────
+
+#[derive(Default)]
+struct GossipState {
+    root_pk: Option<[u8; 32]>,
+    set: RevocationSet,
+    raw_entries: Vec<Revocation>,
+    gossip_merged: u64,
+}
+
+fn gossip_state() -> &'static std::sync::Mutex<GossipState> {
+    static STATE: std::sync::OnceLock<std::sync::Mutex<GossipState>> = std::sync::OnceLock::new();
+    STATE.get_or_init(|| std::sync::Mutex::new(GossipState::default()))
+}
+
+/// Configure the fleet root public key used to verify incoming gossiped revocations.
+pub fn configure_root_pk(root_pk: [u8; 32]) {
+    gossip_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .root_pk = Some(root_pk);
+}
+
+/// Return the configured fleet root public key (checking `GHOST_FLEET_ROOT_PK` if unset).
+pub fn configured_root_pk() -> Option<[u8; 32]> {
+    let mut guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(pk) = guard.root_pk {
+        return Some(pk);
+    }
+    if let Ok(hex_pk) = std::env::var("GHOST_FLEET_ROOT_PK") {
+        if let Ok(raw) = hex::decode(hex_pk.trim()) {
+            if let Ok(arr) = <[u8; 32]>::try_from(raw) {
+                guard.root_pk = Some(arr);
+                return Some(arr);
+            }
+        }
+    }
+    None
+}
+
+/// Verify and store a signed [`Revocation`] for mesh gossip.
+pub fn record_revocation(rev: Revocation, root_pk: &[u8; 32]) -> bool {
+    let mut guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.root_pk.is_none() {
+        guard.root_pk = Some(*root_pk);
+    }
+    let already = guard
+        .raw_entries
+        .iter()
+        .any(|e| e.device_id == rev.device_id && e.issued_at >= rev.issued_at);
+    if !already && guard.set.merge(&rev, root_pk) {
+        guard.raw_entries.retain(|e| e.device_id != rev.device_id);
+        guard.raw_entries.push(rev);
+        true
+    } else {
+        false
+    }
+}
+
+/// Check whether `device_pk` has been revoked in the live fleet store.
+pub fn is_device_pk_revoked(device_pk: &[u8; 32]) -> bool {
+    gossip_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set
+        .is_revoked(device_pk)
+}
+
+const REVOCATION_BYTES: usize = 85;
+
+/// Encode up to 16 revocations into a `GHOST_REVOKE__` gossip batch: `[count u8]([85-byte Revocation]...)`.
+pub fn export_gossip_revocation_batch() -> Vec<u8> {
+    let guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.raw_entries.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    out.push(0u8);
+    let mut count: u8 = 0;
+    for rev in guard.raw_entries.iter().take(16) {
+        if let Some(enc) = rev.encode() {
+            if enc.len() == REVOCATION_BYTES {
+                out.extend_from_slice(&enc);
+                count = count.saturating_add(1);
+            }
+        }
+    }
+    if count == 0 {
+        return Vec::new();
+    }
+    out[0] = count;
+    out
+}
+
+/// Ingest a `GHOST_REVOKE__` gossip batch, verifying every entry against the configured fleet root.
+pub fn ingest_gossip_revocation_batch(bytes: &[u8]) -> usize {
+    let Some(root_pk) = configured_root_pk() else {
+        return 0;
+    };
+    if bytes.is_empty() {
+        return 0;
+    }
+    let count = bytes[0] as usize;
+    let mut pos = 1usize;
+    let mut merged = 0usize;
+    let mut guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
+    for _ in 0..count {
+        if pos + REVOCATION_BYTES > bytes.len() {
+            break;
+        }
+        if let Some(rev) = Revocation::decode(&bytes[pos..pos + REVOCATION_BYTES]) {
+            let already = guard
+                .raw_entries
+                .iter()
+                .any(|e| e.device_id == rev.device_id && e.issued_at >= rev.issued_at);
+            if !already && guard.set.merge(&rev, &root_pk) {
+                guard.raw_entries.retain(|e| e.device_id != rev.device_id);
+                guard.raw_entries.push(rev);
+                guard.gossip_merged += 1;
+                merged += 1;
+            }
+        }
+        pos += REVOCATION_BYTES;
+    }
+    merged
+}
+
+pub fn status_json() -> serde_json::Value {
+    let root_pk = configured_root_pk();
+    let guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
+    serde_json::json!({
+        "configured": root_pk.is_some(),
+        "fleet_id": root_pk.as_ref().map(fleet_id_for),
+        "root_pk": root_pk.as_ref().map(hex::encode),
+        "revoked_count": guard.set.len(),
+        "revoked_device_ids": guard.set.device_ids(),
+        "rejected_revocations": guard.set.rejected(),
+        "gossip_merged": guard.gossip_merged,
+    })
+}
+
+// ── Pure-Rust ISO-18004 QR SVG Renderer (Versions 1..=14, ECC-L, Mask 0) ────
+
+struct QrVersionSpec {
+    version: u8,
+    g1_blocks: usize,
+    g1_data: usize,
+    g2_blocks: usize,
+    g2_data: usize,
+    ecc_per_block: usize,
+    align: &'static [usize],
+}
+
+const QR_SPECS: &[QrVersionSpec] = &[
+    QrVersionSpec { version: 1, g1_blocks: 1, g1_data: 19, g2_blocks: 0, g2_data: 0, ecc_per_block: 7, align: &[] },
+    QrVersionSpec { version: 2, g1_blocks: 1, g1_data: 34, g2_blocks: 0, g2_data: 0, ecc_per_block: 10, align: &[6, 18] },
+    QrVersionSpec { version: 3, g1_blocks: 1, g1_data: 55, g2_blocks: 0, g2_data: 0, ecc_per_block: 15, align: &[6, 22] },
+    QrVersionSpec { version: 4, g1_blocks: 1, g1_data: 80, g2_blocks: 0, g2_data: 0, ecc_per_block: 20, align: &[6, 26] },
+    QrVersionSpec { version: 5, g1_blocks: 1, g1_data: 108, g2_blocks: 0, g2_data: 0, ecc_per_block: 26, align: &[6, 30] },
+    QrVersionSpec { version: 6, g1_blocks: 2, g1_data: 68, g2_blocks: 0, g2_data: 0, ecc_per_block: 18, align: &[6, 34] },
+    QrVersionSpec { version: 7, g1_blocks: 2, g1_data: 78, g2_blocks: 0, g2_data: 0, ecc_per_block: 20, align: &[6, 22, 38] },
+    QrVersionSpec { version: 8, g1_blocks: 2, g1_data: 97, g2_blocks: 0, g2_data: 0, ecc_per_block: 24, align: &[6, 24, 42] },
+    QrVersionSpec { version: 9, g1_blocks: 2, g1_data: 116, g2_blocks: 0, g2_data: 0, ecc_per_block: 30, align: &[6, 26, 46] },
+    QrVersionSpec { version: 10, g1_blocks: 2, g1_data: 68, g2_blocks: 2, g2_data: 69, ecc_per_block: 18, align: &[6, 28, 50] },
+    QrVersionSpec { version: 11, g1_blocks: 4, g1_data: 81, g2_blocks: 0, g2_data: 0, ecc_per_block: 20, align: &[6, 30, 54] },
+    QrVersionSpec { version: 12, g1_blocks: 2, g1_data: 92, g2_blocks: 2, g2_data: 93, ecc_per_block: 24, align: &[6, 32, 58] },
+    QrVersionSpec { version: 13, g1_blocks: 4, g1_data: 107, g2_blocks: 0, g2_data: 0, ecc_per_block: 26, align: &[6, 34, 62] },
+    QrVersionSpec { version: 14, g1_blocks: 3, g1_data: 115, g2_blocks: 1, g2_data: 116, ecc_per_block: 30, align: &[6, 26, 46, 66] },
+    QrVersionSpec { version: 15, g1_blocks: 5, g1_data: 87, g2_blocks: 1, g2_data: 88, ecc_per_block: 22, align: &[6, 26, 48, 70] },
+    QrVersionSpec { version: 16, g1_blocks: 5, g1_data: 98, g2_blocks: 1, g2_data: 99, ecc_per_block: 24, align: &[6, 26, 50, 74] },
+    QrVersionSpec { version: 17, g1_blocks: 1, g1_data: 107, g2_blocks: 5, g2_data: 108, ecc_per_block: 28, align: &[6, 30, 54, 78] },
+    QrVersionSpec { version: 18, g1_blocks: 5, g1_data: 120, g2_blocks: 1, g2_data: 121, ecc_per_block: 30, align: &[6, 30, 56, 82] },
+    QrVersionSpec { version: 19, g1_blocks: 3, g1_data: 113, g2_blocks: 4, g2_data: 114, ecc_per_block: 28, align: &[6, 30, 58, 86] },
+    QrVersionSpec { version: 20, g1_blocks: 3, g1_data: 107, g2_blocks: 5, g2_data: 108, ecc_per_block: 28, align: &[6, 34, 62, 90] },
+    QrVersionSpec { version: 21, g1_blocks: 4, g1_data: 116, g2_blocks: 4, g2_data: 117, ecc_per_block: 28, align: &[6, 28, 50, 72, 94] },
+    QrVersionSpec { version: 22, g1_blocks: 2, g1_data: 111, g2_blocks: 7, g2_data: 112, ecc_per_block: 28, align: &[6, 26, 50, 74, 98] },
+];
+
+fn gf_mul(mut x: u8, mut y: u8) -> u8 {
+    let mut r = 0u8;
+    for _ in 0..8 {
+        if y & 1 != 0 {
+            r ^= x;
+        }
+        let hi = x & 0x80;
+        x <<= 1;
+        if hi != 0 {
+            x ^= 0x1d;
+        }
+        y >>= 1;
+    }
+    r
+}
+
+fn rs_remainder(data: &[u8], ecc_len: usize) -> Vec<u8> {
+    let mut gen = vec![0u8; ecc_len];
+    gen[ecc_len - 1] = 1;
+    let mut root = 1u8;
+    for _ in 0..ecc_len {
+        for j in 0..ecc_len {
+            gen[j] = gf_mul(gen[j], root);
+            if j + 1 < ecc_len {
+                gen[j] ^= gen[j + 1];
+            }
+        }
+        root = gf_mul(root, 2);
+    }
+    let mut rem = vec![0u8; ecc_len];
+    for &b in data {
+        let factor = b ^ rem[0];
+        rem.copy_within(1.., 0);
+        rem[ecc_len - 1] = 0;
+        for j in 0..ecc_len {
+            rem[j] ^= gf_mul(gen[j], factor);
+        }
+    }
+    rem
+}
+
+fn push_bits(buf: &mut Vec<u8>, bit_len: &mut usize, val: u32, count: usize) {
+    for i in (0..count).rev() {
+        let idx = *bit_len / 8;
+        if idx >= buf.len() {
+            buf.push(0);
+        }
+        if (val >> i) & 1 != 0 {
+            buf[idx] |= 1 << (7 - (*bit_len % 8));
+        }
+        *bit_len += 1;
+    }
+}
+
+/// Encode `text` into a QR matrix (`size x size` booleans, `true` = dark module).
+pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
+    let payload = text.as_bytes();
+    let spec = QR_SPECS
+        .iter()
+        .find(|s| {
+            let total_data = s.g1_blocks * s.g1_data + s.g2_blocks * s.g2_data;
+            let hdr_bits = if s.version >= 10 { 20 } else { 12 };
+            (hdr_bits + payload.len() * 8).div_ceil(8) <= total_data
+        })
+        .ok_or_else(|| format!("QR payload too large ({} bytes > V14 ECC-L capacity)", payload.len()))?;
+
+    let total_data = spec.g1_blocks * spec.g1_data + spec.g2_blocks * spec.g2_data;
+    let mut data_bytes = Vec::with_capacity(total_data);
+    let mut bit_len = 0usize;
+    push_bits(&mut data_bytes, &mut bit_len, 0b0100, 4);
+    let count_bits = if spec.version >= 10 { 16 } else { 8 };
+    push_bits(&mut data_bytes, &mut bit_len, payload.len() as u32, count_bits);
+    for &b in payload {
+        push_bits(&mut data_bytes, &mut bit_len, b as u32, 8);
+    }
+    let rem_bits = (total_data * 8).saturating_sub(bit_len).min(4);
+    push_bits(&mut data_bytes, &mut bit_len, 0, rem_bits);
+    while data_bytes.len() < total_data {
+        data_bytes.push(0xec);
+        if data_bytes.len() < total_data {
+            data_bytes.push(0x11);
+        }
+    }
+
+    let mut blocks: Vec<Vec<u8>> = Vec::new();
+    let mut eccs: Vec<Vec<u8>> = Vec::new();
+    let mut off = 0usize;
+    for (n, len) in [(spec.g1_blocks, spec.g1_data), (spec.g2_blocks, spec.g2_data)] {
+        for _ in 0..n {
+            let blk = data_bytes[off..off + len].to_vec();
+            eccs.push(rs_remainder(&blk, spec.ecc_per_block));
+            blocks.push(blk);
+            off += len;
+        }
+    }
+    let mut codewords = Vec::new();
+    let max_data = spec.g1_data.max(spec.g2_data);
+    for i in 0..max_data {
+        for b in &blocks {
+            if i < b.len() {
+                codewords.push(b[i]);
+            }
+        }
+    }
+    for i in 0..spec.ecc_per_block {
+        for e in &eccs {
+            codewords.push(e[i]);
+        }
+    }
+
+    let n = 17 + 4 * spec.version as usize;
+    let mut grid = vec![vec![false; n]; n];
+    let mut func = vec![vec![false; n]; n];
+
+    let mut set_fn = |r: usize, c: usize, dark: bool| {
+        grid[r][c] = dark;
+        func[r][c] = true;
+    };
+    for &(fr, fc) in &[(0usize, 0usize), (0, n - 7), (n - 7, 0)] {
+        for dr in 0..7 {
+            for dc in 0..7 {
+                let border = dr == 0 || dr == 6 || dc == 0 || dc == 6;
+                let center = (2..=4).contains(&dr) && (2..=4).contains(&dc);
+                set_fn(fr + dr, fc + dc, border || center);
+            }
+        }
+    }
+    for i in 0..8 {
+        set_fn(7, i, false);
+        set_fn(i, 7, false);
+        set_fn(7, n - 1 - i, false);
+        set_fn(i, n - 8, false);
+        set_fn(n - 8, i, false);
+        set_fn(n - 1 - i, 7, false);
+    }
+    for i in 8..(n - 8) {
+        set_fn(6, i, i % 2 == 0);
+        set_fn(i, 6, i % 2 == 0);
+    }
+    set_fn(n - 8, 8, true);
+
+    for &ar in spec.align {
+        for &ac in spec.align {
+            if (ar <= 7 && (ac <= 7 || ac >= n - 8)) || (ar >= n - 8 && ac <= 7) {
+                continue;
+            }
+            for dr in 0..5 {
+                for dc in 0..5 {
+                    let r = ar + dr - 2;
+                    let c = ac + dc - 2;
+                    let dark = dr == 0 || dr == 4 || dc == 0 || dc == 4 || (dr == 2 && dc == 2);
+                    set_fn(r, c, dark);
+                }
+            }
+        }
+    }
+
+    // Reserve format areas + write ECC-L Mask 0 format bits (0x77c4).
+    const FORMAT_L_M0: u16 = 0x77c4;
+    for i in 0..15 {
+        let bit = ((FORMAT_L_M0 >> i) & 1) != 0;
+        if i < 6 {
+            set_fn(8, i, bit);
+        } else if i < 8 {
+            set_fn(8, i + 1, bit);
+        } else {
+            set_fn(8, n - 15 + i, bit);
+        }
+        if i < 8 {
+            set_fn(n - 1 - i, 8, bit);
+        } else if i == 8 {
+            set_fn(7, 8, bit);
+        } else {
+            set_fn(14 - i, 8, bit);
+        }
+    }
+
+    if spec.version >= 7 {
+        let mut rem = (spec.version as u32) << 12;
+        for i in (12..=17).rev() {
+            if (rem >> i) & 1 != 0 {
+                rem ^= 0x1f25 << (i - 12);
+            }
+        }
+        let vbits = ((spec.version as u32) << 12) | rem;
+        for i in 0..18 {
+            let bit = ((vbits >> i) & 1) != 0;
+            let a = i / 3;
+            let b = n - 11 + (i % 3);
+            set_fn(a, b, bit);
+            set_fn(b, a, bit);
+        }
+    }
+
+    // Place data bits in zig-zag columns, applying Mask 0: (r + c) % 2 == 0.
+    let mut bit_idx = 0usize;
+    let total_bits = codewords.len() * 8;
+    let mut col = n as isize - 1;
+    let mut up = true;
+    while col > 0 {
+        if col == 6 {
+            col -= 1;
+        }
+        for step in 0..n {
+            let r = if up { n - 1 - step } else { step };
+            for dx in [0isize, -1] {
+                let c = (col + dx) as usize;
+                if !func[r][c] {
+                    let raw_bit = if bit_idx < total_bits {
+                        ((codewords[bit_idx / 8] >> (7 - (bit_idx % 8))) & 1) != 0
+                    } else {
+                        false
+                    };
+                    grid[r][c] = raw_bit ^ (r + c).is_multiple_of(2);
+                    bit_idx += 1;
+                }
+            }
+        }
+        up = !up;
+        col -= 2;
+    }
+
+    Ok(grid)
+}
+
+/// Render `text` as a crisp, self-contained `<svg>` QR code with a 4-module quiet zone.
+pub fn render_qr_svg(text: &str) -> Result<String, String> {
+    let matrix = encode_qr_matrix(text)?;
+    let size = matrix.len();
+    let quiet = 4;
+    let total = size + quiet * 2;
+    let mut path = String::new();
+    for (r, row) in matrix.iter().enumerate() {
+        for (c, &dark) in row.iter().enumerate() {
+            if dark {
+                use std::fmt::Write;
+                let _ = write!(path, "M{},{}h1v1h-1z", c + quiet, r + quiet);
+            }
+        }
+    }
+    Ok(format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {total} {total}\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"Vantablack Fleet Invite QR\"><rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/><path d=\"{path}\" fill=\"#000000\"/></svg>"
+    ))
+}
+
+/// Render a `vb-fleet://` onboarding invite directly as an SVG QR code.
+pub fn render_invite_qr_svg(root_pk: &[u8; 32], cert: &DeviceCert) -> Result<String, String> {
+    let uri = encode_invite(root_pk, cert).ok_or_else(|| "invite encoding failed".to_string())?;
+    render_qr_svg(&uri)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,5 +992,36 @@ mod tests {
         let cert = root.issue(device(8), &long, 0, 100);
         assert_eq!(cert.label.chars().count(), 64);
         assert!(cert.verify(&root.public_key(), 1).is_ok());
+    }
+
+    #[test]
+    fn qr_svg_renders_valid_matrix_for_fleet_invite() {
+        let (root, _) = FleetRoot::generate();
+        let cert = root.issue(device(11), "Pixel", 2_000, DEFAULT_CERT_TTL_SECS);
+        let svg = render_invite_qr_svg(&root.public_key(), &cert).expect("render fleet QR");
+        assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.contains("shape-rendering=\"crispEdges\""));
+        assert!(svg.ends_with("</svg>"));
+
+        let uri = encode_invite(&root.public_key(), &cert).unwrap();
+        let matrix = encode_qr_matrix(&uri).unwrap();
+        let n = matrix.len();
+        assert!(n >= 21 && (n - 17).is_multiple_of(4));
+        // Top-left 7x7 finder border & center must be dark.
+        assert!(matrix[0][0] && matrix[0][6] && matrix[6][0] && matrix[3][3]);
+    }
+
+    #[test]
+    fn revocation_gossip_store_verifies_and_exports_batches() {
+        let (root, _) = FleetRoot::generate();
+        let pk = root.public_key();
+        configure_root_pk(pk);
+        let rev = root.revoke(&device(42), RevokeReason::Lost, 5_000);
+        assert!(record_revocation(rev.clone(), &pk));
+        assert!(is_device_pk_revoked(&device(42)));
+
+        let batch = export_gossip_revocation_batch();
+        assert!(!batch.is_empty());
+        assert_eq!(ingest_gossip_revocation_batch(&batch), 0, "duplicate is idempotent");
     }
 }

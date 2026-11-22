@@ -833,6 +833,42 @@ pub fn spawn_control_center(
                                                 "application/json",
                                             ),
                                         }
+                                    } else if req.starts_with("POST /api/v2/fleet/invite") {
+                                        let body = json_body(&req);
+                                        match v2api::fleet_invite_qr(&body) {
+                                            Ok(value) => (
+                                                "HTTP/1.1 200 OK",
+                                                value.to_string(),
+                                                "application/json",
+                                            ),
+                                            Err(e) => (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({
+                                                    "success": false,
+                                                    "error": e
+                                                })
+                                                .to_string(),
+                                                "application/json",
+                                            ),
+                                        }
+                                    } else if req.starts_with("POST /api/v2/fleet/revoke") {
+                                        let body = json_body(&req);
+                                        match v2api::fleet_revoke(&body) {
+                                            Ok(value) => (
+                                                "HTTP/1.1 200 OK",
+                                                value.to_string(),
+                                                "application/json",
+                                            ),
+                                            Err(e) => (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({
+                                                    "success": false,
+                                                    "error": e
+                                                })
+                                                .to_string(),
+                                                "application/json",
+                                            ),
+                                        }
                                     } else if req.starts_with("GET /api/v2/") {
                                         let peers = nc_ref.sessions.len();
                                         // A regime listener is already the final port;

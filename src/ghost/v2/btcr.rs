@@ -445,6 +445,7 @@ pub struct LedgerSnapshot {
     pub rejected_receipts: u64,
     pub rejected_replays: u64,
     pub spent_nullifiers: usize,
+    pub gossip_merged: u64,
 }
 
 #[derive(Default)]
@@ -454,6 +455,7 @@ struct Ledger {
     rejected_receipts: u64,
     rejected_replays: u64,
     nullifiers: HashSet<String>,
+    gossip_merged: u64,
 }
 
 fn ledger() -> &'static Mutex<Ledger> {
@@ -497,6 +499,7 @@ pub fn snapshot() -> LedgerSnapshot {
         rejected_receipts: guard.rejected_receipts,
         rejected_replays: guard.rejected_replays,
         spent_nullifiers: guard.nullifiers.len(),
+        gossip_merged: guard.gossip_merged,
     }
 }
 
@@ -558,6 +561,93 @@ impl Wallet {
     }
 }
 
+/// Encode up to `max` unexpired tickets from `wallet` into a compact length-prefixed
+/// mesh gossip batch: `[count u8]([len u16 BE][encoded ticket UTF-8]...)`.
+pub fn encode_gossip_batch(wallet: &Wallet, max: usize, now: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.push(0u8);
+    let mut count: u8 = 0;
+    for ticket in &wallet.tickets {
+        if ticket.is_expired(now) || count as usize >= max || count == u8::MAX {
+            continue;
+        }
+        let Ok(enc) = ticket.encode() else {
+            continue;
+        };
+        let bytes = enc.as_bytes();
+        let Ok(len_u16) = u16::try_from(bytes.len()) else {
+            continue;
+        };
+        if out.len() + 2 + bytes.len() > 2048 && count > 0 {
+            break;
+        }
+        out.extend_from_slice(&len_u16.to_be_bytes());
+        out.extend_from_slice(bytes);
+        count = count.saturating_add(1);
+    }
+    if count == 0 {
+        return Vec::new();
+    }
+    out[0] = count;
+    out
+}
+
+/// Decode a gossip batch produced by [`encode_gossip_batch`], dropping expired or malformed entries.
+pub fn decode_gossip_batch(bytes: &[u8], now: u64) -> Wallet {
+    let mut wallet = Wallet::default();
+    if bytes.is_empty() {
+        return wallet;
+    }
+    let count = bytes[0] as usize;
+    let mut pos = 1usize;
+    for _ in 0..count {
+        if pos + 2 > bytes.len() {
+            break;
+        }
+        let len = u16::from_be_bytes([bytes[pos], bytes[pos + 1]]) as usize;
+        pos += 2;
+        if pos + len > bytes.len() {
+            break;
+        }
+        if let Ok(s) = std::str::from_utf8(&bytes[pos..pos + len]) {
+            if let Ok(ticket) = Ticket::decode(s) {
+                if !ticket.is_expired(now) {
+                    wallet.tickets.push(ticket);
+                }
+            }
+        }
+        pos += len;
+    }
+    wallet
+}
+
+/// Export up to `max` unexpired tickets from the node's wallet for `GHOST_BTCR____` PEX gossip.
+pub fn export_gossip_batch(max: usize) -> Vec<u8> {
+    let wallet = Wallet::load(&wallet_path());
+    encode_gossip_batch(&wallet, max, super::now_secs())
+}
+
+/// Merge an incoming `GHOST_BTCR____` gossip batch into the node's wallet on disk.
+pub fn ingest_gossip_batch(bytes: &[u8]) -> usize {
+    let now = super::now_secs();
+    let incoming = decode_gossip_batch(bytes, now);
+    if incoming.tickets.is_empty() {
+        return 0;
+    }
+    let path = wallet_path();
+    let mut wallet = Wallet::load(&path);
+    wallet.prune_expired(now);
+    let added = wallet.merge(&incoming);
+    if added > 0 {
+        let _ = wallet.save(&path);
+        ledger()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .gossip_merged += added as u64;
+    }
+    added
+}
+
 // ── Reporting ───────────────────────────────────────────────────────────────
 
 pub fn status_json(fingerprint: &str) -> serde_json::Value {
@@ -575,6 +665,7 @@ pub fn status_json(fingerprint: &str) -> serde_json::Value {
         "spent": snap.spent,
         "rejected_receipts": snap.rejected_receipts,
         "rejected_replays": snap.rejected_replays,
+        "gossip_merged": snap.gossip_merged,
         "issuance_requires": "beneficiary-signed btcr-receipt:v1 with work_bytes > 0",
     })
 }
@@ -696,5 +787,26 @@ mod tests {
         assert_eq!(a.merge(&b), 0, "the union is idempotent");
         assert_eq!(a.tickets.len(), 2);
         assert_eq!(a.total_credit(), 350);
+    }
+
+    #[test]
+    fn gossip_batch_round_trips_and_filters_expired() {
+        let issuer = Issuer::for_node("gossip-node");
+        let key = beneficiary();
+        let mut w = Wallet::default();
+        let r1 = sign_receipt(&key, "home", 1_000_000, 1).unwrap();
+        let r2 = sign_receipt(&key, "home", 2_000_000, 2).unwrap();
+        let (t1, _) = issue_for_work(&issuer, &r1, &key.verifying_key(), &blind(b"g1"), 100).unwrap();
+        let (mut t2, _) = issue_for_work(&issuer, &r2, &key.verifying_key(), &blind(b"g2"), 100).unwrap();
+        t2.expires_at = 50; // expired at now=100
+        w.tickets.push(t1.clone());
+        w.tickets.push(t2);
+
+        let batch = encode_gossip_batch(&w, 16, 100);
+        assert!(!batch.is_empty());
+        let decoded = decode_gossip_batch(&batch, 100);
+        assert_eq!(decoded.tickets.len(), 1);
+        assert_eq!(decoded.tickets[0].m, t1.m);
+        assert_eq!(decoded.tickets[0].work_bytes, 1_000_000);
     }
 }

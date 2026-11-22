@@ -144,6 +144,7 @@ pub fn handle(state: &ApiState, req: &str) -> Option<Value> {
         "/api/v2/capabilities" => Some(capabilities()),
         "/api/v2/home-exit" => Some(super::boomerang::view(&state.node_fingerprint)),
         "/api/v2/btcr" => Some(btcr::status_json(&state.node_fingerprint)),
+        "/api/v2/fleet" => Some(super::fleet::status_json()),
         "/api/v2/ladder" => Some(super::continuum::status_json()),
         "/api/v2/racs" => Some(super::racs::status_json()),
         _ => None,
@@ -246,6 +247,80 @@ pub fn btcr_spend(body: &Value, fingerprint: &str) -> Result<Value, String> {
         "work_bytes": ticket.work_bytes,
         "nullifier": ticket.nullifier(),
         "ledger": btcr::snapshot(),
+    }))
+}
+
+/// `POST /api/v2/fleet/invite` — render a `vb-fleet://` invite URI and SVG QR code
+/// from a caller-supplied `root_pk` (hex) + `cert` JSON, or `seed` (32-byte hex) +
+/// `device_pk` (32-byte hex) + `label`.
+pub fn fleet_invite_qr(body: &Value) -> Result<Value, String> {
+    let (root_pk, cert) = if let Some(uri) = body.get("uri").and_then(|v| v.as_str()) {
+        super::fleet::decode_invite(uri)?
+    } else {
+        let seed_hex = body
+            .get("root_seed")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "body must contain \"uri\" or \"root_seed\" (32-byte hex)".to_string())?;
+        let seed_raw = hex::decode(seed_hex.trim()).map_err(|e| format!("root_seed hex: {e}"))?;
+        let seed: [u8; 32] = seed_raw
+            .try_into()
+            .map_err(|_| "root_seed must be 32 bytes".to_string())?;
+        let dev_hex = body
+            .get("device_pk")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "body must contain \"device_pk\" (32-byte hex)".to_string())?;
+        let dev_raw = hex::decode(dev_hex.trim()).map_err(|e| format!("device_pk hex: {e}"))?;
+        let dev_pk: [u8; 32] = dev_raw
+            .try_into()
+            .map_err(|_| "device_pk must be 32 bytes".to_string())?;
+        let label = body
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("device");
+        let root = super::fleet::FleetRoot::from_seed(seed);
+        super::fleet::configure_root_pk(root.public_key());
+        let cert = root.issue(
+            dev_pk,
+            label,
+            super::now_secs(),
+            super::fleet::DEFAULT_CERT_TTL_SECS,
+        );
+        (root.public_key(), cert)
+    };
+    let uri = super::fleet::encode_invite(&root_pk, &cert)
+        .ok_or_else(|| "failed to encode vb-fleet:// invite".to_string())?;
+    let qr_svg = super::fleet::render_qr_svg(&uri)?;
+    Ok(json!({
+        "success": true,
+        "fleet_id": super::fleet::fleet_id_for(&root_pk),
+        "uri": uri,
+        "qr_svg": qr_svg,
+    }))
+}
+
+/// `POST /api/v2/fleet/revoke` — record a signed [`Revocation`] for mesh gossip.
+pub fn fleet_revoke(body: &Value) -> Result<Value, String> {
+    let root_hex = body
+        .get("root_pk")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "body must contain \"root_pk\" (32-byte hex)".to_string())?;
+    let root_raw = hex::decode(root_hex.trim()).map_err(|e| format!("root_pk hex: {e}"))?;
+    let root_pk: [u8; 32] = root_raw
+        .try_into()
+        .map_err(|_| "root_pk must be 32 bytes".to_string())?;
+    let rev_hex = body
+        .get("revocation_hex")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "body must contain \"revocation_hex\" (85-byte hex)".to_string())?;
+    let rev_raw = hex::decode(rev_hex.trim()).map_err(|e| format!("revocation_hex: {e}"))?;
+    let rev = super::fleet::Revocation::decode(&rev_raw)
+        .ok_or_else(|| "revocation payload must be 85 valid bytes".to_string())?;
+    if !super::fleet::record_revocation(rev, &root_pk) {
+        return Err("revocation signature failed or was already recorded".into());
+    }
+    Ok(json!({
+        "success": true,
+        "fleet": super::fleet::status_json(),
     }))
 }
 
