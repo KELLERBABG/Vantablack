@@ -1,4 +1,3 @@
-#![cfg(feature = "research")]
 //! Decentralized Bootstrap & Rendezvous Subsystem.
 //!
 //! Eliminates dependency on centralized DNS servers, hardcoded VPS seeds, or domain names.
@@ -258,11 +257,15 @@ pub struct NostrRendezvousEvent {
 
 impl NostrRendezvousEvent {
     /// Format a presence beacon into a Nostr ephemeral rendezvous event.
+    ///
+    /// Strips plaintext `["fp", ...]` and `"vantablack_mesh"` identifying tags,
+    /// using an ephemeral per-epoch `["d", slot_hex]` tag instead.
     pub fn from_beacon(
         beacon: &PresenceBeacon,
         nostr_pubkey: String,
     ) -> Result<Self, serde_json::Error> {
         let content = serde_json::to_string(beacon)?;
+        let slot_hex = hex::encode(RendezvousPoint::global_swarm_slot(beacon.timestamp, 3600));
         let mut hasher = Sha256::new();
         hasher.update(beacon.timestamp.to_be_bytes());
         hasher.update(content.as_bytes());
@@ -273,13 +276,49 @@ impl NostrRendezvousEvent {
             pubkey: nostr_pubkey,
             created_at: beacon.timestamp,
             kind: 20000,
-            tags: vec![
-                vec!["t".into(), "vantablack_mesh".into()],
-                vec!["fp".into(), beacon.fingerprint.clone()],
-            ],
+            tags: vec![vec!["d".into(), slot_hex]],
             content,
             sig: beacon.signature_hex.clone(),
         })
+    }
+
+    /// Wrap an opaque share payload into an ephemeral Nostr event indexed by `["d", slot_hex]`.
+    pub fn from_opaque_share(
+        slot_hex: &str,
+        share_bytes: &[u8],
+        nostr_pubkey: String,
+        created_at: u64,
+        sig: String,
+    ) -> Self {
+        let content = hex::encode(share_bytes);
+        let mut hasher = Sha256::new();
+        hasher.update(created_at.to_be_bytes());
+        hasher.update(slot_hex.as_bytes());
+        hasher.update(content.as_bytes());
+        let event_id = hex::encode(hasher.finalize());
+
+        Self {
+            id: event_id,
+            pubkey: nostr_pubkey,
+            created_at,
+            kind: 20000,
+            tags: vec![vec!["d".into(), slot_hex.to_string()]],
+            content,
+            sig,
+        }
+    }
+
+    /// Return the ephemeral per-epoch `slot_hex` from the `["d", slot_hex]` tag, if present.
+    pub fn slot_hex(&self) -> Option<&str> {
+        self.tags
+            .iter()
+            .find(|t| t.len() >= 2 && t[0] == "d")
+            .map(|t| t[1].as_str())
+    }
+
+    /// Decode an opaque share payload from `self.content`.
+    pub fn extract_opaque_share(&self) -> Option<Vec<u8>> {
+        hex::decode(&self.content).ok()
     }
 
     /// Extract and decode the PresenceBeacon from a received Nostr rendezvous event.
@@ -349,8 +388,22 @@ mod tests {
 
         let event = NostrRendezvousEvent::from_beacon(&beacon, "nostr_hex_pubkey".into()).unwrap();
         assert_eq!(event.kind, 20000);
+        assert!(event.slot_hex().is_some());
+        assert!(!event.tags.iter().any(|t| t.iter().any(|v| v == "fp" || v == "vantablack_mesh")));
 
         let parsed = event.parse_beacon().unwrap();
         assert_eq!(parsed, beacon);
+
+        let opaque = NostrRendezvousEvent::from_opaque_share(
+            "deadbeef01",
+            b"opaque-share-bytes",
+            "nostr_hex_pubkey".into(),
+            1700000000,
+            "sig".into(),
+        );
+        assert_eq!(opaque.kind, 20000);
+        assert_eq!(opaque.slot_hex(), Some("deadbeef01"));
+        assert_eq!(opaque.extract_opaque_share().as_deref(), Some(b"opaque-share-bytes".as_slice()));
+        assert!(!opaque.tags.iter().any(|t| t.iter().any(|v| v == "fp" || v == "vantablack_mesh")));
     }
 }
