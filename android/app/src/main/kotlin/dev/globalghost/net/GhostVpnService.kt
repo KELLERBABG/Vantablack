@@ -556,8 +556,10 @@ class GhostVpnService : VpnService() {
         }
 
         fun fetchBootstrapPeers(network: Network? = null, fp: String = "", lanIp: String = ""): List<String> {
+            val baseUrl = DEFAULT_RENDEZVOUS_URL
+            if (baseUrl.isEmpty()) return emptyList()
             return try {
-                val sb = java.lang.StringBuilder(DEFAULT_BOOTSTRAP_URL)
+                val sb = java.lang.StringBuilder(baseUrl)
                 if (fp.isNotEmpty()) {
                     sb.append("&id=").append(fp)
                 }

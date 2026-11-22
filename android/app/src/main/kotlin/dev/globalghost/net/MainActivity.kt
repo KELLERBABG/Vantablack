@@ -850,6 +850,15 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == QR_SCAN_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) {
+                val contents = data?.getStringExtra("SCAN_RESULT") ?: data?.dataString
+                if (!contents.isNullOrBlank()) {
+                    handleInviteString(contents)
+                }
+            }
+            return
+        }
         if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
             val targetAddr = editRemoteAddr.text.toString().trim().ifEmpty { "auto" }
             val customDns = editDnsServer.text.toString().trim().ifEmpty { "auto" }
@@ -867,7 +876,7 @@ class MainActivity : Activity() {
             GhostVpnService.isRunning = true
             updateUiState(true)
             updateStatus()
-        } else {
+        } else if (requestCode == VPN_REQUEST_CODE) {
             Toast.makeText(this, "VPN permission rejected", Toast.LENGTH_SHORT).show()
         }
     }
@@ -1020,17 +1029,6 @@ class MainActivity : Activity() {
         } else {
             Toast.makeText(this, "Invite queued — tap Connect to join", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (requestCode == QR_SCAN_REQUEST_CODE && resultCode == RESULT_OK) {
-            val contents = data?.getStringExtra("SCAN_RESULT") ?: data?.dataString
-            if (!contents.isNullOrBlank()) {
-                handleInviteString(contents)
-            }
-            return
-        }
-        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun promptUpdateDialog() {
