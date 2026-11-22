@@ -474,6 +474,7 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
             framed.push(0);
         }
         let plaintext_shards = l4_rs::encode(&mut framed);
+        let tail = net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
         let frames = plaintext_shards
             .into_iter()
             .enumerate()
@@ -485,6 +486,7 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
                     ctx.direction,
                     index as u8,
                     shard,
+                    &tail,
                 );
                 let mut wire = sealed.ciphertext;
                 wire.extend_from_slice(&sealed.tag);
@@ -715,10 +717,9 @@ async fn send_cover(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx) {
         }
     }
     for (shard_index, payload) in ready.unwrap_or_else(|| batch.drain_randomized()) {
-        // The `FLAG_DUMMY` bit lets a receiver skip work early. It is *not* what the
-        // receiver decides on — see `FLAG_DUMMY` for why the header cannot be
-        // trusted, and `DUMMY_MAGIC` for what the decision actually rests on.
-        let header = ctx.data_header(shard_index, false, net::FLAG_DUMMY);
+        // Do not set `FLAG_DUMMY` in the unencrypted wire header; cover is
+        // identified strictly by `DUMMY_MAGIC` inside the encrypted payload.
+        let header = ctx.data_header(shard_index, false, 0);
         let _ = send_gtf_v2(sock, dst, &header, &payload, &tag).await;
     }
 }
@@ -743,16 +744,29 @@ fn spawn_cover_task(
     relay_role: Option<Arc<DerpRelay>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut next_emit: std::collections::HashMap<String, tokio::time::Instant> =
+            std::collections::HashMap::new();
         loop {
-            sleep(cover_gap(rand::random::<f64>(), COVER_FRAMES_PER_SEC)).await;
+            let now = tokio::time::Instant::now();
             // Collect first: a DashMap guard must never be held across an await,
             // and every send below is one.
-            let work: Vec<(String, SealCtx)> = node
+            let sessions: Vec<(String, SealCtx)> = node
                 .sessions
                 .iter()
                 .map(|e| (e.peer_fingerprint.clone(), SealCtx::from_session(&e)))
                 .collect();
-            for (peer, ctx) in work {
+            next_emit.retain(|peer, _| sessions.iter().any(|(p, _)| p == peer));
+            let mut due = Vec::new();
+            for (peer, ctx) in sessions {
+                let deadline = next_emit
+                    .entry(peer.clone())
+                    .or_insert_with(|| now + cover_gap(rand::random::<f64>(), COVER_FRAMES_PER_SEC));
+                if now >= *deadline {
+                    *deadline = now + cover_gap(rand::random::<f64>(), COVER_FRAMES_PER_SEC);
+                    due.push((peer, ctx));
+                }
+            }
+            for (peer, ctx) in due {
                 let Some(dst) = addrs.get(&peer).map(|a| *a.value()) else {
                     continue;
                 };
@@ -797,6 +811,13 @@ fn spawn_cover_task(
                     send_cover(&node.socket, &dst, &ctx).await;
                 }
             }
+            let max_sleep = tokio::time::Instant::now() + Duration::from_millis(500);
+            let next_wakeup = next_emit
+                .values()
+                .copied()
+                .min()
+                .map_or(max_sleep, |t| t.min(max_sleep));
+            tokio::time::sleep_until(next_wakeup).await;
         }
     })
 }
@@ -1872,6 +1893,7 @@ impl RxContext {
                         &meta.nonce,
                         direction,
                         &sealed,
+                        &meta.tail,
                     ) {
                         // Deliberately NO `sess.commit_open` here — see the
                         // comment above. The message-level commit in
@@ -9054,6 +9076,7 @@ mod shardsec_default_tests {
                 &meta.nonce,
                 ctx.direction,
                 &sealed,
+                &meta.tail,
             )
             .expect("ingest's ShardSec branch must open a pristine shard");
             assert!(!opened.is_empty());
@@ -9086,12 +9109,14 @@ mod shardsec_default_tests {
                 tag: sd[sd.len() - 16..].try_into().unwrap(),
                 is_honey: false,
             };
+            let tail = net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
             let plain = vantablack::ghost::net::shardsec::open_shard(
                 &ctx.key,
                 ctx.epoch,
                 &ctx.nonce,
                 ctx.direction,
                 &sealed,
+                &tail,
             )
             .expect("a pristine shard opens under its own key");
             opened.push(plain);
@@ -9123,6 +9148,7 @@ mod shardsec_default_tests {
             tag: corrupted[corrupted.len() - 16..].try_into().unwrap(),
             is_honey: false,
         };
+        let tail = net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
         assert!(
             vantablack::ghost::net::shardsec::open_shard(
                 &ctx.key,
@@ -9130,6 +9156,7 @@ mod shardsec_default_tests {
                 &ctx.nonce,
                 ctx.direction,
                 &sealed,
+                &tail,
             )
             .is_err(),
             "a flipped bit must be rejected by the shard's own AEAD tag"

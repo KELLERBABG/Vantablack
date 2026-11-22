@@ -8,7 +8,10 @@
 use hkdf::Hkdf;
 use sha2::Sha256;
 
-use crate::ghost::layers::l2_aead::{xchacha_open, xchacha_seal_in_place, NonceDirection};
+use crate::ghost::layers::l2_aead::{
+    xchacha_open, xchacha_open_with_aad, xchacha_seal_in_place, xchacha_seal_in_place_with_aad,
+    NonceDirection,
+};
 use crate::ghost::layers::l4_rs;
 
 pub const SHARDSEC_LABEL: &[u8] = b"GGN_SHARDSEC_V1";
@@ -49,10 +52,11 @@ pub fn seal_shard(
     direction: NonceDirection,
     index: u8,
     mut shard: Vec<u8>,
+    aad: &[u8],
 ) -> SealedShard {
     let key = shard_key(master, epoch, nonce, index);
     let shard_nonce = shard_nonce(nonce, index);
-    xchacha_seal_in_place(&key, &shard_nonce, epoch, direction, &mut shard)
+    xchacha_seal_in_place_with_aad(&key, &shard_nonce, epoch, direction, &mut shard, aad)
         .expect("owned shard seal");
     let tag = if shard.len() >= 16 {
         let tag_start = shard.len() - 16;
@@ -137,6 +141,7 @@ pub fn open_shard(
     nonce: &[u8; 12],
     direction: NonceDirection,
     sealed: &SealedShard,
+    aad: &[u8],
 ) -> Result<Vec<u8>, &'static str> {
     if sealed.index >= 3 {
         return Err("invalid shard index");
@@ -145,7 +150,7 @@ pub fn open_shard(
     let shard_nonce = shard_nonce(nonce, sealed.index);
     let mut ciphertext = sealed.ciphertext.clone();
     ciphertext.extend_from_slice(&sealed.tag);
-    xchacha_open(&key, &shard_nonce, epoch, direction, &mut ciphertext)
+    xchacha_open_with_aad(&key, &shard_nonce, epoch, direction, &mut ciphertext, aad)
         .map_err(|_| "shard authentication failed")?;
     Ok(ciphertext)
 }
@@ -167,7 +172,7 @@ pub fn seal_message(
     shards
         .into_iter()
         .enumerate()
-        .map(|(index, shard)| seal_shard(master, epoch, nonce, direction, index as u8, shard))
+        .map(|(index, shard)| seal_shard(master, epoch, nonce, direction, index as u8, shard, &[]))
         .collect()
 }
 
@@ -187,7 +192,7 @@ pub fn open_message(
         if candidate.index >= 3 || shards[candidate.index as usize].is_some() {
             continue;
         }
-        if let Ok(plaintext) = open_shard(master, epoch, nonce, direction, candidate) {
+        if let Ok(plaintext) = open_shard(master, epoch, nonce, direction, candidate, &[]) {
             shards[candidate.index as usize] = Some(plaintext);
         }
     }
@@ -335,7 +340,7 @@ impl SpatioTemporalErosionCodec {
             .map(|(i, shard)| {
                 let epoch = base_epoch.wrapping_add(i as u64);
                 let master_key = epoch_master_keys.get(i).unwrap_or(&epoch_master_keys[0]);
-                let sealed = seal_shard(master_key, epoch, nonce, direction, i as u8, shard);
+                let sealed = seal_shard(master_key, epoch, nonce, direction, i as u8, shard, &[]);
                 SpaceTimeShard {
                     index: i as u8,
                     epoch_slot: epoch,
@@ -363,7 +368,7 @@ impl SpatioTemporalErosionCodec {
                 continue;
             }
             if let Some(key) = &available_epoch_keys[idx] {
-                if let Ok(pt) = open_shard(key, st.epoch_slot, nonce, direction, &st.sealed_shard) {
+                if let Ok(pt) = open_shard(key, st.epoch_slot, nonce, direction, &st.sealed_shard, &[]) {
                     opened_shards[idx] = Some(pt);
                 }
             }
@@ -471,7 +476,7 @@ mod tests {
         assert!(!verify_honey_shard(&master, epoch, &nonce, dir, &tampered));
 
         // Normal shard is not a honey shard
-        let normal = seal_shard(&master, epoch, &nonce, dir, 0, b"normal".to_vec());
+        let normal = seal_shard(&master, epoch, &nonce, dir, 0, b"normal".to_vec(), &[]);
         assert!(!normal.is_honey);
         assert!(!verify_honey_shard(&master, epoch, &nonce, dir, &normal));
     }
