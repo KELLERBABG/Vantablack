@@ -1335,21 +1335,41 @@ impl ReciprocityRecord {
         self.reciprocity_ratio = recv as f64 / sent as f64;
     }
 
+    /// Minimum bytes forwarded before bilateral leeching evaluation (10 MB).
+    /// Replaces the old 10 KB threshold that prematurely evicted 5G/CGNAT mobile
+    /// clients and `--relay-only` nodes in asymmetric topologies.
+    pub const LEECH_EVAL_THRESHOLD_BYTES: u64 = 10_000_000;
+
     /// Check if this peer is leeching (we forwarded significantly for them, but they gave back almost nothing).
     pub fn is_leeching(&self) -> bool {
-        self.bytes_forwarded_for_them > 10_000 && self.reciprocity_ratio < 0.3
+        self.bytes_forwarded_for_them > Self::LEECH_EVAL_THRESHOLD_BYTES
+            && self.reciprocity_ratio < 0.1
+    }
+
+    /// Graceful asymmetric rate-limit factor in `(0.0, 1.0]`.
+    /// Asymmetric peers (e.g. CGNAT/mobile) are throttled rather than evicted.
+    pub fn rate_limit_factor(&self) -> f64 {
+        if self.bytes_forwarded_for_them <= 100_000 || self.reciprocity_ratio >= 0.3 {
+            1.0
+        } else if self.reciprocity_ratio >= 0.1 {
+            0.5
+        } else {
+            0.25
+        }
     }
 }
 
 /// Tit-for-Tat enforcement engine.
 ///
-/// Monitors peer reciprocity and evicts leechers.
+/// Monitors peer reciprocity and applies graceful rate-limiting or eviction for leechers.
 /// Extends the PoissonReputationMatrix with concrete resource accounting.
 pub struct TitForTatEnforcer {
     reciprocity: Arc<DashMap<(String, String), ReciprocityRecord>>,
     reputation: Arc<PoissonReputationMatrix>,
     our_fingerprint: String,
     evicted: Arc<DashMap<String, bool>>,
+    /// Peers exempted from bilateral reciprocity eviction (e.g. `--relay-only`, 5G/CGNAT).
+    exempt_peers: Arc<DashMap<String, bool>>,
     min_forward_bytes: u64,
 }
 
@@ -1360,8 +1380,37 @@ impl TitForTatEnforcer {
             reputation,
             our_fingerprint,
             evicted: Arc::new(DashMap::new()),
+            exempt_peers: Arc::new(DashMap::new()),
             min_forward_bytes: 1024, // 1 KB minimum before evaluation
         }
+    }
+
+    /// Mark or unmark a peer as exempt from bilateral reciprocity eviction
+    /// (e.g. `--relay-only` or non-routing 5G/CGNAT mobile clients).
+    pub fn set_peer_exempt(&self, peer_fp: &str, exempt: bool) {
+        if exempt {
+            self.exempt_peers.insert(peer_fp.to_string(), true);
+        } else {
+            self.exempt_peers.remove(peer_fp);
+        }
+    }
+
+    /// Returns true if the peer is exempt from bilateral reciprocity eviction.
+    pub fn is_exempt(&self, peer_fp: &str) -> bool {
+        self.exempt_peers.get(peer_fp).map(|v| *v).unwrap_or(false)
+    }
+
+    /// Graceful bandwidth factor `(0.0, 1.0]` for a peer.
+    /// Exempt peers always receive `1.0`.
+    pub fn rate_limit_factor(&self, peer_fp: &str) -> f64 {
+        if self.is_exempt(peer_fp) {
+            return 1.0;
+        }
+        let key = (self.our_fingerprint.clone(), peer_fp.to_string());
+        self.reciprocity
+            .get(&key)
+            .map(|r| r.rate_limit_factor())
+            .unwrap_or(1.0)
     }
 
     /// Record that we forwarded bytes for a peer.
@@ -1395,6 +1444,9 @@ impl TitForTatEnforcer {
     ///
     /// Returns true if the peer should have its session terminated.
     pub async fn should_evict(&self, peer_fp: &str) -> bool {
+        if self.is_exempt(peer_fp) {
+            return false;
+        }
         // Already evicted
         if self.evicted.get(peer_fp).map(|v| *v).unwrap_or(false) {
             return true;
@@ -2192,6 +2244,35 @@ mod tests {
             tft.ratio_with("fair") > 0.5,
             "Fair ratio should be balanced"
         );
+    }
+
+    #[tokio::test]
+    async fn test_asymmetric_cgnat_and_relay_only_not_evicted_at_10kb() {
+        let rep = Arc::new(PoissonReputationMatrix::new());
+        let tft = TitForTatEnforcer::new("self".to_string(), rep);
+
+        // 5G/CGNAT mobile client: 50 KB forwarded for them, 0 for us -> NOT evicted
+        tft.forwarded_for("mobile_cgnat", 50_000);
+        assert!(
+            !tft.should_evict("mobile_cgnat").await,
+            "Asymmetric 5G/CGNAT client must not be evicted at 50 KB"
+        );
+        assert_eq!(tft.rate_limit_factor("mobile_cgnat"), 1.0);
+
+        // At 200 KB asymmetric, graceful rate-limit applies instead of eviction
+        tft.forwarded_for("mobile_cgnat", 150_000);
+        assert!(!tft.should_evict("mobile_cgnat").await);
+        assert!(tft.rate_limit_factor("mobile_cgnat") < 1.0);
+
+        // Exempt `--relay-only` peer is never evicted or throttled even above 10 MB
+        tft.set_peer_exempt("relay_only_peer", true);
+        tft.forwarded_for("relay_only_peer", 15_000_000);
+        assert!(!tft.should_evict("relay_only_peer").await);
+        assert_eq!(tft.rate_limit_factor("relay_only_peer"), 1.0);
+
+        // Non-exempt abusive peer above 10 MB with < 0.1 ratio IS evicted
+        tft.forwarded_for("abusive_leecher", 11_000_000);
+        assert!(tft.should_evict("abusive_leecher").await);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use tokio::time::sleep;
 
 use vantablack::ghost::net::coalesce::CoalescedShard;
 use vantablack::ghost::net::reassembly::ReassemblyBuffer;
-use vantablack::ghost::net::relay::build_onion_route;
+use vantablack::ghost::net::relay::build_encrypted_onion_route;
 
 static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -36,11 +36,11 @@ fn wrap_onion_e2e(
     route: &[String],
     payload: &[u8],
 ) -> Option<Vec<u8>> {
-    let dctr = nn
+    let (dctr, exit_epoch) = nn
         .sessions
         .get(exit_fp)
-        .map(|s| s.next_tx_counter())
-        .unwrap_or(2);
+        .map(|s| (s.next_tx_counter(), s.epoch()))
+        .unwrap_or((2, 0));
     let mut blob = (payload.len() as u16).to_be_bytes().to_vec();
     blob.extend_from_slice(payload);
     if !blob.len().is_multiple_of(2) {
@@ -50,7 +50,7 @@ fn wrap_onion_e2e(
     vantablack::ghost::layers::l2_aead::xchacha_seal_in_place(
         exit_key,
         &wire_nonce,
-        0,
+        exit_epoch,
         dir_for(exit_role),
         &mut blob,
     )
@@ -60,7 +60,20 @@ fn wrap_onion_e2e(
     inner.extend_from_slice(&wire_nonce);
     inner.extend_from_slice(&blob);
     let route_refs: Vec<&str> = route.iter().map(|s| s.as_str()).collect();
-    build_onion_route(&route_refs, &inner)
+    let hop_keys: Vec<[u8; 32]> = route
+        .iter()
+        .map(|fp| {
+            if fp == exit_fp {
+                *exit_key
+            } else {
+                nn.sessions
+                    .get(fp.as_str())
+                    .map(|s| s.master_key)
+                    .unwrap_or(*exit_key)
+            }
+        })
+        .collect();
+    build_encrypted_onion_route(&route_refs, &hop_keys, &inner)
 }
 
 /// Hop and routing policy for SOCKS5 connections.
@@ -889,9 +902,21 @@ mod tests {
             .expect("guard layer must parse");
         assert_eq!(hop1.next_hop_fingerprint, "middle_fp_002");
         assert_eq!(hop1.remaining_hops, 2);
+        // Guard must NOT be able to read the Exit fingerprint in cleartext
+        assert!(
+            !hop1
+                .inner_payload
+                .windows(b"exit_fp_00003".len())
+                .any(|w| w == b"exit_fp_00003"),
+            "Guard must not see Exit fingerprint in cleartext"
+        );
 
-        // Middle peels second RLY! layer -> points to exit_fp_00003 with remaining_hops == 1
-        let hop2 = vantablack::ghost::net::relay::parse_relay_header(&hop1.inner_payload)
+        // Middle peels its per-hop encrypted layer, then parses RLY! -> points to exit_fp_00003
+        let middle_key = exit_key;
+        let middle_plain =
+            vantablack::ghost::net::relay::peel_encrypted_relay_layer(&middle_key, &hop1.inner_payload)
+                .expect("middle encrypted layer must decrypt");
+        let hop2 = vantablack::ghost::net::relay::parse_relay_header(&middle_plain)
             .expect("middle layer must parse");
         assert_eq!(hop2.next_hop_fingerprint, "exit_fp_00003");
         assert_eq!(hop2.remaining_hops, 1);

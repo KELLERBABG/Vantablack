@@ -18,7 +18,7 @@ use crate::ghost::session::ratchet::{OpenPlan, RatchetStep, SessionRatchet, Step
 use bytes::Bytes;
 use dashmap::DashMap;
 use ml_kem::kem::{KeyExport, TryKeyInit};
-use ml_kem::EncapsulationKey512;
+use ml_kem::EncapsulationKey768;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -61,13 +61,13 @@ pub const QEL_MIX_BLOB_LEN: usize = 250;
 /// Size of the quantum-mix answer: 16 magic + 8 epoch + 32 tag + 64 signature = 120.
 pub const QEL_MIX_RESPONSE_BLOB_LEN: usize = 120;
 
-pub const REKEY_BLOB_LEN: usize = 912;
-/// Size of the re-key response PDU: 16 magic + 32 X25519 + 768 ct + 32 confirm + 64 sig = 912.
+pub const REKEY_BLOB_LEN: usize = 1296;
+/// Size of the re-key response PDU: 16 magic + 32 X25519 + 1088 ct + 32 confirm + 64 sig = 1232.
 ///
 /// It grew by the confirmation tag in the P2-2 wiring: the step must be provably
 /// agreed *before* either side acts on it, or a step with divergent keys looks like
 /// a dead link.
-pub const REKEY_RESPONSE_BLOB_LEN: usize = 912;
+pub const REKEY_RESPONSE_BLOB_LEN: usize = 1232;
 
 /// Full session state for a peer connection.
 pub struct Session {
@@ -167,8 +167,8 @@ pub struct PendingQuantumMix {
 pub struct RatchetAnswer {
     /// The responder's ephemeral X25519 public key.
     pub x_public: [u8; 32],
-    /// ML-KEM-512 ciphertext carrying the encapsulated shared secret.
-    pub kem_ct: [u8; 768],
+    /// ML-KEM-768 ciphertext carrying the encapsulated shared secret.
+    pub kem_ct: [u8; 1088],
     /// Tag derived from the new epoch key, so the initiator can verify agreement.
     pub confirm: [u8; 32],
     /// The epoch the responder prepared. The initiator checks it against its own
@@ -1230,15 +1230,15 @@ impl Session {
 pub fn build_rekey_pdu(
     identity_sign: impl Fn(&[u8]) -> [u8; 64],
     x_pub: &x25519_dalek::PublicKey,
-    kyber_pub: &EncapsulationKey512,
+    kyber_pub: &EncapsulationKey768,
 ) -> Vec<u8> {
     let kyber_bytes = kyber_pub.to_bytes();
     let mut pdu = vec![0u8; REKEY_BLOB_LEN];
     pdu[0..16].copy_from_slice(REKEY_MAGIC);
     pdu[16..48].copy_from_slice(x_pub.as_bytes());
-    pdu[48..848].copy_from_slice(&kyber_bytes);
+    pdu[48..1232].copy_from_slice(&kyber_bytes);
 
-    // Signed material is x25519_pub || kyber_pub (32 + 800 = 832 bytes)
+    // Signed material is x25519_pub || kyber_pub (32 + 1184 = 1216 bytes)
     let signed_material = {
         let mut m = Vec::with_capacity(32 + kyber_bytes.len());
         m.extend_from_slice(x_pub.as_bytes());
@@ -1247,7 +1247,7 @@ pub fn build_rekey_pdu(
     };
 
     let sig = identity_sign(&signed_material);
-    pdu[848..912].copy_from_slice(&sig);
+    pdu[1232..1296].copy_from_slice(&sig);
     pdu
 }
 
@@ -1265,7 +1265,7 @@ pub fn build_ratchet_step_pdu(
     x_pub_bytes: &[u8; 32],
     kem_pub_bytes: &[u8],
 ) -> Option<Vec<u8>> {
-    let ek = EncapsulationKey512::new_from_slice(kem_pub_bytes).ok()?;
+    let ek = EncapsulationKey768::new_from_slice(kem_pub_bytes).ok()?;
     let x_pub = x25519_dalek::PublicKey::from(*x_pub_bytes);
     Some(build_rekey_pdu(identity_sign, &x_pub, &ek))
 }
@@ -1273,7 +1273,7 @@ pub fn build_ratchet_step_pdu(
 /// Parse a re-key handshake PDU.
 pub struct RekeyBlob {
     pub x25519_pub: [u8; 32],
-    pub kyber_pub: [u8; 800],
+    pub kyber_pub: [u8; 1184],
     pub signature: [u8; 64],
 }
 
@@ -1283,10 +1283,10 @@ pub fn parse_rekey_pdu(data: &[u8]) -> Option<RekeyBlob> {
     }
     let mut x25519_pub = [0u8; 32];
     x25519_pub.copy_from_slice(&data[16..48]);
-    let mut kyber_pub = [0u8; 800];
-    kyber_pub.copy_from_slice(&data[48..848]);
+    let mut kyber_pub = [0u8; 1184];
+    kyber_pub.copy_from_slice(&data[48..1232]);
     let mut signature = [0u8; 64];
-    signature.copy_from_slice(&data[848..912]);
+    signature.copy_from_slice(&data[1232..1296]);
     Some(RekeyBlob {
         x25519_pub,
         kyber_pub,
@@ -1309,32 +1309,32 @@ pub fn parse_rekey_pdu(data: &[u8]) -> Option<RekeyBlob> {
 pub fn build_rekey_response_pdu(
     identity_sign: impl Fn(&[u8]) -> [u8; 64],
     x_pub: &[u8; 32],
-    kyber_ct: &[u8; 768],
+    kyber_ct: &[u8; 1088],
     confirm: &[u8; 32],
 ) -> Vec<u8> {
     let mut pdu = vec![0u8; REKEY_RESPONSE_BLOB_LEN];
     pdu[0..16].copy_from_slice(REKEY_RESPONSE_MAGIC);
     pdu[16..48].copy_from_slice(x_pub);
-    pdu[48..816].copy_from_slice(kyber_ct);
-    pdu[816..848].copy_from_slice(confirm);
+    pdu[48..1136].copy_from_slice(kyber_ct);
+    pdu[1136..1168].copy_from_slice(confirm);
 
     let signed_material = {
-        let mut m = vec![0u8; 832];
+        let mut m = vec![0u8; 1152];
         m[0..32].copy_from_slice(x_pub);
-        m[32..800].copy_from_slice(kyber_ct);
-        m[800..832].copy_from_slice(confirm);
+        m[32..1120].copy_from_slice(kyber_ct);
+        m[1120..1152].copy_from_slice(confirm);
         m
     };
 
     let sig = identity_sign(&signed_material);
-    pdu[848..912].copy_from_slice(&sig);
+    pdu[1168..1232].copy_from_slice(&sig);
     pdu
 }
 
 /// Parse a re-key response PDU.
 pub struct RekeyResponseBlob {
     pub x25519_pub: [u8; 32],
-    pub kyber_ct: [u8; 768],
+    pub kyber_ct: [u8; 1088],
     pub confirm: [u8; 32],
     pub signature: [u8; 64],
 }
@@ -1345,12 +1345,12 @@ pub fn parse_rekey_response_pdu(data: &[u8]) -> Option<RekeyResponseBlob> {
     }
     let mut x25519_pub = [0u8; 32];
     x25519_pub.copy_from_slice(&data[16..48]);
-    let mut kyber_ct = [0u8; 768];
-    kyber_ct.copy_from_slice(&data[48..816]);
+    let mut kyber_ct = [0u8; 1088];
+    kyber_ct.copy_from_slice(&data[48..1136]);
     let mut confirm = [0u8; 32];
-    confirm.copy_from_slice(&data[816..848]);
+    confirm.copy_from_slice(&data[1136..1168]);
     let mut signature = [0u8; 64];
-    signature.copy_from_slice(&data[848..912]);
+    signature.copy_from_slice(&data[1168..1232]);
     Some(RekeyResponseBlob {
         x25519_pub,
         kyber_ct,
@@ -1370,10 +1370,10 @@ pub fn rekey_init_signed_material(x_pub: &[u8; 32], kyber_pub: &[u8]) -> Vec<u8>
 /// The bytes a ratchet-step answer's signature covers.
 pub fn rekey_answer_signed_material(
     x_pub: &[u8; 32],
-    kyber_ct: &[u8; 768],
+    kyber_ct: &[u8; 1088],
     confirm: &[u8; 32],
 ) -> Vec<u8> {
-    let mut m = Vec::with_capacity(832);
+    let mut m = Vec::with_capacity(1152);
     m.extend_from_slice(x_pub);
     m.extend_from_slice(kyber_ct);
     m.extend_from_slice(confirm);
@@ -1806,7 +1806,7 @@ mod tests {
     fn test_rekey_pdu_roundtrip() {
         let identity = l0_identity::GhostIdentity::generate_fresh();
         let (_x_sec, x_pub) = crate::ghost::layers::l1_kem::generate_x25519_keypair();
-        let (ky_pub, _ky_sec) = crate::ghost::layers::l1_kem::generate_kyber_keypair();
+        let (ky_pub, _ky_sec) = crate::ghost::layers::l1_kem::generate_kyber768_keypair();
 
         let pdu = build_rekey_pdu(|data| identity.sign(data).to_bytes(), &x_pub, &ky_pub);
 
@@ -1830,7 +1830,7 @@ mod tests {
     fn test_rekey_response_pdu_roundtrip() {
         let identity = l0_identity::GhostIdentity::generate_fresh();
         let x_pub = [0xABu8; 32];
-        let kyber_ct = [0xCDu8; 768];
+        let kyber_ct = [0xCDu8; 1088];
         let confirm = [0xEEu8; 32];
 
         let pdu = build_rekey_response_pdu(
@@ -1869,7 +1869,7 @@ mod tests {
     fn test_rekey_init_signed_material_matches_the_builder() {
         let identity = l0_identity::GhostIdentity::generate_fresh();
         let (_x_sec, x_pub) = crate::ghost::layers::l1_kem::generate_x25519_keypair();
-        let (ky_pub, _ky_sec) = crate::ghost::layers::l1_kem::generate_kyber_keypair();
+        let (ky_pub, _ky_sec) = crate::ghost::layers::l1_kem::generate_kyber768_keypair();
         let pdu = build_rekey_pdu(|d| identity.sign(d).to_bytes(), &x_pub, &ky_pub);
         let parsed = parse_rekey_pdu(&pdu).expect("parse");
         let material = rekey_init_signed_material(&parsed.x25519_pub, &parsed.kyber_pub);
