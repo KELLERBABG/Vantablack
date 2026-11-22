@@ -883,6 +883,78 @@ pub fn build_onion_route(route: &[&str], payload: &[u8]) -> Option<Vec<u8>> {
     Some(inner)
 }
 
+/// Build a per-hop AEAD-encrypted onion route so intermediate relays (e.g. Guard)
+/// cannot read downstream `RLY!` headers or the Exit fingerprint in cleartext.
+///
+/// `hop_keys` must have the same length as `route`, where `hop_keys[i]` is the
+/// 32-byte session key shared with `route[i]`. Each inner `RLY!` layer for
+/// `route[i]` (`i >= 1`) is sealed under `hop_keys[i - 1]` using XChaCha20-Poly1305
+/// (`[nonce (12B) || ciphertext+tag]`) before being wrapped in the outer `RLY!`
+/// header for `route[i - 1]`.
+pub fn build_encrypted_onion_route(
+    route: &[&str],
+    hop_keys: &[[u8; 32]],
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    if route.len() != hop_keys.len()
+        || route.len() < 2
+        || route.len() > MAX_HOPS + 1
+        || route.iter().any(|fp| fp.is_empty())
+        || route
+            .iter()
+            .enumerate()
+            .any(|(index, fp)| route[..index].contains(fp))
+    {
+        return None;
+    }
+
+    let mut inner = payload.to_vec();
+    for index in (1..route.len()).rev() {
+        let remaining = (route.len() - index) as u32;
+        let rly = build_relay_packet(route[index], remaining, &inner);
+        if index > 1 {
+            // Seal the downstream RLY! layer for `route[index - 1]` so `route[index - 2]`
+            // (e.g. Guard) cannot read `route[index]` (e.g. Exit) in cleartext.
+            let nonce = crate::ghost::layers::l2_aead::random_xnonce();
+            let mut sealed = rly;
+            crate::ghost::layers::l2_aead::xchacha_seal_in_place(
+                &hop_keys[index - 1],
+                &nonce,
+                0,
+                crate::ghost::layers::l2_aead::NonceDirection::InitiatorToResponder,
+                &mut sealed,
+            )
+            .ok()?;
+            let mut layer = Vec::with_capacity(12 + sealed.len());
+            layer.extend_from_slice(&nonce);
+            layer.extend_from_slice(&sealed);
+            inner = layer;
+        } else {
+            inner = rly;
+        }
+    }
+    Some(inner)
+}
+
+/// Peel one per-hop AEAD-encrypted relay layer using `hop_key`.
+pub fn peel_encrypted_relay_layer(hop_key: &[u8; 32], encrypted_inner: &[u8]) -> Option<Vec<u8>> {
+    if encrypted_inner.len() < 12 + 16 {
+        return None;
+    }
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&encrypted_inner[..12]);
+    let mut ct = encrypted_inner[12..].to_vec();
+    crate::ghost::layers::l2_aead::xchacha_open(
+        hop_key,
+        &nonce,
+        0,
+        crate::ghost::layers::l2_aead::NonceDirection::InitiatorToResponder,
+        &mut ct,
+    )
+    .ok()
+    .map(|pt| pt.to_vec())
+}
+
 /// `[magic][hops u32][fingerprint 32, null-padded][payload]`.
 ///
 /// One encoder for both envelope kinds, so the two can never drift apart in
