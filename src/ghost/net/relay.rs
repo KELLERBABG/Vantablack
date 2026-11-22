@@ -1375,6 +1375,312 @@ impl WanRateLimiter {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Telescoping Post-Quantum Circuit Isolation & Hop-Local CircuitId Swapping
+// ---------------------------------------------------------------------------
+
+/// 128-bit hop-local circuit identifier.
+///
+/// Each hop-to-hop link uses an independent `CircuitId` so no intermediate
+/// relay can correlate incoming and outgoing circuit IDs across hops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CircuitId(pub [u8; 16]);
+
+impl CircuitId {
+    /// Generate a fresh cryptographically random 128-bit `CircuitId`.
+    pub fn random() -> Self {
+        let mut id = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut id);
+        Self(id)
+    }
+
+    /// Construct a `CircuitId` from raw 16 bytes.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return the underlying 16-byte slice.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+/// Entry in a relay's hop-local [`CircuitSwapTable`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwapEntry {
+    /// Next hop fingerprint (`None` when this node is the circuit Exit).
+    pub next_hop: Option<String>,
+    /// Outgoing hop-local circuit ID to stamp onto the forwarded cell.
+    pub outgoing_circuit_id: CircuitId,
+    /// Per-hop symmetric key derived from ephemeral `X25519 + ML-KEM-768`.
+    pub hop_key: [u8; 32],
+}
+
+/// Hop-local circuit routing and key-swapping table.
+///
+/// Enforces strict topological isolation:
+/// - Guard only stores `(Client_ID -> (Some(Middle), Middle_ID, guard_key))`
+/// - Middle only stores `(Guard_ID -> (Some(Exit), Exit_ID, middle_key))`
+/// - Exit only stores `(Middle_ID -> (None, Middle_ID, exit_key))`
+#[derive(Debug, Default)]
+pub struct CircuitSwapTable {
+    entries: DashMap<CircuitId, SwapEntry>,
+}
+
+impl CircuitSwapTable {
+    pub fn new() -> Self {
+        Self {
+            entries: DashMap::new(),
+        }
+    }
+
+    /// Insert or update a hop-local circuit swap mapping.
+    pub fn insert(
+        &self,
+        in_id: CircuitId,
+        next_hop: Option<String>,
+        out_id: CircuitId,
+        hop_key: [u8; 32],
+    ) {
+        self.entries.insert(
+            in_id,
+            SwapEntry {
+                next_hop,
+                outgoing_circuit_id: out_id,
+                hop_key,
+            },
+        );
+    }
+
+    /// Look up a swap entry by incoming `CircuitId`.
+    pub fn lookup(&self, in_id: &CircuitId) -> Option<SwapEntry> {
+        self.entries.get(in_id).map(|e| e.value().clone())
+    }
+
+    /// Remove a swap entry by incoming `CircuitId`.
+    pub fn remove(&self, in_id: &CircuitId) -> Option<SwapEntry> {
+        self.entries.remove(in_id).map(|(_, v)| v)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Peel one ChaCha20-Poly1305 onion layer using the hop key for `in_id`
+    /// and return `(next_hop, outgoing_circuit_id, inner_payload)`.
+    pub fn swap_and_peel(
+        &self,
+        in_id: &CircuitId,
+        sealed_cell: &[u8],
+    ) -> Option<(Option<String>, CircuitId, Vec<u8>)> {
+        use chacha20poly1305::aead::{Aead, KeyInit};
+        use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+
+        if sealed_cell.len() < 12 + 16 {
+            return None;
+        }
+        let entry = self.entries.get(in_id)?;
+        let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&entry.hop_key));
+        let nonce = Nonce::from_slice(&sealed_cell[..12]);
+        let plaintext = cipher.decrypt(nonce, &sealed_cell[12..]).ok()?;
+        Some((entry.next_hop.clone(), entry.outgoing_circuit_id, plaintext))
+    }
+}
+
+/// Telescoping PQ circuit extension cell using ephemeral `X25519 + ML-KEM-768`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendPqCell {
+    pub circuit_id: CircuitId,
+    pub next_hop: Option<String>,
+    pub client_x25519_pk: [u8; 32],
+    pub ml_kem_ct: Vec<u8>,
+}
+
+impl ExtendPqCell {
+    const MAGIC: &'static [u8; 4] = b"XPQ1";
+
+    fn derive_hop_key(
+        circuit_id: &CircuitId,
+        x25519_ss: &[u8; 32],
+        ml_kem_ss: &[u8],
+    ) -> Option<[u8; 32]> {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+
+        let mut ikm = Vec::with_capacity(32 + ml_kem_ss.len());
+        ikm.extend_from_slice(x25519_ss);
+        ikm.extend_from_slice(ml_kem_ss);
+
+        let hk = Hkdf::<Sha256>::new(Some(circuit_id.as_bytes()), &ikm);
+        let mut okm = [0u8; 32];
+        hk.expand(b"GGN_TELESCOPING_PQ_V1", &mut okm).ok()?;
+        Some(okm)
+    }
+
+    /// Initiate a telescoping PQ hop extension toward a relay with `hop_x25519_pk`
+    /// and `hop_ml_kem_ek`. Returns `(cell, derived_hop_key)`.
+    pub fn initiate(
+        circuit_id: CircuitId,
+        next_hop: Option<String>,
+        hop_x25519_pk: &[u8; 32],
+        hop_ml_kem_ek: &[u8],
+    ) -> Option<(Self, [u8; 32])> {
+        use ml_kem::kem::{Encapsulate, TryKeyInit};
+        use ml_kem::MlKem768;
+
+        let esk = x25519_dalek::EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+        let client_x25519_pk = x25519_dalek::PublicKey::from(&esk).to_bytes();
+        let x25519_ss = esk.diffie_hellman(&x25519_dalek::PublicKey::from(*hop_x25519_pk));
+
+        let ek = ml_kem::EncapsulationKey::<MlKem768>::new_from_slice(hop_ml_kem_ek).ok()?;
+        let (ct, ml_kem_ss) = ek.encapsulate();
+
+        let hop_key = Self::derive_hop_key(&circuit_id, x25519_ss.as_bytes(), ml_kem_ss.as_slice())?;
+        let cell = Self {
+            circuit_id,
+            next_hop,
+            client_x25519_pk,
+            ml_kem_ct: ct.as_slice().to_vec(),
+        };
+        Some((cell, hop_key))
+    }
+
+    /// Accept a telescoping PQ hop extension on the relay using its `X25519`
+    /// secret key and `ML-KEM-768` decapsulation key, returning the shared `hop_key`.
+    pub fn accept(
+        &self,
+        hop_x25519_sk: &x25519_dalek::StaticSecret,
+        hop_ml_kem_dk: &ml_kem::DecapsulationKey<ml_kem::MlKem768>,
+    ) -> Option<[u8; 32]> {
+        use ml_kem::kem::Decapsulate;
+        use ml_kem::MlKem768;
+
+        let ct = ml_kem::Ciphertext::<MlKem768>::try_from(self.ml_kem_ct.as_slice()).ok()?;
+        let ml_kem_ss = hop_ml_kem_dk.decapsulate(&ct);
+        let x25519_ss =
+            hop_x25519_sk.diffie_hellman(&x25519_dalek::PublicKey::from(self.client_x25519_pk));
+        Self::derive_hop_key(&self.circuit_id, x25519_ss.as_bytes(), ml_kem_ss.as_slice())
+    }
+
+    /// Serialize `ExtendPqCell` to wire bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let next_bytes = self.next_hop.as_deref().unwrap_or("").as_bytes();
+        let mut out =
+            Vec::with_capacity(4 + 16 + 2 + next_bytes.len() + 32 + 2 + self.ml_kem_ct.len());
+        out.extend_from_slice(Self::MAGIC);
+        out.extend_from_slice(self.circuit_id.as_bytes());
+        out.extend_from_slice(&(next_bytes.len() as u16).to_be_bytes());
+        out.extend_from_slice(next_bytes);
+        out.extend_from_slice(&self.client_x25519_pk);
+        out.extend_from_slice(&(self.ml_kem_ct.len() as u16).to_be_bytes());
+        out.extend_from_slice(&self.ml_kem_ct);
+        out
+    }
+
+    /// Parse `ExtendPqCell` from wire bytes.
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        if data.len() < 4 + 16 + 2 + 32 + 2 || &data[..4] != Self::MAGIC {
+            return None;
+        }
+        let mut cid = [0u8; 16];
+        cid.copy_from_slice(&data[4..20]);
+        let next_len = u16::from_be_bytes([data[20], data[21]]) as usize;
+        let mut idx = 22;
+        if data.len() < idx + next_len + 32 + 2 {
+            return None;
+        }
+        let next_hop = if next_len == 0 {
+            None
+        } else {
+            Some(std::str::from_utf8(&data[idx..idx + next_len]).ok()?.to_string())
+        };
+        idx += next_len;
+        let mut client_x25519_pk = [0u8; 32];
+        client_x25519_pk.copy_from_slice(&data[idx..idx + 32]);
+        idx += 32;
+        let ct_len = u16::from_be_bytes([data[idx], data[idx + 1]]) as usize;
+        idx += 2;
+        if data.len() != idx + ct_len {
+            return None;
+        }
+        Some(Self {
+            circuit_id: CircuitId(cid),
+            next_hop,
+            client_x25519_pk,
+            ml_kem_ct: data[idx..].to_vec(),
+        })
+    }
+}
+
+/// One hop in a client-side [`TelescopingCircuit`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TelescopingHop {
+    pub peer_fp: String,
+    pub circuit_id: CircuitId,
+    pub hop_key: [u8; 32],
+}
+
+/// Client-side telescoping PQ circuit handle.
+#[derive(Debug, Clone)]
+pub struct TelescopingCircuit {
+    entry_circuit_id: CircuitId,
+    hops: Vec<TelescopingHop>,
+}
+
+impl TelescopingCircuit {
+    pub fn new(entry_circuit_id: CircuitId) -> Self {
+        Self {
+            entry_circuit_id,
+            hops: Vec::new(),
+        }
+    }
+
+    pub fn extend_hop(&mut self, peer_fp: String, circuit_id: CircuitId, hop_key: [u8; 32]) {
+        self.hops.push(TelescopingHop {
+            peer_fp,
+            circuit_id,
+            hop_key,
+        });
+    }
+
+    pub fn hop_count(&self) -> usize {
+        self.hops.len()
+    }
+
+    pub fn entry_id(&self) -> CircuitId {
+        self.entry_circuit_id
+    }
+
+    /// Seal `payload` in reverse hop order (Exit -> Middle -> Guard) so each
+    /// hop peels exactly one layer via [`CircuitSwapTable::swap_and_peel`].
+    pub fn seal_onion(&self, payload: &[u8]) -> Option<Vec<u8>> {
+        use chacha20poly1305::aead::{Aead, KeyInit};
+        use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+
+        if self.hops.is_empty() {
+            return None;
+        }
+        let mut current = payload.to_vec();
+        for hop in self.hops.iter().rev() {
+            let mut nonce_bytes = [0u8; 12];
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_bytes);
+            let cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&hop.hop_key));
+            let ct = cipher
+                .encrypt(Nonce::from_slice(&nonce_bytes), current.as_slice())
+                .ok()?;
+            let mut layer = Vec::with_capacity(12 + ct.len());
+            layer.extend_from_slice(&nonce_bytes);
+            layer.extend_from_slice(&ct);
+            current = layer;
+        }
+        Some(current)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2375,5 +2681,90 @@ mod derp_tests {
         // 5. Subsequent spend fails
         let err_exhausted = ledger.try_spend(&voucher, &group_secret, 1, now + 40);
         assert!(err_exhausted.is_err());
+    }
+
+    #[test]
+    fn test_telescoping_pq_circuit_isolation_and_swap() {
+        use ml_kem::kem::{Kem, KeyExport};
+        use ml_kem::MlKem768;
+
+        // Generate ephemeral X25519 + ML-KEM-768 keys for Guard, Middle, Exit
+        let gen_hop_keys = || {
+            let x_sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+            let x_pk = x25519_dalek::PublicKey::from(&x_sk).to_bytes();
+            let (dk, ek) = MlKem768::generate_keypair();
+            let ek_bytes = ek.to_bytes().as_slice().to_vec();
+            (x_sk, x_pk, dk, ek_bytes)
+        };
+
+        let (g_xsk, g_xpk, g_dk, g_ek) = gen_hop_keys();
+        let (m_xsk, m_xpk, m_dk, m_ek) = gen_hop_keys();
+        let (e_xsk, e_xpk, e_dk, e_ek) = gen_hop_keys();
+
+        let cid_cg = CircuitId::random();
+        let cid_gm = CircuitId::random();
+        let cid_me = CircuitId::random();
+
+        // Client initiates 3-hop telescoping PQ extensions
+        let (cell_g, key_g_client) =
+            ExtendPqCell::initiate(cid_cg, Some("middle_fp".into()), &g_xpk, &g_ek)
+                .expect("guard extend");
+        let parsed_g = ExtendPqCell::from_bytes(&cell_g.to_bytes()).expect("parse guard cell");
+        let key_g_relay = parsed_g.accept(&g_xsk, &g_dk).expect("guard accept");
+        assert_eq!(key_g_client, key_g_relay);
+
+        let (cell_m, key_m_client) =
+            ExtendPqCell::initiate(cid_gm, Some("exit_fp".into()), &m_xpk, &m_ek)
+                .expect("middle extend");
+        let key_m_relay = cell_m.accept(&m_xsk, &m_dk).expect("middle accept");
+        assert_eq!(key_m_client, key_m_relay);
+
+        let (cell_e, key_e_client) =
+            ExtendPqCell::initiate(cid_me, None, &e_xpk, &e_ek).expect("exit extend");
+        let key_e_relay = cell_e.accept(&e_xsk, &e_dk).expect("exit accept");
+        assert_eq!(key_e_client, key_e_relay);
+
+        // Populate hop-local swap tables
+        let guard_table = CircuitSwapTable::new();
+        guard_table.insert(cid_cg, Some("middle_fp".into()), cid_gm, key_g_relay);
+
+        let middle_table = CircuitSwapTable::new();
+        middle_table.insert(cid_gm, Some("exit_fp".into()), cid_me, key_m_relay);
+
+        let exit_table = CircuitSwapTable::new();
+        exit_table.insert(cid_me, None, cid_me, key_e_relay);
+
+        // Build client circuit & seal payload
+        let mut circuit = TelescopingCircuit::new(cid_cg);
+        circuit.extend_hop("guard_fp".into(), cid_cg, key_g_client);
+        circuit.extend_hop("middle_fp".into(), cid_gm, key_m_client);
+        circuit.extend_hop("exit_fp".into(), cid_me, key_e_client);
+        assert_eq!(circuit.hop_count(), 3);
+
+        let payload = b"secret_telescoping_pq_payload";
+        let onion = circuit.seal_onion(payload).expect("seal onion");
+
+        // Guard peels layer 1: only knows (cid_cg -> middle_fp, cid_gm)
+        let (next1, out_id1, body1) = guard_table
+            .swap_and_peel(&cid_cg, &onion)
+            .expect("guard peel");
+        assert_eq!(next1.as_deref(), Some("middle_fp"));
+        assert_eq!(out_id1, cid_gm);
+        assert!(guard_table.lookup(&cid_me).is_none());
+
+        // Middle peels layer 2: only knows (cid_gm -> exit_fp, cid_me)
+        let (next2, out_id2, body2) = middle_table
+            .swap_and_peel(&out_id1, &body1)
+            .expect("middle peel");
+        assert_eq!(next2.as_deref(), Some("exit_fp"));
+        assert_eq!(out_id2, cid_me);
+        assert!(middle_table.lookup(&cid_cg).is_none());
+
+        // Exit peels layer 3: no client session, no client fingerprint/IP
+        let (next3, _out_id3, plaintext) = exit_table
+            .swap_and_peel(&out_id2, &body2)
+            .expect("exit peel");
+        assert!(next3.is_none());
+        assert_eq!(plaintext.as_slice(), payload);
     }
 }

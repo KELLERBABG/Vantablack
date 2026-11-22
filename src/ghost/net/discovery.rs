@@ -1337,6 +1337,478 @@ impl BlindMailboxClient {
     }
 }
 
+// ── Oblivious Multi-Substrate Rendezvous (OMR) ────────────────────────
+
+/// Hardcoded public genesis swarm secret; rejected by default unless explicitly opted in.
+pub const PUBLIC_GENESIS_SWARM_SECRET: &[u8] = b"vantablack-genesis-v1";
+
+/// Policy check: reject the hardcoded `"vantablack-genesis-v1"` fallback unless
+/// `allow_public_swarm` is explicitly enabled.
+pub fn validate_swarm_secret_policy(
+    swarm_secret: &[u8],
+    allow_public_swarm: bool,
+) -> Result<(), &'static str> {
+    if swarm_secret.is_empty() {
+        return Err("swarm secret must not be empty");
+    }
+    if swarm_secret == PUBLIC_GENESIS_SWARM_SECRET && !allow_public_swarm {
+        return Err(
+            "hardcoded 'vantablack-genesis-v1' fallback rejected unless public-swarm mode is explicitly enabled",
+        );
+    }
+    Ok(())
+}
+
+/// Configuration for 2-of-3 Oblivious Multi-Substrate Rendezvous (OMR).
+#[derive(Clone, Debug)]
+pub struct OmrSplitConfig {
+    pub epoch_duration_secs: u64,
+    pub max_skew_secs: u64,
+    pub slot_index: u32,
+    pub allow_public_genesis_fallback: bool,
+}
+
+impl Default for OmrSplitConfig {
+    fn default() -> Self {
+        Self {
+            epoch_duration_secs: 3600,
+            max_skew_secs: DEFAULT_BLIND_MAX_SKEW_SECS,
+            slot_index: 0,
+            allow_public_genesis_fallback: false,
+        }
+    }
+}
+
+/// Opaque per-substrate share envelope: 1 Shamir 2-of-3 key share + 1024B AEAD-encrypted descriptor.
+///
+/// A single substrate learns neither the descriptor nor the full social graph, because
+/// `key_share` is a single (2,3) Shamir share revealing zero information about the AEAD key.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OmrShareEnvelope {
+    pub share_index: u8,
+    pub key_share: Vec<u8>,
+    pub encrypted_blob: Vec<u8>,
+}
+
+/// Pluggable transport substrate for OMR share publishing and fetching.
+pub trait OmrSubstrate: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    fn publish_share<'a>(
+        &'a self,
+        slot_hex: &'a str,
+        envelope: &'a OmrShareEnvelope,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    fn fetch_shares<'a>(
+        &'a self,
+        slot_hex: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<OmrShareEnvelope>, String>> + Send + 'a>,
+    >;
+}
+
+/// Hardened `/v2/slot/` Worker substrate backed by [`BlindMailboxClient`].
+#[derive(Clone, Debug)]
+pub struct WorkerSlotSubstrate {
+    pub base_url: String,
+    pub client: BlindMailboxClient,
+}
+
+impl WorkerSlotSubstrate {
+    pub fn new(base_url: impl Into<String>, client: BlindMailboxClient) -> Self {
+        Self {
+            base_url: base_url.into(),
+            client,
+        }
+    }
+}
+
+impl OmrSubstrate for WorkerSlotSubstrate {
+    fn name(&self) -> &'static str {
+        "worker-v2-slot"
+    }
+
+    fn publish_share<'a>(
+        &'a self,
+        slot_hex: &'a str,
+        envelope: &'a OmrShareEnvelope,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let body = serde_json::to_vec(envelope)
+                .map_err(|e| format!("worker serialize error: {e}"))?;
+            let eph_id = BlindMailboxClient::generate_ephemeral_id();
+            let pow = BlindMailboxClient::compute_pow_nonce(slot_hex, &eph_id, &body);
+            let url = format!(
+                "{}/v2/slot/{}/{}",
+                self.base_url.trim_end_matches('/'),
+                slot_hex,
+                eph_id
+            );
+            let resp = self
+                .client
+                .client
+                .put(&url)
+                .header("X-VB-PoW", pow)
+                .body(body)
+                .send()
+                .await
+                .map_err(|e| format!("worker PUT failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("worker PUT returned HTTP {}", resp.status()));
+            }
+            Ok(())
+        })
+    }
+
+    fn fetch_shares<'a>(
+        &'a self,
+        slot_hex: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<OmrShareEnvelope>, String>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let url = format!(
+                "{}/v2/slot/{}",
+                self.base_url.trim_end_matches('/'),
+                slot_hex
+            );
+            let resp = self
+                .client
+                .client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| format!("worker GET failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("worker GET returned HTTP {}", resp.status()));
+            }
+            let items: Vec<String> = resp
+                .json()
+                .await
+                .map_err(|e| format!("worker JSON decode failed: {e}"))?;
+            let mut out = Vec::new();
+            for item in items {
+                if let Some(raw) = base64_decode_flexible(&item) {
+                    if let Ok(env) = serde_json::from_slice::<OmrShareEnvelope>(&raw) {
+                        out.push(env);
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
+/// Cleaned NIP-01 ephemeral Nostr event (`kind = 20000`) for opaque OMR share transport.
+/// Uses `["d", slot_hex]` tags with zero plaintext `["fp", ...]` or `"vantablack_mesh"` tags.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OmrNostrEvent {
+    pub id: String,
+    pub pubkey: String,
+    pub created_at: u64,
+    pub kind: u16,
+    pub tags: Vec<Vec<String>>,
+    pub content: String,
+    pub sig: String,
+}
+
+impl OmrNostrEvent {
+    pub fn from_opaque_share(
+        slot_hex: &str,
+        share_bytes: &[u8],
+        nostr_pubkey: String,
+        created_at: u64,
+        sig: String,
+    ) -> Self {
+        let content = hex::encode(share_bytes);
+        let mut hasher = Sha256::new();
+        hasher.update(created_at.to_be_bytes());
+        hasher.update(slot_hex.as_bytes());
+        hasher.update(content.as_bytes());
+        let event_id = hex::encode(hasher.finalize());
+        Self {
+            id: event_id,
+            pubkey: nostr_pubkey,
+            created_at,
+            kind: 20000,
+            tags: vec![vec!["d".into(), slot_hex.to_string()]],
+            content,
+            sig,
+        }
+    }
+
+    pub fn slot_hex(&self) -> Option<&str> {
+        self.tags
+            .iter()
+            .find(|t| t.len() >= 2 && t[0] == "d")
+            .map(|t| t[1].as_str())
+    }
+
+    pub fn extract_opaque_share(&self) -> Option<Vec<u8>> {
+        hex::decode(&self.content).ok()
+    }
+}
+
+/// Transport trait for cleaned Nostr ephemeral `["d", slot_hex]` events.
+pub trait NostrRelayTransport: Send + Sync {
+    fn publish_event<'a>(
+        &'a self,
+        event: OmrNostrEvent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    fn query_slot<'a>(
+        &'a self,
+        slot_hex: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<OmrNostrEvent>, String>> + Send + 'a>,
+    >;
+}
+
+/// Cleaned Nostr ephemeral event substrate using `["d", slot_hex]` tags.
+pub struct NostrSlotSubstrate<T: NostrRelayTransport> {
+    pub transport: T,
+    pub nostr_pubkey: String,
+}
+
+impl<T: NostrRelayTransport> NostrSlotSubstrate<T> {
+    pub fn new(transport: T, nostr_pubkey: impl Into<String>) -> Self {
+        Self {
+            transport,
+            nostr_pubkey: nostr_pubkey.into(),
+        }
+    }
+}
+
+impl<T: NostrRelayTransport> OmrSubstrate for NostrSlotSubstrate<T> {
+    fn name(&self) -> &'static str {
+        "nostr-ephemeral-d-slot"
+    }
+
+    fn publish_share<'a>(
+        &'a self,
+        slot_hex: &'a str,
+        envelope: &'a OmrShareEnvelope,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let payload = serde_json::to_vec(envelope)
+                .map_err(|e| format!("nostr serialize error: {e}"))?;
+            let event = OmrNostrEvent::from_opaque_share(
+                slot_hex,
+                &payload,
+                self.nostr_pubkey.clone(),
+                current_unix_secs(),
+                String::new(),
+            );
+            self.transport.publish_event(event).await
+        })
+    }
+
+    fn fetch_shares<'a>(
+        &'a self,
+        slot_hex: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<OmrShareEnvelope>, String>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let events = self.transport.query_slot(slot_hex).await?;
+            let mut out = Vec::new();
+            for ev in events {
+                if let Some(raw) = ev.extract_opaque_share() {
+                    if let Ok(env) = serde_json::from_slice::<OmrShareEnvelope>(&raw) {
+                        out.push(env);
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
+/// Transport trait for DoH-TXT or DHT opaque slot storage.
+pub trait DohDhtTransport: Send + Sync {
+    fn put_record<'a>(
+        &'a self,
+        slot_hex: &'a str,
+        record_bytes: &'a [u8],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    fn get_records<'a>(
+        &'a self,
+        slot_hex: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send + 'a>>;
+}
+
+/// DoH-TXT / DHT substrate for OMR share transport.
+pub struct DohDhtSubstrate<T: DohDhtTransport> {
+    pub transport: T,
+}
+
+impl<T: DohDhtTransport> DohDhtSubstrate<T> {
+    pub fn new(transport: T) -> Self {
+        Self { transport }
+    }
+}
+
+impl<T: DohDhtTransport> OmrSubstrate for DohDhtSubstrate<T> {
+    fn name(&self) -> &'static str {
+        "doh-txt-dht"
+    }
+
+    fn publish_share<'a>(
+        &'a self,
+        slot_hex: &'a str,
+        envelope: &'a OmrShareEnvelope,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let payload = serde_json::to_vec(envelope)
+                .map_err(|e| format!("doh/dht serialize error: {e}"))?;
+            self.transport.put_record(slot_hex, &payload).await
+        })
+    }
+
+    fn fetch_shares<'a>(
+        &'a self,
+        slot_hex: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<OmrShareEnvelope>, String>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            let records = self.transport.get_records(slot_hex).await?;
+            let mut out = Vec::new();
+            for rec in records {
+                if let Ok(env) = serde_json::from_slice::<OmrShareEnvelope>(&rec) {
+                    out.push(env);
+                }
+            }
+            Ok(out)
+        })
+    }
+}
+
+/// Publishes a [`PeerDescriptorV2`] by encrypting it under a fresh 32-byte key and
+/// splitting that key 2-of-3 via [`crate::ghost::layers::l3_shamir`] across 3 substrates.
+pub struct OmrPublisher {
+    pub config: OmrSplitConfig,
+    pub substrates: Vec<Box<dyn OmrSubstrate>>,
+}
+
+impl OmrPublisher {
+    pub fn new(config: OmrSplitConfig, substrates: Vec<Box<dyn OmrSubstrate>>) -> Self {
+        Self { config, substrates }
+    }
+
+    pub async fn publish(
+        &self,
+        swarm_secret: &[u8],
+        descriptor: &PeerDescriptorV2,
+    ) -> Result<usize, String> {
+        validate_swarm_secret_policy(swarm_secret, self.config.allow_public_genesis_fallback)
+            .map_err(|e| e.to_string())?;
+
+        if self.substrates.len() < 3 {
+            return Err("OMR requires at least 3 independent substrates".to_string());
+        }
+
+        let epoch_hour = current_unix_secs() / self.config.epoch_duration_secs.max(1);
+        let (slot_hex, _) =
+            BlindMailboxClient::slot_hex_for_epoch(swarm_secret, epoch_hour, self.config.slot_index);
+
+        let mut blob_key = [0u8; 32];
+        OsRng.fill_bytes(&mut blob_key);
+        let encrypted_blob = BlindRendezvous::encrypt_descriptor_v2(&blob_key, descriptor)
+            .map_err(|e| e.to_string())?;
+        let shares = crate::ghost::layers::l3_shamir::split_secret_bytes(&blob_key);
+        blob_key.fill(0);
+
+        let mut succeeded = 0usize;
+        for (idx, substrate) in self.substrates.iter().take(3).enumerate() {
+            let envelope = OmrShareEnvelope {
+                share_index: idx as u8,
+                key_share: shares[idx].clone(),
+                encrypted_blob: encrypted_blob.clone(),
+            };
+            if substrate.publish_share(&slot_hex, &envelope).await.is_ok() {
+                succeeded += 1;
+            }
+        }
+
+        if succeeded < 2 {
+            return Err(format!(
+                "OMR publish failed: only {succeeded}/3 substrates succeeded (need >= 2)"
+            ));
+        }
+        Ok(succeeded)
+    }
+}
+
+/// Resolves [`PeerDescriptorV2`] records by fetching shares from independent substrates
+/// and reconstructing the AEAD key from any 2-of-3 Shamir shares.
+pub struct OmrResolver {
+    pub config: OmrSplitConfig,
+    pub substrates: Vec<Box<dyn OmrSubstrate>>,
+}
+
+impl OmrResolver {
+    pub fn new(config: OmrSplitConfig, substrates: Vec<Box<dyn OmrSubstrate>>) -> Self {
+        Self { config, substrates }
+    }
+
+    pub async fn resolve(&self, swarm_secret: &[u8]) -> Result<Vec<PeerDescriptorV2>, String> {
+        validate_swarm_secret_policy(swarm_secret, self.config.allow_public_genesis_fallback)
+            .map_err(|e| e.to_string())?;
+
+        let epoch_hour = current_unix_secs() / self.config.epoch_duration_secs.max(1);
+        let (slot_hex, _) =
+            BlindMailboxClient::slot_hex_for_epoch(swarm_secret, epoch_hour, self.config.slot_index);
+
+        let mut by_blob: HashMap<[u8; 32], Vec<OmrShareEnvelope>> = HashMap::new();
+        for substrate in &self.substrates {
+            if let Ok(envelopes) = substrate.fetch_shares(&slot_hex).await {
+                for env in envelopes {
+                    let blob_hash: [u8; 32] = Sha256::digest(&env.encrypted_blob).into();
+                    by_blob.entry(blob_hash).or_default().push(env);
+                }
+            }
+        }
+
+        let mut merged: HashMap<[u8; 32], PeerDescriptorV2> = HashMap::new();
+        for (_blob_hash, envs) in by_blob {
+            if envs.len() < 2 {
+                continue;
+            }
+            'pair_search: for i in 0..envs.len() {
+                for j in (i + 1)..envs.len() {
+                    if envs[i].share_index == envs[j].share_index {
+                        continue;
+                    }
+                    let rec = crate::ghost::layers::l3_shamir::join_shares(
+                        &envs[i].key_share,
+                        &envs[j].key_share,
+                    );
+                    if rec.len() != 32 {
+                        continue;
+                    }
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&rec);
+                    if let Some(plain) =
+                        BlindRendezvous::decrypt_blob(&key, &envs[i].encrypted_blob)
+                    {
+                        if let Some(desc) = PeerDescriptorV2::from_bytes(&plain) {
+                            if desc.verify(self.config.max_skew_secs) {
+                                BlindMailboxClient::upsert_newest(&mut merged, desc);
+                                break 'pair_search;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(merged.into_values().collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1526,5 +1998,164 @@ mod tests {
         assert!(!BlindMailboxClient::verify_pow_nonce(
             slot_hex, &eph1, "not-hex", &body
         ));
+    }
+
+    #[test]
+    fn test_genesis_fallback_policy_check() {
+        assert!(validate_swarm_secret_policy(b"vantablack-genesis-v1", false).is_err());
+        assert!(validate_swarm_secret_policy(b"vantablack-genesis-v1", true).is_ok());
+        assert!(validate_swarm_secret_policy(b"private-swarm-secret-32bytes!", false).is_ok());
+        assert!(validate_swarm_secret_policy(b"", true).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_omr_2_of_3_split_and_reconstruct_all_pairs() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct MemNostr(Arc<Mutex<HashMap<String, Vec<OmrNostrEvent>>>>);
+        impl NostrRelayTransport for MemNostr {
+            fn publish_event<'a>(
+                &'a self,
+                event: OmrNostrEvent,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+                Box::pin(async move {
+                    let slot = event.slot_hex().unwrap_or_default().to_string();
+                    self.0.lock().unwrap().entry(slot).or_default().push(event);
+                    Ok(())
+                })
+            }
+            fn query_slot<'a>(
+                &'a self,
+                slot_hex: &'a str,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Vec<OmrNostrEvent>, String>> + Send + 'a>,
+            > {
+                Box::pin(async move {
+                    Ok(self.0.lock().unwrap().get(slot_hex).cloned().unwrap_or_default())
+                })
+            }
+        }
+
+        #[derive(Clone, Default)]
+        struct MemDoh(Arc<Mutex<HashMap<String, Vec<Vec<u8>>>>>);
+        impl DohDhtTransport for MemDoh {
+            fn put_record<'a>(
+                &'a self,
+                slot_hex: &'a str,
+                record_bytes: &'a [u8],
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+                Box::pin(async move {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .entry(slot_hex.to_string())
+                        .or_default()
+                        .push(record_bytes.to_vec());
+                    Ok(())
+                })
+            }
+            fn get_records<'a>(
+                &'a self,
+                slot_hex: &'a str,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send + 'a>> {
+                Box::pin(async move {
+                    Ok(self.0.lock().unwrap().get(slot_hex).cloned().unwrap_or_default())
+                })
+            }
+        }
+
+        #[derive(Clone, Default)]
+        struct MemWorker(Arc<Mutex<HashMap<String, Vec<OmrShareEnvelope>>>>);
+        impl OmrSubstrate for MemWorker {
+            fn name(&self) -> &'static str {
+                "mem-worker"
+            }
+            fn publish_share<'a>(
+                &'a self,
+                slot_hex: &'a str,
+                envelope: &'a OmrShareEnvelope,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+                Box::pin(async move {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .entry(slot_hex.to_string())
+                        .or_default()
+                        .push(envelope.clone());
+                    Ok(())
+                })
+            }
+            fn fetch_shares<'a>(
+                &'a self,
+                slot_hex: &'a str,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Vec<OmrShareEnvelope>, String>> + Send + 'a>,
+            > {
+                Box::pin(async move {
+                    Ok(self.0.lock().unwrap().get(slot_hex).cloned().unwrap_or_default())
+                })
+            }
+        }
+
+        let s_worker = MemWorker::default();
+        let s_nostr = MemNostr::default();
+        let s_doh = MemDoh::default();
+
+        let id = GhostIdentity::generate_fresh();
+        let desc = PeerDescriptorV2::sign_new(
+            &id,
+            &[0x77u8; 1184],
+            SocketAddr::from(([198, 51, 100, 42], 4433)),
+            vec![],
+            4433,
+            NAT_CONE,
+            CAP_QUIC,
+            None,
+        );
+
+        let publisher = OmrPublisher::new(
+            OmrSplitConfig::default(),
+            vec![
+                Box::new(s_worker.clone()),
+                Box::new(NostrSlotSubstrate::new(s_nostr.clone(), "nostr_pk".to_string())),
+                Box::new(DohDhtSubstrate::new(s_doh.clone())),
+            ],
+        );
+
+        let secret = b"private-omr-swarm-secret-0123456";
+        assert_eq!(publisher.publish(secret, &desc).await.unwrap(), 3);
+
+        // Single substrate alone cannot reconstruct.
+        let r_single = OmrResolver::new(OmrSplitConfig::default(), vec![Box::new(s_worker.clone())]);
+        assert!(r_single.resolve(secret).await.unwrap().is_empty());
+
+        // Any 2 of 3 substrates reconstruct the exact descriptor.
+        let r_01 = OmrResolver::new(
+            OmrSplitConfig::default(),
+            vec![
+                Box::new(s_worker.clone()),
+                Box::new(NostrSlotSubstrate::new(s_nostr.clone(), "nostr_pk".to_string())),
+            ],
+        );
+        assert_eq!(r_01.resolve(secret).await.unwrap(), vec![desc.clone()]);
+
+        let r_02 = OmrResolver::new(
+            OmrSplitConfig::default(),
+            vec![
+                Box::new(s_worker),
+                Box::new(DohDhtSubstrate::new(s_doh.clone())),
+            ],
+        );
+        assert_eq!(r_02.resolve(secret).await.unwrap(), vec![desc.clone()]);
+
+        let r_12 = OmrResolver::new(
+            OmrSplitConfig::default(),
+            vec![
+                Box::new(NostrSlotSubstrate::new(s_nostr, "nostr_pk".to_string())),
+                Box::new(DohDhtSubstrate::new(s_doh)),
+            ],
+        );
+        assert_eq!(r_12.resolve(secret).await.unwrap(), vec![desc]);
     }
 }

@@ -60,7 +60,7 @@ use crate::ghost::layers::l0_identity::{
     ML_DSA_65_PK_LEN, ML_DSA_65_SIG_LEN,
 };
 
-pub const QUIC_ALPN: &[u8] = b"ggn-quic-1";
+pub const QUIC_ALPN: &[u8] = b"h3";
 pub const QUIC_DEFAULT_PORT: u16 = 2271;
 pub const ID_BINDING_LABEL: &[u8] = b"ggn-quic-identity-binding";
 /// Version 2 of the binding: a hybrid proof (Ed25519 + ML-DSA-65).
@@ -844,6 +844,187 @@ async fn read_stream_frame(recv: &mut quinn::RecvStream) -> Result<Option<Vec<u8
     Ok(Some(buf))
 }
 
+// ── HTTP/3 MASQUE CONNECT-UDP Capsule Framing (RFC 9297 / RFC 9298) ───────────
+
+/// RFC 9297 §3.2: DATAGRAM capsule type.
+pub const CAPSULE_TYPE_DATAGRAM: u64 = 0x00;
+/// RFC 9298 §5: Context ID `0x00` for raw UDP payloads in `CONNECT-UDP`.
+pub const CONNECT_UDP_CONTEXT_ID_PAYLOAD: u64 = 0x00;
+/// Maximum value representable by a QUIC variable-length integer (2^62 - 1).
+const QUIC_VARINT_MAX: u64 = (1 << 62) - 1;
+
+/// Encode a QUIC variable-length integer (RFC 9000 §16).
+pub fn encode_quic_varint(val: u64, out: &mut Vec<u8>) -> Result<(), QuicError> {
+    if val > QUIC_VARINT_MAX {
+        return Err(QuicError::Crypto(format!(
+            "QUIC varint {val} exceeds 2^62 - 1"
+        )));
+    }
+    if val < (1 << 6) {
+        out.push(val as u8);
+    } else if val < (1 << 14) {
+        out.extend_from_slice(&((val as u16) | 0x4000).to_be_bytes());
+    } else if val < (1 << 30) {
+        out.extend_from_slice(&((val as u32) | 0x8000_0000).to_be_bytes());
+    } else {
+        out.extend_from_slice(&(val | 0xC000_0000_0000_0000).to_be_bytes());
+    }
+    Ok(())
+}
+
+/// Decode a QUIC variable-length integer (RFC 9000 §16), returning `(value, bytes_consumed)`.
+pub fn decode_quic_varint(buf: &[u8]) -> Option<(u64, usize)> {
+    let first = *buf.first()?;
+    let len = 1usize << (first >> 6);
+    if buf.len() < len {
+        return None;
+    }
+    let mut val = (first & 0x3F) as u64;
+    for &b in &buf[1..len] {
+        val = (val << 8) | (b as u64);
+    }
+    Some((val, len))
+}
+
+/// Frame a UDP/GTF payload as an HTTP/3 `CONNECT-UDP` `DATAGRAM` capsule (RFC 9297 + RFC 9298).
+pub fn encode_connect_udp_capsule(payload: &[u8]) -> Result<Vec<u8>, QuicError> {
+    let mut context_id = Vec::with_capacity(1);
+    encode_quic_varint(CONNECT_UDP_CONTEXT_ID_PAYLOAD, &mut context_id)?;
+    let capsule_len = context_id.len() + payload.len();
+
+    let mut out = Vec::with_capacity(2 + 4 + capsule_len);
+    encode_quic_varint(CAPSULE_TYPE_DATAGRAM, &mut out)?;
+    encode_quic_varint(capsule_len as u64, &mut out)?;
+    out.extend_from_slice(&context_id);
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+/// Decode an HTTP/3 `CONNECT-UDP` `DATAGRAM` capsule, returning `(payload, total_capsule_bytes)`.
+pub fn decode_connect_udp_capsule(buf: &[u8]) -> Option<(&[u8], usize)> {
+    let (capsule_type, type_len) = decode_quic_varint(buf)?;
+    if capsule_type != CAPSULE_TYPE_DATAGRAM {
+        return None;
+    }
+    let (capsule_len, len_len) = decode_quic_varint(&buf[type_len..])?;
+    let header_len = type_len + len_len;
+    let total_len = header_len.checked_add(usize::try_from(capsule_len).ok()?)?;
+    if buf.len() < total_len {
+        return None;
+    }
+    let capsule_val = &buf[header_len..total_len];
+    let (context_id, ctx_len) = decode_quic_varint(capsule_val)?;
+    if context_id != CONNECT_UDP_CONTEXT_ID_PAYLOAD {
+        return None;
+    }
+    Some((&capsule_val[ctx_len..], total_len))
+}
+
+// ── REALITY-style Active-Probe Fallback (TLS legacy_session_id Knock) ─────────
+
+/// Configuration for active-probe resistance: clients embed an ephemeral ECDH
+/// knock in TLS `legacy_session_id`; invalid probes are spliced to `cover_origin`.
+#[derive(Debug, Clone)]
+pub struct RealityKnockConfig {
+    /// Server's static X25519 public key.
+    pub server_public_key: [u8; 32],
+    /// Pre-shared 8-byte short identifier.
+    pub short_id: [u8; 8],
+    /// Cover origin (`host:port`) to splice unauthenticated active probes to.
+    pub cover_origin: String,
+    /// Maximum allowed clock skew in seconds for knock timestamps.
+    pub max_clock_skew_secs: u64,
+}
+
+impl Default for RealityKnockConfig {
+    fn default() -> Self {
+        Self {
+            server_public_key: [0u8; 32],
+            short_id: [0u8; 8],
+            cover_origin: "www.cloudflare.com:443".to_string(),
+            max_clock_skew_secs: 120,
+        }
+    }
+}
+
+fn derive_reality_knock_key(shared_secret: &[u8; 32], short_id: &[u8; 8]) -> [u8; 32] {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+    let hk = Hkdf::<Sha256>::new(Some(short_id), shared_secret);
+    let mut key = [0u8; 32];
+    hk.expand(b"ggn-reality-knock-v1", &mut key)
+        .expect("32-byte HKDF-SHA256 output is valid");
+    key
+}
+
+/// Build a 32-byte TLS `legacy_session_id` knock using an ephemeral X25519 secret.
+pub fn build_reality_knock(
+    client_ephemeral_secret: &x25519_dalek::StaticSecret,
+    server_public_key: &[u8; 32],
+    short_id: &[u8; 8],
+    timestamp_secs: u64,
+) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let server_pub = x25519_dalek::PublicKey::from(*server_public_key);
+    let shared = client_ephemeral_secret.diffie_hellman(&server_pub);
+    let knock_key = derive_reality_knock_key(shared.as_bytes(), short_id);
+
+    let ts_bytes = timestamp_secs.to_be_bytes();
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&knock_key).expect("HMAC-SHA256 accepts 32-byte key");
+    mac.update(&ts_bytes);
+    mac.update(short_id);
+    let tag = mac.finalize().into_bytes();
+
+    let mut knock = [0u8; 32];
+    for i in 0..8 {
+        knock[i] = ts_bytes[i] ^ knock_key[i];
+    }
+    knock[8..32].copy_from_slice(&tag[..24]);
+    knock
+}
+
+/// Verify a 32-byte TLS `legacy_session_id` knock.
+///
+/// Returns `false` for active probes so the listener can splice them to `cover_origin`.
+pub fn verify_reality_knock(
+    server_secret: &x25519_dalek::StaticSecret,
+    client_ephemeral_pub: &[u8; 32],
+    legacy_session_id: &[u8; 32],
+    short_id: &[u8; 8],
+    now_secs: u64,
+    max_skew_secs: u64,
+) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use subtle::ConstantTimeEq;
+
+    let client_pub = x25519_dalek::PublicKey::from(*client_ephemeral_pub);
+    let shared = server_secret.diffie_hellman(&client_pub);
+    let knock_key = derive_reality_knock_key(shared.as_bytes(), short_id);
+
+    let mut ts_bytes = [0u8; 8];
+    for i in 0..8 {
+        ts_bytes[i] = legacy_session_id[i] ^ knock_key[i];
+    }
+    let ts = u64::from_be_bytes(ts_bytes);
+    if now_secs.abs_diff(ts) > max_skew_secs {
+        return false;
+    }
+
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&knock_key).expect("HMAC-SHA256 accepts 32-byte key");
+    mac.update(&ts_bytes);
+    mac.update(short_id);
+    let expected_tag = mac.finalize().into_bytes();
+
+    legacy_session_id[8..32]
+        .ct_eq(&expected_tag[..24])
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,6 +1117,61 @@ mod tests {
         assert!(matches!(
             verify_identity_binding(&fp, &v1, b"session-binding"),
             Err(QuicError::ClassicalOnlyBinding)
+        ));
+    }
+
+    #[test]
+    fn alpn_is_standard_h3() {
+        assert_eq!(QUIC_ALPN, b"h3");
+    }
+
+    #[test]
+    fn connect_udp_capsule_roundtrip() {
+        let payload = b"gtf-v3-encrypted-frame-payload";
+        let capsule = encode_connect_udp_capsule(payload).expect("encode capsule");
+        let (decoded, consumed) = decode_connect_udp_capsule(&capsule).expect("decode capsule");
+        assert_eq!(consumed, capsule.len());
+        assert_eq!(decoded, payload);
+        assert!(decode_connect_udp_capsule(&capsule[..capsule.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn reality_knock_verifies_and_rejects_probes() {
+        let server_secret = x25519_dalek::StaticSecret::from([7u8; 32]);
+        let server_pub = x25519_dalek::PublicKey::from(&server_secret);
+        let client_secret = x25519_dalek::StaticSecret::from([9u8; 32]);
+        let client_pub = x25519_dalek::PublicKey::from(&client_secret);
+        let short_id = *b"ggn-test";
+        let now = 1_700_000_000u64;
+
+        let knock = build_reality_knock(&client_secret, server_pub.as_bytes(), &short_id, now);
+        assert!(verify_reality_knock(
+            &server_secret,
+            client_pub.as_bytes(),
+            &knock,
+            &short_id,
+            now + 5,
+            120,
+        ));
+        // Expired timestamp fails
+        assert!(!verify_reality_knock(
+            &server_secret,
+            client_pub.as_bytes(),
+            &knock,
+            &short_id,
+            now + 300,
+            120,
+        ));
+        // Tampered knock (active probe) fails
+        let mut probe = knock;
+        probe[15] ^= 0xFF;
+        assert!(!verify_reality_knock(
+            &server_secret,
+            client_pub.as_bytes(),
+            &probe,
+            &short_id,
+            now,
+            120,
         ));
     }
 }

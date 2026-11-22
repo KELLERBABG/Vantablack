@@ -986,6 +986,184 @@ pub fn parse_gtf_v2_header(buf: &[u8]) -> Option<GtfV2Header> {
     })
 }
 
+// ── GTF v3: Encrypted-Header Rotating-CID Frame ───────────────────────────────
+
+/// v3: 12-byte random nonce at offset 0 (needed by receiver to derive header keystream).
+pub const V3_OFFSET_NONCE: usize = 0;
+/// v3: start of the 26-byte ChaCha20-encrypted header (`obfs_cid`, `shard_index`, `flags`, `counter`, `epoch`).
+pub const V3_OFFSET_ENC_HEADER: usize = 12;
+/// v3: length of the encrypted header region.
+pub const V3_ENC_HEADER_LEN: usize = 26;
+/// v3: first payload byte (same 38-byte header size as v2, zero `V2_OFFSET_RESERVED` zero-bytes, zero static `session_hash`).
+pub const V3_OFFSET_PAYLOAD_START: usize = 38;
+
+/// Header for a v3 GTF frame with rotating CID and encrypted metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GtfV3Header {
+    /// 8-byte rotating Connection ID (XOR-masked on wire as `obfs_cid`).
+    pub cid: [u8; 8],
+    pub counter: u64,
+    pub epoch: u64,
+    pub nonce: [u8; 12],
+    pub shard_index: u8,
+    pub flags: u8,
+    pub bulk: bool,
+    pub tail: [u8; JITTER_MAX],
+}
+
+/// Built v3 GTF frame wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GtfV3Frame {
+    pub bytes: Vec<u8>,
+}
+
+/// RFC 8439 ChaCha20 single-block keystream (64 bytes) for header masking.
+fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
+    #[inline]
+    fn qr(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+        s[a] = s[a].wrapping_add(s[b]);
+        s[d] = (s[d] ^ s[a]).rotate_left(16);
+        s[c] = s[c].wrapping_add(s[d]);
+        s[b] = (s[b] ^ s[c]).rotate_left(12);
+        s[a] = s[a].wrapping_add(s[b]);
+        s[d] = (s[d] ^ s[a]).rotate_left(8);
+        s[c] = s[c].wrapping_add(s[d]);
+        s[b] = (s[b] ^ s[c]).rotate_left(7);
+    }
+
+    let mut state = [0u32; 16];
+    state[0] = 0x6170_7865;
+    state[1] = 0x3320_646e;
+    state[2] = 0x7962_2d32;
+    state[3] = 0x6b20_6574;
+    for i in 0..8 {
+        state[4 + i] = u32::from_le_bytes(key[i * 4..i * 4 + 4].try_into().unwrap());
+    }
+    state[12] = counter;
+    for i in 0..3 {
+        state[13 + i] = u32::from_le_bytes(nonce[i * 4..i * 4 + 4].try_into().unwrap());
+    }
+
+    let mut working = state;
+    for _ in 0..10 {
+        qr(&mut working, 0, 4, 8, 12);
+        qr(&mut working, 1, 5, 9, 13);
+        qr(&mut working, 2, 6, 10, 14);
+        qr(&mut working, 3, 7, 11, 15);
+        qr(&mut working, 0, 5, 10, 15);
+        qr(&mut working, 1, 6, 11, 12);
+        qr(&mut working, 2, 7, 8, 13);
+        qr(&mut working, 3, 4, 9, 14);
+    }
+
+    let mut out = [0u8; 64];
+    for i in 0..16 {
+        let word = working[i].wrapping_add(state[i]);
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    out
+}
+
+/// Build a v3 GTF frame with `obfs_cid` and encrypted packet number/flags/epoch.
+///
+/// Carries zero `V2_OFFSET_RESERVED` zero-bytes and zero static `session_hash` on wire.
+pub fn try_build_gtf_v3_frame(
+    h: &GtfV3Header,
+    link_hdr_key: &[u8; 32],
+    payload: &[u8],
+    auth_tag: &[u8; 16],
+) -> Result<GtfV3Frame, &'static str> {
+    let (total, tag_start, cap) = if h.bulk {
+        (
+            GTF_BULK_SIZE,
+            V2_BULK_OFFSET_AUTH_TAG_START,
+            V2_MAX_BULK_PAYLOAD_LEN,
+        )
+    } else {
+        (GTF_BASE_SIZE, V2_OFFSET_AUTH_TAG_START, V2_MAX_PAYLOAD_LEN)
+    };
+    if payload.len() > cap {
+        return Err("payload exceeds GTF v3 capacity");
+    }
+
+    let full_cap = if h.bulk {
+        GTF_BULK_SIZE
+    } else {
+        GTF_BASE_SIZE + JITTER_MAX
+    };
+    let mut packet = Vec::with_capacity(full_cap);
+    packet.resize(total, 0u8);
+
+    packet[V3_OFFSET_NONCE..V3_OFFSET_NONCE + 12].copy_from_slice(&h.nonce);
+
+    let mut plain_hdr = [0u8; V3_ENC_HEADER_LEN];
+    plain_hdr[0..8].copy_from_slice(&h.cid);
+    plain_hdr[8] = h.shard_index;
+    plain_hdr[9] = (h.flags & (FLAG_BULK | FLAG_TUNNEL | FLAG_DUMMY | FLAG_SHARDSEC))
+        | if h.bulk { FLAG_BULK } else { 0 };
+    plain_hdr[10..18].copy_from_slice(&h.counter.to_be_bytes());
+    plain_hdr[18..26].copy_from_slice(&h.epoch.to_be_bytes());
+
+    let keystream = chacha20_block(link_hdr_key, 0, &h.nonce);
+    for i in 0..V3_ENC_HEADER_LEN {
+        packet[V3_OFFSET_ENC_HEADER + i] = plain_hdr[i] ^ keystream[i];
+    }
+
+    packet[V3_OFFSET_PAYLOAD_START..V3_OFFSET_PAYLOAD_START + payload.len()]
+        .copy_from_slice(payload);
+
+    if !h.bulk && payload.len() < cap {
+        let slack_start = V3_OFFSET_PAYLOAD_START + payload.len();
+        rand::thread_rng().fill(&mut packet[slack_start..tag_start]);
+    }
+
+    packet[tag_start..total].copy_from_slice(auth_tag);
+    if !h.bulk {
+        packet.extend_from_slice(&h.tail);
+    }
+
+    Ok(GtfV3Frame { bytes: packet })
+}
+
+/// Parse a v3 GTF header by decrypting `obfs_cid` and metadata with `link_hdr_key`.
+pub fn parse_gtf_v3_header(buf: &[u8], link_hdr_key: &[u8; 32]) -> Option<GtfV3Header> {
+    if buf.len() < V3_OFFSET_PAYLOAD_START {
+        return None;
+    }
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&buf[V3_OFFSET_NONCE..V3_OFFSET_NONCE + 12]);
+
+    let keystream = chacha20_block(link_hdr_key, 0, &nonce);
+    let mut plain_hdr = [0u8; V3_ENC_HEADER_LEN];
+    for i in 0..V3_ENC_HEADER_LEN {
+        plain_hdr[i] = buf[V3_OFFSET_ENC_HEADER + i] ^ keystream[i];
+    }
+
+    let mut cid = [0u8; 8];
+    cid.copy_from_slice(&plain_hdr[0..8]);
+    let shard_index = plain_hdr[8];
+    let flags = plain_hdr[9];
+    let bulk = (flags & FLAG_BULK) != 0;
+    let counter = u64::from_be_bytes(plain_hdr[10..18].try_into().ok()?);
+    let epoch = u64::from_be_bytes(plain_hdr[18..26].try_into().ok()?);
+
+    let mut tail = [0u8; JITTER_MAX];
+    if !bulk && buf.len() >= GTF_BASE_SIZE + JITTER_MAX {
+        tail.copy_from_slice(&buf[GTF_BASE_SIZE..GTF_BASE_SIZE + JITTER_MAX]);
+    }
+
+    Some(GtfV3Header {
+        cid,
+        counter,
+        epoch,
+        nonce,
+        shard_index,
+        flags,
+        bulk,
+        tail,
+    })
+}
+
 /// Parse the packet counter from either wire version.
 pub fn parse_packet_counter_u64(buf: &[u8]) -> u64 {
     match parse_gtf_v2_header(buf) {
@@ -1977,5 +2155,37 @@ impl ThroughputStats {
         let recv = self.bytes_recv.swap(0, Ordering::Relaxed) as f64;
         let secs = interval.as_secs_f64();
         (sent, recv, sent / secs, recv / secs)
+    }
+}
+
+#[cfg(test)]
+mod v3_tests {
+    use super::*;
+
+    #[test]
+    fn gtf_v3_frame_roundtrip_and_encrypted_header() {
+        let link_hdr_key = [0x42u8; 32];
+        let cid = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE];
+        let hdr = GtfV3Header {
+            cid,
+            counter: 12345,
+            epoch: 7,
+            nonce: [0x11u8; 12],
+            shard_index: 2,
+            flags: FLAG_TUNNEL,
+            bulk: false,
+            tail: [0x5Au8; JITTER_MAX],
+        };
+        let payload = b"hello-gtf-v3";
+        let auth_tag = [0x99u8; 16];
+
+        let frame = try_build_gtf_v3_frame(&hdr, &link_hdr_key, payload, &auth_tag)
+            .expect("build v3 frame");
+        assert_eq!(frame.bytes.len(), GTF_BASE_SIZE + JITTER_MAX);
+        // CID is XOR-masked on wire, not plaintext.
+        assert_ne!(&frame.bytes[V3_OFFSET_ENC_HEADER..V3_OFFSET_ENC_HEADER + 8], &cid);
+
+        let parsed = parse_gtf_v3_header(&frame.bytes, &link_hdr_key).expect("parse v3 header");
+        assert_eq!(parsed, hdr);
     }
 }

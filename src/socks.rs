@@ -14,9 +14,83 @@ use tokio::time::sleep;
 
 use vantablack::ghost::net::coalesce::CoalescedShard;
 use vantablack::ghost::net::reassembly::ReassemblyBuffer;
-use vantablack::ghost::net::relay::build_encrypted_onion_route;
+use vantablack::ghost::net::relay::{build_encrypted_onion_route, AsnDiversityConstraint};
 
 static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
+static PINNED_GUARD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Select `hop_count` (2 or 3) diverse hops ending at `exit_fp` using
+/// deterministic sorting, persistent Guard pinning, and [`AsnDiversityConstraint`].
+pub fn select_diverse_hops(
+    candidates: &[String],
+    exit_fp: &str,
+    hop_count: usize,
+    peer_asns: &std::collections::HashMap<String, u32>,
+    pinned_guard: &std::sync::Mutex<Option<String>>,
+) -> Option<Vec<String>> {
+    if hop_count < 2 || hop_count > 3 {
+        return None;
+    }
+    let mut other_peers: Vec<String> = candidates
+        .iter()
+        .filter(|p| p.as_str() != exit_fp)
+        .cloned()
+        .collect();
+    other_peers.sort();
+    other_peers.dedup();
+    if other_peers.len() < hop_count - 1 {
+        return None;
+    }
+
+    let mut constraint = AsnDiversityConstraint::new(1);
+    let asn_for = |fp: &str, fallback_idx: u32| -> u32 {
+        peer_asns.get(fp).copied().unwrap_or(0x8000_0000 + fallback_idx)
+    };
+    let exit_asn = asn_for(exit_fp, 999);
+    constraint.assign_shard_asn((hop_count - 1) as u8, exit_asn);
+
+    // Pick Guard (or Relay in 2-hop) with persistent Guard pinning
+    let mut guard_guard = pinned_guard.lock().ok()?;
+    let guard_fp = if let Some(ref pinned) = *guard_guard {
+        if other_peers.contains(pinned) && constraint.is_asn_permitted(0, asn_for(pinned, 1)) {
+            pinned.clone()
+        } else {
+            let chosen = other_peers
+                .iter()
+                .enumerate()
+                .find(|(i, p)| constraint.is_asn_permitted(0, asn_for(p, *i as u32 + 1)))
+                .map(|(_, p)| p.clone())?;
+            *guard_guard = Some(chosen.clone());
+            chosen
+        }
+    } else {
+        let chosen = other_peers
+            .iter()
+            .enumerate()
+            .find(|(i, p)| constraint.is_asn_permitted(0, asn_for(p, *i as u32 + 1)))
+            .map(|(_, p)| p.clone())?;
+        *guard_guard = Some(chosen.clone());
+        chosen
+    };
+    drop(guard_guard);
+
+    constraint.assign_shard_asn(0, asn_for(&guard_fp, 1));
+
+    if hop_count == 2 {
+        return Some(vec![guard_fp, exit_fp.to_string()]);
+    }
+
+    // Pick Middle hop with distinct ASN from Guard and Exit
+    let middle_fp = other_peers
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.as_str() != guard_fp)
+        .find(|(i, p)| constraint.is_asn_permitted(1, asn_for(p, *i as u32 + 100)))
+        .map(|(_, p)| p.clone())?;
+    constraint.assign_shard_asn(1, asn_for(&middle_fp, 100));
+
+    Some(vec![guard_fp, middle_fp, exit_fp.to_string()])
+}
 
 /// Maximum stream flow credit (64 KB window) to prevent congestion and bufferbloat.
 pub const MAX_STREAM_CREDIT: usize = 65536;
@@ -285,18 +359,15 @@ pub async fn handle_socks5_connection(
                 let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
                 return;
             }
-            let exit_fp = fp.clone();
-            let other_peers: Vec<String> =
-                candidates.into_iter().filter(|p| p != &exit_fp).collect();
-            if other_peers.len() < 2 {
-                tracing::warn!("SOCKS5 :1083 Strict 3-Hop: distinct peers unavailable");
+            let empty_asns = std::collections::HashMap::new();
+            let Some(route) = select_diverse_hops(&candidates, &fp, 3, &empty_asns, &PINNED_GUARD)
+            else {
+                tracing::warn!("SOCKS5 :1083 Strict 3-Hop: diverse peers unavailable");
                 let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
                 return;
-            }
-            let guard_fp = other_peers[0].clone();
-            let middle_fp = other_peers[1].clone();
+            };
+            let guard_fp = route[0].clone();
             let guard_addr = aa.get(&guard_fp).map(|v| *v.value()).unwrap_or(tgt);
-            let route = vec![guard_fp.clone(), middle_fp, exit_fp];
             (guard_fp, guard_addr, Some(route))
         }
         HopPolicy::TwoHop => {
@@ -306,16 +377,14 @@ pub async fn handle_socks5_connection(
                 let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
                 return;
             }
-            let exit_fp = fp.clone();
-            let other_peers: Vec<String> =
-                candidates.into_iter().filter(|p| p != &exit_fp).collect();
-            if other_peers.is_empty() {
+            let empty_asns = std::collections::HashMap::new();
+            let Some(route) = select_diverse_hops(&candidates, &fp, 2, &empty_asns, &PINNED_GUARD)
+            else {
                 let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
                 return;
-            }
-            let relay_fp = other_peers[0].clone();
+            };
+            let relay_fp = route[0].clone();
             let relay_addr = aa.get(&relay_fp).map(|v| *v.value()).unwrap_or(tgt);
-            let route = vec![relay_fp.clone(), exit_fp];
             (relay_fp, relay_addr, Some(route))
         }
         HopPolicy::OneHop | HopPolicy::Auto => (fp.clone(), tgt, None),
@@ -937,5 +1006,75 @@ mod tests {
         .expect("Exit must authenticate and decrypt E2E inner layer");
         let unpacked = frame_payload(pt).expect("frame_payload must strip u16 length prefix");
         assert_eq!(unpacked, original);
+    }
+
+    #[test]
+    fn test_guard_pinning_and_asn_diversity() {
+        let pinned = std::sync::Mutex::new(None);
+        let mut asns = std::collections::HashMap::new();
+        asns.insert("peer_a".to_string(), 64501);
+        asns.insert("peer_b".to_string(), 64501); // Same ASN as peer_a
+        asns.insert("peer_c".to_string(), 64502);
+        asns.insert("exit_z".to_string(), 64503);
+
+        let candidates = vec![
+            "peer_c".to_string(),
+            "peer_b".to_string(),
+            "peer_a".to_string(),
+            "exit_z".to_string(),
+        ];
+
+        // 1. First 3-hop selection pins peer_a (sorted first) as Guard, skips peer_b (same ASN), picks peer_c as Middle
+        let route1 = select_diverse_hops(&candidates, "exit_z", 3, &asns, &pinned)
+            .expect("diverse 3-hop route");
+        assert_eq!(route1, vec!["peer_a", "peer_c", "exit_z"]);
+        assert_eq!(pinned.lock().unwrap().as_deref(), Some("peer_a"));
+
+        // 2. Even if a new peer_0 appears, Guard remains pinned to peer_a
+        let candidates2 = vec![
+            "peer_0".to_string(),
+            "peer_a".to_string(),
+            "peer_c".to_string(),
+            "exit_z".to_string(),
+        ];
+        asns.insert("peer_0".to_string(), 64504);
+        let route2 = select_diverse_hops(&candidates2, "exit_z", 3, &asns, &pinned)
+            .expect("pinned guard route");
+        assert_eq!(route2[0], "peer_a");
+
+        // 3. 2-hop selection also respects pinned guard and ASN diversity
+        let route_2hop = select_diverse_hops(&candidates2, "exit_z", 2, &asns, &pinned)
+            .expect("2-hop route");
+        assert_eq!(route_2hop, vec!["peer_a", "exit_z"]);
+    }
+
+    #[test]
+    fn test_telescoping_circuit_isolation_in_socks() {
+        use ml_kem::kem::{Kem, KeyExport};
+        use ml_kem::MlKem768;
+        use vantablack::ghost::net::relay::{
+            CircuitId, CircuitSwapTable, ExtendPqCell, TelescopingCircuit,
+        };
+
+        let x_sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let x_pk = x25519_dalek::PublicKey::from(&x_sk).to_bytes();
+        let (dk, ek) = MlKem768::generate_keypair();
+        let ek_bytes = ek.to_bytes().as_slice().to_vec();
+
+        let cid_in = CircuitId::random();
+        let (cell, client_key) =
+            ExtendPqCell::initiate(cid_in, None, &x_pk, &ek_bytes).expect("initiate");
+        let exit_key = cell.accept(&x_sk, &dk).expect("accept");
+        assert_eq!(client_key, exit_key);
+
+        let exit_table = CircuitSwapTable::new();
+        exit_table.insert(cid_in, None, cid_in, exit_key);
+
+        let mut circuit = TelescopingCircuit::new(cid_in);
+        circuit.extend_hop("exit_fp".into(), cid_in, client_key);
+        let sealed = circuit.seal_onion(b"socks_telescoping_test").expect("seal");
+        let (next, _out_id, plain) = exit_table.swap_and_peel(&cid_in, &sealed).expect("peel");
+        assert!(next.is_none());
+        assert_eq!(plain, b"socks_telescoping_test");
     }
 }
