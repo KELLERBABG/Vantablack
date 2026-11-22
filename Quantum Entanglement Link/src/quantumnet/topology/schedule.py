@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..core.physical import memory_fidelity_after_dt
+from ..core.physical import bell_pair_fidelity_after_dt
 from .graph import QuantumLink, QuantumTopology
 from .routing import Route, e2e_fidelity
 
@@ -82,9 +82,8 @@ def distribute(topology: QuantumTopology, route: Route,
     t1 = topology.nodes[path[0]].t1_s
     t2 = topology.nodes[path[0]].t2_s
 
-    # Each segment carries its fidelity, birth time, and the path index of its
-    # right endpoint (raw links: i+1). Fusing adjacent segments lo, hi happens
-    # at the shared node = the right endpoint of segment lo.
+    # Each segment carries its fidelity, birth time, and the path index of its right
+    # endpoint (raw links: i+1); fusing lo and hi happens at lo's right endpoint.
     segments: list[dict] = [
         {"f": float(f), "born": t_gen, "right": i + 1}
         for i, f in enumerate(route.link_fidelities)
@@ -94,9 +93,9 @@ def distribute(topology: QuantumTopology, route: Route,
         lo, hi = sorted((i, j))
         t = t_gen + step * t_swap_s
         node = path[segments[lo]["right"]]
-        fi = memory_fidelity_after_dt(
+        fi = bell_pair_fidelity_after_dt(
             segments[lo]["f"], t - segments[lo]["born"], t1, t2)
-        fj = memory_fidelity_after_dt(
+        fj = bell_pair_fidelity_after_dt(
             segments[hi]["f"], t - segments[hi]["born"], t1, t2)
         merged = (4.0 * fi * fj - fi - fj + 1.0) / 3.0
         events.append(SwapEvent(

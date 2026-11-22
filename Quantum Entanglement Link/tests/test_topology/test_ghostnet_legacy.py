@@ -2,9 +2,8 @@ import json
 
 import pytest
 
-from quantumnet.topology import (
-    load_ghost_topology, parse_positions, route_ghost,
-)
+from quantumnet.topology.importers import parse
+from quantumnet.topology import parse_positions, route_ghost
 
 
 def _write_export(tmp_path, nodes, links, positions=None):
@@ -32,15 +31,15 @@ class TestGhostNetBridge:
         p = tmp_path / "x.json"
         p.write_text(json.dumps({"generator": "other"}), encoding="utf-8")
         with pytest.raises(ValueError):
-            load_ghost_topology(str(p))
+            from quantumnet.topology.importers import parse
+            parse(str(p), schema_id="vantablack")
 
     def test_route_two_nodes(self, tmp_path):
         fp_a, fp_b = "aa11", "bb22"
-        path = _write_export(tmp_path, [(fp_a, "1.2.3.4:1000"),
-                                        (fp_b, "5.6.7.8:2000")],
-                             [(fp_a, fp_b)],
-                             positions={fp_a: (0.0, 0.0), fp_b: (500.0, 300.0)})
-        topo, route, dist = route_ghost(path, fp_a, fp_b)
+        path = _write_export(tmp_path, [(fp_a, "1.2.3.4:1000"), (fp_b, "5.6.7.8:2000")],
+                             [(fp_a, fp_b)], positions={fp_a: (0.0, 0.0), fp_b: (500.0, 300.0)})
+        doc = parse(str(path), schema_id="vantablack")
+        topo, route, dist = route_ghost(doc, fp_a, fp_b)
         assert route is not None
         assert route.path == [fp_a, fp_b]
         assert dist is not None
@@ -48,22 +47,23 @@ class TestGhostNetBridge:
 
     def test_embedded_positions(self, tmp_path):
         fp_a, fp_b = "aa11", "bb22"
-        path = _write_export(tmp_path,
-                             [(fp_a, "a"), (fp_b, "b")],
-                             [(fp_a, fp_b)],
+        path = _write_export(tmp_path, [(fp_a, "a"), (fp_b, "b")], [(fp_a, fp_b)],
                              positions={fp_a: (0.0, 0.0), fp_b: (200.0, 0.0)})
-        topo, _, _ = route_ghost(path, fp_a, fp_b, positions=None)
+        doc = parse(str(path), schema_id="vantablack")
+        topo, _, _ = route_ghost(doc, fp_a, fp_b)
         assert topo.nodes[fp_a].distance_to(topo.nodes[fp_b]) == pytest.approx(200.0)
 
     def test_unknown_node_raises(self, tmp_path):
         fp_a, fp_b = "aa11", "bb22"
         path = _write_export(tmp_path, [(fp_a, "a"), (fp_b, "b")], [(fp_a, fp_b)])
+        doc = parse(str(path), schema_id="vantablack")
         with pytest.raises(KeyError):
-            route_ghost(path, fp_a, "nope")
+            route_ghost(doc, fp_a, "nope")
 
     def test_min_fidelity_no_route(self, tmp_path):
         fp_a, fp_b = "aa11", "bb22"
         path = _write_export(tmp_path, [(fp_a, "a"), (fp_b, "b")], [(fp_a, fp_b)],
                              positions={fp_a: (0.0, 0.0), fp_b: (100000.0, 0.0)})
-        topo, route, dist = route_ghost(path, fp_a, fp_b, min_fidelity=0.99)
+        doc = parse(str(path), schema_id="vantablack")
+        topo, route, dist = route_ghost(doc, fp_a, fp_b, min_fidelity=0.99)
         assert route is None and dist is None

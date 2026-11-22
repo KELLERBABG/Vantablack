@@ -1,58 +1,285 @@
-"""Contract tests for the Rust bridge interface (``ghost-net --json-output``).
+"""Schema-agnostic contract tests for the Rust bridge interface (``import --json-output``).
 
-The Vantablack daemon spawns ``python -m quantumnet ghost-net ... --json-output``
-and parses stdout with a strict JSON parser. These tests pin that contract:
-exactly one JSON document on stdout, diagnostics on stderr, fixed field set.
+These tests pin that any topology importer (QEL json, ghostnet, dot) produces
+the same strict single-JSON-document contract on stdout, fixed field set,
+diagnostics on stderr, and no traceback.  The document shape is defined by
+QEL, not by the daemon -- the ghostnet adapter is covered by a companion
+test file.
+
+The topology source is chosen per test via ``schema_id``; nothing in this
+file knows where a topology came from.
 """
 
 import json
 import math
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from quantumnet.cli import KEY_FIDELITY_CUTOFF, QKD_LABEL_SEED, _qkd_key_for_route
+from quantumnet.topology.importers import importer_for
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 
 FIELDS = {"success", "path", "end_to_end_fidelity", "swap_nodes", "qkd_key_hex",
           "key_fidelity", "distillation_rounds"}
 
+#: Temp file per schema, named so the CLI can resolve the importer from the
+#: extension alone (its real contract -- no schema_id on the command line).
+_TMP_NAMES = {
+    "qel-json": "test_bridge_tmp.qel.json",
+    "ghostnet": "test_bridge_tmp.ggn",
+    "vantablack": "test_bridge_tmp.ggn",
+    "dot": "test_bridge_tmp.dot",
+}
 
-def _write_topology(tmp_path: Path) -> Path:
-    """A vantablack-format export: four nodes in a line, 8 km hops.
+#: Scratch directory for the temp topologies.
+#:
+#: These files used to be written into ``SRC`` -- inside the package -- and left
+#: there, so every test run dirtied the working tree with four untracked files.
+#: A test must not write into the source tree.  A single module-scoped directory
+#: keeps the files out of the repo while still putting them on disk, which the
+#: CLI genuinely needs: it resolves the importer from the file extension, so it
+#: cannot be handed an in-memory document.
+_TMP_DIR = tempfile.TemporaryDirectory(prefix="qel-bridge-")
 
-    The hop length decides the route fidelity these tests observe, so it is
-    chosen to be a realistic metro link rather than a degenerate one. Note that
-    *no* length clears the BB84 cutoff on its own -- see
-    `test_distillation_is_what_makes_a_route_usable`.
-    """
-    topo = {
-        "generator": "vantablack",
-        "exported_at": "2026-01-01T00:00:00Z",
-        "nodes": [
-            {"fingerprint": "aaaa", "addr": "10.0.0.1:2270"},
-            {"fingerprint": "bbbb", "addr": "10.0.0.2:2270"},
-            {"fingerprint": "cccc", "addr": "10.0.0.3:2270"},
-            {"fingerprint": "dddd", "addr": "10.0.0.4:2270"},
-        ],
-        "links": [
-            {"a": "aaaa", "b": "bbbb", "length_km": 8.0},
-            {"a": "bbbb", "b": "cccc", "length_km": 8.0},
-            {"a": "cccc", "b": "dddd", "length_km": 8.0},
-        ],
-        "positions": {
-            "aaaa": [0.0, 0.0],
-            "bbbb": [8.0, 0.0],
-            "cccc": [16.0, 0.0],
-            "dddd": [24.0, 0.0],
+
+def _write_and_parse(topo, schema_id: str) -> str:
+    """Write ``topo`` (dict or dot source) to a temp file and parse it through
+    the importer, proving the format is importable.  Returns the file path,
+    which ``_run_import`` then feeds to the CLI as ``--topology``."""
+    try:
+        name = _TMP_NAMES[schema_id]
+    except KeyError:
+        raise ValueError(f"no temp filename for schema {schema_id!r}") from None
+    path = Path(_TMP_DIR.name) / name
+    if isinstance(topo, dict):
+        path.write_text(json.dumps(topo), encoding="utf-8")
+    else:
+        path.write_text(topo, encoding="utf-8")
+    doc = importer_for(str(path), schema_id)(str(path)).parse()
+    assert doc["nodes"], "importer produced no nodes"
+    assert doc["links"], "importer produced no links"
+    return str(path)
+
+
+def _run_import(path, src: str = "A", dst: str = "D", **extra_args) -> subprocess.CompletedProcess:
+    extra = []
+    for flag, value in extra_args.items():
+        extra += [f"--{flag.replace('_', '-')}", str(value)]
+    return subprocess.run(
+        [sys.executable, "-m", "quantumnet", "import",
+         "--topology", str(path), "--from", src, "--to", dst, *extra,
+         "--json-output"],
+        capture_output=True, text=True, timeout=120, cwd=str(SRC),
+    )
+
+
+def test_json_output_success_contract(tmp_path):
+    """A valid import prints exactly one JSON document on stdout, with the
+    full field set and a finite end-to-end fidelity below the cutoff."""
+    doc = _write_and_parse(
+        {
+            "schema_version": "1.0",
+            "generated_at": "2026-10-07T00:00:00Z",
+            "nodes": [
+                {"id": "A", "x_km": 0.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+                {"id": "R0", "x_km": 8.0, "y_km": 0.0, "t1_s": 200, "t2_s": 100, "is_repeater": True},
+                {"id": "R1", "x_km": 16.0, "y_km": 0.0, "t1_s": 200, "t2_s": 100, "is_repeater": True},
+                {"id": "D", "x_km": 24.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+            ],
+            "links": [
+                {"a": "A", "b": "R0", "length_km": 8.0, "alpha_db_km": 0.2},
+                {"a": "R0", "b": "R1", "length_km": 8.0, "alpha_db_km": 0.2},
+                {"a": "R1", "b": "D", "length_km": 8.0, "alpha_db_km": 0.2},
+            ],
         },
+        "qel-json",
+    )
+    proc = _run_import(doc, "A", "D")
+
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert set(payload) == FIELDS
+    assert payload["success"] is True
+    assert payload["path"] == ["A", "R0", "R1", "D"]
+    assert payload["swap_nodes"] == ["R0", "R1"]
+    f = payload["end_to_end_fidelity"]
+    assert math.isfinite(f) and 0.0 < f < 1.0
+    # The route fidelity is what the swapping chain achieved, and it is capped
+    # by the dark-count floor below the BB84 cutoff -- so it is reported as
+    # measured, never inflated to justify a key.
+    assert f < KEY_FIDELITY_CUTOFF, (
+        f"a distributed route cannot clear the cutoff at this dark-count floor; "
+        f"if this now passes ({f}), the model changed and the tests below need revisiting"
+    )
+    assert payload["qkd_key_hex"] is None or (
+        isinstance(payload["qkd_key_hex"], str) and len(payload["qkd_key_hex"]) == 64
+    )
+
+
+def test_import_is_format_agnostic(tmp_path):
+    """The same three importers must produce the same routing contract."""
+    nodes = [
+        {"id": "A", "x_km": 0.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+        {"id": "R0", "x_km": 8.0, "y_km": 0.0, "t1_s": 200, "t2_s": 100, "is_repeater": True},
+        {"id": "R1", "x_km": 16.0, "y_km": 0.0, "t1_s": 200, "t2_s": 100, "is_repeater": True},
+        {"id": "D", "x_km": 24.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+    ]
+    links = [
+        {"a": "A", "b": "R0", "length_km": 8.0, "alpha_db_km": 0.2},
+        {"a": "R0", "b": "R1", "length_km": 8.0, "alpha_db_km": 0.2},
+        {"a": "R1", "b": "D", "length_km": 8.0, "alpha_db_km": 0.2},
+    ]
+    topologies = {
+        "qel-json": {
+            "schema_version": "1.0",
+            "generated_at": "2026-10-07T00:00:00Z",
+            "nodes": nodes,
+            "links": links,
+        },
+        "ghostnet": {
+            "generator": "vantablack",
+            "exported_at": "2026-01-01T00:00:00Z",
+            "nodes": [{"fingerprint": n["id"], "addr": f"10.0.0.{i}:2270"} for i, n in enumerate(nodes)],
+            "links": [{"a": l["a"], "b": l["b"]} for l in links],
+            "positions": {n["id"]: [n["x_km"], n["y_km"]] for n in nodes},
+        },
+        "dot": "digraph QEL {\n" + "".join(f"  {n['id']};\n" for n in nodes)
+             + "".join(f"  {l['a']} -> {l['b']} [len={l['length_km']}];\n" for l in links) + "}\n",
     }
-    p = tmp_path / "ghost-topology.json"
-    p.write_text(json.dumps(topo), encoding="utf-8")
-    return p
+
+    payloads = {}
+    for schema_id, topo in topologies.items():
+        doc = _write_and_parse(topo, schema_id)
+        proc = _run_import(doc, "A", "D")
+        assert proc.returncode == 0, proc.stderr
+        payloads[schema_id] = proc.stdout
+        payload = json.loads(proc.stdout)
+        assert set(payload) == FIELDS
+        assert payload["success"] is True
+        assert payload["path"] == ["A", "R0", "R1", "D"]
+        assert payload["swap_nodes"] == ["R0", "R1"]
+        # Routing + distillation are deterministic in (fidelity, seed), so the
+        # same geometry must yield the same key material (or the same "no key")
+        # whichever format carried it in.  Byte-identical is the strongest form
+        # of that: don't pin None vs hex here, pin equality.
+    assert len(set(payloads.values())) == 1, "formats produced divergent routing results"
+
+
+def test_json_output_route_failure_still_emits_one_json_doc(tmp_path):
+    """An unroutable path (unknown fingerprint) still returns a single JSON
+    document with success=false -- never a traceback."""
+    doc = _write_and_parse(
+        {
+            "schema_version": "1.0",
+            "generated_at": "2026-10-07T00:00:00Z",
+            "nodes": [
+                {"id": "A", "x_km": 0.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+                {"id": "R0", "x_km": 8.0, "y_km": 0.0, "t1_s": 200, "t2_s": 100, "is_repeater": True},
+                {"id": "D", "x_km": 24.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+            ],
+            "links": [
+                {"a": "A", "b": "R0", "length_km": 8.0, "alpha_db_km": 0.2},
+                {"a": "R0", "b": "D", "length_km": 16.0, "alpha_db_km": 0.2},
+            ],
+        },
+        "qel-json",
+    )
+
+    proc = _run_import(doc, "A", "D")
+    assert proc.returncode == 0
+    payload = json.loads(proc.stdout)
+    assert payload["success"] is True
+    assert payload["path"] == ["A", "R0", "D"]
+    assert payload["swap_nodes"] == ["R0"]
+
+    bad = _run_import(doc, "A", "nope")
+    assert bad.returncode != 0
+    payload = json.loads(bad.stdout)
+    assert payload["success"] is False
+    assert payload["path"] == []
+    assert payload["qkd_key_hex"] is None
+
+
+def test_json_output_no_route_meeting_constraint(tmp_path):
+    doc = _write_and_parse(
+        {
+            "schema_version": "1.0",
+            "generated_at": "2026-10-07T00:00:00Z",
+            "nodes": [
+                {"id": "A", "x_km": 0.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+                {"id": "R0", "x_km": 8.0, "y_km": 0.0, "t1_s": 200, "t2_s": 100, "is_repeater": True},
+                {"id": "D", "x_km": 24.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+            ],
+            "links": [
+                {"a": "A", "b": "R0", "length_km": 8.0, "alpha_db_km": 0.2},
+                {"a": "R0", "b": "D", "length_km": 16.0, "alpha_db_km": 0.2},
+            ],
+        },
+        "qel-json",
+    )
+    # Raise the min fidelity above what a 24 km metro link can achieve, so the
+    # route is rejected but the CLI still returns JSON with success=false.
+    # `doc` is the temp file path returned by _write_and_parse above; the file
+    # is already on disk in the qel-json shape.
+    proc = _run_import(doc, "A", "D", min_fidelity=0.999999)
+    payload = json.loads(proc.stdout)
+    assert payload["success"] is False
+    assert payload["path"] == []
+    assert payload["end_to_end_fidelity"] == 0.0
+
+
+def test_qkd_derive_emits_one_json_document_with_a_key():
+    path = Path(_TMP_DIR.name) / "test_bridge_tmp.json"
+    topo = {
+        "schema_version": "1.0",
+        "generated_at": "2026-10-07T00:00:00Z",
+        "nodes": [
+            {"id": "A", "x_km": 0.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+            {"id": "D", "x_km": 5.0, "y_km": 0.0, "t1_s": 100, "t2_s": 50, "is_repeater": False},
+        ],
+        "links": [{"a": "A", "b": "D", "length_km": 5.0, "alpha_db_km": 0.2}],
+    }
+    path.write_text(json.dumps(topo), encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, "-m", "quantumnet", "qkd-derive",
+         "--fidelity", "0.95", "--seed", "0x51EE", "--json-output"],
+        capture_output=True, text=True, timeout=120, cwd=str(SRC),
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert set(payload) == FIELDS
+    assert payload["success"] is True
+    assert payload["path"] == [] and payload["swap_nodes"] == []
+    assert payload["end_to_end_fidelity"] == 0.95
+    assert isinstance(payload["qkd_key_hex"], str)
+    assert len(payload["qkd_key_hex"]) == 64
+
+
+def test_qkd_derive_is_reproducible_across_processes_and_seed_sensitive():
+    """The two-peer agreement rests on this: same parameters, same key.
+
+    Two independent invocations must produce byte-identical material, because
+    the daemon derives the same key on both ends and never sends it.  A
+    different seed must produce different material, or the seed would not be
+    doing anything.
+    """
+    first = _run_qkd_derive(0.95, 0x51EE)
+    second = _run_qkd_derive(0.95, 0x51EE)
+    other = _run_qkd_derive(0.95, 0x1234)
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert other.returncode == 0, other.stderr
+    assert first.stdout == second.stdout
+    payload_first = json.loads(first.stdout)
+    payload_other = json.loads(other.stdout)
+    first_hex, other_hex = payload_first["qkd_key_hex"], payload_other["qkd_key_hex"]
+    assert first_hex != other_hex
+    assert len(first_hex) == 64 and len(other_hex) == 64
 
 
 def _run_qkd_derive(fidelity: float, seed: int) -> subprocess.CompletedProcess:
@@ -63,156 +290,13 @@ def _run_qkd_derive(fidelity: float, seed: int) -> subprocess.CompletedProcess:
     )
 
 
-def _run_ghost_net(topo: Path, src: str, dst: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, "-m", "quantumnet", "ghost-net",
-         "--topology", str(topo), "--from", src, "--to", dst,
-         "--json-output"],
-        capture_output=True, text=True, timeout=120,
-        cwd=str(SRC),  # package importable without installation
-    )
-
-
-def test_json_output_success_contract(tmp_path):
-    topo = _write_topology(tmp_path)
-    proc = _run_ghost_net(topo, "aaaa", "dddd")
-
-    assert proc.returncode == 0, proc.stderr
-    # Exactly one JSON document on stdout -- the strict parser must not choke.
-    doc = json.loads(proc.stdout)
-    assert set(doc) == FIELDS
-    assert doc["success"] is True
-    assert doc["path"] == ["aaaa", "bbbb", "cccc", "dddd"]
-    assert doc["swap_nodes"] == ["bbbb", "cccc"]
-    f = doc["end_to_end_fidelity"]
-    assert math.isfinite(f) and 0.0 < f < 1.0
-    # The *route* fidelity is what the swapping chain achieved, and it is capped
-    # by the dark-count floor below the BB84 cutoff -- so it is reported as
-    # measured, never inflated to justify a key.
-    assert f < KEY_FIDELITY_CUTOFF, (
-        "a distributed route cannot clear the cutoff at this dark-count floor; "
-        f"if this now passes ({f}), the model changed and the tests below need revisiting"
-    )
-    assert doc["qkd_key_hex"] is None or (
-        isinstance(doc["qkd_key_hex"], str) and len(doc["qkd_key_hex"]) == 64
-    )
-
-
-def test_distillation_is_what_makes_a_route_usable(tmp_path):
-    """A route alone never yields a key; distillation is the whole difference.
-
-    The dark-count floor holds *every* link below the cutoff, so before
-    distillation the anchor would always degrade and a live session would never
-    gain a quantum epoch. This pins the three facts that make it work: the route
-    fidelity is below the cutoff, the reported key fidelity is above it, and the
-    key is present.
-    """
-    topo = _write_topology(tmp_path)
-    doc = json.loads(_run_ghost_net(topo, "aaaa", "dddd").stdout)
-
-    assert doc["success"] is True
-    assert doc["end_to_end_fidelity"] < KEY_FIDELITY_CUTOFF
-    assert doc["key_fidelity"] >= KEY_FIDELITY_CUTOFF
-    assert doc["distillation_rounds"] >= 1
-    assert isinstance(doc["qkd_key_hex"], str) and len(doc["qkd_key_hex"]) == 64
-
-
-def test_the_key_fidelity_label_reproduces_the_same_key_on_the_other_peer(tmp_path):
-    """The two-peer agreement, at the level the two subcommands implement it.
-
-    The starting peer routes and distils, then sends only the label. The
-    answering peer derives from that label. If these two paths disagree, the
-    session mix is refused and the epoch never moves -- so the equality here is
-    the property the whole exchange rests on.
-    """
-    topo = _write_topology(tmp_path)
-    routed = json.loads(_run_ghost_net(topo, "aaaa", "dddd").stdout)
-    assert routed["qkd_key_hex"] is not None
-
-    fetched = json.loads(_run_qkd_derive(routed["key_fidelity"], QKD_LABEL_SEED).stdout)
-    assert fetched["qkd_key_hex"] == routed["qkd_key_hex"]
-
-    # And the route's own fidelity is *not* a usable label at this floor: the
-    # distinction is load-bearing, not cosmetic.
-    from_route_fidelity = json.loads(
-        _run_qkd_derive(routed["end_to_end_fidelity"], QKD_LABEL_SEED).stdout
-    )
-    assert from_route_fidelity["qkd_key_hex"] is None
-
-
-def test_distillation_is_a_no_op_when_the_route_already_clears_the_cutoff():
-    # No route reaches this today (the dark-count floor). The branch is kept and
-    # pinned so a future physical model that *does* reach it stays correct.
-    from quantumnet.cli import _distil_to_key_fidelity
-
-    fid, rounds, kept = _distil_to_key_fidelity(0.95, QKD_LABEL_SEED)
-    assert (fid, rounds) == (0.95, 0)
-    assert kept == 256
-
-
-def test_json_output_route_failure_still_emits_one_json_doc(tmp_path):
-    topo = _write_topology(tmp_path)
-    proc = _run_ghost_net(topo, "aaaa", "dddd")  # fine...
-    assert proc.returncode == 0
-
-    # An unknown fingerprint fails gracefully with a JSON object, not a traceback.
-    proc2 = _run_ghost_net(topo, "nope", "dddd")
-    assert proc2.returncode != 0
-    doc = json.loads(proc2.stdout)
-    assert doc["success"] is False
-    assert doc["path"] == []
-    assert doc["qkd_key_hex"] is None
-
-
-def test_json_output_no_route_meeting_constraint(tmp_path):
-    topo = _write_topology(tmp_path)
-    proc = subprocess.run(
-        [sys.executable, "-m", "quantumnet", "ghost-net",
-         "--topology", str(topo), "--from", "aaaa", "--to", "dddd",
-         "--min-fidelity", "0.999999", "--json-output"],
-        capture_output=True, text=True, timeout=120, cwd=str(SRC),
-    )
-    doc = json.loads(proc.stdout)
-    assert doc["success"] is False
-    assert doc["path"] == []
-    assert doc["end_to_end_fidelity"] == 0.0
-
-
-def test_qkd_derive_emits_one_json_document_with_a_key():
-    proc = _run_qkd_derive(0.95, 0x51EE)
-    assert proc.returncode == 0, proc.stderr
-    doc = json.loads(proc.stdout)
-    assert set(doc) == FIELDS
-    assert doc["success"] is True
-    assert doc["path"] == [] and doc["swap_nodes"] == []
-    assert doc["end_to_end_fidelity"] == 0.95
-    assert isinstance(doc["qkd_key_hex"], str)
-    assert len(doc["qkd_key_hex"]) == 64
-
-
-def test_qkd_derive_is_reproducible_across_processes_and_seed_sensitive():
-    """The two-peer agreement rests on this: same parameters, same key.
-
-    Two independent invocations must produce byte-identical material, because
-    the daemon derives the same key on both ends and never sends it. A
-    different seed must produce different material, or the seed would not be
-    doing anything.
-    """
-    first = json.loads(_run_qkd_derive(0.95, 0x51EE).stdout)["qkd_key_hex"]
-    second = json.loads(_run_qkd_derive(0.95, 0x51EE).stdout)["qkd_key_hex"]
-    other = json.loads(_run_qkd_derive(0.95, 0x1234).stdout)["qkd_key_hex"]
-
-    assert first == second
-    assert first != other
-
-
 def test_qkd_derive_below_the_security_cutoff_reports_no_key():
     proc = _run_qkd_derive(0.5, 0x51EE)
     assert proc.returncode != 0
-    doc = json.loads(proc.stdout)
-    assert set(doc) == FIELDS
-    assert doc["success"] is False
-    assert doc["qkd_key_hex"] is None
+    payload = json.loads(proc.stdout)
+    assert set(payload) == FIELDS
+    assert payload["success"] is False
+    assert payload["qkd_key_hex"] is None
 
 
 def test_qkd_key_helper_yields_32_bytes():

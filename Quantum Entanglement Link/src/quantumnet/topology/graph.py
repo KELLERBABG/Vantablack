@@ -1,7 +1,7 @@
 """Quantum network topology: nodes, optical links, and physical fidelity models.
 
 Everything is derived from the physical-layer models in ``core.physical``
-(fibre attenuation, dark counts, detector efficiency, pulse rates) — no
+(fibre attenuation, dark counts, detector efficiency, pulse rates): no
 hand-tuned "plausible" numbers.
 
 Link fidelity model
@@ -87,13 +87,43 @@ class QuantumLink:
         return bell_fidelity_from_depolarizing(self.depolarizing_probability())
 
     def generation_rate(self) -> float:
-        """Mean successful entanglement attempts per second on this link."""
+        """Mean successful entanglement attempts per second on this link.
+
+        This is the **single-photon** scheme: one photon per arm, both detected,
+        so the attempt probability is ``(eta_det * T)^2``.  It deliberately
+        omits the 1/2 that a double-heralded scheme carries, because it is not
+        modelling one -- for Barrett-Kok use
+        :meth:`barrett_kok_rate` or :func:`~quantumnet.core.photonics.compare_link_models`
+        to see both side by side.
+        """
         return entanglement_generation_rate(
             self.pulse_rate_hz,
             self.length_km,
             alpha_db_km=self.alpha_db_km,
             detector_efficiency=self.detector_eff,
         )
+
+    def barrett_kok(self, *, coincidences_window_s: float = 1e-9):
+        """This link as a double-heralded Barrett-Kok elementary link.
+
+        Provided so a planner can use the physically grounded rate without
+        constructing detectors by hand.  The coincidence window is what sets the
+        dark-count exposure per attempt, so it is explicit rather than assumed.
+        """
+        from ..core.photonics import elementary_link_from_specs
+        return elementary_link_from_specs(
+            self.length_km,
+            alpha_db_km=self.alpha_db_km,
+            detector_efficiency=self.detector_eff,
+            dark_count_hz=self.dark_count_hz,
+            coincidences_window_s=coincidences_window_s,
+        )
+
+    def barrett_kok_rate(self, *, coincidences_window_s: float = 1e-9) -> float:
+        """Barrett-Kok generation rate in successful attempts per second."""
+        return self.barrett_kok(
+            coincidences_window_s=coincidences_window_s
+        ).generation_rate_hz(self.pulse_rate_hz)
 
 
 @dataclass

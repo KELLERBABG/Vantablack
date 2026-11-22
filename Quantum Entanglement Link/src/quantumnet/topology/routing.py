@@ -10,7 +10,7 @@ yields a Werner state with fidelity
 In the Werner parameter ``p = (4F-1)/3`` the operation multiplies
 (``p' = p1*p2``), so pure swap noise is independent of the fusion order.
 Order still matters for the *scheduled* distribution because segments wait
-in memory between generation and fusion (T1/T2 decay) — see ``schedule.py``.
+in memory between generation and fusion (T1/T2 decay).  See ``schedule.py``.
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def all_simple_paths(topo: QuantumTopology, src: str, dst: str,
     ``max_paths`` caps the result list, but when ``dst`` is unreachable the
     DFS would still enumerate every simple path (exponential in dense
     graphs). ``max_visits`` is a global node-expansion budget that bounds
-    the traversal itself — crafted topology files cannot hang the search.
+    the traversal itself: crafted topology files cannot hang the search.
     """
     paths: list[list[str]] = []
     stack: list[tuple[str, list[str]]] = [(src, [src])]

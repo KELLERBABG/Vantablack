@@ -23,11 +23,9 @@ class StabilizerState:
             self.tab[n_qubits + i, n_qubits + i] = True
             self.tab[i, i] = True
 
-    # ------------------------------------------------------------------
     # Row operations (GF(2) linear algebra)
-    # ------------------------------------------------------------------
     def _rowsum(self, dst: int, src: int):
-        """Row[dst] ^= Row[src] — multiply Pauli generators."""
+        """Row[dst] ^= Row[src].  Multiply Pauli generators."""
         for j in range(self.n):
             if self.tab[dst, j] and self.tab[src, self.n + j]:
                 self.tab[dst, 2 * self.n] ^= True
@@ -36,9 +34,7 @@ class StabilizerState:
         for j in range(2 * self.n + 1):
             self.tab[dst, j] ^= self.tab[src, j]
 
-    # ------------------------------------------------------------------
-    # Clifford gates  (each modifies *all* 2n rows)
-    # ------------------------------------------------------------------
+    # Clifford gates (each modifies all 2n rows)
     def h(self, q: int):
         """Hadamard on qubit q."""
         for i in range(2 * self.n):
@@ -113,9 +109,7 @@ class StabilizerState:
         self.cnot(b, a)
         self.cnot(a, b)
 
-    # ------------------------------------------------------------------
     # State preparation helpers
-    # ------------------------------------------------------------------
     @staticmethod
     def zero(n_qubits: int = 1) -> "StabilizerState":
         return StabilizerState(n_qubits)
@@ -159,9 +153,7 @@ class StabilizerState:
         s.x(0)
         return s
 
-    # ------------------------------------------------------------------
     # Measurement
-    # ------------------------------------------------------------------
     def measure(self, q: int, rng: np.random.Generator | None = None) -> int:
         """Measure qubit q in the computational (Z) basis.
 
@@ -204,9 +196,7 @@ class StabilizerState:
             outcomes[q] = self.measure(q, rng)
         return outcomes
 
-    # ------------------------------------------------------------------
-    # Internal: sign of Z_q in deterministic case
-    # ------------------------------------------------------------------
+    # Internal: sign of Z_q in the deterministic case
     def _pauli_sign(self, q: int) -> int:
         """Return ±1: the sign of Z_q in the stabilizer group.
 
@@ -264,9 +254,7 @@ class StabilizerState:
             c[col] = aug[r, n]
         return c
 
-    # ------------------------------------------------------------------
     # Conversion to / from density matrix
-    # ------------------------------------------------------------------
     @staticmethod
     def _apply_pauli(vec: np.ndarray, x: np.ndarray, z: np.ndarray,
                      r: bool) -> np.ndarray:

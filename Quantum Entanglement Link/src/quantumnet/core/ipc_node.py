@@ -30,9 +30,7 @@ class IPCMessage:
     timestamp: float = field(default_factory=time.time)
 
 
-# ---------------------------------------------------------------------------
 # Node worker process
-# ---------------------------------------------------------------------------
 def _node_worker(node_id: str,
                  inbox: mp.Queue,
                  outbox: mp.Queue,
@@ -141,9 +139,7 @@ class IPCNode:
         return self._process is not None and self._process.is_alive()
 
 
-# ---------------------------------------------------------------------------
-# Topology runner  (coordinates multiple IPC nodes)
-# ---------------------------------------------------------------------------
+# Topology runner (coordinates multiple IPC nodes)
 @dataclass
 class TopologyNode:
     node_id: str

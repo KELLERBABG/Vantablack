@@ -1,10 +1,42 @@
 [project]
 name = "quantumnet"
 version = "0.1.0"
-description = "Quantum communication network simulation stack"
+description = "Quantum communication network simulation stack: density-matrix states, noise, error correction, QKD and repeater placement over a mesh topology"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "Lukas Negenborn" }]
+keywords = [
+    "quantum networks", "quantum key distribution", "decoy state",
+    "surface code", "error correction", "repeater placement",
+    "entanglement swapping", "simulation",
+]
+classifiers = [
+    # The `License ::` classifier is deliberately absent: PEP 639 supersedes it with the
+    # `license` expression above, and modern setuptools rejects the pair as conflicting.
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = ["numpy>=1.24"]
-optional-dependencies = { dev = ["pytest>=7"] }
+
+# `stim` is genuinely optional: three surface-code modules import it, and everything
+# else runs on numpy alone. It is separated from `dev` so a user who wants the surface
+# code does not have to install the test toolchain to get it.
+#
+# `pymatching` is imported only on explicit comparison/oracle paths (`logical.py` when
+# `matcher="pymatching"`, and `tjoin_decoder.compare_to_reference`), never on the default
+# decode path. It is kept in `dev` as an independent comparison oracle.
+[project.optional-dependencies]
+surface = ["stim>=1.12"]
+dev = ["pytest>=7", "stim>=1.12", "pymatching>=2.0"]
+
+[project.urls]
+Homepage = "https://kellersystems.dev"
+Repository = "https://github.com/KELLERBABG/QEL"
+Issues = "https://github.com/KELLERBABG/QEL/issues"
+Changelog = "https://github.com/KELLERBABG/QEL/commits/main"
 
 [project.scripts]
 quantumnet = "quantumnet.cli:main"
