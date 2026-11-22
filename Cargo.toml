@@ -127,6 +127,7 @@ reed-solomon-erasure = "6.0.0"
 chacha20poly1305 = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
+sha3 = "0.11"
 # STUN MESSAGE-INTEGRITY (RFC 8489 §14.5) is HMAC-SHA1. Same RustCrypto family
 # as the sha2/hkdf already used above; see `ghost::net::stun`.
 hmac = "0.12"

@@ -261,6 +261,16 @@ impl GhostIdentity {
         hex::encode(&self.public_key_bytes()[0..8])
     }
 
+    /// Compute the PQ-bound canonical identity ID (`NodeIdV3`).
+    pub fn node_id_v3(&self) -> NodeIdV3 {
+        NodeIdV3::compute(&self.public_key_bytes(), &self.pq_public_key_bytes())
+    }
+
+    /// Compute the PQ-bound 16-byte (32-hex) fingerprint from `NodeIdV3`.
+    pub fn pq_fingerprint(&self) -> String {
+        self.node_id_v3().to_short_hex()
+    }
+
     /// Derive an unlinkable, one-time burnable identity for a specific peer and epoch (§3 Burnable Ghost IDs).
     ///
     /// Cryptographically isolates identity across peers:
@@ -360,6 +370,72 @@ pub fn pq_commitment(pq_public_key: &[u8]) -> [u8; 32] {
     h.update(b"ggn-pq-commitment-v1");
     h.update(pq_public_key);
     h.finalize().into()
+}
+
+/// Canonical PQ-bound node identity (`SHA3-256("VB-ID-V3" || ed25519_pk || mldsa65_pk)`).
+///
+/// Binds both the classical Ed25519 key and the post-quantum ML-DSA-65 key so
+/// a classical key break cannot swap the ML-DSA-65 key during TOFU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NodeIdV3(pub [u8; 32]);
+
+impl NodeIdV3 {
+    /// Compute `NodeIdV3` from an Ed25519 public key and an ML-DSA-65 public key.
+    pub fn compute(ed25519_pk: &[u8; 32], mldsa65_pk: &[u8]) -> Self {
+        use sha3::Digest;
+        let mut h = sha3::Sha3_256::new();
+        h.update(b"VB-ID-V3");
+        h.update(ed25519_pk);
+        h.update(mldsa65_pk);
+        Self(h.finalize().into())
+    }
+
+    /// Return the full 32-byte digest.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Return the first 16 bytes of the canonical ID.
+    pub fn short_bytes(&self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&self.0[..16]);
+        out
+    }
+
+    /// Return the 32-character lowercase hex display of the 16-byte prefix.
+    pub fn to_short_hex(&self) -> String {
+        hex::encode(self.short_bytes())
+    }
+
+    /// Derive a `fd7b::/16` IPv6 ULA address from the canonical ID.
+    pub fn to_ula_ipv6(&self) -> std::net::Ipv6Addr {
+        let mut octets = [0u8; 16];
+        octets[0] = 0xfd;
+        octets[1] = 0x7b;
+        octets[2..16].copy_from_slice(&self.0[..14]);
+        std::net::Ipv6Addr::from(octets)
+    }
+}
+
+/// Verify that `(ed25519_pk, mldsa65_pk)` matches the expected `NodeIdV3` TOFU binding.
+///
+/// Rejects malformed ML-DSA-65 public keys or any key pair whose `NodeIdV3`
+/// digest does not match `expected_id` in constant time.
+pub fn verify_pq_identity_binding(
+    expected_id: &NodeIdV3,
+    ed25519_pk: &[u8; 32],
+    mldsa65_pk: &[u8],
+) -> Result<(), &'static str> {
+    use subtle::ConstantTimeEq;
+    if mldsa65_pk.len() != ML_DSA_65_PK_LEN {
+        return Err("invalid ML-DSA-65 public key length");
+    }
+    let computed = NodeIdV3::compute(ed25519_pk, mldsa65_pk);
+    if computed.0.ct_eq(&expected_id.0).into() {
+        Ok(())
+    } else {
+        Err("PQ identity binding mismatch")
+    }
 }
 
 /// Verify a signature from a peer's public key bytes.
@@ -804,5 +880,69 @@ mod tests {
         // Clean up
         let _ = std::fs::remove_file(&key_path);
         let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn node_id_v3_is_deterministic_and_matches_sha3_256() {
+        use sha3::Digest;
+        let id = GhostIdentity::generate_fresh();
+        let ed_pk = id.public_key_bytes();
+        let pq_pk = id.pq_public_key_bytes();
+
+        let node_id = id.node_id_v3();
+        assert_eq!(node_id, NodeIdV3::compute(&ed_pk, &pq_pk));
+        assert!(verify_pq_identity_binding(&node_id, &ed_pk, &pq_pk).is_ok());
+
+        let mut h = sha3::Sha3_256::new();
+        h.update(b"VB-ID-V3");
+        h.update(&ed_pk);
+        h.update(&pq_pk);
+        let expected: [u8; 32] = h.finalize().into();
+        assert_eq!(node_id.as_bytes(), &expected);
+    }
+
+    #[test]
+    fn node_id_v3_rejects_swapped_mldsa65_key_even_with_same_ed25519_key() {
+        let victim = GhostIdentity::generate_fresh();
+        let attacker = GhostIdentity::generate_fresh();
+
+        let expected_id = victim.node_id_v3();
+        let victim_ed_pk = victim.public_key_bytes();
+        let attacker_pq_pk = attacker.pq_public_key_bytes();
+
+        // Classical key is identical, but ML-DSA-65 key is swapped: must be rejected.
+        let res = verify_pq_identity_binding(&expected_id, &victim_ed_pk, &attacker_pq_pk);
+        assert!(res.is_err());
+        assert_ne!(
+            NodeIdV3::compute(&victim_ed_pk, &attacker_pq_pk),
+            expected_id
+        );
+    }
+
+    #[test]
+    fn node_id_v3_rejects_malformed_mldsa65_key_length() {
+        let id = GhostIdentity::generate_fresh();
+        let expected_id = id.node_id_v3();
+        let ed_pk = id.public_key_bytes();
+        let short_pq_pk = vec![0u8; ML_DSA_65_PK_LEN - 1];
+
+        assert!(verify_pq_identity_binding(&expected_id, &ed_pk, &short_pq_pk).is_err());
+    }
+
+    #[test]
+    fn node_id_v3_display_and_ula_helpers() {
+        let id = GhostIdentity::generate_fresh();
+        let node_id = id.node_id_v3();
+
+        let pq_fp = id.pq_fingerprint();
+        assert_eq!(pq_fp.len(), 32);
+        assert_eq!(pq_fp, node_id.to_short_hex());
+        assert_eq!(hex::encode(node_id.short_bytes()), pq_fp);
+
+        let ula = node_id.to_ula_ipv6();
+        let octets = ula.octets();
+        assert_eq!(octets[0], 0xfd);
+        assert_eq!(octets[1], 0x7b);
+        assert_eq!(&octets[2..16], &node_id.as_bytes()[..14]);
     }
 }
