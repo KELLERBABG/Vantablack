@@ -830,8 +830,8 @@ fn spawn_cover_task(
                     *prev_ctr = tx_ctr;
                     *active_at = now;
                 }
-                let in_active_tail =
-                    now.saturating_duration_since(*active_at) <= Duration::from_secs(COVER_ACTIVE_TAIL_SECS);
+                let in_active_tail = now.saturating_duration_since(*active_at)
+                    <= Duration::from_secs(COVER_ACTIVE_TAIL_SECS);
                 let rate = effective_cover_rate(mode, in_active_tail);
                 let deadline = next_emit
                     .entry(peer.clone())
@@ -4394,12 +4394,10 @@ async fn handle_pkt(
             let mut unsealed: Option<Vec<u8>> = None;
             if payload.starts_with(vantablack::ghost::net::relay::ONION_SEAL_MAGIC) {
                 for entry in node.sessions.iter() {
-                    if let Some(inner) =
-                        vantablack::ghost::net::relay::peel_encrypted_relay_layer(
-                            &entry.value().master_key,
-                            payload,
-                        )
-                    {
+                    if let Some(inner) = vantablack::ghost::net::relay::peel_encrypted_relay_layer(
+                        &entry.value().master_key,
+                        payload,
+                    ) {
                         unsealed = Some(inner);
                         break;
                     }
@@ -5479,11 +5477,7 @@ async fn install_peer_descriptor_v2(
     let is_exit = (desc.capabilities & vantablack::ghost::net::discovery::CAP_EXIT) != 0;
     // Remember (or withdraw) this peer's home-exit advertisement. Only a signed
     // descriptor that carries `CAP_HOME_EXIT` becomes a selectable exit.
-    vantablack::ghost::v2::boomerang::note_peer(
-        &fp,
-        desc.capabilities,
-        &desc.endpoint.to_string(),
-    );
+    vantablack::ghost::v2::boomerang::note_peer(&fp, desc.capabilities, &desc.endpoint.to_string());
 
     if let Some(kd) = known_descriptors {
         let should_insert = kd
@@ -6298,9 +6292,7 @@ async fn run_node(
     });
     let socks = std::env::var("GHOST_SOCKS5").is_ok() || regime_policy.is_some();
     let socks_port: u16 = regime_policy
-        .map(|r| {
-            vantablack::ghost::v2::regime::effective_policy(r, 0, 1080).socks_port
-        })
+        .map(|r| vantablack::ghost::v2::regime::effective_policy(r, 0, 1080).socks_port)
         .unwrap_or_else(|| {
             std::env::var("GHOST_SOCKS5_PORT")
                 .ok()
@@ -6310,9 +6302,7 @@ async fn run_node(
     let single_hop_policy = regime_policy.map(|r| match r.hops() {
         vantablack::ghost::v2::regime::HopClass::Direct => socks::HopPolicy::OneHop,
         vantablack::ghost::v2::regime::HopClass::TwoHop => socks::HopPolicy::TwoHop,
-        vantablack::ghost::v2::regime::HopClass::ThreeHopStrict => {
-            socks::HopPolicy::StrictThreeHop
-        }
+        vantablack::ghost::v2::regime::HopClass::ThreeHopStrict => socks::HopPolicy::StrictThreeHop,
     });
     let tm: u64 = std::env::var("GHOST_TRANSIT_MBPS")
         .ok()

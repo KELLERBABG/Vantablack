@@ -2183,7 +2183,10 @@ mod v3_tests {
             .expect("build v3 frame");
         assert_eq!(frame.bytes.len(), GTF_BASE_SIZE + JITTER_MAX);
         // CID is XOR-masked on wire, not plaintext.
-        assert_ne!(&frame.bytes[V3_OFFSET_ENC_HEADER..V3_OFFSET_ENC_HEADER + 8], &cid);
+        assert_ne!(
+            &frame.bytes[V3_OFFSET_ENC_HEADER..V3_OFFSET_ENC_HEADER + 8],
+            &cid
+        );
 
         let parsed = parse_gtf_v3_header(&frame.bytes, &link_hdr_key).expect("parse v3 header");
         assert_eq!(parsed, hdr);

@@ -163,13 +163,8 @@ fn tunnel_frame(
     }
     let nonce = crate::ghost::layers::l2_aead::random_xnonce();
     let epoch = 0u64;
-    let _ = crate::ghost::layers::l2_aead::xchacha_seal_in_place(
-        key,
-        &nonce,
-        epoch,
-        dir,
-        &mut framed,
-    );
+    let _ =
+        crate::ghost::layers::l2_aead::xchacha_seal_in_place(key, &nonce, epoch, dir, &mut framed);
     let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
     let shard = frame_shard(&framed);
     let meta = crate::ghost::net::GtfV2Header {
@@ -1419,10 +1414,9 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
                     *RENDEZVOUS_URL.lock() = url.clone();
                 }
                 let ep = inv
-                    .bootstrap_peers
-                    .first()
-                    .and_then(|p| p.endpoints.first())
-                    .map(|e| e.to_string())
+                    .bootstrap_peer
+                    .as_ref()
+                    .map(|p| p.endpoint.to_string())
                     .unwrap_or_default();
                 format!("ok:{ep}")
             }
@@ -1431,11 +1425,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
     } else if trimmed.starts_with("vb://") {
         match crate::ghost::net::discovery::PeerDescriptorV2::from_uri(trimmed) {
             Some(desc) => {
-                let ep = desc
-                    .endpoints
-                    .first()
-                    .map(|e| e.to_string())
-                    .unwrap_or_default();
+                let ep = desc.endpoint.to_string();
                 format!("ok:{ep}")
             }
             None => "err:invalid peer descriptor".to_string(),

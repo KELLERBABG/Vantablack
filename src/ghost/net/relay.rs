@@ -943,7 +943,9 @@ pub const ONION_SEAL_MAGIC: &[u8; 4] = b"ONS1";
 
 /// Peel one per-hop AEAD-encrypted relay layer using `hop_key`.
 pub fn peel_encrypted_relay_layer(hop_key: &[u8; 32], encrypted_inner: &[u8]) -> Option<Vec<u8>> {
-    let encrypted_inner = encrypted_inner.strip_prefix(ONION_SEAL_MAGIC).unwrap_or(encrypted_inner);
+    let encrypted_inner = encrypted_inner
+        .strip_prefix(ONION_SEAL_MAGIC)
+        .unwrap_or(encrypted_inner);
     if encrypted_inner.len() < 12 + 16 {
         return None;
     }
@@ -1545,7 +1547,8 @@ impl ExtendPqCell {
         let ek = ml_kem::EncapsulationKey::<MlKem768>::new_from_slice(hop_ml_kem_ek).ok()?;
         let (ct, ml_kem_ss) = ek.encapsulate();
 
-        let hop_key = Self::derive_hop_key(&circuit_id, x25519_ss.as_bytes(), ml_kem_ss.as_slice())?;
+        let hop_key =
+            Self::derive_hop_key(&circuit_id, x25519_ss.as_bytes(), ml_kem_ss.as_slice())?;
         let cell = Self {
             circuit_id,
             next_hop,
@@ -1602,7 +1605,11 @@ impl ExtendPqCell {
         let next_hop = if next_len == 0 {
             None
         } else {
-            Some(std::str::from_utf8(&data[idx..idx + next_len]).ok()?.to_string())
+            Some(
+                std::str::from_utf8(&data[idx..idx + next_len])
+                    .ok()?
+                    .to_string(),
+            )
         };
         idx += next_len;
         let mut client_x25519_pk = [0u8; 32];

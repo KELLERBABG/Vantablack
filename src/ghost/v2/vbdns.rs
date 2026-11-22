@@ -364,8 +364,14 @@ pub fn ptr_name(addr: &Ipv6Addr) -> String {
 
 /// Parse the IPv6 address out of a `PTR` question in `ip6.arpa`.
 fn addr_from_ptr_name(name: &str) -> Option<Ipv6Addr> {
-    let stripped = name.strip_suffix(".ip6.arpa").or_else(|| name.strip_suffix("ip6.arpa"))?;
-    let nibbles: Vec<&str> = stripped.trim_end_matches('.').split('.').filter(|s| !s.is_empty()).collect();
+    let stripped = name
+        .strip_suffix(".ip6.arpa")
+        .or_else(|| name.strip_suffix("ip6.arpa"))?;
+    let nibbles: Vec<&str> = stripped
+        .trim_end_matches('.')
+        .split('.')
+        .filter(|s| !s.is_empty())
+        .collect();
     if nibbles.len() != 32 {
         return None;
     }
@@ -605,7 +611,10 @@ mod tests {
         registry.bind(name.clone(), a);
         registry.bind(name, b);
         assert!(registry.reverse(&ula_for_node(&a)).is_none());
-        assert_eq!(registry.reverse(&ula_for_node(&b)).as_deref(), Some("phone"));
+        assert_eq!(
+            registry.reverse(&ula_for_node(&b)).as_deref(),
+            Some("phone")
+        );
         assert_eq!(registry.list().len(), 1);
     }
 
@@ -621,10 +630,13 @@ mod tests {
         let query = build_query(99, "mesh.vb", QTYPE_AAAA).unwrap();
         client.send_to(&query, addr).await.unwrap();
         let mut buf = [0u8; 512];
-        let (n, _) = tokio::time::timeout(std::time::Duration::from_secs(2), client.recv_from(&mut buf))
-            .await
-            .expect("stub answered within 2s")
-            .unwrap();
+        let (n, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.recv_from(&mut buf),
+        )
+        .await
+        .expect("stub answered within 2s")
+        .unwrap();
         assert_eq!(first_aaaa(&buf[..n]).unwrap(), ula_for_node(&id));
         task.abort();
     }

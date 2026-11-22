@@ -389,7 +389,10 @@ mod tests {
         let event = NostrRendezvousEvent::from_beacon(&beacon, "nostr_hex_pubkey".into()).unwrap();
         assert_eq!(event.kind, 20000);
         assert!(event.slot_hex().is_some());
-        assert!(!event.tags.iter().any(|t| t.iter().any(|v| v == "fp" || v == "vantablack_mesh")));
+        assert!(!event
+            .tags
+            .iter()
+            .any(|t| t.iter().any(|v| v == "fp" || v == "vantablack_mesh")));
 
         let parsed = event.parse_beacon().unwrap();
         assert_eq!(parsed, beacon);
@@ -403,7 +406,13 @@ mod tests {
         );
         assert_eq!(opaque.kind, 20000);
         assert_eq!(opaque.slot_hex(), Some("deadbeef01"));
-        assert_eq!(opaque.extract_opaque_share().as_deref(), Some(b"opaque-share-bytes".as_slice()));
-        assert!(!opaque.tags.iter().any(|t| t.iter().any(|v| v == "fp" || v == "vantablack_mesh")));
+        assert_eq!(
+            opaque.extract_opaque_share().as_deref(),
+            Some(b"opaque-share-bytes".as_slice())
+        );
+        assert!(!opaque
+            .tags
+            .iter()
+            .any(|t| t.iter().any(|v| v == "fp" || v == "vantablack_mesh")));
     }
 }

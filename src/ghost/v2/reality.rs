@@ -60,8 +60,8 @@ impl RealityKnock {
     }
 
     fn mac(&self, sni: &str, client_random: &[u8; 32], timestamp: u64) -> [u8; 32] {
-        let mut mac = HmacSha256::new_from_slice(&self.key)
-            .expect("HMAC-SHA256 accepts keys of any length");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.key).expect("HMAC-SHA256 accepts keys of any length");
         mac.update(b"VB-REALITY-KNOCK-V1");
         mac.update(&(sni.len() as u16).to_be_bytes());
         mac.update(sni.as_bytes());
@@ -129,7 +129,8 @@ pub enum SpliceAction {
 
 /// Classify the first bytes of a connection.
 pub fn classify(first: &[u8]) -> ProbeKind {
-    if first.len() >= 3 && first[0] == 0x16 && first[1] == 0x03 && (0x01..=0x04).contains(&first[2]) {
+    if first.len() >= 3 && first[0] == 0x16 && first[1] == 0x03 && (0x01..=0x04).contains(&first[2])
+    {
         // A complete TLS record whose body carries the knock magic in its first
         // bytes is the authenticated case. The full check happens against the
         // parsed SNI and random in `RealityKnock::verify`.
@@ -357,10 +358,19 @@ mod tests {
         let random = [0x11u8; 32];
         let token = rk.token("cdn.example", &random, 1_000);
         assert!(rk.verify("cdn.example", &random, &token, 1_000));
-        assert!(rk.verify("cdn.example", &random, &token, 1_050), "inside window");
+        assert!(
+            rk.verify("cdn.example", &random, &token, 1_050),
+            "inside window"
+        );
         assert!(!rk.verify("cdn.example", &random, &token, 2_000), "expired");
-        assert!(!rk.verify("other.example", &random, &token, 1_000), "replayed elsewhere");
-        assert!(!rk.verify("cdn.example", &[0x22u8; 32], &token, 1_000), "other hello");
+        assert!(
+            !rk.verify("other.example", &random, &token, 1_000),
+            "replayed elsewhere"
+        );
+        assert!(
+            !rk.verify("cdn.example", &[0x22u8; 32], &token, 1_000),
+            "other hello"
+        );
     }
 
     #[test]
@@ -377,12 +387,18 @@ mod tests {
     fn unauthenticated_probes_are_spliced_never_refused() {
         let tls = [0x16u8, 0x03, 0x01, 0x00, 0x40, 0x01, 0, 0, 0, 0, 0, 0xAA];
         assert_eq!(classify(&tls), ProbeKind::TlsClientHello);
-        assert_eq!(decide(ProbeKind::TlsClientHello), SpliceAction::SpliceToOrigin);
+        assert_eq!(
+            decide(ProbeKind::TlsClientHello),
+            SpliceAction::SpliceToOrigin
+        );
         assert_eq!(
             decide(classify(b"GET / HTTP/1.1\r\n")),
             SpliceAction::SpliceToOrigin
         );
-        assert_eq!(decide(classify(b"\x00\xff\x00")), SpliceAction::SpliceToOrigin);
+        assert_eq!(
+            decide(classify(b"\x00\xff\x00")),
+            SpliceAction::SpliceToOrigin
+        );
         assert_eq!(decide(ProbeKind::RealityKnock), SpliceAction::OpenTunnel);
     }
 
@@ -425,7 +441,15 @@ mod tests {
 
     #[test]
     fn varint_round_trips_at_boundaries() {
-        for v in [0u64, 63, 64, 16_383, 16_384, 1_073_741_823, 4_611_686_018_427_387_903] {
+        for v in [
+            0u64,
+            63,
+            64,
+            16_383,
+            16_384,
+            1_073_741_823,
+            4_611_686_018_427_387_903,
+        ] {
             let enc = encode_varint(v).unwrap();
             assert_eq!(decode_varint(&enc), Some((v, enc.len())));
         }

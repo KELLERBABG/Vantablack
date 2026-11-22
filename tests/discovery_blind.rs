@@ -106,12 +106,16 @@ async fn spawn_mock_blind_mailbox() -> (String, Arc<Mutex<MockServerState>>) {
                     });
                 }
 
-                let Some(slot_hex) = target.strip_prefix("/v1/slot/") else {
+                let rest = target
+                    .strip_prefix("/v2/slot/")
+                    .or_else(|| target.strip_prefix("/v1/slot/"));
+                let Some(rest) = rest else {
                     let _ = stream
                         .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
                         .await;
                     return;
                 };
+                let slot_hex = rest.split('/').next().unwrap_or("");
 
                 if method == "PUT" {
                     if body.is_empty() || body.len() > BLIND_MAILBOX_WIRE_LEN {

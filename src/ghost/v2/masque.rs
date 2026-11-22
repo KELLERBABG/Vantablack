@@ -482,11 +482,8 @@ fn transport() -> Arc<quinn::TransportConfig> {
 }
 
 fn server_config(sni: &str, cert_out: Option<&str>) -> Result<quinn::ServerConfig> {
-    let certified = rcgen::generate_simple_self_signed(vec![
-        sni.to_string(),
-        format!("*.{sni}"),
-    ])
-    .map_err(|e| anyhow!("certificate generation failed: {e}"))?;
+    let certified = rcgen::generate_simple_self_signed(vec![sni.to_string(), format!("*.{sni}")])
+        .map_err(|e| anyhow!("certificate generation failed: {e}"))?;
     if let Some(path) = cert_out {
         std::fs::write(path, certified.cert.pem()).context("write certificate PEM")?;
     }
@@ -664,7 +661,9 @@ async fn handle_request(
         let dgram_conn = conn.clone();
         tokio::spawn(async move {
             while let Ok(data) = dgram_conn.read_datagram().await {
-                let Some((id, n)) = decode_varint(&data) else { continue };
+                let Some((id, n)) = decode_varint(&data) else {
+                    continue;
+                };
                 let payload = &data[n..];
                 let mut reply = Vec::new();
                 put_varint(&mut reply, id);
@@ -686,7 +685,10 @@ async fn handle_request(
                     answer.extend_from_slice(payload);
                     if let Some(echo) = encode_datagram_capsule(&answer) {
                         send_frame(&mut send, DATA_FRAME, &echo).await?;
-                        println!("MASQUE capsule {} bytes echoed (qsid={qsid})", payload.len());
+                        println!(
+                            "MASQUE capsule {} bytes echoed (qsid={qsid})",
+                            payload.len()
+                        );
                     }
                 }
             }
@@ -830,7 +832,9 @@ mod tests {
         let encoded = qpack_encode_fields(&fields);
         let decoded = qpack_decode(&encoded).unwrap();
         assert_eq!(decoded.len(), 3);
-        assert!(decoded.iter().any(|(n, v)| n == ":protocol" && v == "connect-udp"));
+        assert!(decoded
+            .iter()
+            .any(|(n, v)| n == ":protocol" && v == "connect-udp"));
         assert!(decoded
             .iter()
             .any(|(n, v)| n == "capsule-protocol" && v == "?1"));
@@ -842,8 +846,22 @@ mod tests {
         assert_eq!(qpack_decode(&[0, 0, 0xC0 | 17]).unwrap()[0].1, "GET");
         // Huffman for "www.example.com" (RFC 7541 C.4.1).
         let encoded = [
-            0u8, 0, 0x50, 0x80 | 12, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab,
-            0x90, 0xf4, 0xff,
+            0u8,
+            0,
+            0x50,
+            0x80 | 12,
+            0xf1,
+            0xe3,
+            0xc2,
+            0xe5,
+            0xf2,
+            0x3a,
+            0x6b,
+            0xa0,
+            0xab,
+            0x90,
+            0xf4,
+            0xff,
         ];
         let decoded = qpack_decode(&encoded).unwrap();
         assert_eq!(decoded[0], (":authority".into(), "www.example.com".into()));

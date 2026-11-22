@@ -244,7 +244,11 @@ impl MockMailboxServer {
                             body: body.clone(),
                         });
 
-                        if let Some(slot_hex) = path.strip_prefix("/v1/slot/") {
+                        if let Some(rest) = path
+                            .strip_prefix("/v2/slot/")
+                            .or_else(|| path.strip_prefix("/v1/slot/"))
+                        {
+                            let slot_hex = rest.split('/').next().unwrap_or("");
                             if method == "PUT" {
                                 let b64 = base64_std_encode(&body);
                                 let mut map = slots_bg.lock().unwrap();
@@ -435,7 +439,7 @@ fn two_nodes_discover_via_blind_mailbox_and_persist_v2_cache() {
     );
     for req in &captured {
         assert!(
-            req.path.starts_with("/v1/slot/"),
+            req.path.starts_with("/v2/slot/") || req.path.starts_with("/v1/slot/"),
             "unexpected mailbox path: {}",
             req.path
         );

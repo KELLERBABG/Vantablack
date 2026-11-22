@@ -222,7 +222,9 @@ pub fn plan(
 ) -> Result<CircuitPlan, PlanError> {
     let mut homes: Vec<&HomeExit> = candidates
         .iter()
-        .filter(|h| h.descriptor.home_exit && h.verify() && h.is_fresh(now, DESCRIPTOR_MAX_AGE_SECS))
+        .filter(|h| {
+            h.descriptor.home_exit && h.verify() && h.is_fresh(now, DESCRIPTOR_MAX_AGE_SECS)
+        })
         .collect();
     if homes.is_empty() {
         return Err(PlanError::NoVerifiedHomeExit);
@@ -233,7 +235,11 @@ pub fn plan(
     // excluded — the exit is a destination, not a relay.
     let mut relays: Vec<RelayDescriptor> = plain_relays
         .iter()
-        .filter(|r| !r.home_exit && r.seen_at <= now && now.saturating_sub(r.seen_at) <= DESCRIPTOR_MAX_AGE_SECS)
+        .filter(|r| {
+            !r.home_exit
+                && r.seen_at <= now
+                && now.saturating_sub(r.seen_at) <= DESCRIPTOR_MAX_AGE_SECS
+        })
         .cloned()
         .collect();
     relays.sort_by_key(|r| epoch_rank(epoch, &r.node_id));
@@ -397,7 +403,11 @@ pub fn forget_peer(fingerprint: &str) {
 pub fn candidates() -> Vec<PeerHomeExit> {
     let rt = runtime().read().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<PeerHomeExit> = rt.peers.values().cloned().collect();
-    out.sort_by(|a, b| b.seen_at.cmp(&a.seen_at).then(a.fingerprint.cmp(&b.fingerprint)));
+    out.sort_by(|a, b| {
+        b.seen_at
+            .cmp(&a.seen_at)
+            .then(a.fingerprint.cmp(&b.fingerprint))
+    });
     out
 }
 
@@ -572,7 +582,10 @@ mod tests {
         let listed = candidates();
         assert!(listed.iter().any(|c| c.fingerprint == "fp-home"));
         assert!(!listed.iter().any(|c| c.fingerprint == "fp-plain"));
-        assert!(select("fp-plain").is_err(), "never advertised, never selected");
+        assert!(
+            select("fp-plain").is_err(),
+            "never advertised, never selected"
+        );
         assert!(select("fp-home").is_ok());
         assert_eq!(selected().as_deref(), Some("fp-home"));
         // A later descriptor without the bit withdraws the advertisement.

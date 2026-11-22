@@ -1020,9 +1020,7 @@ pub fn verify_reality_knock(
     mac.update(short_id);
     let expected_tag = mac.finalize().into_bytes();
 
-    legacy_session_id[8..32]
-        .ct_eq(&expected_tag[..24])
-        .into()
+    legacy_session_id[8..32].ct_eq(&expected_tag[..24]).into()
 }
 
 #[cfg(test)]

@@ -110,7 +110,8 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             let target = flag_value(&args, "--target")
                 .or_else(|| args.get(2).filter(|a| !a.starts_with("--")).cloned())
                 .unwrap_or_else(|| "127.0.0.1:3000".to_string());
-            let listen = flag_value(&args, "--listen").unwrap_or_else(|| "127.0.0.1:8787".to_string());
+            let listen =
+                flag_value(&args, "--listen").unwrap_or_else(|| "127.0.0.1:8787".to_string());
             let token = flag_value(&args, "--token").unwrap_or_else(random_token);
             let cfg = ExposeConfig {
                 listen,
@@ -187,13 +188,11 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
                     .map_err(anyhow::Error::msg),
                 )
             } else {
-                let out = flag_value(&args, "--out").unwrap_or_else(|| ".hpeb-recovered.bin".into());
+                let out =
+                    flag_value(&args, "--out").unwrap_or_else(|| ".hpeb-recovered.bin".into());
                 Some(
-                    vantablack::ghost::v2::hpeb::run_multipath_server(
-                        &listen,
-                        &PathBuf::from(out),
-                    )
-                    .map_err(anyhow::Error::msg),
+                    vantablack::ghost::v2::hpeb::run_multipath_server(&listen, &PathBuf::from(out))
+                        .map_err(anyhow::Error::msg),
                 )
             }
         }
@@ -228,7 +227,9 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!("  ggn drop <file>                 Share a file with a browser link (key stays in the URL fragment)");
             println!("  ggn expose <host:port>          Token-gated relay to one local server, no port forwarding");
             println!("  ggn party [--peer ADDR] [--peer-listen ADDR]  UDP bridge for LAN games (dedupe + jitter buffer)");
-            println!("  ggn mode [fast|shielded|ghost|vantablack]  Show or set the operating regime");
+            println!(
+                "  ggn mode [fast|shielded|ghost|vantablack]  Show or set the operating regime"
+            );
             println!("  ggn vb-dns [--map name=NODEID]  Serve <name>.vb on a loopback DNS stub");
             println!("  ggn xray [--json]               What your ISP, the guard and the website can see");
             println!("  ggn fleet [--init|--issue PK|--revoke PK|--admit URI]  Fleet subkeys, vb-fleet:// QR onboarding, revocation");
@@ -251,9 +252,7 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
 
 #[cfg(feature = "reality-front")]
 fn run_reality(listen: String, origin: String, token: String) -> anyhow::Result<()> {
-    block_on(vantablack::ghost::v2::front::run_cli(
-        listen, origin, token,
-    ))
+    block_on(vantablack::ghost::v2::front::run_cli(listen, origin, token))
 }
 
 #[cfg(not(feature = "reality-front"))]
@@ -397,7 +396,10 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
     }
 
     if !has_flag(args, "--demo") {
-        println!("{}", serde_json::to_string_pretty(&btcr::status_json("cli"))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&btcr::status_json("cli"))?
+        );
         return Ok(());
     }
 
@@ -405,8 +407,8 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
     let beneficiary = SigningKey::from_bytes(&[11u8; 32]);
     let now = vantablack::ghost::v2::now_secs();
     let to_any = |e: String| anyhow::anyhow!(e);
-    let receipt = sign_receipt(&beneficiary, "demo-home-pc", 4_000_000, now / 3600)
-        .map_err(to_any)?;
+    let receipt =
+        sign_receipt(&beneficiary, "demo-home-pc", 4_000_000, now / 3600).map_err(to_any)?;
 
     // A tampered receipt must be refused before anything is minted.
     let mut forged: Receipt = receipt.clone();
@@ -434,9 +436,22 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
 
     println!("BTCr / Blind-Pass demo (Ristretto255 VOPRF + Chaum–Pedersen DLEQ)");
     println!("  issuer key        {}", issuer.public_hex());
-    println!("  beneficiary       {}", hex::encode(beneficiary.verifying_key().to_bytes()));
-    println!("  receipt           {} bytes of relay work, epoch {}", receipt.work_bytes, receipt.epoch);
-    println!("  tampered receipt  {}", if refused { "refused" } else { "ACCEPTED — bug" });
+    println!(
+        "  beneficiary       {}",
+        hex::encode(beneficiary.verifying_key().to_bytes())
+    );
+    println!(
+        "  receipt           {} bytes of relay work, epoch {}",
+        receipt.work_bytes, receipt.epoch
+    );
+    println!(
+        "  tampered receipt  {}",
+        if refused {
+            "refused"
+        } else {
+            "ACCEPTED — bug"
+        }
+    );
     println!("  blind request     {}", &request.blinded[..32]);
     let (eval_hex, _) = issuer.evaluate(&request.blinded).map_err(to_any)?;
     let dleq_ok = btcr::decode_point(&request.blinded)
@@ -452,7 +467,10 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
         verified
     );
     println!("  first spend       {:?}", first_spend.map(|_| "ok"));
-    println!("  replay            {}", replay.err().unwrap_or_else(|| "ACCEPTED — bug".into()));
+    println!(
+        "  replay            {}",
+        replay.err().unwrap_or_else(|| "ACCEPTED — bug".into())
+    );
     println!("  wallet            {}", btcr::wallet_path().display());
     println!("  wallet credit     {} bytes", wallet.total_credit());
     println!("  note              signature is bound to the receipt message; issuance without it is refused");
@@ -469,10 +487,16 @@ async fn run_ladder(args: &[String]) -> anyhow::Result<()> {
         return Ok(());
     }
     if has_flag(args, "--json") {
-        println!("{}", serde_json::to_string_pretty(&continuum::status_json())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&continuum::status_json())?
+        );
         return Ok(());
     }
-    println!("Continuum ladder — {}-byte GhostCell-Nano", continuum::CELL_LEN);
+    println!(
+        "Continuum ladder — {}-byte GhostCell-Nano",
+        continuum::CELL_LEN
+    );
     for rung in continuum::ladder() {
         println!(
             "  [{}] {:14} mtu={}  {}",
@@ -488,7 +512,9 @@ async fn run_ladder(args: &[String]) -> anyhow::Result<()> {
     println!("  bundles     {}", store.list().len());
     println!("  merkle root {}", store.merkle_root());
     println!();
-    println!("`ggn ladder --demo` sends three real cells over loopback UDP and unions two mule stores.");
+    println!(
+        "`ggn ladder --demo` sends three real cells over loopback UDP and unions two mule stores."
+    );
     Ok(())
 }
 
@@ -523,8 +549,8 @@ fn run_fleet(args: &[String]) -> anyhow::Result<()> {
         Ok(fleet::FleetRoot::from_seed(seed))
     };
     let parse_pk = |raw: &str| -> anyhow::Result<[u8; 32]> {
-        let bytes = hex::decode(raw.trim())
-            .map_err(|e| anyhow::anyhow!("device key is not hex: {e}"))?;
+        let bytes =
+            hex::decode(raw.trim()).map_err(|e| anyhow::anyhow!("device key is not hex: {e}"))?;
         bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("device key must be 32 bytes"))
@@ -556,7 +582,10 @@ fn run_fleet(args: &[String]) -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("cannot encode fleet invite"))?;
         println!("Device certificate issued.");
         println!("  device   {}", cert.device_pk);
-        println!("  id       {}", hex::encode(cert.device_id().unwrap_or([0u8; 8])));
+        println!(
+            "  id       {}",
+            hex::encode(cert.device_id().unwrap_or([0u8; 8]))
+        );
         println!("  expires  {}", cert.expires_at);
         println!("  onboard  {uri}");
         println!();
@@ -582,7 +611,14 @@ fn run_fleet(args: &[String]) -> anyhow::Result<()> {
         println!("Device revoked.");
         println!("  device id {}", rev.device_id);
         println!("  wire      {} bytes  {}", wire.len(), hex::encode(&wire));
-        println!("  signature {}", if rev.verify(&root.public_key()) { "valid" } else { "INVALID" });
+        println!(
+            "  signature {}",
+            if rev.verify(&root.public_key()) {
+                "valid"
+            } else {
+                "INVALID"
+            }
+        );
         return Ok(());
     }
 
@@ -598,13 +634,8 @@ fn run_fleet(args: &[String]) -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!("revocation signature is invalid"));
             }
         }
-        let pk = fleet::admit(
-            &cert,
-            &root_pk,
-            &revoked,
-            vantablack::ghost::v2::now_secs(),
-        )
-        .map_err(|e| anyhow::anyhow!("device refused: {e}"))?;
+        let pk = fleet::admit(&cert, &root_pk, &revoked, vantablack::ghost::v2::now_secs())
+            .map_err(|e| anyhow::anyhow!("device refused: {e}"))?;
         println!("Device admitted.");
         println!("  fleet  {}", cert.fleet_id);
         println!("  device {}", cert.label);
@@ -639,7 +670,11 @@ fn run_mode(args: &[String]) -> anyhow::Result<()> {
         return Ok(());
     }
     let active = vantablack::ghost::v2::regime::active().map_err(|e| anyhow::anyhow!(e))?;
-    println!("Active regime: {} ({})", active.as_str(), active.plane().as_str());
+    println!(
+        "Active regime: {} ({})",
+        active.as_str(),
+        active.plane().as_str()
+    );
     println!("{}", active.describe());
     println!();
     for regime in Regime::ALL {
@@ -654,7 +689,10 @@ fn run_mode(args: &[String]) -> anyhow::Result<()> {
         );
     }
     println!();
-    println!("Anonymity is only ever claimed by `vantablack`, and only above {} public relays.", vantablack::ghost::v2::regime::MIN_ANONYMITY_RELAYS);
+    println!(
+        "Anonymity is only ever claimed by `vantablack`, and only above {} public relays.",
+        vantablack::ghost::v2::regime::MIN_ANONYMITY_RELAYS
+    );
     Ok(())
 }
 
@@ -678,7 +716,8 @@ fn run_vb_dns(args: &[String]) -> anyhow::Result<()> {
                 let parsed = vbdns::VbName::parse(name)
                     .or_else(|| vbdns::VbName::parse(&format!("{name}.vb")))
                     .ok_or_else(|| anyhow::anyhow!("{name:?} is not a valid <name>.vb"))?;
-                let bytes = hex::decode(id.trim()).map_err(|e| anyhow::anyhow!("bad node id: {e}"))?;
+                let bytes =
+                    hex::decode(id.trim()).map_err(|e| anyhow::anyhow!("bad node id: {e}"))?;
                 if bytes.is_empty() || bytes.len() > 16 {
                     return Err(anyhow::anyhow!("node id must be 1..=16 bytes of hex"));
                 }
@@ -693,8 +732,8 @@ fn run_vb_dns(args: &[String]) -> anyhow::Result<()> {
     }
 
     if let Some(name) = flag_value(args, "--check") {
-        let Some(parsed) = vbdns::VbName::parse(&name)
-            .or_else(|| vbdns::VbName::parse(&format!("{name}.vb")))
+        let Some(parsed) =
+            vbdns::VbName::parse(&name).or_else(|| vbdns::VbName::parse(&format!("{name}.vb")))
         else {
             return Err(anyhow::anyhow!("{name:?} is not a valid <name>.vb"));
         };
@@ -719,7 +758,9 @@ fn run_vb_dns(args: &[String]) -> anyhow::Result<()> {
             println!("  {name} -> {target}");
         }
         println!("Set the OS resolver for `.vb` (or the whole resolver) to {addr}.");
-        println!("Port 53 usually needs administrator rights; use --bind 127.0.0.53:5353 for a test.");
+        println!(
+            "Port 53 usually needs administrator rights; use --bind 127.0.0.53:5353 for a test."
+        );
         tokio::signal::ctrl_c().await.ok();
         task.abort();
         println!(".vb DNS stub stopped.");
@@ -780,16 +821,13 @@ async fn run_xray(args: &[String]) -> anyhow::Result<()> {
     println!();
     println!("Invariants:");
     for inv in &ledger.invariants {
-        println!(
-            "  [{:8}] {:24} {}",
-            inv.state.as_str(),
-            inv.id,
-            inv.detail
-        );
+        println!("  [{:8}] {:24} {}", inv.state.as_str(), inv.id, inv.detail);
     }
     if status.is_null() {
         println!();
-        println!("Note: the control center on port {port} did not answer, so the relay count is 0.");
+        println!(
+            "Note: the control center on port {port} did not answer, so the relay count is 0."
+        );
     }
     Ok(())
 }

@@ -63,7 +63,12 @@ pub struct GhostCellNano {
 
 impl GhostCellNano {
     /// Seal `payload` (never more than [`MAX_PAYLOAD`] bytes).
-    pub fn seal(key: &[u8; 32], cell_id: [u8; 4], seq: u64, payload: &[u8]) -> Result<Self, String> {
+    pub fn seal(
+        key: &[u8; 32],
+        cell_id: [u8; 4],
+        seq: u64,
+        payload: &[u8],
+    ) -> Result<Self, String> {
         if payload.len() > MAX_PAYLOAD {
             return Err(format!(
                 "payload is {} bytes; one GhostCell-Nano carries at most {MAX_PAYLOAD}",
@@ -114,7 +119,9 @@ impl GhostCellNano {
                     aad: &aad,
                 },
             )
-            .map_err(|_| "cell authentication failed (wrong key, reordered, or tampered)".to_string())?;
+            .map_err(|_| {
+                "cell authentication failed (wrong key, reordered, or tampered)".to_string()
+            })?;
         if body.len() != SEALED_LEN {
             return Err("cell body has the wrong length".into());
         }
@@ -137,7 +144,10 @@ impl GhostCellNano {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() != CELL_LEN {
-            return Err(format!("a GhostCell-Nano is {CELL_LEN} bytes, got {}", bytes.len()));
+            return Err(format!(
+                "a GhostCell-Nano is {CELL_LEN} bytes, got {}",
+                bytes.len()
+            ));
         }
         let mut cell_id = [0u8; 4];
         let mut seq = [0u8; 8];
@@ -506,7 +516,11 @@ impl MuleStore {
 
 // ── UDP path ────────────────────────────────────────────────────────────────
 
-pub async fn send_cell(sock: &UdpSocket, dst: SocketAddr, cell: &GhostCellNano) -> std::io::Result<usize> {
+pub async fn send_cell(
+    sock: &UdpSocket,
+    dst: SocketAddr,
+    cell: &GhostCellNano,
+) -> std::io::Result<usize> {
     sock.send_to(&cell.to_bytes(), dst).await
 }
 
@@ -543,7 +557,11 @@ pub async fn loopback_demo() -> Result<DemoReport, String> {
         .map_err(|e| format!("bind sender: {e}"))?;
     let dst = receiver.local_addr().map_err(|e| format!("addr: {e}"))?;
 
-    let payloads = [b"rung-1".as_slice(), b"rung-2".as_slice(), b"rung-3".as_slice()];
+    let payloads = [
+        b"rung-1".as_slice(),
+        b"rung-2".as_slice(),
+        b"rung-3".as_slice(),
+    ];
     let mut sent = Vec::new();
     for (i, payload) in payloads.iter().enumerate() {
         let cell = GhostCellNano::seal(&key, [0xAB, 0xCD, 0xEF, i as u8], i as u64 + 1, payload)?;
@@ -673,7 +691,8 @@ mod tests {
         let b = MuleStore::new(base.join("b"));
         let key = [7u8; 32];
         for i in 0..3u64 {
-            let cell = GhostCellNano::seal(&key, [9, 9, 9, 9], i, format!("cell-{i}").as_bytes()).unwrap();
+            let cell =
+                GhostCellNano::seal(&key, [9, 9, 9, 9], i, format!("cell-{i}").as_bytes()).unwrap();
             a.put(&cell.to_bytes()).unwrap();
         }
         assert_ne!(a.merkle_root(), b.merkle_root());

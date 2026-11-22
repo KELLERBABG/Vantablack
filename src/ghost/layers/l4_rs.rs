@@ -178,8 +178,12 @@ mod tests {
         let shards = encode_aont_rs21(secret);
         assert_eq!(shards.len(), 3);
         // Neither shard[0] nor shard[1] contains the plaintext substring.
-        assert!(!shards[0].windows(8).any(|w| secret.windows(8).any(|s| s == w)));
-        assert!(!shards[1].windows(8).any(|w| secret.windows(8).any(|s| s == w)));
+        assert!(!shards[0]
+            .windows(8)
+            .any(|w| secret.windows(8).any(|s| s == w)));
+        assert!(!shards[1]
+            .windows(8)
+            .any(|w| secret.windows(8).any(|s| s == w)));
 
         // Drop shard 0 -> reconstruct from shard 1 + parity 2.
         let mut partial = vec![None, Some(shards[1].clone()), Some(shards[2].clone())];
@@ -189,11 +193,17 @@ mod tests {
 
     #[test]
     fn adaptive_coding_mode_selection() {
-        assert_eq!(select_coding_mode(0.001, 1), AdaptiveCodingMode::DirectNoFec);
+        assert_eq!(
+            select_coding_mode(0.001, 1),
+            AdaptiveCodingMode::DirectNoFec
+        );
         assert_eq!(
             select_coding_mode(0.03, 1),
             AdaptiveCodingMode::AdaptiveBurstFec { data: 4, parity: 1 }
         );
-        assert_eq!(select_coding_mode(0.0, 2), AdaptiveCodingMode::ShatterAontRs21);
+        assert_eq!(
+            select_coding_mode(0.0, 2),
+            AdaptiveCodingMode::ShatterAontRs21
+        );
     }
 }

@@ -429,7 +429,9 @@ fn route(path: &str) -> Route {
     match parts.as_slice() {
         ["f", id] if is_drop_id(id) => Route::Page((*id).to_string()),
         ["f", id, "recv"] if is_drop_id(id) => Route::ReceiverPage((*id).to_string()),
-        ["f", id, "signal", role] if is_drop_id(id) && (*role == "sender" || *role == "receiver") => {
+        ["f", id, "signal", role]
+            if is_drop_id(id) && (*role == "sender" || *role == "receiver") =>
+        {
             Route::Signal((*id).to_string(), (*role).to_string())
         }
         ["d", id, "meta"] if is_drop_id(id) => Route::Meta((*id).to_string()),
@@ -871,9 +873,7 @@ pub async fn serve(registry: Arc<PortalRegistry>, listener: tokio::net::TcpListe
             out.extend_from_slice(
                 format!("HTTP/1.1 {} {}\r\n", resp.status, reason(resp.status)).as_bytes(),
             );
-            out.extend_from_slice(
-                format!("Content-Type: {}\r\n", resp.content_type).as_bytes(),
-            );
+            out.extend_from_slice(format!("Content-Type: {}\r\n", resp.content_type).as_bytes());
             out.extend_from_slice(format!("Content-Length: {}\r\n", resp.body.len()).as_bytes());
             out.extend_from_slice(b"Connection: close\r\n");
             for (name, value) in &resp.extra_headers {
@@ -930,7 +930,10 @@ pub async fn run_cli(
     println!("  SHA-256 {}", manifest.sha256);
     println!("  expires {}", manifest.expires_at);
     println!();
-    println!("  local: {}", session.link(&format!("http://127.0.0.1:{port}")));
+    println!(
+        "  local: {}",
+        session.link(&format!("http://127.0.0.1:{port}"))
+    );
     if let Some(ip) = local_lan_ip() {
         if !ip.is_loopback() {
             println!("  LAN:   {}", session.link(&format!("http://{ip}:{port}")));
@@ -1004,14 +1007,14 @@ mod tests {
         let mut rebuilt = Vec::new();
         for i in 0..session.manifest.chunk_count {
             let sealed = session.chunk(i).unwrap();
-            assert_eq!(sealed.len(), decrypt(&session, i, &sealed).len() + CHUNK_TAG_LEN);
+            assert_eq!(
+                sealed.len(),
+                decrypt(&session, i, &sealed).len() + CHUNK_TAG_LEN
+            );
             rebuilt.extend_from_slice(&decrypt(&session, i, &sealed));
         }
         assert_eq!(rebuilt, data);
-        assert_eq!(
-            session.manifest.sha256,
-            hex::encode(Sha256::digest(&data))
-        );
+        assert_eq!(session.manifest.sha256, hex::encode(Sha256::digest(&data)));
     }
 
     #[test]
@@ -1022,7 +1025,9 @@ mod tests {
         let other = Aes256Gcm::new_from_slice(&[0u8; 32]).unwrap();
         let mut nonce = [0u8; 12];
         nonce[4..].copy_from_slice(&0u64.to_be_bytes());
-        assert!(other.decrypt(Nonce::from_slice(&nonce), sealed.as_slice()).is_err());
+        assert!(other
+            .decrypt(Nonce::from_slice(&nonce), sealed.as_slice())
+            .is_err());
     }
 
     #[test]
@@ -1032,7 +1037,10 @@ mod tests {
         let link = session.link("http://192.0.2.5:8787");
         assert!(link.starts_with("http://192.0.2.5:8787/f/"));
         let (before, after) = link.split_once('#').unwrap();
-        assert!(!before.contains(&session.key_hex()), "key must not be in the path");
+        assert!(
+            !before.contains(&session.key_hex()),
+            "key must not be in the path"
+        );
         assert_eq!(after, format!("k={}", session.key_hex()));
         // And it is absent from the metadata the server hands out.
         let manifest = session.manifest_json().to_string();
@@ -1085,7 +1093,10 @@ mod tests {
             404
         );
         assert_eq!(respond(&registry, "POST", "/", Instant::now()).status, 405);
-        assert_eq!(respond(&registry, "GET", "/healthz", Instant::now()).status, 200);
+        assert_eq!(
+            respond(&registry, "GET", "/healthz", Instant::now()).status,
+            200
+        );
     }
 
     #[tokio::test]
@@ -1163,10 +1174,9 @@ mod tests {
         // POST remains forbidden everywhere except signaling.
         assert_eq!(respond(&registry, "POST", "/", Instant::now()).status, 405);
 
-        let send = String::from_utf8(
-            respond(&registry, "GET", &format!("/f/{id}"), Instant::now()).body,
-        )
-        .unwrap();
+        let send =
+            String::from_utf8(respond(&registry, "GET", &format!("/f/{id}"), Instant::now()).body)
+                .unwrap();
         assert!(send.contains("Send over DataChannel"));
         assert!(send.contains("RTCPeerConnection"));
         let recv = String::from_utf8(

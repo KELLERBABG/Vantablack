@@ -186,8 +186,7 @@ async fn serve_tunnel(
             Some(payload) => {
                 let mut answer = b"CAPSULE-ECHO:".to_vec();
                 answer.extend_from_slice(payload);
-                crate::ghost::v2::reality::encode_datagram_capsule(&answer)
-                    .unwrap_or_default()
+                crate::ghost::v2::reality::encode_datagram_capsule(&answer).unwrap_or_default()
             }
             None => b"CAPSULE-BAD".to_vec(),
         }
@@ -217,7 +216,9 @@ pub async fn run_cli(listen: String, origin: String, token: String) -> Result<()
     let listener = TcpListener::bind(addr).await?;
     println!(
         "REALITY front listening on {} -> borrowed origin {}:{} (TLS 1.3)",
-        listener.local_addr()?, origin_host, origin_port
+        listener.local_addr()?,
+        origin_host,
+        origin_port
     );
     println!("Authenticated SNI label: {token}.{origin_sni}");
     loop {

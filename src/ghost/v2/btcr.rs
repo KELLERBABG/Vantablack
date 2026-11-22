@@ -105,21 +105,19 @@ fn dleq_challenge(
 ) -> Scalar {
     let mut h = Sha512::new();
     h.update(b"VB-BTCR-DLEQ-V1");
-    for p in [
-        &RISTRETTO_BASEPOINT_POINT,
-        k,
-        b,
-        e,
-        a1,
-        a2,
-    ] {
+    for p in [&RISTRETTO_BASEPOINT_POINT, k, b, e, a1, a2] {
         h.update(p.compress().as_bytes());
     }
     Scalar::from_hash(h)
 }
 
 impl Dleq {
-    fn prove(secret: &Scalar, public: &RistrettoPoint, blinded: &RistrettoPoint, eval: &RistrettoPoint) -> Self {
+    fn prove(
+        secret: &Scalar,
+        public: &RistrettoPoint,
+        blinded: &RistrettoPoint,
+        eval: &RistrettoPoint,
+    ) -> Self {
         let t = random_scalar();
         let a1 = t * RISTRETTO_BASEPOINT_POINT;
         let a2 = t * blinded;
@@ -388,8 +386,8 @@ pub fn sign_receipt(
 }
 
 pub fn verify_receipt(receipt: &Receipt, allowed: &VerifyingKey) -> Result<(), String> {
-    let pk_bytes = hex::decode(&receipt.beneficiary)
-        .map_err(|e| format!("bad beneficiary key: {e}"))?;
+    let pk_bytes =
+        hex::decode(&receipt.beneficiary).map_err(|e| format!("bad beneficiary key: {e}"))?;
     if pk_bytes.len() != 32 {
         return Err("beneficiary key must be 32 bytes".into());
     }
@@ -400,7 +398,8 @@ pub fn verify_receipt(receipt: &Receipt, allowed: &VerifyingKey) -> Result<(), S
     if stated != *allowed {
         return Err("receipt was signed by a key that is not this node's beneficiary".into());
     }
-    let sig_bytes = hex::decode(&receipt.signature).map_err(|e| format!("bad signature hex: {e}"))?;
+    let sig_bytes =
+        hex::decode(&receipt.signature).map_err(|e| format!("bad signature hex: {e}"))?;
     if sig_bytes.len() != 64 {
         return Err("receipt signature must be 64 bytes".into());
     }
@@ -684,7 +683,10 @@ mod tests {
         let key = beneficiary();
         let receipt = sign_receipt(&key, "home-pc", 4_000_000, 12).unwrap();
         let request = blind(b"phone-session-1");
-        assert_ne!(request.blinded, request.input, "the issuer must not see the input");
+        assert_ne!(
+            request.blinded, request.input,
+            "the issuer must not see the input"
+        );
 
         let (ticket, proof) = issue_for_work(
             &issuer,
@@ -732,8 +734,8 @@ mod tests {
         let mut receipt = sign_receipt(&key, "relay", 10_000, 1).unwrap();
         receipt.work_bytes = 999_999_999; // tampered after signing
         let request = blind(b"unearned");
-        let err = issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, 100)
-            .unwrap_err();
+        let err =
+            issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, 100).unwrap_err();
         assert!(err.contains("signature"), "{err}");
 
         let zero = Receipt {
@@ -775,7 +777,10 @@ mod tests {
         let key = beneficiary();
         let mut a = Wallet::default();
         let mut b = Wallet::default();
-        for (wallet, seed, work) in [(&mut a, b"w1".as_slice(), 100u64), (&mut b, b"w2".as_slice(), 250)] {
+        for (wallet, seed, work) in [
+            (&mut a, b"w1".as_slice(), 100u64),
+            (&mut b, b"w2".as_slice(), 250),
+        ] {
             let request = blind(seed);
             let receipt = sign_receipt(&key, "relay", work, 1).unwrap();
             let (ticket, _) =
@@ -796,8 +801,10 @@ mod tests {
         let mut w = Wallet::default();
         let r1 = sign_receipt(&key, "home", 1_000_000, 1).unwrap();
         let r2 = sign_receipt(&key, "home", 2_000_000, 2).unwrap();
-        let (t1, _) = issue_for_work(&issuer, &r1, &key.verifying_key(), &blind(b"g1"), 100).unwrap();
-        let (mut t2, _) = issue_for_work(&issuer, &r2, &key.verifying_key(), &blind(b"g2"), 100).unwrap();
+        let (t1, _) =
+            issue_for_work(&issuer, &r1, &key.verifying_key(), &blind(b"g1"), 100).unwrap();
+        let (mut t2, _) =
+            issue_for_work(&issuer, &r2, &key.verifying_key(), &blind(b"g2"), 100).unwrap();
         t2.expires_at = 50; // expired at now=100
         w.tickets.push(t1.clone());
         w.tickets.push(t2);

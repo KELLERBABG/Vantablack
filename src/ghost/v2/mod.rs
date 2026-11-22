@@ -29,15 +29,15 @@ pub mod api;
 pub mod boomerang;
 pub mod btcr;
 pub mod chronos;
+pub mod continuum;
 pub mod expose;
 pub mod fleet;
 #[cfg(feature = "reality-front")]
 pub mod front;
+pub mod hpeb;
 #[cfg(feature = "quic")]
 pub mod masque;
-pub mod hpeb;
 pub mod party;
-pub mod continuum;
 pub mod portal;
 pub mod racs;
 pub mod reality;

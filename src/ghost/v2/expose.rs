@@ -258,7 +258,10 @@ pub async fn run_cli(cfg: ExposeConfig) -> anyhow::Result<()> {
         }
     }
     println!();
-    println!("Anyone with the token reaches {} and nothing else. Ctrl+C to stop.", cfg.target);
+    println!(
+        "Anyone with the token reaches {} and nothing else. Ctrl+C to stop.",
+        cfg.target
+    );
     let cfg = Arc::new(cfg);
     let loop_task = tokio::spawn(serve(listener, Arc::clone(&cfg)));
     tokio::signal::ctrl_c().await.ok();
@@ -303,7 +306,9 @@ mod tests {
         let req = head(&format!("GET /{} HTTP/1.1\r\n\r\n", c.token));
         match route(&req, &c) {
             Route::Forward(bytes) => {
-                assert!(String::from_utf8(bytes).unwrap().starts_with("GET / HTTP/1.1\r\n"))
+                assert!(String::from_utf8(bytes)
+                    .unwrap()
+                    .starts_with("GET / HTTP/1.1\r\n"))
             }
             Route::Deny => panic!("denied"),
         }
@@ -335,20 +340,30 @@ mod tests {
             Route::Deny
         );
         assert_eq!(
-            route(&head("GET /v1/chat HTTP/1.1\r\nX-VB-Expose: nope\r\n\r\n"), &c),
+            route(
+                &head("GET /v1/chat HTTP/1.1\r\nX-VB-Expose: nope\r\n\r\n"),
+                &c
+            ),
             Route::Deny
         );
         // A token that is a prefix of the real one must not pass.
         assert_eq!(
-            route(&head(&format!("GET /{}/ HTTP/1.1\r\n\r\n", &c.token[..8])), &c),
+            route(
+                &head(&format!("GET /{}/ HTTP/1.1\r\n\r\n", &c.token[..8])),
+                &c
+            ),
             Route::Deny
         );
     }
 
     #[test]
     fn a_weak_token_is_rejected_at_startup() {
-        assert!(ExposeConfig::new("127.0.0.1:3000", "short").validate().is_err());
-        assert!(ExposeConfig::new("no-port", "0123456789abcdef").validate().is_err());
+        assert!(ExposeConfig::new("127.0.0.1:3000", "short")
+            .validate()
+            .is_err());
+        assert!(ExposeConfig::new("no-port", "0123456789abcdef")
+            .validate()
+            .is_err());
     }
 
     #[tokio::test]
@@ -389,7 +404,9 @@ mod tests {
 
         // Denied, with a 404 that says nothing else.
         let mut s = TcpStream::connect(addr).await.unwrap();
-        s.write_all(b"GET /nope HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        s.write_all(b"GET /nope HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
         let mut resp = Vec::new();
         s.read_to_end(&mut resp).await.unwrap();
         let text = String::from_utf8_lossy(&resp).to_string();

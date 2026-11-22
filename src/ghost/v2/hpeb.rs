@@ -115,7 +115,11 @@ impl HpebScheduler {
     /// Unpinned paths do not count: two sockets that both leave by the default
     /// route are one physical path with extra steps.
     pub fn is_bonded(&self) -> bool {
-        let live: Vec<&PhyPath> = self.paths.iter().filter(|p| p.available && p.is_pinned()).collect();
+        let live: Vec<&PhyPath> = self
+            .paths
+            .iter()
+            .filter(|p| p.available && p.is_pinned())
+            .collect();
         live.len() >= 2
             && live
                 .iter()
@@ -180,7 +184,10 @@ impl HpebScheduler {
 
     /// Interfaces currently live — what the dashboard shows as "bonded".
     pub fn live_interfaces(&self) -> Vec<String> {
-        self.available().iter().map(|p| p.interface.clone()).collect()
+        self.available()
+            .iter()
+            .map(|p| p.interface.clone())
+            .collect()
     }
 }
 
@@ -192,10 +199,9 @@ pub enum BondError {
 impl std::fmt::Display for BondError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BondError::NotEnoughPaths { live } => write!(
-                f,
-                "bonding needs 2 live interfaces, {live} available"
-            ),
+            BondError::NotEnoughPaths { live } => {
+                write!(f, "bonding needs 2 live interfaces, {live} available")
+            }
         }
     }
 }
@@ -299,7 +305,11 @@ pub fn run_multipath_client(
     let phy: Vec<PhyPath> = paths
         .iter()
         .enumerate()
-        .map(|(i, addr)| PhyPath::new(&format!("lo-{i}")).pinned(addr).with_cost(i as u8))
+        .map(|(i, addr)| {
+            PhyPath::new(&format!("lo-{i}"))
+                .pinned(addr)
+                .with_cost(i as u8)
+        })
         .collect();
     let scheduler = HpebScheduler::new(phy.clone());
     if !scheduler.is_bonded() {
@@ -412,9 +422,18 @@ mod tests {
 
     fn three_paths() -> Vec<PhyPath> {
         vec![
-            PhyPath::new("wlan0").pinned("192.168.1.42:0").with_asn(64500).with_cost(10),
-            PhyPath::new("rmnet0").pinned("10.64.7.9:0").with_asn(64501).with_cost(50),
-            PhyPath::new("starlink0").pinned("100.72.3.4:0").with_asn(64502).with_cost(90),
+            PhyPath::new("wlan0")
+                .pinned("192.168.1.42:0")
+                .with_asn(64500)
+                .with_cost(10),
+            PhyPath::new("rmnet0")
+                .pinned("10.64.7.9:0")
+                .with_asn(64501)
+                .with_cost(50),
+            PhyPath::new("starlink0")
+                .pinned("100.72.3.4:0")
+                .with_asn(64502)
+                .with_cost(90),
         ]
     }
 
@@ -422,7 +441,9 @@ mod tests {
     fn each_shard_leaves_by_its_own_interface() {
         let sched = HpebScheduler::new(three_paths());
         assert!(sched.is_bonded());
-        let bonded = sched.bond(b"the whole message, split across three radios").unwrap();
+        let bonded = sched
+            .bond(b"the whole message, split across three radios")
+            .unwrap();
         assert_eq!(bonded.len(), 3);
         let ifaces: std::collections::HashSet<&str> =
             bonded.iter().map(|s| s.interface.as_str()).collect();
@@ -454,7 +475,10 @@ mod tests {
         let bonded = sched.bond(payload).unwrap();
         for shard in &bonded {
             assert!(
-                !shard.bytes.windows(8).any(|w| payload.windows(8).any(|p| p == w)),
+                !shard
+                    .bytes
+                    .windows(8)
+                    .any(|w| payload.windows(8).any(|p| p == w)),
                 "shard {} leaked plaintext",
                 shard.index
             );
@@ -466,10 +490,7 @@ mod tests {
 
     #[test]
     fn unpinned_paths_do_not_count_as_bonding() {
-        let sched = HpebScheduler::new(vec![
-            PhyPath::new("wlan0"),
-            PhyPath::new("rmnet0"),
-        ]);
+        let sched = HpebScheduler::new(vec![PhyPath::new("wlan0"), PhyPath::new("rmnet0")]);
         assert!(!sched.is_bonded());
     }
 

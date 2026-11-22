@@ -368,7 +368,9 @@ impl SpatioTemporalErosionCodec {
                 continue;
             }
             if let Some(key) = &available_epoch_keys[idx] {
-                if let Ok(pt) = open_shard(key, st.epoch_slot, nonce, direction, &st.sealed_shard, &[]) {
+                if let Ok(pt) =
+                    open_shard(key, st.epoch_slot, nonce, direction, &st.sealed_shard, &[])
+                {
                     opened_shards[idx] = Some(pt);
                 }
             }

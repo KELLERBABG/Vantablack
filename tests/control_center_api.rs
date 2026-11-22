@@ -28,6 +28,16 @@ impl Drop for NodeProcessGuard {
     }
 }
 
+/// Serialize tests in this binary that spawn a `ggn` daemon on the shared
+/// LAN multicast group (`239.255.0.1:2270`), preventing concurrent test
+/// daemons from discovering each other as peers.
+fn lock_daemon_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 /// Find a contiguous block of `count` free TCP ports, ensuring concurrent tests
 /// in this binary never overlap on multi-port SOCKS5 ranges (`base..base+4`).
 fn reserve_port_block(count: u16) -> u16 {
@@ -210,6 +220,7 @@ fn http_request_timeout(
 
 #[test]
 fn test_product_surface_control_center_api_and_socks5_e2e() {
+    let _test_lock = lock_daemon_test();
     let bin_path = find_binary();
     println!("Testing binary: {}", bin_path.display());
 
@@ -486,6 +497,7 @@ fn test_product_surface_control_center_api_and_socks5_e2e() {
 /// degrades honestly to an error JSON (never a 5xx) when the anchor cannot run.
 #[test]
 fn test_anchors_api_surface() {
+    let _test_lock = lock_daemon_test();
     let bin_path = find_binary();
     let web_port = get_free_port();
     let udp_port = get_free_port();
@@ -587,6 +599,7 @@ fn test_anchors_api_surface() {
 /// the BB84 cutoff while `end_to_end_fidelity` is below it.
 #[test]
 fn test_qel_anchor_routes_a_real_key_over_a_mesh_export() {
+    let _test_lock = lock_daemon_test();
     let bin_path = find_binary();
     let web_port = get_free_port();
     let udp_port = get_free_port();
@@ -726,6 +739,7 @@ fn wait_for_control_center(web_port: u16) {
 
 #[test]
 fn test_mesh_ui_endpoints_topology_pac_aliases_vb_uri_and_disconnect() {
+    let _test_lock = lock_daemon_test();
     let bin_path = find_binary();
     let web_port = get_free_port();
     let socks_port = reserve_port_block(4);
@@ -869,6 +883,7 @@ fn test_mesh_ui_endpoints_topology_pac_aliases_vb_uri_and_disconnect() {
 
 #[test]
 fn test_topology_and_disconnect_enforce_ghost_pin() {
+    let _test_lock = lock_daemon_test();
     let bin_path = find_binary();
     let web_port = get_free_port();
     let udp_port = get_free_port();
@@ -947,6 +962,7 @@ fn test_topology_and_disconnect_enforce_ghost_pin() {
 
 #[test]
 fn test_exit_voucher_enforces_ghost_pin_and_mints_valid_capability() {
+    let _test_lock = lock_daemon_test();
     let bin_path = find_binary();
     let web_port = get_free_port();
     let udp_port = get_free_port();

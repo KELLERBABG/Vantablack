@@ -161,11 +161,11 @@ pub fn apply_regime(body: &Value) -> Result<Value, String> {
         .get("regime")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "body must contain a \"regime\" string".to_string())?;
-    let parsed = Regime::parse(raw).ok_or_else(|| {
-        format!("{raw:?} is not one of fast, shielded, ghost, vantablack")
-    })?;
+    let parsed = Regime::parse(raw)
+        .ok_or_else(|| format!("{raw:?} is not one of fast, shielded, ghost, vantablack"))?;
     let path = regime::config_path();
-    regime::save_persisted(&path, parsed).map_err(|e| format!("cannot save {}: {e}", path.display()))?;
+    regime::save_persisted(&path, parsed)
+        .map_err(|e| format!("cannot save {}: {e}", path.display()))?;
     std::env::set_var(regime::REGIME_ENV, parsed.as_str());
     let policy = effective_policy(parsed, 0, 1080);
     Ok(json!({
@@ -260,7 +260,9 @@ pub fn fleet_invite_qr(body: &Value) -> Result<Value, String> {
         let seed_hex = body
             .get("root_seed")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "body must contain \"uri\" or \"root_seed\" (32-byte hex)".to_string())?;
+            .ok_or_else(|| {
+                "body must contain \"uri\" or \"root_seed\" (32-byte hex)".to_string()
+            })?;
         let seed_raw = hex::decode(seed_hex.trim()).map_err(|e| format!("root_seed hex: {e}"))?;
         let seed: [u8; 32] = seed_raw
             .try_into()

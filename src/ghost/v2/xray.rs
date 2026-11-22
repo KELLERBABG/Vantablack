@@ -156,7 +156,10 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         Some(n) => inv(
             "circuit_length",
             State::Failed,
-            format!("{n} hops in use but {} requires {required_hops}", regime.as_str()),
+            format!(
+                "{n} hops in use but {} requires {required_hops}",
+                regime.as_str()
+            ),
         ),
         None => inv(
             "circuit_length",
@@ -198,9 +201,7 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
             Some(n) => inv(
                 "relay_population",
                 State::Failed,
-                format!(
-                    "{n} public relays live; anonymity needs at least {MIN_ANONYMITY_RELAYS}"
-                ),
+                format!("{n} public relays live; anonymity needs at least {MIN_ANONYMITY_RELAYS}"),
             ),
             None => inv(
                 "relay_population",
@@ -261,8 +262,14 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
     }
 
     // ── Claim ───────────────────────────────────────────────────────────
-    let failed = invariants.iter().filter(|i| i.state == State::Failed).count();
-    let unknown = invariants.iter().filter(|i| i.state == State::Unknown).count();
+    let failed = invariants
+        .iter()
+        .filter(|i| i.state == State::Failed)
+        .count();
+    let unknown = invariants
+        .iter()
+        .filter(|i| i.state == State::Unknown)
+        .count();
 
     let claim = if !regime.anonymity_claim_allowed() {
         format!(
@@ -273,10 +280,7 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
     } else if failed > 0 || unknown > 0 {
         "Vantablack — anonymity claim withheld while a check fails or is unmeasured".to_string()
     } else {
-        format!(
-            "anonymous among {} public relays",
-            relays.unwrap_or(0)
-        )
+        format!("anonymous among {} public relays", relays.unwrap_or(0))
     };
 
     let headline = if failed > 0 {
@@ -330,7 +334,11 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
     let mut guard_sees = vec![format!(
         "{} hop{}",
         input.circuit_hops.unwrap_or(0),
-        if input.circuit_hops == Some(1) { "" } else { "s" }
+        if input.circuit_hops == Some(1) {
+            ""
+        } else {
+            "s"
+        }
     )];
     if input.public_relays.is_some() {
         guard_sees.push(format!(
@@ -344,9 +352,14 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
     ];
 
     let website = match (&input.exit_ip, plane) {
-        (Some(ip), _) => vec![format!("the exit address {ip}"), "your normal TLS fingerprint".to_string()],
+        (Some(ip), _) => vec![
+            format!("the exit address {ip}"),
+            "your normal TLS fingerprint".to_string(),
+        ],
         (None, Plane::Umbra) => vec!["the exit node's address, not yours".to_string()],
-        (None, Plane::Phantom) => vec!["your own address — this plane does not hide it".to_string()],
+        (None, Plane::Phantom) => {
+            vec!["your own address — this plane does not hide it".to_string()]
+        }
     };
 
     TruthLedger {
@@ -368,10 +381,7 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
             Observation {
                 observer: "The website".to_string(),
                 sees: website,
-                does_not_see: vec![
-                    "your identity".to_string(),
-                    "where you are".to_string(),
-                ],
+                does_not_see: vec!["your identity".to_string(), "where you are".to_string()],
             },
         ],
         invariants,

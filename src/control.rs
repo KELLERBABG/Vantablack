@@ -17,8 +17,8 @@ use vantablack::ghost::layers::l10_qel::{self, QelAnchorState, QuantumRouteResul
 use vantablack::ghost::net::consumer::{self, ConsumerSettings};
 use vantablack::ghost::net::discovery::{
     LocalPeerCache, NetworkInvite, PeerDescriptor, PeerDescriptorV2, CAP_EXIT, CAP_HOME_EXIT,
-    CAP_QUIC, CAP_RELAY, CAP_VPN_HUB, NAT_CONE, NAT_DIRECT, NAT_RESTRICTED, NAT_SYMMETRIC, NAT_UNKNOWN,
-    VB_NET_URI_PREFIX, VB_URI_PREFIX, VB_V2_URI_PREFIX,
+    CAP_QUIC, CAP_RELAY, CAP_VPN_HUB, NAT_CONE, NAT_DIRECT, NAT_RESTRICTED, NAT_SYMMETRIC,
+    NAT_UNKNOWN, VB_NET_URI_PREFIX, VB_URI_PREFIX, VB_V2_URI_PREFIX,
 };
 use vantablack::ghost::net::mesh::{
     local_node_offer, peer_telemetry_snapshot, remove_peer_telemetry, update_peer_telemetry,
@@ -58,8 +58,7 @@ pub fn is_origin_allowed(req: &str, port: u16) -> bool {
     match origin {
         None => true, // direct curl, desktop webview, or native process
         Some(o) => {
-            o == format!("http://127.0.0.1:{}", port)
-                || o == format!("http://localhost:{}", port)
+            o == format!("http://127.0.0.1:{}", port) || o == format!("http://localhost:{}", port)
         }
     }
 }
@@ -775,8 +774,7 @@ pub fn spawn_control_center(
                                             .to_string();
                                         match v2::boomerang::select(&fp) {
                                             Ok(peer) => {
-                                                let connected =
-                                                    nc_ref.sessions.contains_key(&fp);
+                                                let connected = nc_ref.sessions.contains_key(&fp);
                                                 (
                                                     "HTTP/1.1 200 OK",
                                                     serde_json::json!({
@@ -884,8 +882,7 @@ pub fn spawn_control_center(
                                             regime: regime_active
                                                 .unwrap_or(v2regime::Regime::Ghost),
                                             socks_port: api_socks_base,
-                                            transport: (peers > 0)
-                                                .then(|| "udp".to_string()),
+                                            transport: (peers > 0).then(|| "udp".to_string()),
                                             exit_ip: None,
                                             node_fingerprint: nc_ref.fingerprint(),
                                         };
@@ -970,11 +967,10 @@ pub fn spawn_control_center(
                                         // Same operator override as the descriptor
                                         // builder: a manually forwarded endpoint wins
                                         // over STUN, and then it is the only candidate.
-                                        let advertised_override = std::env::var(
-                                            "GHOST_ADVERTISE_ADDR",
-                                        )
-                                        .ok()
-                                        .and_then(|raw| raw.trim().parse::<SocketAddr>().ok());
+                                        let advertised_override =
+                                            std::env::var("GHOST_ADVERTISE_ADDR").ok().and_then(
+                                                |raw| raw.trim().parse::<SocketAddr>().ok(),
+                                            );
                                         let endpoint = advertised_override
                                             .or(wan_snap.public_addr)
                                             .or(lan_sa)
@@ -1180,7 +1176,11 @@ pub fn spawn_control_center(
                                                     // descriptor's signature, so it is
                                                     // enough to register a home-exit
                                                     // candidate before any session exists.
-                                                    v2::boomerang::note_peer(&fp, caps, &endpoint_str);
+                                                    v2::boomerang::note_peer(
+                                                        &fp,
+                                                        caps,
+                                                        &endpoint_str,
+                                                    );
                                                     let body = serde_json::json!({
                                                         "success": true,
                                                         "address": endpoint_str,
@@ -1253,7 +1253,9 @@ pub fn spawn_control_center(
                                                             update_peer_telemetry(&fp, |t| {
                                                                 t.is_exit = is_exit;
                                                             });
-                                                            v2::boomerang::note_peer(&fp, caps, &ep_str);
+                                                            v2::boomerang::note_peer(
+                                                                &fp, caps, &ep_str,
+                                                            );
                                                             target_ep = Some(ep_str);
                                                             peer_fp = Some(fp);
                                                         }

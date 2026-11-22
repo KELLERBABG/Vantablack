@@ -44,7 +44,10 @@ pub fn select_diverse_hops(
 
     let mut constraint = AsnDiversityConstraint::new(1);
     let asn_for = |fp: &str, fallback_idx: u32| -> u32 {
-        peer_asns.get(fp).copied().unwrap_or(0x8000_0000 + fallback_idx)
+        peer_asns
+            .get(fp)
+            .copied()
+            .unwrap_or(0x8000_0000 + fallback_idx)
     };
     let exit_asn = asn_for(exit_fp, 999);
     constraint.assign_shard_asn((hop_count - 1) as u8, exit_asn);
@@ -355,7 +358,6 @@ pub async fn handle_socks5_connection(
             }
         }
     };
-
 
     // Allocate monotonic stream ID for this SOCKS5 TCP connection
     let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
@@ -1018,9 +1020,11 @@ mod tests {
 
         // Middle peels its per-hop encrypted layer, then parses RLY! -> points to exit_fp_00003
         let middle_key = exit_key;
-        let middle_plain =
-            vantablack::ghost::net::relay::peel_encrypted_relay_layer(&middle_key, &hop1.inner_payload)
-                .expect("middle encrypted layer must decrypt");
+        let middle_plain = vantablack::ghost::net::relay::peel_encrypted_relay_layer(
+            &middle_key,
+            &hop1.inner_payload,
+        )
+        .expect("middle encrypted layer must decrypt");
         let hop2 = vantablack::ghost::net::relay::parse_relay_header(&middle_plain)
             .expect("middle layer must parse");
         assert_eq!(hop2.next_hop_fingerprint, "exit_fp_00003");
@@ -1079,8 +1083,8 @@ mod tests {
         assert_eq!(route2[0], "peer_a");
 
         // 3. 2-hop selection also respects pinned guard and ASN diversity
-        let route_2hop = select_diverse_hops(&candidates2, "exit_z", 2, &asns, &pinned)
-            .expect("2-hop route");
+        let route_2hop =
+            select_diverse_hops(&candidates2, "exit_z", 2, &asns, &pinned).expect("2-hop route");
         assert_eq!(route_2hop, vec!["peer_a", "exit_z"]);
     }
 

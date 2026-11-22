@@ -294,9 +294,11 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
     // *known* address: an ephemeral port would leave the other machine with
     // nothing to point `--peer` at.
     let peer_bind = cfg.peer_listen_addr();
-    let uplink = Arc::new(UdpSocket::bind(&peer_bind).await.map_err(|e| {
-        anyhow::anyhow!("cannot listen for peers on {peer_bind}: {e}")
-    })?);
+    let uplink = Arc::new(
+        UdpSocket::bind(&peer_bind)
+            .await
+            .map_err(|e| anyhow::anyhow!("cannot listen for peers on {peer_bind}: {e}"))?,
+    );
     let game_sender: Arc<std::sync::Mutex<Option<SocketAddr>>> =
         Arc::new(std::sync::Mutex::new(None));
     let stats = Arc::new(PartyStats::default());
@@ -312,7 +314,9 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
         println!("  peer  -> (none; local echo mode)");
     }
     println!("  copies {}, jitter {} ms", copies, cfg.jitter_ms);
-    println!("Point the game at the game address and the other player at this node's peer address.");
+    println!(
+        "Point the game at the game address and the other player at this node's peer address."
+    );
     println!("Ctrl+C to stop.");
 
     // ── Game → peer ────────────────────────────────────────────────────
@@ -367,41 +371,35 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
         let mut buffer = JitterBuffer::new(jitter);
         let mut buf = vec![0u8; 2048];
         loop {
-            let wait = if buffer.depth() > 0 { Duration::from_millis(5) } else { Duration::from_secs(1) };
+            let wait = if buffer.depth() > 0 {
+                Duration::from_millis(5)
+            } else {
+                Duration::from_secs(1)
+            };
             match tokio::time::timeout(wait, down_sock.recv_from(&mut buf)).await {
-                Ok(Ok((n, _from))) => {
-                    match PartyFrame::decode(&buf[..n]) {
-                        Some(frame) => {
-                            down_stats.received.fetch_add(1, Ordering::Relaxed);
-                            if !window.accept(frame.seq) {
-                                down_stats.duplicates.fetch_add(1, Ordering::Relaxed);
-                                continue;
-                            }
-                            for payload in buffer.push(frame.seq, frame.payload, Instant::now()) {
-                                let addr = down_sender
-                                    .lock()
-                                    .ok()
-                                    .and_then(|slot| *slot)
-                                    .or(peer_addr);
-                                if let Some(addr) = addr {
-                                    let _ = down_local.send_to(&payload, addr).await;
-                                    down_stats.forwarded.fetch_add(1, Ordering::Relaxed);
-                                }
-                            }
+                Ok(Ok((n, _from))) => match PartyFrame::decode(&buf[..n]) {
+                    Some(frame) => {
+                        down_stats.received.fetch_add(1, Ordering::Relaxed);
+                        if !window.accept(frame.seq) {
+                            down_stats.duplicates.fetch_add(1, Ordering::Relaxed);
+                            continue;
                         }
-                        None => {
-                            down_stats.malformed.fetch_add(1, Ordering::Relaxed);
+                        for payload in buffer.push(frame.seq, frame.payload, Instant::now()) {
+                            let addr = down_sender.lock().ok().and_then(|slot| *slot).or(peer_addr);
+                            if let Some(addr) = addr {
+                                let _ = down_local.send_to(&payload, addr).await;
+                                down_stats.forwarded.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
-                }
+                    None => {
+                        down_stats.malformed.fetch_add(1, Ordering::Relaxed);
+                    }
+                },
                 Ok(Err(_)) => {}
                 Err(_) => {
                     for payload in buffer.tick(Instant::now()) {
-                        let addr = down_sender
-                            .lock()
-                            .ok()
-                            .and_then(|slot| *slot)
-                            .or(peer_addr);
+                        let addr = down_sender.lock().ok().and_then(|slot| *slot).or(peer_addr);
                         if let Some(addr) = addr {
                             let _ = down_local.send_to(&payload, addr).await;
                             down_stats.forwarded.fetch_add(1, Ordering::Relaxed);
@@ -496,8 +494,14 @@ mod tests {
         let mut b = JitterBuffer::new(Duration::from_millis(20));
         assert_eq!(b.push(0, b"zero".to_vec(), t0), vec![b"zero".to_vec()]);
         assert!(b.push(2, b"two".to_vec(), t0).is_empty());
-        assert!(b.tick(t0 + Duration::from_millis(5)).is_empty(), "still inside the delay");
-        assert_eq!(b.tick(t0 + Duration::from_millis(25)), vec![b"two".to_vec()]);
+        assert!(
+            b.tick(t0 + Duration::from_millis(5)).is_empty(),
+            "still inside the delay"
+        );
+        assert_eq!(
+            b.tick(t0 + Duration::from_millis(25)),
+            vec![b"two".to_vec()]
+        );
     }
 
     #[test]

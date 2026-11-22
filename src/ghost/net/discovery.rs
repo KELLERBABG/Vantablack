@@ -1169,7 +1169,12 @@ impl BlindMailboxClient {
 
     /// Verify a 16-bit proof-of-work nonce (`X-VB-PoW` header) against
     /// `(slot_hex, ephemeral_id, body)`.
-    pub fn verify_pow_nonce(slot_hex: &str, ephemeral_id: &str, nonce_hex: &str, body: &[u8]) -> bool {
+    pub fn verify_pow_nonce(
+        slot_hex: &str,
+        ephemeral_id: &str,
+        nonce_hex: &str,
+        body: &[u8],
+    ) -> bool {
         let Ok(nonce_bytes) = hex::decode(nonce_hex) else {
             return false;
         };
@@ -1441,8 +1446,8 @@ impl OmrSubstrate for WorkerSlotSubstrate {
         envelope: &'a OmrShareEnvelope,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            let body = serde_json::to_vec(envelope)
-                .map_err(|e| format!("worker serialize error: {e}"))?;
+            let body =
+                serde_json::to_vec(envelope).map_err(|e| format!("worker serialize error: {e}"))?;
             let eph_id = BlindMailboxClient::generate_ephemeral_id();
             let pow = BlindMailboxClient::compute_pow_nonce(slot_hex, &eph_id, &body);
             let url = format!(
@@ -1597,8 +1602,8 @@ impl<T: NostrRelayTransport> OmrSubstrate for NostrSlotSubstrate<T> {
         envelope: &'a OmrShareEnvelope,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            let payload = serde_json::to_vec(envelope)
-                .map_err(|e| format!("nostr serialize error: {e}"))?;
+            let payload =
+                serde_json::to_vec(envelope).map_err(|e| format!("nostr serialize error: {e}"))?;
             let event = OmrNostrEvent::from_opaque_share(
                 slot_hex,
                 &payload,
@@ -1642,7 +1647,9 @@ pub trait DohDhtTransport: Send + Sync {
     fn get_records<'a>(
         &'a self,
         slot_hex: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send + 'a>>;
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send + 'a>,
+    >;
 }
 
 /// DoH-TXT / DHT substrate for OMR share transport.
@@ -1717,8 +1724,11 @@ impl OmrPublisher {
         }
 
         let epoch_hour = current_unix_secs() / self.config.epoch_duration_secs.max(1);
-        let (slot_hex, _) =
-            BlindMailboxClient::slot_hex_for_epoch(swarm_secret, epoch_hour, self.config.slot_index);
+        let (slot_hex, _) = BlindMailboxClient::slot_hex_for_epoch(
+            swarm_secret,
+            epoch_hour,
+            self.config.slot_index,
+        );
 
         let mut blob_key = [0u8; 32];
         OsRng.fill_bytes(&mut blob_key);
@@ -1765,8 +1775,11 @@ impl OmrResolver {
             .map_err(|e| e.to_string())?;
 
         let epoch_hour = current_unix_secs() / self.config.epoch_duration_secs.max(1);
-        let (slot_hex, _) =
-            BlindMailboxClient::slot_hex_for_epoch(swarm_secret, epoch_hour, self.config.slot_index);
+        let (slot_hex, _) = BlindMailboxClient::slot_hex_for_epoch(
+            swarm_secret,
+            epoch_hour,
+            self.config.slot_index,
+        );
 
         let mut by_blob: HashMap<[u8; 32], Vec<OmrShareEnvelope>> = HashMap::new();
         for substrate in &self.substrates {
@@ -2024,7 +2037,8 @@ mod tests {
             fn publish_event<'a>(
                 &'a self,
                 event: OmrNostrEvent,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+            {
                 Box::pin(async move {
                     let slot = event.slot_hex().unwrap_or_default().to_string();
                     self.0.lock().unwrap().entry(slot).or_default().push(event);
@@ -2035,10 +2049,20 @@ mod tests {
                 &'a self,
                 slot_hex: &'a str,
             ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<Vec<OmrNostrEvent>, String>> + Send + 'a>,
+                Box<
+                    dyn std::future::Future<Output = Result<Vec<OmrNostrEvent>, String>>
+                        + Send
+                        + 'a,
+                >,
             > {
                 Box::pin(async move {
-                    Ok(self.0.lock().unwrap().get(slot_hex).cloned().unwrap_or_default())
+                    Ok(self
+                        .0
+                        .lock()
+                        .unwrap()
+                        .get(slot_hex)
+                        .cloned()
+                        .unwrap_or_default())
                 })
             }
         }
@@ -2050,7 +2074,8 @@ mod tests {
                 &'a self,
                 slot_hex: &'a str,
                 record_bytes: &'a [u8],
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+            {
                 Box::pin(async move {
                     self.0
                         .lock()
@@ -2064,9 +2089,17 @@ mod tests {
             fn get_records<'a>(
                 &'a self,
                 slot_hex: &'a str,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send + 'a>> {
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<Vec<Vec<u8>>, String>> + Send + 'a>,
+            > {
                 Box::pin(async move {
-                    Ok(self.0.lock().unwrap().get(slot_hex).cloned().unwrap_or_default())
+                    Ok(self
+                        .0
+                        .lock()
+                        .unwrap()
+                        .get(slot_hex)
+                        .cloned()
+                        .unwrap_or_default())
                 })
             }
         }
@@ -2081,7 +2114,8 @@ mod tests {
                 &'a self,
                 slot_hex: &'a str,
                 envelope: &'a OmrShareEnvelope,
-            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+            {
                 Box::pin(async move {
                     self.0
                         .lock()
@@ -2096,10 +2130,20 @@ mod tests {
                 &'a self,
                 slot_hex: &'a str,
             ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<Vec<OmrShareEnvelope>, String>> + Send + 'a>,
+                Box<
+                    dyn std::future::Future<Output = Result<Vec<OmrShareEnvelope>, String>>
+                        + Send
+                        + 'a,
+                >,
             > {
                 Box::pin(async move {
-                    Ok(self.0.lock().unwrap().get(slot_hex).cloned().unwrap_or_default())
+                    Ok(self
+                        .0
+                        .lock()
+                        .unwrap()
+                        .get(slot_hex)
+                        .cloned()
+                        .unwrap_or_default())
                 })
             }
         }
@@ -2124,7 +2168,10 @@ mod tests {
             OmrSplitConfig::default(),
             vec![
                 Box::new(s_worker.clone()),
-                Box::new(NostrSlotSubstrate::new(s_nostr.clone(), "nostr_pk".to_string())),
+                Box::new(NostrSlotSubstrate::new(
+                    s_nostr.clone(),
+                    "nostr_pk".to_string(),
+                )),
                 Box::new(DohDhtSubstrate::new(s_doh.clone())),
             ],
         );
@@ -2133,7 +2180,8 @@ mod tests {
         assert_eq!(publisher.publish(secret, &desc).await.unwrap(), 3);
 
         // Single substrate alone cannot reconstruct.
-        let r_single = OmrResolver::new(OmrSplitConfig::default(), vec![Box::new(s_worker.clone())]);
+        let r_single =
+            OmrResolver::new(OmrSplitConfig::default(), vec![Box::new(s_worker.clone())]);
         assert!(r_single.resolve(secret).await.unwrap().is_empty());
 
         // Any 2 of 3 substrates reconstruct the exact descriptor.
@@ -2141,7 +2189,10 @@ mod tests {
             OmrSplitConfig::default(),
             vec![
                 Box::new(s_worker.clone()),
-                Box::new(NostrSlotSubstrate::new(s_nostr.clone(), "nostr_pk".to_string())),
+                Box::new(NostrSlotSubstrate::new(
+                    s_nostr.clone(),
+                    "nostr_pk".to_string(),
+                )),
             ],
         );
         assert_eq!(r_01.resolve(secret).await.unwrap(), vec![desc.clone()]);

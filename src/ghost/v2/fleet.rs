@@ -147,7 +147,13 @@ impl DeviceCert {
         let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| CertError::Malformed)?;
         let sig = Signature::from_bytes(&sig_arr);
         let vk = VerifyingKey::from_bytes(root_pk).map_err(|_| CertError::Malformed)?;
-        let msg = Self::canonical_bytes(&self.fleet_id, &pk, &self.label, self.issued_at, self.expires_at);
+        let msg = Self::canonical_bytes(
+            &self.fleet_id,
+            &pk,
+            &self.label,
+            self.issued_at,
+            self.expires_at,
+        );
         vk.verify_strict(&msg, &sig)
             .map_err(|_| CertError::BadSignature)
     }
@@ -590,28 +596,204 @@ struct QrVersionSpec {
 }
 
 const QR_SPECS: &[QrVersionSpec] = &[
-    QrVersionSpec { version: 1, g1_blocks: 1, g1_data: 19, g2_blocks: 0, g2_data: 0, ecc_per_block: 7, align: &[] },
-    QrVersionSpec { version: 2, g1_blocks: 1, g1_data: 34, g2_blocks: 0, g2_data: 0, ecc_per_block: 10, align: &[6, 18] },
-    QrVersionSpec { version: 3, g1_blocks: 1, g1_data: 55, g2_blocks: 0, g2_data: 0, ecc_per_block: 15, align: &[6, 22] },
-    QrVersionSpec { version: 4, g1_blocks: 1, g1_data: 80, g2_blocks: 0, g2_data: 0, ecc_per_block: 20, align: &[6, 26] },
-    QrVersionSpec { version: 5, g1_blocks: 1, g1_data: 108, g2_blocks: 0, g2_data: 0, ecc_per_block: 26, align: &[6, 30] },
-    QrVersionSpec { version: 6, g1_blocks: 2, g1_data: 68, g2_blocks: 0, g2_data: 0, ecc_per_block: 18, align: &[6, 34] },
-    QrVersionSpec { version: 7, g1_blocks: 2, g1_data: 78, g2_blocks: 0, g2_data: 0, ecc_per_block: 20, align: &[6, 22, 38] },
-    QrVersionSpec { version: 8, g1_blocks: 2, g1_data: 97, g2_blocks: 0, g2_data: 0, ecc_per_block: 24, align: &[6, 24, 42] },
-    QrVersionSpec { version: 9, g1_blocks: 2, g1_data: 116, g2_blocks: 0, g2_data: 0, ecc_per_block: 30, align: &[6, 26, 46] },
-    QrVersionSpec { version: 10, g1_blocks: 2, g1_data: 68, g2_blocks: 2, g2_data: 69, ecc_per_block: 18, align: &[6, 28, 50] },
-    QrVersionSpec { version: 11, g1_blocks: 4, g1_data: 81, g2_blocks: 0, g2_data: 0, ecc_per_block: 20, align: &[6, 30, 54] },
-    QrVersionSpec { version: 12, g1_blocks: 2, g1_data: 92, g2_blocks: 2, g2_data: 93, ecc_per_block: 24, align: &[6, 32, 58] },
-    QrVersionSpec { version: 13, g1_blocks: 4, g1_data: 107, g2_blocks: 0, g2_data: 0, ecc_per_block: 26, align: &[6, 34, 62] },
-    QrVersionSpec { version: 14, g1_blocks: 3, g1_data: 115, g2_blocks: 1, g2_data: 116, ecc_per_block: 30, align: &[6, 26, 46, 66] },
-    QrVersionSpec { version: 15, g1_blocks: 5, g1_data: 87, g2_blocks: 1, g2_data: 88, ecc_per_block: 22, align: &[6, 26, 48, 70] },
-    QrVersionSpec { version: 16, g1_blocks: 5, g1_data: 98, g2_blocks: 1, g2_data: 99, ecc_per_block: 24, align: &[6, 26, 50, 74] },
-    QrVersionSpec { version: 17, g1_blocks: 1, g1_data: 107, g2_blocks: 5, g2_data: 108, ecc_per_block: 28, align: &[6, 30, 54, 78] },
-    QrVersionSpec { version: 18, g1_blocks: 5, g1_data: 120, g2_blocks: 1, g2_data: 121, ecc_per_block: 30, align: &[6, 30, 56, 82] },
-    QrVersionSpec { version: 19, g1_blocks: 3, g1_data: 113, g2_blocks: 4, g2_data: 114, ecc_per_block: 28, align: &[6, 30, 58, 86] },
-    QrVersionSpec { version: 20, g1_blocks: 3, g1_data: 107, g2_blocks: 5, g2_data: 108, ecc_per_block: 28, align: &[6, 34, 62, 90] },
-    QrVersionSpec { version: 21, g1_blocks: 4, g1_data: 116, g2_blocks: 4, g2_data: 117, ecc_per_block: 28, align: &[6, 28, 50, 72, 94] },
-    QrVersionSpec { version: 22, g1_blocks: 2, g1_data: 111, g2_blocks: 7, g2_data: 112, ecc_per_block: 28, align: &[6, 26, 50, 74, 98] },
+    QrVersionSpec {
+        version: 1,
+        g1_blocks: 1,
+        g1_data: 19,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 7,
+        align: &[],
+    },
+    QrVersionSpec {
+        version: 2,
+        g1_blocks: 1,
+        g1_data: 34,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 10,
+        align: &[6, 18],
+    },
+    QrVersionSpec {
+        version: 3,
+        g1_blocks: 1,
+        g1_data: 55,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 15,
+        align: &[6, 22],
+    },
+    QrVersionSpec {
+        version: 4,
+        g1_blocks: 1,
+        g1_data: 80,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 20,
+        align: &[6, 26],
+    },
+    QrVersionSpec {
+        version: 5,
+        g1_blocks: 1,
+        g1_data: 108,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 26,
+        align: &[6, 30],
+    },
+    QrVersionSpec {
+        version: 6,
+        g1_blocks: 2,
+        g1_data: 68,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 18,
+        align: &[6, 34],
+    },
+    QrVersionSpec {
+        version: 7,
+        g1_blocks: 2,
+        g1_data: 78,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 20,
+        align: &[6, 22, 38],
+    },
+    QrVersionSpec {
+        version: 8,
+        g1_blocks: 2,
+        g1_data: 97,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 24,
+        align: &[6, 24, 42],
+    },
+    QrVersionSpec {
+        version: 9,
+        g1_blocks: 2,
+        g1_data: 116,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 30,
+        align: &[6, 26, 46],
+    },
+    QrVersionSpec {
+        version: 10,
+        g1_blocks: 2,
+        g1_data: 68,
+        g2_blocks: 2,
+        g2_data: 69,
+        ecc_per_block: 18,
+        align: &[6, 28, 50],
+    },
+    QrVersionSpec {
+        version: 11,
+        g1_blocks: 4,
+        g1_data: 81,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 20,
+        align: &[6, 30, 54],
+    },
+    QrVersionSpec {
+        version: 12,
+        g1_blocks: 2,
+        g1_data: 92,
+        g2_blocks: 2,
+        g2_data: 93,
+        ecc_per_block: 24,
+        align: &[6, 32, 58],
+    },
+    QrVersionSpec {
+        version: 13,
+        g1_blocks: 4,
+        g1_data: 107,
+        g2_blocks: 0,
+        g2_data: 0,
+        ecc_per_block: 26,
+        align: &[6, 34, 62],
+    },
+    QrVersionSpec {
+        version: 14,
+        g1_blocks: 3,
+        g1_data: 115,
+        g2_blocks: 1,
+        g2_data: 116,
+        ecc_per_block: 30,
+        align: &[6, 26, 46, 66],
+    },
+    QrVersionSpec {
+        version: 15,
+        g1_blocks: 5,
+        g1_data: 87,
+        g2_blocks: 1,
+        g2_data: 88,
+        ecc_per_block: 22,
+        align: &[6, 26, 48, 70],
+    },
+    QrVersionSpec {
+        version: 16,
+        g1_blocks: 5,
+        g1_data: 98,
+        g2_blocks: 1,
+        g2_data: 99,
+        ecc_per_block: 24,
+        align: &[6, 26, 50, 74],
+    },
+    QrVersionSpec {
+        version: 17,
+        g1_blocks: 1,
+        g1_data: 107,
+        g2_blocks: 5,
+        g2_data: 108,
+        ecc_per_block: 28,
+        align: &[6, 30, 54, 78],
+    },
+    QrVersionSpec {
+        version: 18,
+        g1_blocks: 5,
+        g1_data: 120,
+        g2_blocks: 1,
+        g2_data: 121,
+        ecc_per_block: 30,
+        align: &[6, 30, 56, 82],
+    },
+    QrVersionSpec {
+        version: 19,
+        g1_blocks: 3,
+        g1_data: 113,
+        g2_blocks: 4,
+        g2_data: 114,
+        ecc_per_block: 28,
+        align: &[6, 30, 58, 86],
+    },
+    QrVersionSpec {
+        version: 20,
+        g1_blocks: 3,
+        g1_data: 107,
+        g2_blocks: 5,
+        g2_data: 108,
+        ecc_per_block: 28,
+        align: &[6, 34, 62, 90],
+    },
+    QrVersionSpec {
+        version: 21,
+        g1_blocks: 4,
+        g1_data: 116,
+        g2_blocks: 4,
+        g2_data: 117,
+        ecc_per_block: 28,
+        align: &[6, 28, 50, 72, 94],
+    },
+    QrVersionSpec {
+        version: 22,
+        g1_blocks: 2,
+        g1_data: 111,
+        g2_blocks: 7,
+        g2_data: 112,
+        ecc_per_block: 28,
+        align: &[6, 26, 50, 74, 98],
+    },
 ];
 
 fn gf_mul(mut x: u8, mut y: u8) -> u8 {
@@ -678,14 +860,24 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
             let hdr_bits = if s.version >= 10 { 20 } else { 12 };
             (hdr_bits + payload.len() * 8).div_ceil(8) <= total_data
         })
-        .ok_or_else(|| format!("QR payload too large ({} bytes > V14 ECC-L capacity)", payload.len()))?;
+        .ok_or_else(|| {
+            format!(
+                "QR payload too large ({} bytes > V14 ECC-L capacity)",
+                payload.len()
+            )
+        })?;
 
     let total_data = spec.g1_blocks * spec.g1_data + spec.g2_blocks * spec.g2_data;
     let mut data_bytes = Vec::with_capacity(total_data);
     let mut bit_len = 0usize;
     push_bits(&mut data_bytes, &mut bit_len, 0b0100, 4);
     let count_bits = if spec.version >= 10 { 16 } else { 8 };
-    push_bits(&mut data_bytes, &mut bit_len, payload.len() as u32, count_bits);
+    push_bits(
+        &mut data_bytes,
+        &mut bit_len,
+        payload.len() as u32,
+        count_bits,
+    );
     for &b in payload {
         push_bits(&mut data_bytes, &mut bit_len, b as u32, 8);
     }
@@ -701,7 +893,10 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
     let mut blocks: Vec<Vec<u8>> = Vec::new();
     let mut eccs: Vec<Vec<u8>> = Vec::new();
     let mut off = 0usize;
-    for (n, len) in [(spec.g1_blocks, spec.g1_data), (spec.g2_blocks, spec.g2_data)] {
+    for (n, len) in [
+        (spec.g1_blocks, spec.g1_data),
+        (spec.g2_blocks, spec.g2_data),
+    ] {
         for _ in 0..n {
             let blk = data_bytes[off..off + len].to_vec();
             eccs.push(rs_remainder(&blk, spec.ecc_per_block));
@@ -896,7 +1091,10 @@ mod tests {
         let (root, _) = FleetRoot::generate();
         let mut cert = root.issue(device(1), "phone", 10, 100);
         cert.label = "laptop".into();
-        assert_eq!(cert.verify(&root.public_key(), 20), Err(CertError::BadSignature));
+        assert_eq!(
+            cert.verify(&root.public_key(), 20),
+            Err(CertError::BadSignature)
+        );
     }
 
     #[test]
@@ -955,7 +1153,10 @@ mod tests {
         let cert = root.issue(dev, "old phone", 100, 10_000);
         let mut set = RevocationSet::new();
         assert!(admit(&cert, &root.public_key(), &set, 200).is_ok());
-        set.merge(&root.revoke(&dev, RevokeReason::Decommissioned, 150), &root.public_key());
+        set.merge(
+            &root.revoke(&dev, RevokeReason::Decommissioned, 150),
+            &root.public_key(),
+        );
         assert_eq!(
             admit(&cert, &root.public_key(), &set, 200),
             Err(CertError::Revoked)
@@ -1022,6 +1223,10 @@ mod tests {
 
         let batch = export_gossip_revocation_batch();
         assert!(!batch.is_empty());
-        assert_eq!(ingest_gossip_revocation_batch(&batch), 0, "duplicate is idempotent");
+        assert_eq!(
+            ingest_gossip_revocation_batch(&batch),
+            0,
+            "duplicate is idempotent"
+        );
     }
 }

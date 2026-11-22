@@ -229,9 +229,7 @@ pub fn effective_policy(regime: Regime, relays: usize, base_socks_port: u16) -> 
         if relays >= MIN_ANONYMITY_RELAYS {
             format!("anonymous among {relays} public relays")
         } else {
-            format!(
-                "not anonymous — {relays} public relays live, {MIN_ANONYMITY_RELAYS} required"
-            )
+            format!("not anonymous — {relays} public relays live, {MIN_ANONYMITY_RELAYS} required")
         }
     } else if regime.plane() == Plane::Umbra {
         format!("unlinkable from a guard's view; not an anonymity claim ({relays} relays)")
@@ -324,7 +322,10 @@ mod tests {
         assert_eq!(effective_policy(Regime::Fast, 1, 1080).socks_port, 1081);
         assert_eq!(effective_policy(Regime::Shielded, 2, 1080).socks_port, 1082);
         assert_eq!(effective_policy(Regime::Ghost, 3, 1080).socks_port, 1083);
-        assert_eq!(effective_policy(Regime::Vantablack, 200, 1080).socks_port, 1083);
+        assert_eq!(
+            effective_policy(Regime::Vantablack, 200, 1080).socks_port,
+            1083
+        );
         assert_eq!(Regime::Fast.plane(), Plane::Phantom);
         assert_eq!(Regime::Vantablack.plane(), Plane::Umbra);
     }

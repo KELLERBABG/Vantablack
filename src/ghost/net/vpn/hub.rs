@@ -254,10 +254,13 @@ impl VpnHub {
         if payload.len() < 12 {
             return;
         }
-        self.sessions.lock().entry(fp.to_string()).and_modify(|info| {
-            info.session_hash = session_hash;
-            info.endpoint = src;
-        });
+        self.sessions
+            .lock()
+            .entry(fp.to_string())
+            .and_modify(|info| {
+                info.session_hash = session_hash;
+                info.endpoint = src;
+            });
         let epoch = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
         let ctr = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
         let current_epoch = self.ingress_epochs.lock().get(fp).copied();
