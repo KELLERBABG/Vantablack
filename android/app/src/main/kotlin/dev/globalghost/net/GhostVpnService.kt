@@ -97,6 +97,12 @@ class GhostVpnService : VpnService() {
             if (ptr == 0L) { shutdown(); stopSelf(); return START_NOT_STICKY }
             activePtr = ptr
         }
+        intent.getStringExtra(EXTRA_RENDEZVOUS_URL)?.trim()?.takeIf { it.isNotEmpty() }?.let { url ->
+            try { GhostCore.setRendezvousUrl(ptr, url) } catch (_: Throwable) {}
+        }
+        intent.getStringExtra(EXTRA_INVITE)?.trim()?.takeIf { it.isNotEmpty() }?.let { invite ->
+            try { GhostCore.importInvite(ptr, invite) } catch (_: Throwable) {}
+        }
         Thread {
             startTunnel()
         }.start()
@@ -286,12 +292,16 @@ class GhostVpnService : VpnService() {
             }
 
             if (activeNetwork != network) {
+                val wasConnected = activeNetwork != null
                 activeNetwork = network
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
                     setUnderlyingNetworks(arrayOf(network))
                 }
                 channel?.socket()?.let { sock ->
                     protect(sock)
+                }
+                if (wasConnected && ptr != 0L) {
+                    try { GhostCore.recordHandover(ptr) } catch (_: Throwable) {}
                 }
             }
         }
@@ -416,8 +426,9 @@ class GhostVpnService : VpnService() {
         const val EXTRA_HUB_ADDR = "hub_addr"
         const val EXTRA_DNS = "dns_server"
         const val EXTRA_SEARCH_DOMAIN = "search_domain"
-        const val DEFAULT_BOOTSTRAP_URL =
-            "https://red-star-512e.papababg02.workers.dev/peers?port=55225"
+        const val EXTRA_RENDEZVOUS_URL = "rendezvous_url"
+        const val EXTRA_INVITE = "invite"
+        const val DEFAULT_RENDEZVOUS_URL = ""
         @Volatile var isRunning = false
         @Volatile var activePtr: Long = 0L
         @Volatile var currentHubAddr: String = "auto"
@@ -442,6 +453,27 @@ class GhostVpnService : VpnService() {
             return if (p != 0L) {
                 try { GhostCore.stats(p) } catch (_: Throwable) { LongArray(4) }
             } else LongArray(4)
+        }
+
+        fun getConnectionPath(): String {
+            val p = activePtr
+            return if (p != 0L) {
+                try { GhostCore.getConnectionPath(p) } catch (_: Throwable) { "Disconnected" }
+            } else "Disconnected"
+        }
+
+        fun getRttMs(): Long {
+            val p = activePtr
+            return if (p != 0L) {
+                try { GhostCore.getRttMs(p) } catch (_: Throwable) { -1L }
+            } else -1L
+        }
+
+        fun getHandoverCount(): Long {
+            val p = activePtr
+            return if (p != 0L) {
+                try { GhostCore.getHandoverCount(p) } catch (_: Throwable) { 0L }
+            } else 0L
         }
 
         fun getActiveExitNode(): String {

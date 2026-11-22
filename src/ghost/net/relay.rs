@@ -1190,6 +1190,119 @@ pub fn spawn_store_forward_task(
     })
 }
 
+/// Per-source-IP token bucket and stateless cookie helper for WAN anti-abuse (C4).
+///
+/// Enforces per-IP rate limits on `ctr == 0` handshakes, unauthenticated beacons,
+/// and STUN requests when `pending_hs` crosses 50% capacity (`MAX_PENDING_HANDSHAKES / 2`),
+/// preventing CPU exhaustion from spoofed ML-KEM-768 handshakes on public WAN relays/exits.
+#[derive(Debug, Clone)]
+pub struct WanRateLimiter {
+    buckets: Arc<DashMap<std::net::IpAddr, (f64, Instant)>>,
+    capacity: f64,
+    refill_per_sec: f64,
+    max_entries: usize,
+}
+
+impl Default for WanRateLimiter {
+    fn default() -> Self {
+        Self::new(8.0, 2.0)
+    }
+}
+
+impl WanRateLimiter {
+    pub fn new(capacity: f64, refill_per_sec: f64) -> Self {
+        Self {
+            buckets: Arc::new(DashMap::new()),
+            capacity: capacity.max(1.0),
+            refill_per_sec: refill_per_sec.max(0.1),
+            max_entries: 4096,
+        }
+    }
+
+    /// Check whether a packet from `ip` is allowed given current `pending_hs_len`.
+    ///
+    /// Below 50% of `max_pending_hs`, requests are allowed without throttling.
+    /// At or above `max_pending_hs / 2`, the per-IP token bucket is enforced.
+    pub fn allow(
+        &self,
+        ip: std::net::IpAddr,
+        pending_hs_len: usize,
+        max_pending_hs: usize,
+    ) -> bool {
+        if pending_hs_len < max_pending_hs / 2 {
+            return true;
+        }
+        self.allow_strict(ip)
+    }
+
+    /// Strictly consume 1 token from `ip`'s bucket, returning `false` if exhausted.
+    pub fn allow_strict(&self, ip: std::net::IpAddr) -> bool {
+        let now = Instant::now();
+        if self.buckets.len() >= self.max_entries && !self.buckets.contains_key(&ip) {
+            self.buckets
+                .retain(|_, (_, last)| now.duration_since(*last) < Duration::from_secs(60));
+            if self.buckets.len() >= self.max_entries {
+                return false;
+            }
+        }
+        let mut entry = self
+            .buckets
+            .entry(ip)
+            .or_insert_with(|| (self.capacity, now));
+        let (tokens, last) = entry.value_mut();
+        let elapsed = now.duration_since(*last).as_secs_f64();
+        *tokens = (*tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Compute a stateless 16-byte handshake cookie bound to `ip` and a 60s time window.
+    pub fn issue_cookie(secret: &[u8; 32], ip: std::net::IpAddr, now_secs: u64) -> [u8; 16] {
+        use sha2::{Digest, Sha256};
+        let window = now_secs / 60;
+        let mut hasher = Sha256::new();
+        hasher.update(secret);
+        hasher.update(b"GGN_HS_COOKIE_V1");
+        hasher.update(window.to_be_bytes());
+        match ip {
+            std::net::IpAddr::V4(v4) => hasher.update(v4.octets()),
+            std::net::IpAddr::V6(v6) => hasher.update(v6.octets()),
+        };
+        let hash = hasher.finalize();
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&hash[..16]);
+        out
+    }
+
+    /// Verify a stateless 16-byte handshake cookie for `ip` (accepts current or previous 60s window).
+    pub fn verify_cookie(
+        secret: &[u8; 32],
+        ip: std::net::IpAddr,
+        cookie: &[u8],
+        now_secs: u64,
+    ) -> bool {
+        if cookie.len() != 16 {
+            return false;
+        }
+        let current = Self::issue_cookie(secret, ip, now_secs);
+        if cookie == current {
+            return true;
+        }
+        if now_secs >= 60 {
+            let prev = Self::issue_cookie(secret, ip, now_secs - 60);
+            if cookie == prev {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

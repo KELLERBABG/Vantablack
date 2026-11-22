@@ -7,11 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-11-22 - Android Parity, Divergent Sharding, Self-Healing Watchdog, Anti-Abuse, Vouchers & Multi-NAT E2E
+
+- **Android & Mobile Parity (`src/ghost/net/vpn/android_jni.rs`, `android/`):** Upgraded JNI tunnel framing to GTF v2 (`build_gtf_v2_frame`, `V2FrameMeta`, `FLAG_V2`), `parse_packet_counter_u64`, STUN/ICE demux, and `BLND!` DERP relay fallback; added `vb-net://` / `vb://` QR invite scan/import, `GHOST_RENDEZVOUS_URL` support, and live connection path / RTT / handover telemetry in `MainActivity.kt`.
+- **Divergent Sharding, Watchdog & Anti-Abuse (`src/main.rs`, `src/ghost/net/{fallback,mesh,relay}.rs`, `tests/wan_resilience_e2e.rs`):** Added `GHOST_DIVERGENT_SHARDS=1` `BLND!` multi-carrier RS sharding in `send3_adaptive`, self-healing network-change & dead-peer/TUN watchdog, and `WanRateLimiter` per-IP token bucket + stateless handshake cookies under load.
+- **Guest Exit Vouchers (`src/control.rs`, `assets/wan_dashboard.html`, `tests/control_center_api.rs`):** Added PIN-protected `POST /api/exit/voucher` (`ExitCapability::issue`) and Guest Exit Voucher generator UI.
+- **Multi-NAT E2E Harness (`deploy/docker-compose.nat-e2e.yml`, `scripts/wan_nat_e2e.sh`, `tests/multi_nat_e2e.rs`):** Added reproducible Cone/Symmetric/Relay Docker Compose topology and 3-test multi-NAT & multi-hop onion E2E suite.
+
+---
+
 ## [1.4.0] - 2026-11-21 - End-to-End WAN Discovery, Live Telemetry & Invite Wiring
 
 - **Blind WAN Discovery & Tier-1 Cache Wiring (`src/main.rs`):** Wired `LocalPeerCache::{load_v2, save_v2}` (`peers.bin` with legacy `peers.cache` fallback), `BlindMailboxClient` (`GHOST_RENDEZVOUS_URL`, preserving `http_bootstrap` fallback only when unset), and signed `GHOST_PEX2____` (`PeerDescriptorV2`) gossip alongside backward-compatible `GHOST_PEX_____` v1 frames, installing peer `IceOffer`s into `NatHolePuncher` and `CAP_RELAY` peers into `Fallback`.
 - **Live WAN Telemetry & `vb://2.` / `vb-net://` Invites (`src/ghost/net/mesh.rs`, `src/control.rs`, `assets/wan_dashboard.html`):** Connected `wan_telemetry_snapshot()` and per-peer `PeerTopologyTelemetry` (`public_addr`, `nat_type`, `stun_ok`, `upnp_ok`, `relay_count`, `relayed_peer_count`, `rtt_ms`, `transport`, `via_relay_fp`) into `GET /api/topology` and `GET /api/status`; added PIN-protected `GET /api/invite`, `vb://2.` / `vb-net://` support in `POST /api/peers/add`, and a "Copy Signed `vb://` Invite" button in the Pairing Studio.
 - **Full Cross-Subsystem E2E Tests (`tests/wan_full_e2e.rs`):** Added end-to-end integration tests covering blind-mailbox publish/fetch with zero plaintext leakage on the wire, `LocalPeerCache` v2 roundtrip & Tier-1 boot, live `/api/topology` telemetry, and `GET /api/invite` + `POST /api/peers/add` pairing.
+
+---
+
+## [1.5.0] - 2026-11-22 - Android Parity, Divergent Sharding, Self-Healing Watchdog, Anti-Abuse, Vouchers & Multi-NAT E2E
+
+- **Android & Mobile Parity (`src/ghost/net/vpn/android_jni.rs`, `android/`):** Upgraded JNI tunnel framing to GTF v2 (`build_gtf_v2_frame`, `V2FrameMeta`, `FLAG_V2`), `parse_packet_counter_u64`, STUN/ICE demux, and `BLND!` DERP relay fallback; added `vb-net://` / `vb://` QR invite scan/import, `GHOST_RENDEZVOUS_URL` support, and live connection path / RTT / handover telemetry in `MainActivity.kt`.
+- **Divergent Sharding, Watchdog & Anti-Abuse (`src/main.rs`, `src/ghost/net/{fallback,mesh,relay}.rs`, `tests/wan_resilience_e2e.rs`):** Added `GHOST_DIVERGENT_SHARDS=1` `BLND!` multi-carrier RS sharding in `send3_adaptive`, self-healing network-change & dead-peer/TUN watchdog, and `WanRateLimiter` per-IP token bucket + stateless handshake cookies under load.
+- **Guest Exit Vouchers (`src/control.rs`, `assets/wan_dashboard.html`, `tests/control_center_api.rs`):** Added PIN-protected `POST /api/exit/voucher` (`ExitCapability::issue`) and Guest Exit Voucher generator UI.
+- **Multi-NAT E2E Harness (`deploy/docker-compose.nat-e2e.yml`, `scripts/wan_nat_e2e.sh`, `tests/multi_nat_e2e.rs`):** Added reproducible Cone/Symmetric/Relay Docker Compose topology and 3-test multi-NAT & multi-hop onion E2E suite.
 
 ---
 
@@ -24,11 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-11-22 - Android Parity, Divergent Sharding, Self-Healing Watchdog, Anti-Abuse, Vouchers & Multi-NAT E2E
+
+- **Android & Mobile Parity (`src/ghost/net/vpn/android_jni.rs`, `android/`):** Upgraded JNI tunnel framing to GTF v2 (`build_gtf_v2_frame`, `V2FrameMeta`, `FLAG_V2`), `parse_packet_counter_u64`, STUN/ICE demux, and `BLND!` DERP relay fallback; added `vb-net://` / `vb://` QR invite scan/import, `GHOST_RENDEZVOUS_URL` support, and live connection path / RTT / handover telemetry in `MainActivity.kt`.
+- **Divergent Sharding, Watchdog & Anti-Abuse (`src/main.rs`, `src/ghost/net/{fallback,mesh,relay}.rs`, `tests/wan_resilience_e2e.rs`):** Added `GHOST_DIVERGENT_SHARDS=1` `BLND!` multi-carrier RS sharding in `send3_adaptive`, self-healing network-change & dead-peer/TUN watchdog, and `WanRateLimiter` per-IP token bucket + stateless handshake cookies under load.
+- **Guest Exit Vouchers (`src/control.rs`, `assets/wan_dashboard.html`, `tests/control_center_api.rs`):** Added PIN-protected `POST /api/exit/voucher` (`ExitCapability::issue`) and Guest Exit Voucher generator UI.
+- **Multi-NAT E2E Harness (`deploy/docker-compose.nat-e2e.yml`, `scripts/wan_nat_e2e.sh`, `tests/multi_nat_e2e.rs`):** Added reproducible Cone/Symmetric/Relay Docker Compose topology and 3-test multi-NAT & multi-hop onion E2E suite.
+
+---
+
 ## [1.2.0] - 2026-11-21 - Control Center API v2 & Interactive Mesh View UI
 
 - **Control Center REST API v2 (`src/control.rs`):** Added PIN-protected `GET /api/topology` (with `TopologySelfHint` / `TopologyPeerHint` snapshot structs), `GET /proxy.pac`, `vb://` URI decoding & signature verification in `POST /api/peers/add`, `POST /api/peers/disconnect` (session/carrier teardown with `GHOST_BYE_MAGIC`), `/api/mesh/scan` & `/api/mesh/config` aliases, and dynamic `version`, `multicast_addr` (`239.255.0.1:2270`), and `socks_ports` in `GET /api/status`.
 - **Interactive Mesh View & Dashboard Overhaul (`assets/wan_dashboard.html`):** Added zero-CDN inline SVG Ego-Graph (`tab-mesh`) with Ring 1 LAN/WAN & Ring 2 relayed arcs, toggleable Circuit Hop Overlay, `Ego Graph` / `Peer Table` switcher, filter chips, click-to-inspect Peer Drawer, WAN & NAT Readiness Pipeline card, Pairing Studio (`IP:Port` / `vb://`), Multi-Port SOCKS5 (`:1080`–`:1083`) + `/proxy.pac` copy + visual Split-Tunnel Bypass editor, Crypto/RS Pipeline Benchmark, styled in-app PIN Unlock Modal, and keyboard shortcuts (`1–5`, `Esc`).
 - **Control Center Integration Tests (`tests/control_center_api.rs`):** Added tests covering `/api/topology`, `/proxy.pac`, `/api/mesh/{scan,config}` aliases, `vb://` URI verification, peer disconnect, and `GHOST_PIN` enforcement.
+
+---
+
+## [1.5.0] - 2026-11-22 - Android Parity, Divergent Sharding, Self-Healing Watchdog, Anti-Abuse, Vouchers & Multi-NAT E2E
+
+- **Android & Mobile Parity (`src/ghost/net/vpn/android_jni.rs`, `android/`):** Upgraded JNI tunnel framing to GTF v2 (`build_gtf_v2_frame`, `V2FrameMeta`, `FLAG_V2`), `parse_packet_counter_u64`, STUN/ICE demux, and `BLND!` DERP relay fallback; added `vb-net://` / `vb://` QR invite scan/import, `GHOST_RENDEZVOUS_URL` support, and live connection path / RTT / handover telemetry in `MainActivity.kt`.
+- **Divergent Sharding, Watchdog & Anti-Abuse (`src/main.rs`, `src/ghost/net/{fallback,mesh,relay}.rs`, `tests/wan_resilience_e2e.rs`):** Added `GHOST_DIVERGENT_SHARDS=1` `BLND!` multi-carrier RS sharding in `send3_adaptive`, self-healing network-change & dead-peer/TUN watchdog, and `WanRateLimiter` per-IP token bucket + stateless handshake cookies under load.
+- **Guest Exit Vouchers (`src/control.rs`, `assets/wan_dashboard.html`, `tests/control_center_api.rs`):** Added PIN-protected `POST /api/exit/voucher` (`ExitCapability::issue`) and Guest Exit Voucher generator UI.
+- **Multi-NAT E2E Harness (`deploy/docker-compose.nat-e2e.yml`, `scripts/wan_nat_e2e.sh`, `tests/multi_nat_e2e.rs`):** Added reproducible Cone/Symmetric/Relay Docker Compose topology and 3-test multi-NAT & multi-hop onion E2E suite.
 
 ---
 
@@ -38,6 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Signed PeerDescriptorV2 & Invite Links:** Added Ed25519-signed `PeerDescriptorV2` (`VBP2`), `vb://2.<b64>` and `NetworkInvite` (`vb-net://<b64>`) codecs, and `LocalPeerCache::{save_v2, load_v2}` (`VBPCACHE2`) with expiry and signature pruning while preserving v1 compatibility.
 - **Blind Mailbox Client & Cloudflare Worker (`deploy/worker/blind_rendezvous.js`, `deploy/worker/wrangler.toml`):** Added `BlindMailboxClient` (`publish_descriptor`, `fetch_descriptors` with `epoch_hour - 1` rollover/fallback) and a zero-logging KV-backed Cloudflare Worker (1024B max payload, 900s TTL, 32-entry slot cap).
 - **Deploy & Smoke-Testbed Repairs (`deploy/docker-compose*.yml`, `scripts/mesh_smoke_test.sh`, `scripts/smoke_test.sh`):** Fixed `docker/Dockerfile.wan` build paths, added headless `--relay-only` relay compose configuration, updated binary discovery (`ggn.exe`/`ggn`/`vantablack.exe`), and replaced stub smoke assertions with real container, socket, netem, and HTTP telemetry checks.
+
+---
+
+## [1.5.0] - 2026-11-22 - Android Parity, Divergent Sharding, Self-Healing Watchdog, Anti-Abuse, Vouchers & Multi-NAT E2E
+
+- **Android & Mobile Parity (`src/ghost/net/vpn/android_jni.rs`, `android/`):** Upgraded JNI tunnel framing to GTF v2 (`build_gtf_v2_frame`, `V2FrameMeta`, `FLAG_V2`), `parse_packet_counter_u64`, STUN/ICE demux, and `BLND!` DERP relay fallback; added `vb-net://` / `vb://` QR invite scan/import, `GHOST_RENDEZVOUS_URL` support, and live connection path / RTT / handover telemetry in `MainActivity.kt`.
+- **Divergent Sharding, Watchdog & Anti-Abuse (`src/main.rs`, `src/ghost/net/{fallback,mesh,relay}.rs`, `tests/wan_resilience_e2e.rs`):** Added `GHOST_DIVERGENT_SHARDS=1` `BLND!` multi-carrier RS sharding in `send3_adaptive`, self-healing network-change & dead-peer/TUN watchdog, and `WanRateLimiter` per-IP token bucket + stateless handshake cookies under load.
+- **Guest Exit Vouchers (`src/control.rs`, `assets/wan_dashboard.html`, `tests/control_center_api.rs`):** Added PIN-protected `POST /api/exit/voucher` (`ExitCapability::issue`) and Guest Exit Voucher generator UI.
+- **Multi-NAT E2E Harness (`deploy/docker-compose.nat-e2e.yml`, `scripts/wan_nat_e2e.sh`, `tests/multi_nat_e2e.rs`):** Added reproducible Cone/Symmetric/Relay Docker Compose topology and 3-test multi-NAT & multi-hop onion E2E suite.
 
 ---
 
@@ -63,10 +108,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.5.0] - 2026-11-22 - Android Parity, Divergent Sharding, Self-Healing Watchdog, Anti-Abuse, Vouchers & Multi-NAT E2E
+
+- **Android & Mobile Parity (`src/ghost/net/vpn/android_jni.rs`, `android/`):** Upgraded JNI tunnel framing to GTF v2 (`build_gtf_v2_frame`, `V2FrameMeta`, `FLAG_V2`), `parse_packet_counter_u64`, STUN/ICE demux, and `BLND!` DERP relay fallback; added `vb-net://` / `vb://` QR invite scan/import, `GHOST_RENDEZVOUS_URL` support, and live connection path / RTT / handover telemetry in `MainActivity.kt`.
+- **Divergent Sharding, Watchdog & Anti-Abuse (`src/main.rs`, `src/ghost/net/{fallback,mesh,relay}.rs`, `tests/wan_resilience_e2e.rs`):** Added `GHOST_DIVERGENT_SHARDS=1` `BLND!` multi-carrier RS sharding in `send3_adaptive`, self-healing network-change & dead-peer/TUN watchdog, and `WanRateLimiter` per-IP token bucket + stateless handshake cookies under load.
+- **Guest Exit Vouchers (`src/control.rs`, `assets/wan_dashboard.html`, `tests/control_center_api.rs`):** Added PIN-protected `POST /api/exit/voucher` (`ExitCapability::issue`) and Guest Exit Voucher generator UI.
+- **Multi-NAT E2E Harness (`deploy/docker-compose.nat-e2e.yml`, `scripts/wan_nat_e2e.sh`, `tests/multi_nat_e2e.rs`):** Added reproducible Cone/Symmetric/Relay Docker Compose topology and 3-test multi-NAT & multi-hop onion E2E suite.
+
+---
+
 ## [0.8.21] - 2026-11-07
 - Security hardening sprints 1–4.
 - Origin validation in local web control center.
 - Coalescing data-plane optimizations.
+
+---
+
+## [1.5.0] - 2026-11-22 - Android Parity, Divergent Sharding, Self-Healing Watchdog, Anti-Abuse, Vouchers & Multi-NAT E2E
+
+- **Android & Mobile Parity (`src/ghost/net/vpn/android_jni.rs`, `android/`):** Upgraded JNI tunnel framing to GTF v2 (`build_gtf_v2_frame`, `V2FrameMeta`, `FLAG_V2`), `parse_packet_counter_u64`, STUN/ICE demux, and `BLND!` DERP relay fallback; added `vb-net://` / `vb://` QR invite scan/import, `GHOST_RENDEZVOUS_URL` support, and live connection path / RTT / handover telemetry in `MainActivity.kt`.
+- **Divergent Sharding, Watchdog & Anti-Abuse (`src/main.rs`, `src/ghost/net/{fallback,mesh,relay}.rs`, `tests/wan_resilience_e2e.rs`):** Added `GHOST_DIVERGENT_SHARDS=1` `BLND!` multi-carrier RS sharding in `send3_adaptive`, self-healing network-change & dead-peer/TUN watchdog, and `WanRateLimiter` per-IP token bucket + stateless handshake cookies under load.
+- **Guest Exit Vouchers (`src/control.rs`, `assets/wan_dashboard.html`, `tests/control_center_api.rs`):** Added PIN-protected `POST /api/exit/voucher` (`ExitCapability::issue`) and Guest Exit Voucher generator UI.
+- **Multi-NAT E2E Harness (`deploy/docker-compose.nat-e2e.yml`, `scripts/wan_nat_e2e.sh`, `tests/multi_nat_e2e.rs`):** Added reproducible Cone/Symmetric/Relay Docker Compose topology and 3-test multi-NAT & multi-hop onion E2E suite.
 
 ---
 

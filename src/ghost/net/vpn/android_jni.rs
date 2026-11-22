@@ -161,12 +161,24 @@ fn tunnel_frame(
     if framed.len() % 2 != 0 {
         framed.push(0);
     }
-    encrypt_in_place_with_context(key, ctr, &sh, dir, &mut framed);
+    let mut nonce = [0u8; 24];
+    nonce[..4].copy_from_slice(&sh);
+    nonce[4..8].copy_from_slice(&ctr.to_be_bytes());
+    let epoch = 0u64;
+    crate::ghost::layers::l2_aead::xchacha_seal_with_aad(key, &nonce, epoch, dir, &mut framed, &[]);
     let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
-    let framed = frame_shard(&framed);
-    let mut frame = build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
-    frame[OFFSET_FLAGS] |= 0x02; // tunnel bit — receiver-side bypass marker
-    frame
+    let shard = frame_shard(&framed);
+    let meta = crate::ghost::net::V2FrameMeta {
+        session_hash: sh,
+        counter: ctr as u64,
+        shard_index: 0,
+        epoch,
+        nonce,
+        bulk: true,
+        flags: crate::ghost::net::FLAG_V2 | 0x02,
+        tail: [0u8; crate::ghost::net::V2_TAIL_LEN],
+    };
+    crate::ghost::net::build_gtf_v2_frame(&meta, &shard, &tag)
 }
 
 fn receiver_open(
@@ -719,10 +731,18 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         Err(_) => return false,
     };
     let src = canonicalize_addr(raw_src);
+    if crate::ghost::net::stun::is_stun_packet(&buf[..n]) {
+        // Single-socket STUN/ICE demux: handle reflexive discovery or ICE connectivity checks
+        return false;
+    }
+    if n > 5 && &buf[..5] == b"BLND!" {
+        // DERP blind relay envelope demux
+        return false;
+    }
     if n < MIN_FRAME_SIZE {
         return false;
     }
-    let ctr = parse_packet_counter(&buf[..n]);
+    let ctr = crate::ghost::net::parse_packet_counter_u64(&buf[..n]) as u32;
 
     // Inbound handshake initiation from a peer (counter == 0)
     if ctr == 0 {
@@ -1364,4 +1384,135 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_destroy(
     if ptr != 0 {
         drop(unsafe { Box::from_raw(ptr as *mut AndroidCore) });
     }
+}
+
+static RENDEZVOUS_URL: Mutex<String> = Mutex::new(String::new());
+static HANDOVER_COUNT: AtomicU64 = AtomicU64::new(0);
+static LAST_RTT_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// `fun importInvite(ptr: Long, invite: String): String`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
+    mut env: JNIEnv,
+    _class: JClass,
+    _ptr: jlong,
+    invite: jni::objects::JString,
+) -> jni::sys::jstring {
+    let raw: String = match env.get_string(&invite) {
+        Ok(s) => s.into(),
+        Err(_) => {
+            return env
+                .new_string("err:invalid string")
+                .map(|s| s.into_raw())
+                .unwrap_or(std::ptr::null_mut());
+        }
+    };
+    let trimmed = raw.trim();
+    let res = if trimmed.starts_with("vb-net://") {
+        match crate::ghost::net::discovery::NetworkInvite::decode(trimmed) {
+            Ok(inv) => {
+                if let Some(url) = inv.rendezvous_url.as_ref() {
+                    *RENDEZVOUS_URL.lock() = url.clone();
+                }
+                let ep = inv
+                    .bootstrap_peers
+                    .first()
+                    .and_then(|p| p.endpoints.first())
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                format!("ok:{ep}")
+            }
+            Err(e) => format!("err:{e}"),
+        }
+    } else if trimmed.starts_with("vb://") {
+        match crate::ghost::net::discovery::PeerDescriptorV2::decode(trimmed) {
+            Ok(desc) => {
+                let ep = desc
+                    .endpoints
+                    .first()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                format!("ok:{ep}")
+            }
+            Err(e) => format!("err:{e}"),
+        }
+    } else {
+        "err:unsupported invite scheme".to_string()
+    };
+    env.new_string(res)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// `fun setRendezvousUrl(ptr: Long, url: String)`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_setRendezvousUrl(
+    mut env: JNIEnv,
+    _class: JClass,
+    _ptr: jlong,
+    url: jni::objects::JString,
+) {
+    if let Ok(s) = env.get_string(&url) {
+        let u: String = s.into();
+        *RENDEZVOUS_URL.lock() = u.trim().to_string();
+    }
+}
+
+/// `fun getConnectionPath(ptr: Long): String`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getConnectionPath(
+    env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+) -> jni::sys::jstring {
+    let path = if let Some(core) = unsafe { (ptr as *const AndroidCore).as_ref() } {
+        if let Some(hub) = core.hub_addr {
+            match hub.ip() {
+                std::net::IpAddr::V4(v4) if v4.is_private() => "Wi-Fi Direct LAN",
+                _ => "5G Direct ICE",
+            }
+        } else {
+            "5G via DERP Relay"
+        }
+    } else {
+        "Disconnected"
+    };
+    env.new_string(path)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// `fun getRttMs(ptr: Long): Long`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getRttMs(
+    _env: JNIEnv,
+    _class: JClass,
+    _ptr: jlong,
+) -> jlong {
+    let v = LAST_RTT_MS.load(Ordering::Relaxed);
+    if v == u64::MAX {
+        -1
+    } else {
+        v as jlong
+    }
+}
+
+/// `fun getHandoverCount(ptr: Long): Long`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getHandoverCount(
+    _env: JNIEnv,
+    _class: JClass,
+    _ptr: jlong,
+) -> jlong {
+    HANDOVER_COUNT.load(Ordering::Relaxed) as jlong
+}
+
+/// `fun recordHandover(ptr: Long)`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_recordHandover(
+    _env: JNIEnv,
+    _class: JClass,
+    _ptr: jlong,
+) {
+    HANDOVER_COUNT.fetch_add(1, Ordering::Relaxed);
 }

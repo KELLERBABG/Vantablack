@@ -1275,6 +1275,66 @@ pub fn spawn_control_center(
                                         })
                                         .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/exit/voucher") {
+                                        let val = json_body(&req);
+                                        let peer_fp = val
+                                            .get("peer_fingerprint")
+                                            .and_then(|v| v.as_str())
+                                            .map(str::trim)
+                                            .filter(|s| !s.is_empty());
+                                        if let Some(peer_fp) = peer_fp {
+                                            let allowed_host = val
+                                                .get("allowed_host")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::trim)
+                                                .filter(|s| !s.is_empty())
+                                                .unwrap_or("*");
+                                            let ttl_secs = val
+                                                .get("ttl_secs")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(86400)
+                                                .clamp(60, 30 * 86400);
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map(|d| d.as_secs())
+                                                .unwrap_or(0);
+                                            let expires_at = now.saturating_add(ttl_secs);
+                                            match vantablack::ghost::net::relay::ExitCapability::issue(
+                                                &nc_ref.identity,
+                                                peer_fp,
+                                                allowed_host,
+                                                expires_at,
+                                            )
+                                            .and_then(|cap| cap.encode())
+                                            {
+                                                Some(raw) => {
+                                                    let body = serde_json::json!({
+                                                        "success": true,
+                                                        "voucher_hex": hex::encode(raw),
+                                                        "expires_at": expires_at,
+                                                        "allowed_host": allowed_host,
+                                                        "peer_fingerprint": peer_fp,
+                                                    })
+                                                    .to_string();
+                                                    ("HTTP/1.1 200 OK", body, "application/json")
+                                                }
+                                                None => {
+                                                    let body = serde_json::json!({
+                                                        "success": false,
+                                                        "error": "Invalid peer_fingerprint or allowed_host"
+                                                    })
+                                                    .to_string();
+                                                    ("HTTP/1.1 400 Bad Request", body, "application/json")
+                                                }
+                                            }
+                                        } else {
+                                            let body = serde_json::json!({
+                                                "success": false,
+                                                "error": "peer_fingerprint is required"
+                                            })
+                                            .to_string();
+                                            ("HTTP/1.1 400 Bad Request", body, "application/json")
+                                        }
                                     } else if req.starts_with("POST /api/scan")
                                         || req.starts_with("POST /api/mesh/scan")
                                     {

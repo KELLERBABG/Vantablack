@@ -336,6 +336,19 @@ impl Fallback {
         self.routes.relayed_via(relay_fp)
     }
 
+    /// Evict a dead/stale peer from relay candidates, clear its own route, and
+    /// clear any routes that were relaying through it, returning affected peers
+    /// for failover (A6).
+    pub fn evict_dead_peer(&self, dead_fp: &str) -> Vec<String> {
+        self.remove_relay(dead_fp);
+        self.clear(dead_fp);
+        let affected = self.routes.relayed_via(dead_fp);
+        for peer in &affected {
+            self.clear(peer);
+        }
+        affected
+    }
+
     /// The allocation that carries TURN routes, when one is configured.
     pub fn turn(&self) -> Option<&Arc<TurnPath>> {
         self.turn.as_ref()

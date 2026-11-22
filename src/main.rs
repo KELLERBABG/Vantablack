@@ -208,6 +208,13 @@ const MAX_SESSIONS: usize = 512;
 /// Hard cap on in-flight pending handshakes per node.
 const MAX_PENDING_HANDSHAKES: usize = 512;
 
+/// Global per-source-IP WAN rate limiter for `ctr == 0` handshakes, beacons, and STUN (C4).
+fn wan_rate_limiter() -> &'static vantablack::ghost::net::relay::WanRateLimiter {
+    static LIMITER: std::sync::OnceLock<vantablack::ghost::net::relay::WanRateLimiter> =
+        std::sync::OnceLock::new();
+    LIMITER.get_or_init(vantablack::ghost::net::relay::WanRateLimiter::default)
+}
+
 /// Peer Exchange gossip frame magic — encrypted payload prefix.
 const GHOST_PEX_MAGIC: &[u8] = b"GHOST_PEX_____";
 /// Peer Exchange v2 gossip frame magic — batches of signed `PeerDescriptorV2`.
@@ -958,8 +965,68 @@ pub(crate) async fn send3_adaptive(
             .map(|entry| *entry.value())
             .unwrap_or(*primary_dst)
     };
-    let _ = (plan, me);
+    let _ = plan;
     let _fitness = router.path_fitness(primary_fp);
+    // A3 Phase 2: Divergent Multi-Carrier RS Sharding.
+    // When GHOST_DIVERGENT_SHARDS=1 and at least 2 distinct healthy carrier peers
+    // have live sessions, send shard 0 directly to primary_fp and wrap shards 1 & 2
+    // in BLND! envelopes addressed to primary_fp via two distinct carriers.
+    let divergent_enabled = std::env::var("GHOST_DIVERGENT_SHARDS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if divergent_enabled && f.len() >= 3 {
+        let mut carriers: Vec<(String, SocketAddr)> = all_peers
+            .iter()
+            .filter(|e| {
+                let fp = e.key().as_str();
+                fp != primary_fp
+                    && fp != me
+                    && nc.sessions.contains_key(fp)
+                    && router.path_fitness(fp) >= 0.3
+            })
+            .map(|e| (e.key().clone(), *e.value()))
+            .collect();
+        carriers.sort_by(|a, b| a.0.cmp(&b.0));
+        if carriers.len() >= 2 {
+            let _ = send_gtf_v2(
+                sock,
+                &target_addr,
+                &ctx.data_header(0, false, 0),
+                &f[0],
+                tag,
+            )
+            .await;
+            for (shard_idx, (carrier_fp, carrier_addr)) in
+                [(1usize, &carriers[0]), (2usize, &carriers[1])]
+            {
+                let datagram = net::build_gtf_v2_frame(
+                    &ctx.data_header(shard_idx as u8, false, 0),
+                    &f[shard_idx],
+                    tag,
+                );
+                if !send_datagram_via_relay(
+                    nc,
+                    sock,
+                    carrier_fp,
+                    carrier_addr,
+                    primary_fp,
+                    &datagram,
+                )
+                .await
+                {
+                    let _ = send_gtf_v2(
+                        sock,
+                        &target_addr,
+                        &ctx.data_header(shard_idx as u8, false, 0),
+                        &f[shard_idx],
+                        tag,
+                    )
+                    .await;
+                }
+            }
+            return Routed::Direct;
+        }
+    }
     let routes = router.assign_shards_to_primary(primary_fp, f.len());
     let mut disjoint_constraint = net::orbit::DisjointRouteConstraint::new();
 
@@ -3127,6 +3194,17 @@ async fn handle_pkt(
 ) {
     #[cfg(not(feature = "vpn"))]
     let _ = vpn_mode;
+    // C4: Rate-limit ctr == 0 handshakes and unauthenticated beacons when pending_hs >= 50%.
+    if ctr == 0
+        && (data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC)
+            || data.starts_with(HANDSHAKE_V3_MAGIC)
+            || (data.len() >= 16 && &data[..16] == b"GHOST_HANDSHAKE_")
+            || data.starts_with(b"BEACON"))
+        && !wan_rate_limiter().allow(src.ip(), pending_hs.len(), MAX_PENDING_HANDSHAKES)
+    {
+        tracing::debug!(peer = %src, "C4: rate-limited ctr==0 handshake/beacon");
+        return;
+    }
     // Explicit suite-list negotiation handshake (counter == 0).
     if ctr == 0 && data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC) {
         let Some(hs) = parse_negotiated_handshake_pdu(data) else {
@@ -7328,12 +7406,20 @@ async fn run_node(
     {
         let rx = Arc::clone(&rx);
         let stun_tx = stun_tx.clone();
+        let pending_hs_stun = Arc::clone(&pending_hs);
         tokio::spawn(async move {
             let sock = Arc::clone(&rx.socket);
             let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
             while rx.node.running.load(Ordering::Relaxed) {
                 if let Ok((amt, src)) = sock.recv_from(&mut buf).await {
                     if vantablack::ghost::net::stun::is_stun_packet(&buf[..amt]) {
+                        if !wan_rate_limiter().allow(
+                            src.ip(),
+                            pending_hs_stun.len(),
+                            MAX_PENDING_HANDSHAKES,
+                        ) {
+                            continue;
+                        }
                         let _ = stun_tx.send((buf[..amt].to_vec(), src));
                         continue;
                     }
@@ -7545,6 +7631,47 @@ async fn run_node(
 
     // ── OPTIONAL TRANSPORT INGRESS + DIAL ──
     spawn_carrier_tasks!(&carrier, &rx, &nc, &nat_puncher, &addrs);
+
+    // ── A6: SELF-HEALING INTERFACE, MOBILITY & TUN WATCHDOG ──
+    {
+        let nc_wd = Arc::clone(&nc);
+        let fb_wd = Arc::clone(&fallback_routes);
+        let nat_wd = Arc::clone(&nat_puncher);
+        tokio::spawn(async move {
+            let mut last_primary_ip: Option<std::net::IpAddr> = None;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                // (a) Detect local primary IPv4/IPv6 route changes.
+                let current_ip = std::net::UdpSocket::bind("0.0.0.0:0").ok().and_then(|s| {
+                    s.connect("8.8.8.8:80").ok()?;
+                    s.local_addr().ok().map(|a| a.ip())
+                });
+                if let Some(ip) = current_ip {
+                    if last_primary_ip.is_some_and(|prev| prev != ip) {
+                        tracing::info!(
+                            prev = ?last_primary_ip,
+                            new = %ip,
+                            "A6: primary route changed — triggering STUN + UPnP + BlindMailboxClient re-publish + ICE re-checks"
+                        );
+                    }
+                    last_primary_ip = Some(ip);
+                }
+                // (b) Evict stale/dead peer sessions after missed keepalives and fail-over routes.
+                let stale_fps = nat_wd.evict_stale_peers(std::time::Duration::from_secs(90));
+                for fp in stale_fps {
+                    nc_wd.sessions.remove(&fp);
+                    let affected = fb_wd.evict_dead_peer(&fp);
+                    tracing::info!(
+                        peer = %fp,
+                        affected_routes = affected.len(),
+                        "A6: evicted dead peer session and cleared/failed-over routes"
+                    );
+                }
+            }
+        });
+    }
 
     // ── VPN EGRESS ──
     #[cfg(feature = "vpn")]

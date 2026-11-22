@@ -372,6 +372,19 @@ impl Default for NatHolePuncher {
 }
 
 impl NatHolePuncher {
+    /// Evict peers whose last keepalive exceeds `max_idle`, returning their fingerprints (A6).
+    pub fn evict_stale_peers(&self, max_idle: Duration) -> Vec<String> {
+        let stale: Vec<String> = self
+            .peers
+            .iter()
+            .filter(|p| p.value().last_keepalive.elapsed() > max_idle)
+            .map(|p| p.key().clone())
+            .collect();
+        for fp in &stale {
+            self.peers.remove(fp);
+        }
+        stale
+    }
     pub fn new() -> Self {
         Self::default()
     }

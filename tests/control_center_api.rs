@@ -944,3 +944,66 @@ fn test_topology_and_disconnect_enforce_ghost_pin() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_exit_voucher_enforces_ghost_pin_and_mints_valid_capability() {
+    let bin_path = find_binary();
+    let web_port = get_free_port();
+    let udp_port = get_free_port();
+
+    let temp_dir = std::env::temp_dir().join(format!("vanta_exit_voucher_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    let mut cmd = Command::new(&bin_path);
+    cmd.env("GHOST_NO_GUI", "1")
+        .env("GHOST_WEB_PORT", web_port.to_string())
+        .env("GHOST_UDP_PORT", udp_port.to_string())
+        .env("GHOST_DATA_DIR", &temp_dir)
+        .env("GHOST_PIN", "secret-pin-42")
+        .env("GHOST_STUN", "off")
+        .env_remove("GHOST_PSK")
+        .env("GHOST_MODE", "public");
+
+    let child = cmd.spawn().expect("failed to spawn daemon");
+    let _guard = NodeProcessGuard { child };
+    wait_for_control_center(web_port);
+
+    let payload = serde_json::json!({
+        "peer_fingerprint": "deadbeef12345678",
+        "allowed_host": "*.example.test",
+        "ttl_secs": 3600
+    });
+
+    // Unauthenticated POST /api/exit/voucher -> 401
+    let (code, unauth) = http_request(web_port, "POST", "/api/exit/voucher", Some(&payload));
+    assert_eq!(code, 401);
+    assert_eq!(unauth["pin_required"], true);
+
+    // Authenticated POST /api/exit/voucher -> 200 with valid decodable ExitCapability
+    let (code, _, body) = http_request_raw(
+        web_port,
+        "POST",
+        "/api/exit/voucher",
+        Some(&payload),
+        &[("X-Pin", "secret-pin-42")],
+        Duration::from_secs(5),
+    );
+    assert_eq!(code, 200);
+    let resp: serde_json::Value = serde_json::from_str(&body).expect("valid voucher json");
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["peer_fingerprint"], "deadbeef12345678");
+    assert_eq!(resp["allowed_host"], "*.example.test");
+    let voucher_hex = resp["voucher_hex"].as_str().expect("voucher_hex string");
+    let raw = hex::decode(voucher_hex).expect("valid hex");
+    let cap =
+        vantablack::ghost::net::relay::ExitCapability::decode(&raw).expect("valid ExitCapability");
+    assert_eq!(cap.subject, "deadbeef12345678");
+    assert_eq!(cap.scope, "*.example.test");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(cap.verify(now, "deadbeef12345678", "*.example.test"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

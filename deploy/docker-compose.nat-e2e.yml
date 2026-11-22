@@ -1,0 +1,128 @@
+# Vantablack — Multi-NAT E2E Verification Topology (Track F1)
+#
+# Isolated subnets simulating:
+#   1. public_wan  (172.30.0.0/24) : Public `ggn --relay-only` node (172.30.0.10)
+#   2. nat_cone_a  (172.30.1.0/24) : Cone NAT A client (172.30.1.10)
+#   3. nat_cone_b  (172.30.2.0/24) : Cone NAT B client (172.30.2.10)
+#   4. nat_sym_c   (172.30.3.0/24) : Symmetric CGNAT C client (172.30.3.10)
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.nat-e2e.yml up -d
+#   bash scripts/wan_nat_e2e.sh
+
+version: '3.8'
+
+services:
+  ggn-public-relay:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.wan
+    container_name: ggn-nat-e2e-relay
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=relay
+      - GHOST_RELAY=1
+      - GGN_RELAY_ONLY=1
+      - LISTEN_ADDR=0.0.0.0:8000
+      - GHOST_WEB_PORT=8080
+      - NETEM_RULE=delay 10ms 2ms
+    ports:
+      - "18180:8080"
+    networks:
+      public_wan:
+        ipv4_address: 172.30.0.10
+
+  ggn-cone-a:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.wan
+    container_name: ggn-nat-e2e-cone-a
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=client
+      - NAT_PROFILE=cone
+      - LISTEN_ADDR=0.0.0.0:8000
+      - GHOST_WEB_PORT=8080
+      - GHOST_BOOTSTRAP_PEERS=172.30.0.10:8000
+      - NETEM_RULE=delay 15ms 3ms
+    ports:
+      - "18181:8080"
+    networks:
+      nat_cone_a:
+        ipv4_address: 172.30.1.10
+      public_wan:
+        ipv4_address: 172.30.0.11
+    depends_on:
+      - ggn-public-relay
+
+  ggn-cone-b:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.wan
+    container_name: ggn-nat-e2e-cone-b
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=client
+      - NAT_PROFILE=cone
+      - LISTEN_ADDR=0.0.0.0:8000
+      - GHOST_WEB_PORT=8080
+      - GHOST_BOOTSTRAP_PEERS=172.30.0.10:8000
+      - NETEM_RULE=delay 20ms 4ms
+    ports:
+      - "18182:8080"
+    networks:
+      nat_cone_b:
+        ipv4_address: 172.30.2.10
+      public_wan:
+        ipv4_address: 172.30.0.12
+    depends_on:
+      - ggn-public-relay
+
+  ggn-sym-c:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.wan
+    container_name: ggn-nat-e2e-sym-c
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - NODE_ROLE=client
+      - NAT_PROFILE=symmetric_cgnat
+      - LISTEN_ADDR=0.0.0.0:8000
+      - GHOST_WEB_PORT=8080
+      - GHOST_BOOTSTRAP_PEERS=172.30.0.10:8000
+      - NETEM_RULE=delay 25ms 5ms
+    ports:
+      - "18183:8080"
+    networks:
+      nat_sym_c:
+        ipv4_address: 172.30.3.10
+      public_wan:
+        ipv4_address: 172.30.0.13
+    depends_on:
+      - ggn-public-relay
+
+networks:
+  public_wan:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  nat_cone_a:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.1.0/24
+  nat_cone_b:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
+  nat_sym_c:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.3.0/24

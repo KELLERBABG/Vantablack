@@ -62,4 +62,22 @@ object GhostCore {
 
     /** Return comma-separated list of all authenticated peer endpoints ("ip:port,..."). */
     external fun getKnownPeers(ptr: Long): String
+
+    /** Import a vb-net:// or vb://2. invite/descriptor via Rust PeerDescriptorV2 / BlindRendezvous. */
+    external fun importInvite(ptr: Long, invite: String): String
+
+    /** Configure the BlindRendezvous URL (GHOST_RENDEZVOUS_URL). */
+    external fun setRendezvousUrl(ptr: Long, url: String)
+
+    /** Return the active connection path: "Wi-Fi Direct LAN", "5G Direct ICE", or "5G via DERP Relay". */
+    external fun getConnectionPath(ptr: Long): String
+
+    /** Return live RTT in milliseconds to the active hub, or -1 if unknown. */
+    external fun getRttMs(ptr: Long): Long
+
+    /** Return the number of seamless network handovers (Wi-Fi <-> 5G) in this session. */
+    external fun getHandoverCount(ptr: Long): Long
+
+    /** Record a network handover event in native telemetry. */
+    external fun recordHandover(ptr: Long)
 }

@@ -22,6 +22,8 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private val VPN_REQUEST_CODE = 1001
+    private val QR_SCAN_REQUEST_CODE = 1002
+    private var pendingInvite: String? = null
     private lateinit var editRemoteAddr: EditText
     private lateinit var editDnsServer: EditText
     private lateinit var btnConnect: Button
@@ -40,6 +42,9 @@ class MainActivity : Activity() {
     private lateinit var txtUpTotal: TextView
     private lateinit var txtExitNode: TextView
     private lateinit var txtDnsServer: TextView
+    private lateinit var txtConnPath: TextView
+    private lateinit var txtRtt: TextView
+    private lateinit var txtHandovers: TextView
     private lateinit var txtPeersHeader: TextView
     private lateinit var peerListContainer: LinearLayout
 
@@ -264,6 +269,51 @@ class MainActivity : Activity() {
             row2.addView(colExit)
             row2.addView(colDns)
             addView(row2)
+
+            val row3 = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 14, 0, 0)
+            }
+            val colPath = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+                addView(createDimLabel("PATH"))
+                txtConnPath = TextView(context).apply {
+                    text = "Standby"
+                    textSize = 12f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#38bdf8"))
+                }
+                addView(txtConnPath)
+            }
+            val colRtt = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f)
+                addView(createDimLabel("RTT"))
+                txtRtt = TextView(context).apply {
+                    text = "— ms"
+                    textSize = 12f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#f1f5f9"))
+                }
+                addView(txtRtt)
+            }
+            val colHandover = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f)
+                addView(createDimLabel("HANDOVERS"))
+                txtHandovers = TextView(context).apply {
+                    text = "0"
+                    textSize = 12f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#f1f5f9"))
+                }
+                addView(txtHandovers)
+            }
+            row3.addView(colPath)
+            row3.addView(colRtt)
+            row3.addView(colHandover)
+            addView(row3)
         }
         layout.addView(cardTelemetry)
 
@@ -307,6 +357,50 @@ class MainActivity : Activity() {
                 }
             }
             addView(btnScanLan)
+
+            val inviteRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                val params = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(0, 10, 0, 0) }
+                layoutParams = params
+            }
+            val btnScanQr = Button(context).apply {
+                text = "Scan QR Invite"
+                textSize = 12f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#38bdf8"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#151821"))
+                    setStroke(1, Color.parseColor("#262b3a"))
+                    cornerRadius = 8f
+                }
+                setPadding(0, 16, 0, 16)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(0, 0, 6, 0)
+                }
+                setOnClickListener { launchQrScanner() }
+            }
+            val btnPasteInvite = Button(context).apply {
+                text = "Paste vb:// Invite"
+                textSize = 12f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#cbd5e1"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#151821"))
+                    setStroke(1, Color.parseColor("#262b3a"))
+                    cornerRadius = 8f
+                }
+                setPadding(0, 16, 0, 16)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(6, 0, 0, 0)
+                }
+                setOnClickListener { pasteOrPromptInvite() }
+            }
+            inviteRow.addView(btnScanQr)
+            inviteRow.addView(btnPasteInvite)
+            addView(inviteRow)
         }
         layout.addView(cardPeers)
 
@@ -618,9 +712,16 @@ class MainActivity : Activity() {
             }
 
             txtMode.text = "Route: 0.0.0.0/0 (Full Mesh Tunnel)"
+            txtConnPath.text = GhostVpnService.getConnectionPath()
+            val rtt = GhostVpnService.getRttMs()
+            txtRtt.text = if (rtt >= 0) "$rtt ms" else "— ms"
+            txtHandovers.text = GhostVpnService.getHandoverCount().toString()
             updateUiState(true)
         } else {
             txtMode.text = "Standby"
+            txtConnPath.text = "Standby"
+            txtRtt.text = "— ms"
+            txtHandovers.text = "0"
             txtDownSpeed.text = "0 B/s"
             txtUpSpeed.text = "0 B/s"
             peerListContainer.removeAllViews()
@@ -850,6 +951,86 @@ class MainActivity : Activity() {
                 }
             }
         }.start()
+    }
+
+    private fun launchQrScanner() {
+        try {
+            val intent = Intent("com.google.zxing.client.android.SCAN").apply {
+                putExtra("SCAN_MODE", "QR_CODE_MODE")
+            }
+            startActivityForResult(intent, QR_SCAN_REQUEST_CODE)
+        } catch (_: android.content.ActivityNotFoundException) {
+            Toast.makeText(this, "No QR scanner app installed — paste invite instead", Toast.LENGTH_SHORT).show()
+            promptPasteInvite()
+        } catch (_: Throwable) {
+            promptPasteInvite()
+        }
+    }
+
+    private fun pasteOrPromptInvite() {
+        val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clipText = clip.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
+        if (clipText.startsWith("vb-net://") || clipText.startsWith("vb://")) {
+            handleInviteString(clipText)
+        } else {
+            promptPasteInvite(clipText)
+        }
+    }
+
+    private fun promptPasteInvite(prefill: String = "") {
+        val input = EditText(this).apply {
+            hint = "vb-net://... or vb://2...."
+            setText(prefill)
+            setSingleLine(false)
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Import Mesh Invite")
+            .setMessage("Paste a vb-net:// network invite or vb://2. peer descriptor:")
+            .setView(input)
+            .setPositiveButton("Import") { _, _ ->
+                val text = input.text.toString().trim()
+                if (text.isNotEmpty()) {
+                    handleInviteString(text)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun handleInviteString(raw: String) {
+        val invite = raw.trim()
+        if (!invite.startsWith("vb-net://") && !invite.startsWith("vb://")) {
+            Toast.makeText(this, "Invalid invite (expected vb-net:// or vb://)", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingInvite = invite
+        val p = GhostVpnService.activePtr
+        if (p != 0L) {
+            val res = try { GhostCore.importInvite(p, invite) } catch (e: Throwable) { "err:${e.message}" }
+            if (res.startsWith("ok:")) {
+                val endpoint = res.removePrefix("ok:")
+                if (endpoint.isNotEmpty()) {
+                    editRemoteAddr.setText(endpoint)
+                }
+                Toast.makeText(this, "Invite imported ($endpoint)", Toast.LENGTH_SHORT).show()
+                updateStatus()
+            } else {
+                Toast.makeText(this, "Invite error: ${res.removePrefix("err:")}", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            Toast.makeText(this, "Invite queued — tap Connect to join", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == QR_SCAN_REQUEST_CODE && resultCode == RESULT_OK) {
+            val contents = data?.getStringExtra("SCAN_RESULT") ?: data?.dataString
+            if (!contents.isNullOrBlank()) {
+                handleInviteString(contents)
+            }
+            return
+        }
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun promptUpdateDialog() {

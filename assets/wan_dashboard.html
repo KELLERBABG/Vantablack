@@ -1483,6 +1483,41 @@
         </div>
 
         <div class="section-header" style="margin-top: 20px;">
+          <span class="section-title">Guest Exit Voucher</span>
+        </div>
+
+        <div class="setting-panel">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+            <div>
+              <div class="setting-title">Issue Signed Exit Capability (<code>GHOST_EXIT_VOUCHER</code>)</div>
+              <div class="setting-desc">Mint a time-limited, peer-scoped exit voucher for a guest node to route traffic through this exit.</div>
+            </div>
+            <span class="pill cyan">ED25519 SIGNED</span>
+          </div>
+
+          <div class="input-row" style="margin-bottom: 10px; flex-wrap: wrap;">
+            <input type="text" id="voucher-peer-fp" class="text-input" placeholder="Guest peer fingerprint (e.g. deadbeef12345678)" style="min-width: 220px;">
+            <input type="text" id="voucher-allowed-host" class="text-input" value="*" placeholder="Allowed host/scope (* for any)" style="max-width: 200px;">
+            <select id="voucher-ttl-secs" style="background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-family: var(--font-mono); font-size: 12px;">
+              <option value="3600">1h</option>
+              <option value="86400" selected>24h</option>
+              <option value="604800">7d</option>
+            </select>
+            <button class="action-btn" id="btn-mint-voucher" onclick="mintExitVoucher()">Mint Voucher</button>
+          </div>
+
+          <div id="voucher-result-box" style="display: none; margin-top: 10px;">
+            <span class="pair-label">GHOST_EXIT_VOUCHER</span>
+            <div class="pair-input-box" style="margin-top: 5px;">
+              <span class="pair-val" id="voucher-hex-display" style="word-break: break-all;"></span>
+              <button class="copy-btn" onclick="copyTextField('voucher-hex-display', 'copy-voucher-text')">
+                <span id="copy-voucher-text">Copy Voucher</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top: 20px;">
           <span class="section-title">Mesh Configuration</span>
         </div>
 
@@ -3112,6 +3147,44 @@
           if (attempts > 40) clearInterval(interval);
         }
       }, 1500);
+    }
+
+    async function mintExitVoucher() {
+      const fpEl = document.getElementById('voucher-peer-fp');
+      const hostEl = document.getElementById('voucher-allowed-host');
+      const ttlEl = document.getElementById('voucher-ttl-secs');
+      const btn = document.getElementById('btn-mint-voucher');
+      const resultBox = document.getElementById('voucher-result-box');
+      const hexDisplay = document.getElementById('voucher-hex-display');
+
+      const peer_fingerprint = (fpEl && fpEl.value || '').trim();
+      if (!peer_fingerprint) {
+        showToast('Enter a guest peer fingerprint', 'error');
+        return;
+      }
+      const allowed_host = (hostEl && hostEl.value || '*').trim() || '*';
+      const ttl_secs = parseInt((ttlEl && ttlEl.value) || '86400', 10) || 86400;
+
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch('/api/exit/voucher', {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, pinHeaders()),
+          body: JSON.stringify({ peer_fingerprint, allowed_host, ttl_secs })
+        });
+        const data = await res.json();
+        if (data.success && data.voucher_hex) {
+          if (hexDisplay) hexDisplay.textContent = data.voucher_hex;
+          if (resultBox) resultBox.style.display = 'block';
+          showToast('Exit voucher minted', 'success');
+        } else {
+          showToast('Failed to mint voucher: ' + (data.error || 'Unknown error'), 'error');
+        }
+      } catch (e) {
+        showToast('Failed to mint voucher: ' + e.message, 'error');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     // ── Bootstrapping & Polling ──
