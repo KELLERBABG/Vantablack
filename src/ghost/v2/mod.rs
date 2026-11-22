@@ -31,6 +31,10 @@ pub mod btcr;
 pub mod chronos;
 pub mod expose;
 pub mod fleet;
+#[cfg(feature = "reality-front")]
+pub mod front;
+#[cfg(feature = "quic")]
+pub mod masque;
 pub mod hpeb;
 pub mod party;
 pub mod continuum;
@@ -60,16 +64,22 @@ pub fn now_secs() -> u64 {
 }
 
 pub const V2_SURFACES: &[(&str, &str)] = &[
-    ("drop", "GhostPortal encrypted browser file drop"),
+    (
+        "drop",
+        "GhostPortal encrypted browser file drop with WebRTC DataChannel peer transfer",
+    ),
     ("expose", "token-gated local server tunnel"),
     ("party", "UDP LAN-bridge for games"),
     ("regime", "Fast / Shielded / Ghost / Vantablack regimes"),
     ("vbdns", ".vb mesh DNS stub"),
     ("chronos", "RTT-matching ACK pacing"),
-    ("reality", "probe splicing, MASQUE and SRTP shaping"),
+    (
+        "reality",
+        "TLS 1.3 front with probe splicing (feature reality-front), QUIC/h3 MASQUE datagrams (feature quic), SRTP shaping",
+    ),
     (
         "boomerang",
-        "home-exit advertisement and selection (runtime tri-hop assembly deferred)",
+        "home-exit advertisement, selection and live guard/middle/home circuits",
     ),
     ("hpeb", "multi-PHY erasure bonding"),
     ("xray", "truth ledger with live invariants"),

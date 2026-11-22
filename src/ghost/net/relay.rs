@@ -925,7 +925,8 @@ pub fn build_encrypted_onion_route(
                 &mut sealed,
             )
             .ok()?;
-            let mut layer = Vec::with_capacity(12 + sealed.len());
+            let mut layer = Vec::with_capacity(ONION_SEAL_MAGIC.len() + 12 + sealed.len());
+            layer.extend_from_slice(ONION_SEAL_MAGIC);
             layer.extend_from_slice(&nonce);
             layer.extend_from_slice(&sealed);
             inner = layer;
@@ -936,8 +937,13 @@ pub fn build_encrypted_onion_route(
     Some(inner)
 }
 
+/// Marks a relay layer sealed for a downstream hop, so a middle relay knows it
+/// must try its session keys before falling back to plaintext `RLY!` parsing.
+pub const ONION_SEAL_MAGIC: &[u8; 4] = b"ONS1";
+
 /// Peel one per-hop AEAD-encrypted relay layer using `hop_key`.
 pub fn peel_encrypted_relay_layer(hop_key: &[u8; 32], encrypted_inner: &[u8]) -> Option<Vec<u8>> {
+    let encrypted_inner = encrypted_inner.strip_prefix(ONION_SEAL_MAGIC).unwrap_or(encrypted_inner);
     if encrypted_inner.len() < 12 + 16 {
         return None;
     }

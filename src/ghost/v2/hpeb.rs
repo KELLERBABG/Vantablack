@@ -24,6 +24,9 @@
 //!   testbed, not to this file.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::net::{SocketAddr, UdpSocket};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::ghost::layers::l4_rs;
@@ -270,6 +273,137 @@ impl HandoverState {
         self.switches = self.switches.saturating_add(1);
         true
     }
+}
+
+// ── Live multipath UDP (one bound socket per path) ────────────────────────
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
+
+/// Split a payload through `HpebScheduler` and send every shard from the UDP
+/// socket bound to that shard's path address.
+pub fn run_multipath_client(
+    connect: &str,
+    paths: &[String],
+    file: &Path,
+    single_source: bool,
+) -> Result<(), String> {
+    let target: SocketAddr = connect
+        .parse()
+        .map_err(|e| format!("invalid --connect {connect}: {e}"))?;
+    let payload = std::fs::read(file).map_err(|e| format!("read {}: {e}", file.display()))?;
+    let checksum = sha256_hex(&payload);
+    let phy: Vec<PhyPath> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, addr)| PhyPath::new(&format!("lo-{i}")).pinned(addr).with_cost(i as u8))
+        .collect();
+    let scheduler = HpebScheduler::new(phy.clone());
+    if !scheduler.is_bonded() {
+        return Err("need two pinned paths on distinct addresses".into());
+    }
+    let shards = scheduler.bond(&payload).map_err(|e| e.to_string())?;
+    println!(
+        "HPEB client payload={} sha256={} shards={} paths={}",
+        payload.len(),
+        checksum,
+        shards.len(),
+        paths.join(",")
+    );
+
+    let mut sockets: Vec<(&str, UdpSocket, String)> = Vec::new();
+    for p in &phy {
+        let addr = p.local_addr.as_deref().ok_or("unpinned path")?;
+        let bind: SocketAddr = format!("{addr}:0")
+            .parse()
+            .map_err(|e| format!("invalid path {addr}: {e}"))?;
+        let sock = UdpSocket::bind(bind).map_err(|e| format!("bind {addr}: {e}"))?;
+        let local = sock.local_addr().map_err(|e| e.to_string())?.to_string();
+        sockets.push((&p.interface, sock, local));
+    }
+
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&7u64.to_be_bytes());
+    for shard in &shards {
+        // `--single-source` deliberately sends every shard over one binding so
+        // the server's refusal path can be exercised; it is not a normal send.
+        let (_, sock, local) = if single_source {
+            &sockets[0]
+        } else {
+            sockets
+                .iter()
+                .find(|(iface, _, _)| *iface == shard.interface)
+                .ok_or_else(|| format!("no socket for {}", shard.interface))?
+        };
+        let mut datagram = frame.clone();
+        datagram.push(shard.index);
+        datagram.extend_from_slice(&shard.bytes);
+        sock.send_to(&datagram, target)
+            .map_err(|e| format!("send via {}: {e}", shard.interface))?;
+        println!(
+            "HPEB shard {} iface={} src={} -> {} bytes={}",
+            shard.index,
+            shard.interface,
+            local,
+            target,
+            shard.bytes.len()
+        );
+    }
+    println!("HPEB client done sha256={checksum}");
+    Ok(())
+}
+
+/// Receive shards from any source, rebuild through the same AONT+RS path, and
+/// report the source addresses each shard actually arrived from.
+pub fn run_multipath_server(listen: &str, out: &Path) -> Result<(), String> {
+    let sock = UdpSocket::bind(listen).map_err(|e| format!("bind {listen}: {e}"))?;
+    sock.set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| e.to_string())?;
+    println!("HPEB server listening on {listen}");
+    let mut buf = vec![0u8; 65_535];
+    let mut shards: Vec<(u8, Vec<u8>)> = Vec::new();
+    let mut sources: Vec<String> = Vec::new();
+    while shards.len() < 3 {
+        let (n, from) = match sock.recv_from(&mut buf) {
+            Ok(v) => v,
+            Err(e) => return Err(format!("recv: {e}")),
+        };
+        if n < 9 {
+            continue;
+        }
+        let index = buf[8];
+        if shards.iter().any(|(i, _)| *i == index) {
+            continue;
+        }
+        let source = from.to_string();
+        println!(
+            "HPEB server shard {} from {} bytes={}",
+            index,
+            source,
+            n - 9
+        );
+        sources.push(source);
+        shards.push((index, buf[9..n].to_vec()));
+    }
+    let recovered = HpebScheduler::recover(&shards).ok_or("AONT/RS recovery failed")?;
+    std::fs::write(out, &recovered).map_err(|e| format!("write {}: {e}", out.display()))?;
+    sources.sort();
+    sources.dedup();
+    println!(
+        "HPEB recovered {} bytes sha256={} distinct_sources={} [{}] out={}",
+        recovered.len(),
+        sha256_hex(&recovered),
+        sources.len(),
+        sources.join(","),
+        out.display()
+    );
+    if sources.len() < 2 {
+        return Err("all shards arrived from one source binding".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

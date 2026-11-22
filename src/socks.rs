@@ -391,6 +391,7 @@ pub async fn handle_socks5_connection(
             };
             let guard_fp = route[0].clone();
             let guard_addr = aa.get(&guard_fp).map(|v| *v.value()).unwrap_or(tgt);
+            vantablack::ghost::v2::boomerang::record_circuit(&route, "StrictThreeHop");
             (guard_fp, guard_addr, Some(route))
         }
         HopPolicy::TwoHop => {
@@ -408,6 +409,7 @@ pub async fn handle_socks5_connection(
             };
             let relay_fp = route[0].clone();
             let relay_addr = aa.get(&relay_fp).map(|v| *v.value()).unwrap_or(tgt);
+            vantablack::ghost::v2::boomerang::record_circuit(&route, "TwoHop");
             (relay_fp, relay_addr, Some(route))
         }
         HopPolicy::OneHop | HopPolicy::Auto => (fp.clone(), tgt, None),
@@ -819,25 +821,31 @@ pub fn spawn_socks5_server(
     fallback_routes: Arc<fallback::Fallback>,
     carrier: Arc<net::carrier::Carrier>,
     turn_path: Option<Arc<TurnPath>>,
+    // A configured regime replaces the four fixed ports with the one listener
+    // and hop policy that regime names.
+    regime_policy: Option<HopPolicy>,
 ) {
-    let port_policies = [
-        (socks_port, HopPolicy::Auto, "Auto (Adaptive)"),
-        (
-            socks_port.saturating_add(1),
-            HopPolicy::OneHop,
-            "1-Hop Fast Path",
-        ),
-        (
-            socks_port.saturating_add(2),
-            HopPolicy::TwoHop,
-            "2-Hop Circuit",
-        ),
-        (
-            socks_port.saturating_add(3),
-            HopPolicy::StrictThreeHop,
-            "Strict 3-Hop Onion",
-        ),
-    ];
+    let port_policies: Vec<(u16, HopPolicy, &str)> = match regime_policy {
+        Some(policy) => vec![(socks_port, policy, "Regime")],
+        None => vec![
+            (socks_port, HopPolicy::Auto, "Auto (Adaptive)"),
+            (
+                socks_port.saturating_add(1),
+                HopPolicy::OneHop,
+                "1-Hop Fast Path",
+            ),
+            (
+                socks_port.saturating_add(2),
+                HopPolicy::TwoHop,
+                "2-Hop Circuit",
+            ),
+            (
+                socks_port.saturating_add(3),
+                HopPolicy::StrictThreeHop,
+                "Strict 3-Hop Onion",
+            ),
+        ],
+    };
 
     for (port, policy, desc) in port_policies {
         let nc = Arc::clone(&nc);
@@ -923,6 +931,7 @@ mod tests {
             consumer_settings,
             fallback_routes,
             carrier,
+            None,
             None,
         );
 

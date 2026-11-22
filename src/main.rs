@@ -4372,6 +4372,28 @@ async fn handle_pkt(
         // Multi-hop relay: a decrypted payload may carry a relay header.
         // (parse the UNFRAMED payload — the length prefix precedes the header)
         if let Some(payload) = frame_payload(pt) {
+            // A middle relay receives its downstream layer sealed by the
+            // originator under the key the two of them share. Try our session
+            // keys to open it before parsing the `RLY!` header inside.
+            let mut unsealed: Option<Vec<u8>> = None;
+            if payload.starts_with(vantablack::ghost::net::relay::ONION_SEAL_MAGIC) {
+                for entry in node.sessions.iter() {
+                    if let Some(inner) =
+                        vantablack::ghost::net::relay::peel_encrypted_relay_layer(
+                            &entry.value().master_key,
+                            payload,
+                        )
+                    {
+                        unsealed = Some(inner);
+                        break;
+                    }
+                }
+                if unsealed.is_none() {
+                    tracing::debug!(from = %peer_fp, "Relay: sealed layer not addressed to this node");
+                    return;
+                }
+            }
+            let payload = unsealed.as_deref().unwrap_or(payload);
             if let Some(relay) = parse_relay_header(payload) {
                 if relay.remaining_hops > 0 {
                     // WIRED: Tit-for-Tat enforcer - drop forwarding for evicted leechers
@@ -4419,16 +4441,15 @@ async fn handle_pkt(
                     // consumed by the destination. Re-wrapping with `next`
                     // again would make a three-hop route point back at the
                     // middle relay and loop forever.
+                    // For a nested onion, forward the inner payload unchanged.
+                    // It is either the next plaintext `RLY!` header (legacy
+                    // onion) or a *sealed* layer that the next hop opens with
+                    // its own session key. Re-wrapping it with `next` would
+                    // prepend a header naming the very relay being sent to, so
+                    // that relay would look itself up as the next hop and drop
+                    // the packet — which is exactly what broke three-hop routes.
                     let rewrap = if relay.remaining_hops > 1 {
-                        parse_relay_header(&relay.inner_payload)
-                            .map(|_| relay.inner_payload.clone())
-                            .unwrap_or_else(|| {
-                                build_relay_packet(
-                                    next,
-                                    relay.remaining_hops - 1,
-                                    &relay.inner_payload,
-                                )
-                            })
+                        relay.inner_payload.clone()
                     } else {
                         build_relay_packet(next, 0, &relay.inner_payload)
                     };
@@ -5340,7 +5361,30 @@ fn build_local_descriptor_v2(
         .parse()
         .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let lan_sa = SocketAddr::new(lan_ip, mesh_port);
-    let endpoint = wan_snap.public_addr.unwrap_or(lan_sa);
+    // `GHOST_ADVERTISE_ADDR` is an operator override for nodes behind manual
+    // port forwarding or a stable DNS name, and it is what makes several nodes
+    // on one host testable: each can bind and advertise a distinct loopback
+    // address, which `is_single_device_ip` correctly treats as separate peers.
+    // Without it the public STUN address wins, which is right for real WAN use.
+    let advertised_override = std::env::var("GHOST_ADVERTISE_ADDR")
+        .ok()
+        .and_then(|raw| match raw.trim().parse::<SocketAddr>() {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                tracing::warn!(value = %raw, error = %e, "GHOST_ADVERTISE_ADDR is not a socket address; ignoring");
+                None
+            }
+        });
+    let endpoint = advertised_override
+        .or(wan_snap.public_addr)
+        .unwrap_or(lan_sa);
+    // With an explicit address, advertise exactly that candidate: the detected
+    // LAN address is a different interface and is not reachable at that endpoint.
+    let lan_candidates = if advertised_override.is_some() {
+        vec![endpoint]
+    } else {
+        vec![lan_sa]
+    };
     let mut caps = 0u8;
     if relay_enabled {
         caps |= CAP_RELAY;
@@ -5371,7 +5415,7 @@ fn build_local_descriptor_v2(
         &nc.identity,
         &nc.identity.pq_public_key_bytes(),
         endpoint,
-        vec![lan_sa],
+        lan_candidates,
         mesh_port,
         nat_type_to_wire(wan_snap.nat_type),
         caps,
@@ -6194,11 +6238,50 @@ async fn run_node(
     // for future use when a real consumer exists.
 
     let ba = std::env::var("GHOST_BIND").unwrap_or_else(|_| "0.0.0.0:55225".to_string());
-    let socks = std::env::var("GHOST_SOCKS5").is_ok();
-    let socks_port: u16 = std::env::var("GHOST_SOCKS5_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1080);
+    // A configured regime is the human-facing replacement for the four SOCKS
+    // ports and their env vars: it selects one listener, one hop policy, and
+    // cover traffic. `GHOST_V2_REGIME` wins over the persisted choice; a typo is
+    // reported instead of silently falling back to the weakest regime.
+    let regime = match vantablack::ghost::v2::regime::from_env() {
+        Ok(Some(r)) => Some(r),
+        Ok(None) => vantablack::ghost::v2::regime::load_persisted(
+            &vantablack::ghost::v2::regime::config_path(),
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("Regime file ignored: {e}");
+            None
+        }),
+        Err(e) => {
+            tracing::warn!("Ignoring regime setting: {e}");
+            None
+        }
+    };
+    let regime_policy = regime.inspect(|r| {
+        if r.cover_traffic() && std::env::var("GHOST_RACS").is_err() {
+            // Cover traffic is what `ghost`/`vantablack` promise; the RACS gate
+            // already exists, so a regime turns it on rather than adding a
+            // second switch.
+            std::env::set_var("GHOST_RACS", "1");
+        }
+    });
+    let socks = std::env::var("GHOST_SOCKS5").is_ok() || regime_policy.is_some();
+    let socks_port: u16 = regime_policy
+        .map(|r| {
+            vantablack::ghost::v2::regime::effective_policy(r, 0, 1080).socks_port
+        })
+        .unwrap_or_else(|| {
+            std::env::var("GHOST_SOCKS5_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1080)
+        });
+    let single_hop_policy = regime_policy.map(|r| match r.hops() {
+        vantablack::ghost::v2::regime::HopClass::Direct => socks::HopPolicy::OneHop,
+        vantablack::ghost::v2::regime::HopClass::TwoHop => socks::HopPolicy::TwoHop,
+        vantablack::ghost::v2::regime::HopClass::ThreeHopStrict => {
+            socks::HopPolicy::StrictThreeHop
+        }
+    });
     let tm: u64 = std::env::var("GHOST_TRANSIT_MBPS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -6298,7 +6381,15 @@ async fn run_node(
         "Vantablack v{} starting — L0-L9 stack fully wired",
         env!("CARGO_PKG_VERSION")
     );
-    if socks {
+    if let Some(r) = regime_policy {
+        tracing::info!(
+            regime = %r,
+            plane = r.plane().as_str(),
+            hops = r.hops().hops(),
+            port = socks_port,
+            "Regime active: one SOCKS5 listener replaces the four fixed ports"
+        );
+    } else if socks {
         tracing::info!("Mode: SOCKS5 proxy on 127.0.0.1:{socks_port}");
     }
     if revocation_list.prune_expired() > 0 {
@@ -6986,6 +7077,7 @@ async fn run_node(
             Arc::clone(&fallback_routes),
             Arc::clone(&carrier),
             turn_path.clone(),
+            single_hop_policy,
         );
     }
 

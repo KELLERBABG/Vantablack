@@ -231,6 +231,10 @@ pub struct PartyConfig {
     /// Where the peer's `ggn party` listens. `None` makes this a local echo
     /// bridge, useful for checking a path without a second node.
     pub peer: Option<String>,
+    /// The address this bridge accepts peer frames on. Defaults to the game
+    /// port + 1 on the same host; a two-machine run must give this address to
+    /// the other player's `--peer`.
+    pub peer_listen: Option<String>,
     /// Number of copies per datagram. Clamped to 1..=3.
     pub copies: usize,
     /// Jitter buffer delay in milliseconds.
@@ -242,8 +246,24 @@ impl PartyConfig {
         Self {
             listen: listen.to_string(),
             peer: peer.map(str::to_string),
+            peer_listen: None,
             copies: 2,
             jitter_ms: 0,
+        }
+    }
+
+    /// The peer-facing bind address. Derived from `listen` when unset so the
+    /// game side and the peer side never share a socket.
+    pub fn peer_listen_addr(&self) -> String {
+        if let Some(addr) = &self.peer_listen {
+            return addr.clone();
+        }
+        match self.listen.parse::<SocketAddr>() {
+            Ok(mut addr) => {
+                addr.set_port(addr.port().saturating_add(1));
+                addr.to_string()
+            }
+            Err(_) => "0.0.0.0:47078".to_string(),
         }
     }
 
@@ -270,14 +290,22 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
     };
 
     // The peer-facing socket is separate so the game's address is never used as
-    // the source for peer traffic (a NAT would rewrite it anyway).
-    let uplink = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+    // the source for peer traffic (a NAT would rewrite it anyway). It binds a
+    // *known* address: an ephemeral port would leave the other machine with
+    // nothing to point `--peer` at.
+    let peer_bind = cfg.peer_listen_addr();
+    let uplink = Arc::new(UdpSocket::bind(&peer_bind).await.map_err(|e| {
+        anyhow::anyhow!("cannot listen for peers on {peer_bind}: {e}")
+    })?);
+    let game_sender: Arc<std::sync::Mutex<Option<SocketAddr>>> =
+        Arc::new(std::sync::Mutex::new(None));
     let stats = Arc::new(PartyStats::default());
     let copies = cfg.copies();
     let jitter = Duration::from_millis(cfg.jitter_ms);
 
     println!("Vantablack party");
     println!("  game  -> {}", local.local_addr()?);
+    println!("  peers -> {}", uplink.local_addr()?);
     if let Some(p) = peer_addr {
         println!("  peer  -> {p}");
     } else {
@@ -291,6 +319,7 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
     let up_local = Arc::clone(&local);
     let up_sock = Arc::clone(&uplink);
     let up_stats = Arc::clone(&stats);
+    let up_sender = Arc::clone(&game_sender);
     tokio::spawn(async move {
         let mut seq = 0u64;
         let mut buf = vec![0u8; 2048];
@@ -299,6 +328,11 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
                 continue;
             };
             up_stats.received.fetch_add(1, Ordering::Relaxed);
+            // Remember the local game endpoint; peer frames are delivered here,
+            // never back to the other bridge.
+            if let Ok(mut slot) = up_sender.lock() {
+                *slot = Some(from);
+            }
             let frame = PartyFrame {
                 seq,
                 payload: buf[..n].to_vec(),
@@ -327,16 +361,15 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
     let down_sock = Arc::clone(&uplink);
     let down_local = Arc::clone(&local);
     let down_stats = Arc::clone(&stats);
+    let down_sender = Arc::clone(&game_sender);
     tokio::spawn(async move {
         let mut window = SeqWindow::new();
         let mut buffer = JitterBuffer::new(jitter);
         let mut buf = vec![0u8; 2048];
-        let mut game_addr: Option<SocketAddr> = None;
         loop {
             let wait = if buffer.depth() > 0 { Duration::from_millis(5) } else { Duration::from_secs(1) };
             match tokio::time::timeout(wait, down_sock.recv_from(&mut buf)).await {
-                Ok(Ok((n, from))) => {
-                    game_addr.get_or_insert(from);
+                Ok(Ok((n, _from))) => {
                     match PartyFrame::decode(&buf[..n]) {
                         Some(frame) => {
                             down_stats.received.fetch_add(1, Ordering::Relaxed);
@@ -345,7 +378,12 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
                                 continue;
                             }
                             for payload in buffer.push(frame.seq, frame.payload, Instant::now()) {
-                                if let Some(addr) = game_addr.or(peer_addr) {
+                                let addr = down_sender
+                                    .lock()
+                                    .ok()
+                                    .and_then(|slot| *slot)
+                                    .or(peer_addr);
+                                if let Some(addr) = addr {
                                     let _ = down_local.send_to(&payload, addr).await;
                                     down_stats.forwarded.fetch_add(1, Ordering::Relaxed);
                                 }
@@ -359,7 +397,12 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
                 Ok(Err(_)) => {}
                 Err(_) => {
                     for payload in buffer.tick(Instant::now()) {
-                        if let Some(addr) = game_addr.or(peer_addr) {
+                        let addr = down_sender
+                            .lock()
+                            .ok()
+                            .and_then(|slot| *slot)
+                            .or(peer_addr);
+                        if let Some(addr) = addr {
                             let _ = down_local.send_to(&payload, addr).await;
                             down_stats.forwarded.fetch_add(1, Ordering::Relaxed);
                         }

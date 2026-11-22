@@ -258,11 +258,29 @@ impl DropSession {
 #[derive(Default)]
 pub struct PortalRegistry {
     sessions: DashMap<String, Arc<DropSession>>,
+    // SDP-only signaling for the browser-to-browser DataChannel path. File
+    // bytes never enter this map; it holds offer/answer JSON and nothing else.
+    signals: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl PortalRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Store the latest SDP for one role (`sender` or `receiver`).
+    pub fn put_signal(&self, id: &str, role: &str, value: serde_json::Value) {
+        if let Ok(mut map) = self.signals.lock() {
+            map.insert(format!("{id}:{role}"), value);
+        }
+    }
+
+    /// The latest SDP posted by `role`, if any.
+    pub fn get_signal(&self, id: &str, role: &str) -> Option<serde_json::Value> {
+        self.signals
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&format!("{id}:{role}")).cloned())
     }
 
     pub fn insert(&self, session: Arc<DropSession>) -> String {
@@ -388,6 +406,8 @@ fn reason(status: u16) -> &'static str {
 enum Route {
     Index,
     Page(String),
+    ReceiverPage(String),
+    Signal(String, String),
     Meta(String),
     Chunk(String, u32),
     Health,
@@ -408,6 +428,10 @@ fn route(path: &str) -> Route {
     let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match parts.as_slice() {
         ["f", id] if is_drop_id(id) => Route::Page((*id).to_string()),
+        ["f", id, "recv"] if is_drop_id(id) => Route::ReceiverPage((*id).to_string()),
+        ["f", id, "signal", role] if is_drop_id(id) && (*role == "sender" || *role == "receiver") => {
+            Route::Signal((*id).to_string(), (*role).to_string())
+        }
         ["d", id, "meta"] if is_drop_id(id) => Route::Meta((*id).to_string()),
         ["d", id, "c", n] if is_drop_id(id) => match n.parse::<u32>() {
             Ok(index) => Route::Chunk((*id).to_string(), index),
@@ -421,16 +445,29 @@ fn route(path: &str) -> Route {
 /// path beyond the drop id, and no way to reach a file other than through a
 /// registered session.
 pub fn respond(registry: &PortalRegistry, method: &str, path: &str, now: Instant) -> HttpResponse {
-    if method != "GET" && method != "HEAD" {
+    respond_with_body(registry, method, path, &[], now)
+}
+
+/// Same as [`respond`], with a request body for the SDP signaling endpoint.
+pub fn respond_with_body(
+    registry: &PortalRegistry,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    now: Instant,
+) -> HttpResponse {
+    let route = route(path);
+    let signal = matches!(route, Route::Signal(..));
+    if method != "GET" && method != "HEAD" && !(method == "POST" && signal) {
         return HttpResponse {
             status: 405,
             content_type: "text/plain; charset=utf-8",
-            extra_headers: vec![("Allow".into(), "GET, HEAD".into())],
+            extra_headers: vec![("Allow".into(), "GET, HEAD, POST".into())],
             body: b"method not allowed\n".to_vec(),
         };
     }
 
-    match route(path) {
+    match route {
         Route::Health => HttpResponse::text(200, "ok\n"),
         Route::Index => {
             let body = format!(
@@ -457,8 +494,51 @@ pub fn respond(registry: &PortalRegistry, method: &str, path: &str, now: Instant
                 status: 200,
                 content_type: "text/html; charset=utf-8",
                 extra_headers: security_headers(),
-                body: render_page(&id).into_bytes(),
+                body: render_page(&id, "send").into_bytes(),
             }
+        }
+        Route::ReceiverPage(id) => {
+            if registry.get(&id).is_none() {
+                return HttpResponse::not_found();
+            }
+            HttpResponse {
+                status: 200,
+                content_type: "text/html; charset=utf-8",
+                extra_headers: security_headers(),
+                body: render_page(&id, "recv").into_bytes(),
+            }
+        }
+        Route::Signal(id, role) => {
+            if registry.get(&id).is_none() {
+                return HttpResponse::not_found();
+            }
+            if method == "POST" {
+                if body.is_empty() || body.len() > 64 * 1024 {
+                    return HttpResponse::text(400, "SDP body must be under 64 KiB\n");
+                }
+                let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+                    return HttpResponse::text(400, "SDP body must be JSON\n");
+                };
+                let Some(sdp) = value.get("sdp").and_then(|v| v.as_str()) else {
+                    return HttpResponse::text(400, "SDP body needs a string \"sdp\"\n");
+                };
+                let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                if !matches!(kind, "offer" | "answer") || sdp.len() > 60 * 1024 {
+                    return HttpResponse::text(400, "unsupported SDP type\n");
+                }
+                registry.put_signal(&id, &role, value);
+                let mut resp = HttpResponse::json(200, &serde_json::json!({"ok": true}));
+                resp.extra_headers = security_headers();
+                return resp;
+            }
+            let mut resp = HttpResponse::json(
+                200,
+                &registry
+                    .get_signal(&id, &role)
+                    .unwrap_or_else(|| serde_json::json!({"waiting": true})),
+            );
+            resp.extra_headers = security_headers();
+            resp
         }
         Route::Meta(id) => match registry.get(&id) {
             Some(session) if session.is_live(now) => {
@@ -500,8 +580,10 @@ fn security_headers() -> Vec<(String, String)> {
 /// The recipient's page. The only interpolation is the id, which is validated
 /// hex before this is called; the key never appears in the document, only in
 /// `location.hash`.
-fn render_page(id: &str) -> String {
-    PAGE_TEMPLATE.replace("__ID__", id)
+fn render_page(id: &str, mode: &str) -> String {
+    PAGE_TEMPLATE
+        .replace("__ID__", id)
+        .replace("__MODE__", mode)
 }
 
 const PAGE_TEMPLATE: &str = r##"<!doctype html>
@@ -529,17 +611,148 @@ code{font:12px ui-monospace,monospace;color:#7dd3fc;word-break:break-all}
 <p id="meta"></p>
 <div class="bar"><i id="prog"></i></div>
 <p id="status">Waiting.</p>
-<p><button id="go" disabled>Save file</button></p>
+<p><button id="go" disabled>Save file</button>
+<button id="p2p" disabled>Send over DataChannel</button></p>
+<p id="p2pstatus"></p>
 <p id="note"></p>
 <p style="margin-top:1.5rem;font-size:.75rem">The key is in the link fragment and never reaches the sender's server. Verify the SHA-256 after saving if you want certainty.</p>
 </main>
 <script>
 const ID="__ID__";
+const MODE="__MODE__";
 const $=(s)=>document.querySelector(s);
 const hex=(s)=>Uint8Array.from(s.match(/.{2}/g).map(h=>parseInt(h,16)));
+const hexOf=(buf)=>[...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,"0")).join("");
+const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 function fail(m){$("#status").textContent=m;$("#status").className="err";}
 let meta=null,key=null;
+
+// ── WebRTC DataChannel: the drop page is the sending peer ──────────────
+// The server is used only to exchange SDP; file bytes never go through it.
+const P2P={state:"idle",bytes:0,sha:null,error:null,cache:null,pc:null,dc:null};
+window.__vb=P2P;
+async function postSDP(role,desc){
+  const r=await fetch(`/f/${ID}/signal/${role}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:desc.type,sdp:desc.sdp})});
+  if(!r.ok) throw new Error("SDP rejected: "+(await r.text()));
+}
+async function getSDP(role){
+  const r=await fetch(`/f/${ID}/signal/${role}`,{cache:"no-store"});
+  if(!r.ok) return null;
+  const j=await r.json();
+  return (j&&j.sdp)?j:null;
+}
+async function waitIce(pc){
+  if(pc.iceGatheringState==="complete") return;
+  await new Promise(res=>{
+    const t=setTimeout(res,4000);
+    pc.addEventListener("icegatheringstatechange",()=>{
+      if(pc.iceGatheringState==="complete"){clearTimeout(t);res();}
+    });
+  });
+}
+async function startReceiver(){
+  document.querySelector("h1").textContent="Receiving a peer-to-peer drop";
+  $("#go").style.display="none";
+  $("#p2p").style.display="none";
+  const R=window.__vb={state:"signaling",bytes:0,sha:null,error:null,chunks:[],expected:null};
+  const pc=new RTCPeerConnection({iceServers:[]});
+  R.pc=pc;
+  pc.ondatachannel=(e)=>{
+    const dc=e.channel; dc.binaryType="arraybuffer"; R.state="channel"; R.dc=dc;
+    dc.onclose=()=>{ R.state="closed"; R.error="DataChannel closed"; };
+    dc.onmessage=async(ev)=>{
+      if(typeof ev.data==="string"){
+        if(ev.data==="DONE"){
+          R.state="hashing";
+          const buf=await new Blob(R.chunks).arrayBuffer();
+          R.sha=hexOf(await crypto.subtle.digest("SHA-256",buf));
+          R.state="done";
+          $("#p2pstatus").className="ok";
+          $("#p2pstatus").textContent=`Received ${R.bytes} bytes over DataChannel · SHA-256 ${R.sha}`;
+        }else{ try{R.expected=JSON.parse(ev.data);}catch(_){} }
+      }else{
+        R.chunks.push(ev.data); R.bytes+=ev.data.byteLength; R.state="receiving";
+        $("#p2pstatus").textContent="Receiving over DataChannel: "+R.bytes+" bytes";
+      }
+    };
+  };
+  const deadline=Date.now()+30000; let offer=null;
+  while(Date.now()<deadline){ offer=await getSDP("sender"); if(offer) break; await sleep(250); }
+  if(!offer){ R.state="error"; R.error="no sender offer"; fail("Waiting for the sending peer failed: no offer."); return; }
+  await pc.setRemoteDescription({type:"offer",sdp:offer.sdp});
+  const answer=await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await waitIce(pc);
+  await postSDP("receiver",pc.localDescription);
+  R.state="waiting-for-data";
+  $("#p2pstatus").textContent="Answer sent; waiting for the DataChannel…";
+}
+P2P.prepare=async()=>{
+  try{
+    if(!meta||!key) throw new Error("open the full link first");
+    P2P.state="fetching";
+    const parts=[]; const prefix=hex(meta.nonce_prefix);
+    for(let i=0;i<meta.chunk_count;i++){
+      const r=await fetch(`/d/${ID}/c/${i}`,{cache:"no-store"});
+      if(!r.ok) throw new Error("chunk "+(i+1)+" failed: "+r.status);
+      const ct=new Uint8Array(await r.arrayBuffer());
+      const iv=new Uint8Array(12); iv.set(prefix,0);
+      new DataView(iv.buffer).setBigUint64(4,BigInt(i));
+      const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv},key,ct);
+      parts.push(new Uint8Array(pt));
+      $("#prog").style.width=(((i+1)/meta.chunk_count)*100).toFixed(1)+"%";
+    }
+    P2P.cache=parts;
+    P2P.bytes=parts.reduce((a,p)=>a+p.byteLength,0);
+    P2P.sha=hexOf(await crypto.subtle.digest("SHA-256",await new Blob(parts).arrayBuffer()));
+    const pc=new RTCPeerConnection({iceServers:[]}); P2P.pc=pc;
+    const dc=pc.createDataChannel("vb-file",{ordered:true}); dc.binaryType="arraybuffer"; P2P.dc=dc;
+    dc.onclose=()=>{ P2P.state="closed"; P2P.error="DataChannel closed"; };
+    dc.onerror=(e)=>{ P2P.error="DataChannel error: "+(e.message||"unknown"); };
+    pc.onconnectionstatechange=()=>{ P2P.pcState=pc.connectionState; };
+    P2P.state="signaling";
+    pc.onicegatheringstatechange=async()=>{
+      if(pc.iceGatheringState==="complete"&&!P2P.offerSent){
+        P2P.offerSent=true; await postSDP("sender",pc.localDescription);
+      }
+    };
+    await pc.setLocalDescription(await pc.createOffer());
+    const deadline=Date.now()+20000; let answer=null;
+    while(Date.now()<deadline){ answer=await getSDP("receiver"); if(answer) break; await sleep(250); }
+    if(!answer) throw new Error("no receiving peer answered (open /f/"+ID+"/recv)");
+    await pc.setRemoteDescription({type:"answer",sdp:answer.sdp});
+    P2P.state="connecting";
+    await new Promise((res,rej)=>{
+      const t=setTimeout(()=>rej(new Error("DataChannel did not open")),20000);
+      dc.onopen=()=>{clearTimeout(t);res();};
+    });
+    P2P.state="connected"; P2P.dcState=dc.readyState; P2P.pcState=pc.connectionState;
+    $("#p2pstatus").className="ok";
+    $("#p2pstatus").textContent="DataChannel open. Local SHA-256 "+P2P.sha+" — ready to send.";
+  }catch(e){ P2P.state="error"; P2P.error=e.message; fail("P2P failed: "+e.message); }
+};
+P2P.send=async()=>{
+  if(P2P.state!=="connected") throw new Error("DataChannel is not open");
+  const dc=P2P.dc;
+  dc.send(JSON.stringify({name:meta.file_name,size:P2P.bytes,sha256:P2P.sha,chunks:P2P.cache.length}));
+  // SCTP messages have a size cap (commonly 256 KiB), so a 4 MiB drop chunk is
+  // split into fixed-size slices; the receiver concatenates them in order.
+  const SLICE=64*1024;
+  for(const p of P2P.cache){
+    for(let off=0;off<p.byteLength;off+=SLICE){
+      while(dc.bufferedAmount>4*1024*1024) await sleep(20);
+      dc.send(p.subarray(off,Math.min(off+SLICE,p.byteLength)));
+    }
+  }
+  dc.send("DONE");
+  P2P.state="sent";
+  $("#p2pstatus").textContent=`Sent ${P2P.bytes} bytes over DataChannel · SHA-256 ${P2P.sha}`;
+};
+$("#p2p").onclick=async()=>{ $("#p2p").disabled=true; await P2P.prepare(); if(P2P.state==="connected") await P2P.send(); };
+
 (async()=>{
+  if(MODE==="recv"){ await startReceiver(); return; }
+  $("#go").hidden=false;
   const m=(location.hash||"").match(/[#&]k=([0-9a-f]{64})/i);
   if(!m){fail("This link is missing its key. Open the full link, including the part after #.");return;}
   try{
@@ -553,6 +766,7 @@ let meta=null,key=null;
     meta.chunk_count+" chunks · expires "+new Date(meta.expires_at*1000).toLocaleString();
   $("#note").innerHTML="SHA-256 <code>"+meta.sha256+"</code>";
   $("#go").disabled=false;
+  $("#p2p").disabled=false;
   $("#status").textContent="Ready.";
 })();
 $("#go").onclick=async()=>{
@@ -619,12 +833,39 @@ pub async fn serve(registry: Arc<PortalRegistry>, listener: tokio::net::TcpListe
                     }
                 }
             }
-            let text = String::from_utf8_lossy(&head);
+            let split = head
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|p| p + 4)
+                .unwrap_or(head.len());
+            let (header_bytes, body) = head.split_at(split);
+            let text = String::from_utf8_lossy(header_bytes);
             let mut parts = text.lines().next().unwrap_or("").split_whitespace();
             let method = parts.next().unwrap_or("");
             let path = parts.next().unwrap_or("/");
             let head_only = method == "HEAD";
-            let resp = respond(&registry, method, path, Instant::now());
+            // Signaling bodies are small JSON SDPs; anything larger is refused
+            // rather than buffered.
+            let content_len = text
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0)
+                .min(64 * 1024);
+            let mut body = body.to_vec();
+            while body.len() < content_len {
+                let want = content_len - body.len();
+                let mut extra = vec![0u8; want.min(2048)];
+                match stream.read(&mut extra).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => body.extend_from_slice(&extra[..n]),
+                }
+            }
+            let resp = respond_with_body(&registry, method, path, &body, Instant::now());
 
             let mut out = Vec::with_capacity(resp.body.len() + 256);
             out.extend_from_slice(
@@ -881,6 +1122,59 @@ mod tests {
         let body = &resp[split..];
         assert_eq!(body.len(), 64 * 1024 + CHUNK_TAG_LEN);
         assert_eq!(decrypt(&session, 0, body).len(), 64 * 1024);
+    }
+
+    #[test]
+    fn sdp_signaling_round_trips_and_both_pages_are_served() {
+        let path = temp_file("signal.bin", b"payload");
+        let session = Arc::new(DropSession::open(&path, DropOptions::default()).unwrap());
+        let id = session.manifest.id.clone();
+        let registry = PortalRegistry::new();
+        registry.insert(session);
+
+        let offer = serde_json::json!({"type":"offer","sdp":"v=0 fake offer"});
+        let posted = respond_with_body(
+            &registry,
+            "POST",
+            &format!("/f/{id}/signal/sender"),
+            offer.to_string().as_bytes(),
+            Instant::now(),
+        );
+        assert_eq!(posted.status, 200);
+        let got = respond(
+            &registry,
+            "GET",
+            &format!("/f/{id}/signal/sender"),
+            Instant::now(),
+        );
+        let value: serde_json::Value = serde_json::from_slice(&got.body).unwrap();
+        assert_eq!(value["sdp"], "v=0 fake offer");
+        // The other role is still waiting; GET does not echo a role's own SDP.
+        let waiting = respond(
+            &registry,
+            "GET",
+            &format!("/f/{id}/signal/receiver"),
+            Instant::now(),
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&waiting.body).unwrap()["waiting"],
+            true
+        );
+        // POST remains forbidden everywhere except signaling.
+        assert_eq!(respond(&registry, "POST", "/", Instant::now()).status, 405);
+
+        let send = String::from_utf8(
+            respond(&registry, "GET", &format!("/f/{id}"), Instant::now()).body,
+        )
+        .unwrap();
+        assert!(send.contains("Send over DataChannel"));
+        assert!(send.contains("RTCPeerConnection"));
+        let recv = String::from_utf8(
+            respond(&registry, "GET", &format!("/f/{id}/recv"), Instant::now()).body,
+        )
+        .unwrap();
+        assert!(recv.contains("startReceiver"));
+        assert!(recv.contains("SHA-256"));
     }
 
     #[test]

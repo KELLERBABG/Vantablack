@@ -3315,9 +3315,12 @@
         const sel = d.selected;
         document.getElementById('home-exit-selected').textContent = sel ? ('Selected: ' + sel + ' — SOCKS5 exit traffic is pinned') : 'Selected: none — the adaptive exit choice applies';
         const pc = d.planned_circuit || {};
-        document.getElementById('home-exit-circuit').textContent = pc.state
-          ? ('Circuit: ' + pc.hops + '-hop plan is ' + pc.state + ' — ' + pc.reason)
-          : 'Circuit: no plan reported';
+        document.getElementById('home-exit-circuit').textContent =
+          pc.state === 'live'
+            ? ('Circuit: observed ' + pc.hops + '-hop ' + (pc.policy || 'onion') + ' route — ' + (pc.route || []).join(' → '))
+            : pc.state
+              ? ('Circuit: ' + pc.state + (pc.reason ? ' — ' + pc.reason : ''))
+              : 'Circuit: no circuit reported';
         const list = d.candidates || [];
         document.getElementById('home-exit-candidates').innerHTML = list.length ? list.map(c => `
           <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; border:1px solid var(--border-subtle); border-radius:6px; font-size:12px;">

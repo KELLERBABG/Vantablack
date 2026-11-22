@@ -331,6 +331,27 @@ struct Runtime {
     selected: Option<String>,
     local_endpoint: Option<String>,
     local_active: bool,
+    last_circuit: Option<LastCircuit>,
+}
+
+/// The last onion route the SOCKS5 proxy actually assembled, for live telemetry.
+#[derive(Debug, Clone)]
+pub struct LastCircuit {
+    pub route: Vec<String>,
+    pub policy: String,
+    pub recorded_unix: u64,
+}
+
+/// Record the route a connection was just built on. Called by the SOCKS5 proxy
+/// after hop selection, so `/api/v2/home-exit` reports observed circuit state
+/// instead of a plan.
+pub fn record_circuit(route: &[String], policy: &str) {
+    let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
+    rt.last_circuit = Some(LastCircuit {
+        route: route.to_vec(),
+        policy: policy.to_string(),
+        recorded_unix: super::now_secs(),
+    });
 }
 
 fn runtime() -> &'static RwLock<Runtime> {
@@ -427,13 +448,21 @@ pub fn view(node_fingerprint: &str) -> serde_json::Value {
         },
         "selected": rt.selected,
         "candidates": rt.peers.values().cloned().collect::<Vec<_>>(),
-        // Selection pins the exit on the direct path. The planner can compute a
-        // guard→middle→home circuit, but the daemon does not assemble one, so
-        // say that here rather than letting a client infer three hops.
-        "planned_circuit": {
-            "hops": 3,
-            "state": "deferred",
-            "reason": "runtime guard→middle→home assembly is not implemented; selection pins the exit on the direct path"
+        // The route the proxy actually assembled for the last connection. `none`
+        // means no onion route has been built since this daemon started; it does
+        // not imply the capability is missing.
+        "planned_circuit": match &rt.last_circuit {
+            Some(c) => serde_json::json!({
+                "state": "live",
+                "hops": c.route.len(),
+                "route": c.route,
+                "policy": c.policy,
+                "recorded_unix": c.recorded_unix,
+            }),
+            None => serde_json::json!({
+                "state": "none",
+                "reason": "no SOCKS5 onion route assembled since daemon start",
+            }),
         },
     })
 }

@@ -4,6 +4,8 @@
 
 **Autonomous Post-Quantum WAN Mesh Routing & Serverless Traffic Sharding**
 
+**Evidence build:** `target/debug/ggn.exe` SHA-256 `78e9dffdd7c0d6b9c61be6e4c7ebf177d527a4da0fb803b872823a3446f52c84`, built with `--features quic,reality-front,pq-tls` from HEAD `a94f2bddb5eea8e6c70ef3c6125710e621aa032a` plus the uncommitted worktree. Runtime evidence is in [`DEV/V2_BUILD_STATUS.md`](DEV/V2_BUILD_STATUS.md).
+
 <br>
 
 [![Release](https://img.shields.io/github/v/release/KELLERBABG/Vantablack?color=22d3ee&style=flat-square)](https://github.com/KELLERBABG/Vantablack/releases)
@@ -361,10 +363,14 @@ entitlement gate.
 
 | Command | What it does |
 | :--- | :--- |
-| `ggn drop <file>` | Serves one file to any browser. The key lives in the URL fragment (`#k=…`), which browsers never transmit, so the sender's server cannot read what it serves. Each 4 MiB chunk is sealed with AES-256-GCM and decrypted by the page with `crypto.subtle`; large files stream to disk through the File System Access API. `--once` makes it single-use. |
+| `ggn hpeb --paths <addrA,addrB>` | HPEB multipath: AONT + RS(2,1) shards, one UDP socket bound to each path address. `--client --file F` sends each shard from its own source; the server reassembles from any two and reports the distinct source addresses and SHA-256. Live proof used loopback aliases `127.0.0.2`/`127.0.0.3`; this host has no second physical uplink, so no three-radio handover was measured. |
+| `ggn masque --token <label>` | Real HTTP/3 (RFC 9114) MASQUE endpoint (feature `quic`): SETTINGS/control streams, QPACK, extended CONNECT `:protocol=connect-udp`, `capsule-protocol: ?1`, RFC 9297 capsules and RFC 9221 bidirectional datagrams. Proven with aioquic 1.9.0 and SPKI-pinned Chrome 157. `--cert-out` writes the certificate for pinning; `--client` runs a probe. Build with `pq-tls` for the hybrid `X25519MLKEM768` group. |
+| `ggn reality --token <label>` | Real TLS 1.3 front (feature `reality-front`). A ClientHello whose SNI is `<label>.<origin>` is terminated locally and tunnelled; every other probe is copied byte-for-byte to `--origin`, which keeps the real certificate and hybrid `X25519MLKEM768` handshake in front of a prober. |
+| `ggn drop <file>` | Serves one file to any browser. The key lives in the URL fragment (`#k=…`), which browsers never transmit, so the sender's server cannot read what it serves. Each 4 MiB chunk is sealed with AES-256-GCM and decrypted by the page with `crypto.subtle`; large files stream to disk through the File System Access API. The page is also a WebRTC DataChannel sender: open `<link>` and `/f/<id>/recv` in two browsers and the file moves peer-to-peer, with only SDP passing through the drop server (no payload relay). `--once` makes it single-use. |
 | `ggn expose <host:port>` | Token-gated relay to exactly one local server (`localhost:3000`, an AI endpoint, …) with no port forwarding and no third-party tunnel. WebSocket and streaming pass through; a wrong token gets the same `404` as a wrong path. |
-| `ggn party [--peer ADDR]` | UDP bridge for LAN games: sequences datagrams, drops duplicates with a 1024-sequence window, re-orders through a configurable jitter buffer, and can send each datagram twice so one loss cannot end a frame. |
-| `ggn mode [name]` | Switches between the four regimes — `fast` (1 hop), `shielded` (2), `ghost` (3 strict), `vantablack` (3 strict + network diversity + cover traffic) — and prints the exact hop policy and SOCKS5 port each implies. |
+| `ggn party [--peer ADDR]` | UDP bridge for LAN games: sequences datagrams, drops duplicates with a 1024-sequence window, re-orders through a configurable jitter buffer, and can send each datagram twice so one loss cannot end a frame. Each side binds a printed `--peer-listen` address (game port + 1 by default) that the other side points `--peer` at, so a two-machine bridge has a real address to connect to. |
+| `ggn mode [name]` | Switches between the four regimes — `fast` (1 hop), `shielded` (2), `ghost` (3 strict), `vantablack` (3 strict + network diversity + cover traffic) — and prints the exact hop policy and SOCKS5 port each implies. A saved regime is applied by the daemon at its next start: it binds one listener on that regime's port (`:1081`/`:1082`/`:1083`) instead of the four fixed ports. |
+| `ggn fleet [--init\|--issue PK\|--admit URI\|--revoke PK]` | Offline fleet root, per-device certificates and 85-byte revocations. `--issue` prints a `vb-fleet://` onboarding payload for a QR code; `--admit` verifies it and refuses revoked or tampered devices. |
 | `ggn vb-dns [--map name=NODEID]` | Loopback DNS stub answering `<name>.vb` with the deterministic ULA `fd7b::<NodeID>`. Self-certifying (the address is a function of the node id), local only, and `REFUSED` outside the zone so normal browsing falls through. |
 | `ggn xray [--json]` | The Adversary Goggles view: what your ISP, the guard relay and the website can each see, plus live invariant checks. It refuses to print "anonymous" below 200 public relays, and a failing check changes the headline. |
 | `ggn btcr [--demo\|--wallet]` | Relay credits as Ristretto255 VOPRF blind-signed tickets. The issuer proves its key with a Chaum–Pedersen DLEQ, tickets verify as `N == k·M`, and a spent ticket's nullifier cannot be spent twice. Issuance requires a beneficiary-signed work receipt. `--demo` runs issue → verify → spend → replay-refused. |
@@ -374,17 +380,23 @@ entitlement gate.
 Home exits are live: start a node with `GHOST_EXIT=1 GHOST_EXIT_ALLOWLIST=any
 GHOST_HOME_EXIT=1`, add its `vb://2.` invite on the client, then
 `POST /api/v2/home-exit/select`. SOCKS5 traffic is pinned to that exit and
-**refuses** rather than silently using another one if it is unreachable. The same
-selection is visible at `GET /api/v2/home-exit`.
+**refuses** rather than silently using another one if it is unreachable. With at
+least three peers the proxy assembles a real guard → middle → home onion, and
+`GET /api/v2/home-exit` reports the route it actually built
+(`planned_circuit.state = "live"`). Several nodes on one host can be told to
+bind and advertise distinct addresses with `GHOST_BIND` and
+`GHOST_ADVERTISE_ADDR` (for example `127.0.0.2:19771`), which is how the
+four-node loopback test ran.
 
 The **X-Ray** tab in the control center (`6`) reads `GET /api/v2/xray`, alongside
 `GET /api/v2/regime` and `POST /api/v2/regime`. The **Continuum** tab (`5`) shows
-home-exit advertisement/candidates with pin and clear actions, BTCr credits and
-wallet, all six ladder rungs (including each refusal reason), and live RACS
-counters from `GET /api/v2/{home-exit,btcr,ladder,racs}`. The dashboard reports
-the Boomerang three-hop circuit as **deferred** — the runtime still pins the exit
-on the direct path — and `GET /api/v2/capabilities` lists deferred capabilities
-machine-readably. See [`DEV/V2_BUILD_STATUS.md`](DEV/V2_BUILD_STATUS.md) for the
+home-exit advertisement/candidates with pin and clear actions, the last observed
+onion circuit, BTCr credits and wallet, all six ladder rungs (including each
+refusal reason), and live RACS counters from
+`GET /api/v2/{home-exit,btcr,ladder,racs}`. Pinning a home exit makes SOCKS5
+assemble a real guard → middle → home circuit when the swarm has at least three
+peers; `GET /api/v2/home-exit` reports the route it actually built, and
+`GET /api/v2/capabilities` lists capabilities that remain deferred. See [`DEV/V2_BUILD_STATUS.md`](DEV/V2_BUILD_STATUS.md) for the
 item-by-item status of the v2.0 roadmap, including what is deliberately deferred
 and why.
 

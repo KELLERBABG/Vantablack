@@ -386,6 +386,41 @@ impl RevocationSet {
 }
 
 /// Admit a device only if its certificate is valid, unexpired and unrevol­ked.
+/// Prefix of the QR/onboarding payload for a device certificate.
+pub const FLEET_URI_PREFIX: &str = "vb-fleet://";
+
+/// Encode the onboarding payload a QR code carries: the fleet's public key and
+/// the device certificate, both hex. Hex keeps the payload dependency-free; a QR
+/// encoder only has to render the string.
+pub fn encode_invite(root_pk: &[u8; 32], cert: &DeviceCert) -> Option<String> {
+    let json = serde_json::to_vec(cert).ok()?;
+    Some(format!(
+        "{FLEET_URI_PREFIX}{}/{}",
+        hex::encode(root_pk),
+        hex::encode(json)
+    ))
+}
+
+/// Parse a `vb-fleet://` payload. It is not trusted until `admit` verifies the
+/// certificate against the root key it carries.
+pub fn decode_invite(uri: &str) -> Result<([u8; 32], DeviceCert), String> {
+    let rest = uri
+        .trim()
+        .strip_prefix(FLEET_URI_PREFIX)
+        .ok_or_else(|| format!("not a {FLEET_URI_PREFIX} URI"))?;
+    let (root_hex, cert_hex) = rest
+        .split_once('/')
+        .ok_or_else(|| "vb-fleet:// URI must be root-key/certificate".to_string())?;
+    let root_raw = hex::decode(root_hex).map_err(|e| format!("root key is not hex: {e}"))?;
+    let root_pk: [u8; 32] = root_raw
+        .try_into()
+        .map_err(|_| "root key must be 32 bytes".to_string())?;
+    let cert_raw = hex::decode(cert_hex).map_err(|e| format!("certificate is not hex: {e}"))?;
+    let cert: DeviceCert = serde_json::from_slice(&cert_raw)
+        .map_err(|e| format!("certificate JSON is invalid: {e}"))?;
+    Ok((root_pk, cert))
+}
+
 pub fn admit(
     cert: &DeviceCert,
     root_pk: &[u8; 32],
@@ -495,6 +530,29 @@ mod tests {
         assert_eq!(
             admit(&cert, &root.public_key(), &set, 200),
             Err(CertError::Revoked)
+        );
+    }
+
+    #[test]
+    fn fleet_invite_round_trips_and_still_needs_the_root_signature() {
+        let (root, _seed) = FleetRoot::generate();
+        let cert = root.issue(device(9), "Lukas' phone", 1_000, DEFAULT_CERT_TTL_SECS);
+        let uri = encode_invite(&root.public_key(), &cert).expect("encode invite");
+        assert!(uri.starts_with(FLEET_URI_PREFIX));
+        let (root_pk, decoded) = decode_invite(&uri).expect("decode invite");
+        assert_eq!(root_pk, root.public_key());
+        assert_eq!(decoded, cert);
+        assert_eq!(
+            admit(&decoded, &root_pk, &RevocationSet::new(), 2_000),
+            Ok(device(9))
+        );
+
+        // A payload that swaps in another device's key must fail admission.
+        let mut tampered = decoded;
+        tampered.device_pk = hex::encode(device(10));
+        assert_eq!(
+            admit(&tampered, &root_pk, &RevocationSet::new(), 2_000),
+            Err(CertError::BadSignature)
         );
     }
 

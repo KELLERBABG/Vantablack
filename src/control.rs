@@ -835,11 +835,19 @@ pub fn spawn_control_center(
                                         }
                                     } else if req.starts_with("GET /api/v2/") {
                                         let peers = nc_ref.sessions.len();
+                                        // A regime listener is already the final port;
+                                        // the API derives offsets, so give it the base.
+                                        let regime_active = v2regime::active().ok();
+                                        let api_socks_base = if regime_active.is_some() {
+                                            1080
+                                        } else {
+                                            socks_port
+                                        };
                                         let state = v2api::ApiState {
                                             peers,
-                                            regime: v2regime::active()
+                                            regime: regime_active
                                                 .unwrap_or(v2regime::Regime::Ghost),
-                                            socks_port,
+                                            socks_port: api_socks_base,
                                             transport: (peers > 0)
                                                 .then(|| "udp".to_string()),
                                             exit_ip: None,
@@ -923,12 +931,26 @@ pub fn spawn_control_center(
                                                 .unwrap_or(55225)
                                         };
                                         let lan_sa = lan_host_ref.parse::<SocketAddr>().ok();
-                                        let lan_endpoints: Vec<SocketAddr> =
-                                            lan_sa.into_iter().collect();
-                                        let endpoint =
-                                            wan_snap.public_addr.or(lan_sa).unwrap_or_else(|| {
+                                        // Same operator override as the descriptor
+                                        // builder: a manually forwarded endpoint wins
+                                        // over STUN, and then it is the only candidate.
+                                        let advertised_override = std::env::var(
+                                            "GHOST_ADVERTISE_ADDR",
+                                        )
+                                        .ok()
+                                        .and_then(|raw| raw.trim().parse::<SocketAddr>().ok());
+                                        let endpoint = advertised_override
+                                            .or(wan_snap.public_addr)
+                                            .or(lan_sa)
+                                            .unwrap_or_else(|| {
                                                 SocketAddr::from(([127, 0, 0, 1], mesh_port))
                                             });
+                                        let lan_endpoints: Vec<SocketAddr> =
+                                            if advertised_override.is_some() {
+                                                vec![endpoint]
+                                            } else {
+                                                lan_sa.into_iter().collect()
+                                            };
                                         let caps = local_capability_flags(vpn_role);
                                         let nat_code = nat_type_to_code(wan_snap.nat_type);
                                         let desc = PeerDescriptorV2::sign_new(

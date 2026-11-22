@@ -119,10 +119,6 @@ pub fn capabilities() -> Value {
         "min_anonymity_relays": regime::MIN_ANONYMITY_RELAYS,
         "deferred": [
             {
-                "capability": "boomerang_guard_middle_home_circuit",
-                "reason": "runtime three-hop assembly is not implemented; home-exit selection pins the exit on the direct path",
-            },
-            {
                 "capability": "continuum_wifi_aware_ble_radio",
                 "reason": "no Wi-Fi Aware or BLE transport in this build; the mule rung syncs removable media instead",
             },

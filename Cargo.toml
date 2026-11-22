@@ -56,6 +56,12 @@ sdr = ["dep:abos"]
 # binary free of a TLS stack — and a build without it *refuses* an https:// KME
 # URL rather than falling back to plaintext key delivery.
 qkd-tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile"]
+# REALITY front: a real TLS 1.3 listener with an authenticated SNI knock and a
+# byte-for-byte splice to a borrowed origin for every other probe.
+reality-front = ["dep:tokio-rustls", "dep:rustls", "dep:rcgen"]
+# Use AWS-LC as the rustls provider so TLS 1.3 offers the hybrid
+# X25519MLKEM768 key exchange Chrome uses by default.
+pq-tls = ["rustls/aws_lc_rs", "rustls/prefer-post-quantum"]
 # Dormant research primitives (see docs/DORMANT_MODULES.md). Off by default so
 # the production daemon only ships live packet-path modules; enabled in CI.
 research = []
