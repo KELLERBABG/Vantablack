@@ -34,13 +34,14 @@
 //! answerable from a packet capture.
 
 use crate::ghost::layers::l1_kem::{
-    derive_epoch_key, generate_kyber_keypair, generate_x25519_keypair, kdf_ck, kdf_rk_hybrid,
-    kdf_rk_quantum_mix, seed_ratchet_chains,
+    derive_epoch_key, generate_kyber768_keypair, generate_x25519_keypair, kdf_ck, kdf_rk_hybrid,
+    kdf_rk_quantum_mix, kyber768_decapsulate, kyber768_encapsulate, seed_ratchet_chains,
 };
 use crate::ghost::layers::l2_aead::NonceDirection;
-use ml_kem::kem::{Decapsulate, KeyExport};
-use ml_kem::{Ciphertext, DecapsulationKey512, EncapsulationKey512, MlKem512};
+use ml_kem::kem::KeyExport;
+use ml_kem::{DecapsulationKey768, EncapsulationKey768};
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 use zeroize::Zeroize;
 
@@ -52,6 +53,10 @@ use zeroize::Zeroize;
 /// ratchet replaces the key long before a real link could accumulate the 2⁴⁸
 /// frames where a random-96-bit-nonce birthday collision becomes likely.
 pub const RATCHET_INTERVAL: u64 = 1_000_000;
+
+/// Maximum wall-clock lifetime of a single epoch before a ratchet is due,
+/// ensuring low-volume sessions still rotate keys regularly.
+pub const RATCHET_TIME_CEILING: Duration = Duration::from_secs(15 * 60);
 
 /// How many *previous* epochs keep their keys so frames in flight across a step
 /// still open. One is enough for a step; two covers a step that raced with a
@@ -274,6 +279,8 @@ pub struct SessionRatchet {
     steps: u64,
     /// Frames sealed in the current epoch, which is what triggers the step.
     frames_in_epoch: u64,
+    /// When the current epoch began, enforcing [`RATCHET_TIME_CEILING`].
+    epoch_started_at: Instant,
     /// Retired epochs, newest first.
     retired: VecDeque<RatchetEpoch>,
     /// A step derived but not installed (see [`PreparedEpoch`]).
@@ -294,6 +301,7 @@ impl SessionRatchet {
             epoch: 0,
             steps: 0,
             frames_in_epoch: 0,
+            epoch_started_at: Instant::now(),
             retired: VecDeque::new(),
             pending: None,
         }
@@ -499,6 +507,7 @@ impl SessionRatchet {
         self.epoch = p.epoch;
         self.steps = self.steps.wrapping_add(1);
         self.frames_in_epoch = 0;
+        self.epoch_started_at = Instant::now();
         true
     }
 
@@ -512,11 +521,18 @@ impl SessionRatchet {
         self.epoch
     }
 
+    /// Whether the current epoch has reached either [`RATCHET_INTERVAL`] or
+    /// [`RATCHET_TIME_CEILING`].
+    pub fn is_ratchet_due(&self) -> bool {
+        self.frames_in_epoch >= RATCHET_INTERVAL
+            || self.epoch_started_at.elapsed() >= RATCHET_TIME_CEILING
+    }
+
     /// Count a frame sealed in the current epoch; `true` means the session is due
     /// to ratchet.
     pub fn count_seal(&mut self) -> bool {
         self.frames_in_epoch = self.frames_in_epoch.saturating_add(1);
-        self.frames_in_epoch >= RATCHET_INTERVAL
+        self.is_ratchet_due()
     }
 
     /// Frames still available under the current epoch key.
@@ -566,6 +582,7 @@ impl SessionRatchet {
         self.epoch = self.epoch.wrapping_add(1);
         self.steps = self.steps.wrapping_add(1);
         self.frames_in_epoch = 0;
+        self.epoch_started_at = Instant::now();
         let next = self.epoch;
 
         self.to_resp = ChainState::seed(chain_to_resp, next);
@@ -602,6 +619,7 @@ impl SessionRatchet {
 
         self.epoch = self.epoch.wrapping_add(1);
         self.frames_in_epoch = 0;
+        self.epoch_started_at = Instant::now();
         let next = self.epoch;
 
         self.to_resp = ChainState::seed(chain_to_resp, next);
@@ -718,15 +736,15 @@ impl Drop for StepSecrets {
 pub struct RatchetStep {
     x_secret: Option<EphemeralSecret>,
     x_public: X25519PublicKey,
-    kem_ek: EncapsulationKey512,
-    kem_dk: DecapsulationKey512,
+    kem_ek: EncapsulationKey768,
+    kem_dk: DecapsulationKey768,
 }
 
 impl RatchetStep {
-    /// Generate fresh ephemeral X25519 and ML-KEM-512 material.
+    /// Generate fresh ephemeral X25519 and ML-KEM-768 material.
     pub fn generate() -> Self {
         let (x_secret, x_public) = generate_x25519_keypair();
-        let (kem_ek, kem_dk) = generate_kyber_keypair();
+        let (kem_ek, kem_dk) = generate_kyber768_keypair();
         Self {
             x_secret: Some(x_secret),
             x_public,
@@ -740,7 +758,7 @@ impl RatchetStep {
         *self.x_public.as_bytes()
     }
 
-    /// This side's ML-KEM-512 encapsulation key, to go in the step PDU.
+    /// This side's ML-KEM-768 encapsulation key, to go in the step PDU.
     pub fn kem_public_bytes(&self) -> Vec<u8> {
         self.kem_ek.to_bytes().to_vec()
     }
@@ -755,20 +773,20 @@ impl RatchetStep {
         mut self,
         peer_x_pub: &[u8; 32],
         peer_kem_pub: &[u8],
-    ) -> Option<(StepSecrets, [u8; 768])> {
+    ) -> Option<(StepSecrets, [u8; 1088])> {
         let secret = self.x_secret.take()?;
         let dh = secret.diffie_hellman(&X25519PublicKey::from(*peer_x_pub));
-        let (ct, kem) = crate::ghost::layers::l1_kem::kyber_encapsulate(peer_kem_pub).ok()?;
+        let (ct_vec, kem) = kyber768_encapsulate(peer_kem_pub).ok()?;
+        let ct: [u8; 1088] = ct_vec.try_into().ok()?;
         Some((StepSecrets::new(*dh.as_bytes(), kem), ct))
     }
 
     /// *Initiator* side of a step: open the responder's ciphertext and produce the
     /// same secrets the responder did.
-    pub fn finish(mut self, peer_x_pub: &[u8; 32], kem_ct: &[u8; 768]) -> Option<StepSecrets> {
+    pub fn finish(mut self, peer_x_pub: &[u8; 32], kem_ct: &[u8; 1088]) -> Option<StepSecrets> {
         let secret = self.x_secret.take()?;
         let dh = secret.diffie_hellman(&X25519PublicKey::from(*peer_x_pub));
-        let ct = Ciphertext::<MlKem512>::from(*kem_ct);
-        let kem = self.kem_dk.decapsulate(&ct).as_slice().to_vec();
+        let kem = kyber768_decapsulate(&self.kem_dk, kem_ct).ok()?;
         Some(StepSecrets::new(*dh.as_bytes(), kem))
     }
 }
@@ -1162,7 +1180,7 @@ mod tests {
         // cannot produce the epoch key. This is what makes the step authentic
         // without a per-step signature.
         let watcher = RatchetStep::generate();
-        let (secrets, _ct) = watcher.respond(&[0x77u8; 32], &[0x88u8; 800]).unwrap();
+        let (secrets, _ct) = watcher.respond(&[0x77u8; 32], &[0x88u8; 1184]).unwrap();
         let mut a = SessionRatchet::new(master());
         a.step(&secrets);
         let mut honest = SessionRatchet::new(master());
@@ -1333,6 +1351,20 @@ mod tests {
         r.step(&StepSecrets::new([1u8; 32], vec![1u8; 32]));
         assert_eq!(r.frames_in_epoch(), 0);
         assert_eq!(r.epoch_capacity_left(), RATCHET_INTERVAL);
+    }
+
+    #[test]
+    fn test_ratchet_time_ceiling_triggers_on_low_volume() {
+        let mut r = SessionRatchet::new(master());
+        assert!(!r.is_ratchet_due());
+        assert!(!r.count_seal());
+
+        r.epoch_started_at = Instant::now() - RATCHET_TIME_CEILING;
+        assert!(r.is_ratchet_due());
+        assert!(r.count_seal(), "low-volume session must ratchet after 15m");
+
+        r.step(&StepSecrets::new([0x22u8; 32], vec![0x33u8; 32]));
+        assert!(!r.is_ratchet_due());
     }
 
     #[test]
