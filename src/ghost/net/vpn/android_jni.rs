@@ -26,9 +26,7 @@ use crate::ghost::layers::l1_kem::{
     build_handshake_pdu, compute_session_hash, derive_hybrid_master_key, generate_kyber_keypair,
     generate_x25519_keypair, parse_response_pdu, RESPONSE_BLOB_LEN,
 };
-use crate::ghost::layers::l2_aead::{
-    decrypt_in_place_with_context, encrypt_in_place_with_context, NonceDirection,
-};
+use crate::ghost::layers::l2_aead::{decrypt_in_place_with_context, NonceDirection};
 use crate::ghost::layers::l4_rs;
 use crate::ghost::net::{
     build_gtf_frame, frame_shard, parse_flags, parse_packet_counter, unframe,
@@ -175,7 +173,7 @@ fn tunnel_frame(
         nonce,
         bulk: true,
         flags: crate::ghost::net::FLAG_TUNNEL,
-        tail: [0u8; crate::ghost::net::V2_TAIL_LEN],
+        tail: [0u8; crate::ghost::net::JITTER_MAX],
     };
     crate::ghost::net::try_build_gtf_v2_frame(&meta, &shard, &tag).unwrap_or_default()
 }
