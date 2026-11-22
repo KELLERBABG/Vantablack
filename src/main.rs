@@ -666,7 +666,47 @@ pub(crate) async fn send3_mixed(
 /// across a WAN, large enough that a link is never silent.
 const COVER_FRAMES_PER_SEC: f64 = 2.0;
 
+/// Sparse idle cover rate (~1 message per 60 s) used by `CoverShapingMode::Adaptive`
+/// once a session has been quiet past the cellular RRC tail window, allowing
+/// mobile modems to enter `RRC_IDLE` instead of draining battery 24/7.
+const COVER_IDLE_FRAMES_PER_SEC: f64 = 0.05;
+
+const COVER_ACTIVE_TAIL_SECS: u64 = 5;
+
 const COVER_FRAMES_PER_MESSAGE: f64 = 3.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoverShapingMode {
+    Adaptive,
+    Always,
+    Off,
+}
+
+fn cover_shaping_mode() -> CoverShapingMode {
+    match std::env::var("GHOST_COVER_MODE")
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "off" | "0" | "false" => CoverShapingMode::Off,
+        "always" | "2hz" => CoverShapingMode::Always,
+        _ => CoverShapingMode::Adaptive,
+    }
+}
+
+fn effective_cover_rate(mode: CoverShapingMode, active_tail: bool) -> f64 {
+    match mode {
+        CoverShapingMode::Off => 0.0,
+        CoverShapingMode::Always => COVER_FRAMES_PER_SEC,
+        CoverShapingMode::Adaptive => {
+            if active_tail {
+                COVER_FRAMES_PER_SEC
+            } else {
+                COVER_IDLE_FRAMES_PER_SEC
+            }
+        }
+    }
+}
 
 /// How long until the next cover message.
 ///
@@ -746,24 +786,59 @@ fn spawn_cover_task(
     tokio::spawn(async move {
         let mut next_emit: std::collections::HashMap<String, tokio::time::Instant> =
             std::collections::HashMap::new();
+        let mut last_tx: std::collections::HashMap<String, (u64, tokio::time::Instant)> =
+            std::collections::HashMap::new();
+        let mode = cover_shaping_mode();
         loop {
+            if mode == CoverShapingMode::Off {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                continue;
+            }
             let now = tokio::time::Instant::now();
-            // Collect first: a DashMap guard must never be held across an await,
-            // and every send below is one.
-            let sessions: Vec<(String, SealCtx)> = node
+            // Collect peer metadata without holding DashMap guards across awaits,
+            // and only advance `SealCtx` when a peer is actually due to emit.
+            let peer_states: Vec<(String, u64)> = node
                 .sessions
                 .iter()
-                .map(|e| (e.peer_fingerprint.clone(), SealCtx::from_session(&e)))
+                .map(|e| {
+                    (
+                        e.peer_fingerprint.clone(),
+                        e.tx_counter.load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                })
                 .collect();
-            next_emit.retain(|peer, _| sessions.iter().any(|(p, _)| p == peer));
+            next_emit.retain(|peer, _| peer_states.iter().any(|(p, _)| p == peer));
+            last_tx.retain(|peer, _| peer_states.iter().any(|(p, _)| p == peer));
+
             let mut due = Vec::new();
-            for (peer, ctx) in sessions {
+            for (peer, tx_ctr) in peer_states {
+                let (prev_ctr, active_at) = last_tx.entry(peer.clone()).or_insert((tx_ctr, now));
+                if tx_ctr > *prev_ctr {
+                    *prev_ctr = tx_ctr;
+                    *active_at = now;
+                }
+                let in_active_tail =
+                    now.saturating_duration_since(*active_at) <= Duration::from_secs(COVER_ACTIVE_TAIL_SECS);
+                let rate = effective_cover_rate(mode, in_active_tail);
                 let deadline = next_emit
                     .entry(peer.clone())
-                    .or_insert_with(|| now + cover_gap(rand::random::<f64>(), COVER_FRAMES_PER_SEC));
+                    .or_insert_with(|| now + cover_gap(rand::random::<f64>(), rate));
+                // If the session transitioned into an active tail while sleeping on a
+                // long idle deadline, pull the next emission forward.
+                if in_active_tail && *deadline > now + Duration::from_secs(3) {
+                    *deadline = now + cover_gap(rand::random::<f64>(), rate);
+                }
                 if now >= *deadline {
-                    *deadline = now + cover_gap(rand::random::<f64>(), COVER_FRAMES_PER_SEC);
-                    due.push((peer, ctx));
+                    *deadline = now + cover_gap(rand::random::<f64>(), rate);
+                    if let Some(sess) = node.sessions.get(&peer) {
+                        let ctx = SealCtx::from_session(&sess);
+                        // Account for the 3 cover frames we are about to send so cover
+                        // itself does not re-trigger the active-tail window.
+                        if let Some((c, _)) = last_tx.get_mut(&peer) {
+                            *c = sess.tx_counter.load(std::sync::atomic::Ordering::Relaxed);
+                        }
+                        due.push((peer, ctx));
+                    }
                 }
             }
             for (peer, ctx) in due {
@@ -2919,6 +2994,9 @@ fn uniform_handshake_enabled() -> bool {
         .unwrap_or(false)
 }
 
+const MAX_REORDER_BUF: usize = 32;
+const MAX_REORDER_GAP: u64 = 64;
+
 fn rx_push(state: &mut RxState, ctr: u64, payload: Vec<u8>) -> Vec<Vec<u8>> {
     let Some(next) = state.next else {
         state.next = Some(ctr + 1);
@@ -2928,6 +3006,13 @@ fn rx_push(state: &mut RxState, ctr: u64, payload: Vec<u8>) -> Vec<Vec<u8>> {
         return Vec::new();
     }
     state.buf.insert(ctr, payload);
+    if state.buf.len() >= MAX_REORDER_BUF || ctr.saturating_sub(next) >= MAX_REORDER_GAP {
+        if let Some(&first_available) = state.buf.keys().next() {
+            if first_available > next {
+                state.next = Some(first_available);
+            }
+        }
+    }
     let mut out = Vec::new();
     loop {
         let n = state.next.unwrap();
@@ -4068,17 +4153,32 @@ async fn handle_pkt(
         // inner AEAD and lease authorization and never touches SOCKS5/CHAT/relay logic.
         #[cfg(feature = "vpn")]
         if let Some(framed) = frame_payload(pt) {
-            if framed.len() > VPN_PAYLOAD_MAGIC.len()
-                && &framed[..VPN_PAYLOAD_MAGIC.len()] == VPN_PAYLOAD_MAGIC.as_slice()
-            {
-                let body = &framed[VPN_PAYLOAD_MAGIC.len()..];
+            let is_v1 = framed.len() > VPN_PAYLOAD_MAGIC.len()
+                && &framed[..VPN_PAYLOAD_MAGIC.len()] == VPN_PAYLOAD_MAGIC.as_slice();
+            let is_v2 = framed.len() > vpn::hub::VPN_PAYLOAD_V2_MAGIC.len()
+                && &framed[..vpn::hub::VPN_PAYLOAD_V2_MAGIC.len()]
+                    == vpn::hub::VPN_PAYLOAD_V2_MAGIC.as_slice();
+            if is_v1 || is_v2 {
+                let body = if is_v2 {
+                    &framed[vpn::hub::VPN_PAYLOAD_V2_MAGIC.len()..]
+                } else {
+                    &framed[VPN_PAYLOAD_MAGIC.len()..]
+                };
                 match vpn_mode {
                     Some(VpnMode::Hub(hub)) => {
-                        hub.handle_tunnel_payload(&peer_fp, &key, sh, body, *src);
+                        if is_v2 {
+                            hub.handle_tunnel_payload_v2(&peer_fp, sh, body, *src);
+                        } else {
+                            hub.handle_tunnel_payload(&peer_fp, &key, sh, body, *src);
+                        }
                     }
                     Some(VpnMode::Client(client, tun)) => {
                         let guard = tun.lock().unwrap_or_else(|e| e.into_inner());
-                        let (_ok, _adv) = vpn::client::open_to_tun(client, body, &*guard);
+                        if is_v2 {
+                            let (_ok, _adv) = vpn::client::open_v2_to_tun(client, body, &*guard);
+                        } else {
+                            let (_ok, _adv) = vpn::client::open_to_tun(client, body, &*guard);
+                        }
                     }
                     None => {}
                 }
@@ -5403,6 +5503,32 @@ fn sync_peer_topology_telemetry(
     }
 }
 
+fn resolve_swarm_secret_for_discovery() -> Option<String> {
+    let allow_public_genesis = std::env::var("GHOST_PUBLIC_GENESIS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let swarm_secret = match std::env::var("GHOST_SWARM_SECRET") {
+        Ok(s) if !s.trim().is_empty() => s,
+        _ => {
+            if !allow_public_genesis {
+                tracing::warn!(
+                    "Discovery Tier 3: GHOST_SWARM_SECRET is unset; set GHOST_SWARM_SECRET for private meshes or GHOST_PUBLIC_GENESIS=1 for public genesis fallback"
+                );
+                return None;
+            }
+            "vantablack-genesis-v1".to_string()
+        }
+    };
+    if let Err(e) = vantablack::ghost::net::discovery::validate_swarm_secret_policy(
+        swarm_secret.as_bytes(),
+        allow_public_genesis,
+    ) {
+        tracing::warn!(error = %e, "Discovery Tier 3: swarm secret rejected by policy");
+        return None;
+    }
+    Some(swarm_secret)
+}
+
 /// Publish this node's signed [`PeerDescriptorV2`] to `GHOST_RENDEZVOUS_URL` and
 /// fetch/install swarm peers via [`BlindMailboxClient`].
 async fn blind_rendezvous_sync(
@@ -5427,8 +5553,9 @@ async fn blind_rendezvous_sync(
             return;
         }
     };
-    let swarm_secret =
-        std::env::var("GHOST_SWARM_SECRET").unwrap_or_else(|_| "vantablack-genesis-v1".to_string());
+    let Some(swarm_secret) = resolve_swarm_secret_for_discovery() else {
+        return;
+    };
     let local_desc = build_local_descriptor_v2(
         nc,
         mesh_port,
@@ -5646,8 +5773,9 @@ async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr
     }
 
     // Tier 3: Zero-knowledge blinded rendezvous discovery
-    let swarm_secret =
-        std::env::var("GHOST_SWARM_SECRET").unwrap_or_else(|_| "vantablack-genesis-v1".to_string());
+    let Some(swarm_secret) = resolve_swarm_secret_for_discovery() else {
+        return Vec::new();
+    };
     let now_epoch_hour = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -10401,6 +10529,39 @@ mod p3_1_cover_tests {
             !is_dummy_payload(frame_payload(&real).expect("a framed data payload")),
             "FLAG_DUMMY on a real payload must not make it cover"
         );
+    }
+
+    #[test]
+    fn adaptive_cover_drops_to_idle_rate_outside_active_tail() {
+        assert_eq!(
+            effective_cover_rate(CoverShapingMode::Adaptive, true),
+            COVER_FRAMES_PER_SEC
+        );
+        assert_eq!(
+            effective_cover_rate(CoverShapingMode::Adaptive, false),
+            COVER_IDLE_FRAMES_PER_SEC
+        );
+        assert_eq!(effective_cover_rate(CoverShapingMode::Off, true), 0.0);
+        assert_eq!(
+            effective_cover_rate(CoverShapingMode::Always, false),
+            COVER_FRAMES_PER_SEC
+        );
+    }
+
+    #[test]
+    fn rx_push_advances_past_permanent_gap_without_deadlock() {
+        let mut st = RxState {
+            next: None,
+            buf: std::collections::BTreeMap::new(),
+        };
+        assert_eq!(rx_push(&mut st, 1, b"one".to_vec()), vec![b"one".to_vec()]);
+        // Counter 2 is permanently lost; once gap >= MAX_REORDER_GAP, rx_push flushes.
+        let mut flushed = Vec::new();
+        for c in 3..=(2 + MAX_REORDER_GAP) {
+            flushed.extend(rx_push(&mut st, c, format!("p{c}").into_bytes()));
+        }
+        assert!(!flushed.is_empty());
+        assert_eq!(flushed[0], b"p3");
     }
 
     #[test]

@@ -729,6 +729,16 @@ pub fn seal_datagram(key: &[u8; 32], epoch: u32, ctr: u64, ip_packet: &[u8]) -> 
     out
 }
 
+/// Frame an IP packet for single-AEAD `GVPN2` transport inside an already-authenticated
+/// session frame: `[epoch u32][ctr u64][ip_packet]`. Eliminates redundant inner AEAD.
+pub fn seal_datagram_v2(epoch: u32, ctr: u64, ip_packet: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + ip_packet.len());
+    out.extend_from_slice(&epoch.to_be_bytes());
+    out.extend_from_slice(&ctr.to_be_bytes());
+    out.extend_from_slice(ip_packet);
+    out
+}
+
 /// Result of opening a tunnel datagram.
 pub enum OpenOutcome {
     /// Authenticated + fresh; payload is the inner IP packet. `advanced` is
@@ -826,6 +836,34 @@ impl VpnIngress {
         }
         OpenOutcome::Accepted {
             ip_packet: body,
+            advanced,
+        }
+    }
+
+    /// Open a single-AEAD `GVPN2` datagram (`[epoch u32][ctr u64][ip_packet]`) that was
+    /// already authenticated by the outer session frame.
+    pub fn open_v2(&self, fingerprint: &str, expected_epoch: u32, wire: &[u8]) -> OpenOutcome {
+        if wire.len() < 12 {
+            return OpenOutcome::AuthFail;
+        }
+        let epoch = u32::from_be_bytes([wire[0], wire[1], wire[2], wire[3]]);
+        let ctr = u64::from_be_bytes([
+            wire[4], wire[5], wire[6], wire[7], wire[8], wire[9], wire[10], wire[11],
+        ]);
+        if epoch != expected_epoch {
+            return OpenOutcome::AuthFail;
+        }
+        let mut rx = self.rx.lock();
+        let state = rx.entry((fingerprint.to_string(), epoch)).or_default();
+        let advanced = ctr > state.v_max;
+        if !state.guard.check_and_update(ctr) {
+            return OpenOutcome::Replay;
+        }
+        if advanced {
+            state.v_max = ctr;
+        }
+        OpenOutcome::Accepted {
+            ip_packet: wire[12..].to_vec(),
             advanced,
         }
     }
@@ -1131,5 +1169,31 @@ mod tests {
             matches!(outcome_post_decay, OpenOutcome::AuthFail),
             "Decayed epoch wire packet must fail with AuthFail"
         );
+    }
+
+    #[test]
+    fn gvpn2_single_aead_roundtrip_and_replay_protection() {
+        let ingress = VpnIngress::new();
+        let pkt = vec![0x45u8; 40];
+        let wire = seal_datagram_v2(3, 42, &pkt);
+        assert_eq!(wire.len(), 12 + pkt.len());
+        match ingress.open_v2("peer_v2", 3, &wire) {
+            OpenOutcome::Accepted {
+                ip_packet,
+                advanced,
+            } => {
+                assert_eq!(ip_packet, pkt);
+                assert!(advanced);
+            }
+            _ => panic!("expected Accepted"),
+        }
+        assert!(matches!(
+            ingress.open_v2("peer_v2", 3, &wire),
+            OpenOutcome::Replay
+        ));
+        assert!(matches!(
+            ingress.open_v2("peer_v2", 4, &wire),
+            OpenOutcome::AuthFail
+        ));
     }
 }

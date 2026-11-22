@@ -27,6 +27,10 @@ use super::{seal_datagram, FlowKey, LeaseTable, OpenOutcome, UdpFlowTable, VpnCo
 /// Magic prefix marking a VPN tunnel payload inside a decrypted session frame.
 pub const VPN_PAYLOAD_MAGIC: &[u8; 5] = b"GVPN1";
 
+/// Single-AEAD VPN tunnel payload (`[epoch u32][ctr u64][ip_packet]`) used inside
+/// an already-authenticated session frame.
+pub const VPN_PAYLOAD_V2_MAGIC: &[u8; 5] = b"GVPN2";
+
 /// Authenticated goodbye / reroute control notification sent when a node
 /// disconnects or deactivates the mesh.
 pub const GHOST_BYE_MAGIC: &[u8; 14] = b"GHOST_BYE_____";
@@ -234,7 +238,47 @@ impl VpnHub {
         // A forward epoch is a legitimate authenticated mobility/re-key
         // candidate; open it in its own replay namespace, then retain only it.
         let expected = epoch;
-        match self.ingress.open(master_key, fp, expected, payload) {
+        let outcome = self.ingress.open(master_key, fp, expected, payload);
+        self.handle_tunnel_outcome(fp, epoch, ctr, src, current_epoch, outcome);
+    }
+
+    /// Handle a single-AEAD `GVPN2` payload from a client (already authenticated by
+    /// the outer session frame).
+    pub fn handle_tunnel_payload_v2(
+        self: &Arc<Self>,
+        fp: &str,
+        session_hash: [u8; 4],
+        payload: &[u8],
+        src: SocketAddr,
+    ) {
+        if payload.len() < 12 {
+            return;
+        }
+        self.sessions.lock().entry(fp.to_string()).and_modify(|info| {
+            info.session_hash = session_hash;
+            info.endpoint = src;
+        });
+        let epoch = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let ctr = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        let current_epoch = self.ingress_epochs.lock().get(fp).copied();
+        if current_epoch.is_some_and(|current| epoch < current) {
+            tracing::debug!(peer = %fp, epoch, current = ?current_epoch, "VPN v2 stale epoch dropped");
+            return;
+        }
+        let outcome = self.ingress.open_v2(fp, epoch, payload);
+        self.handle_tunnel_outcome(fp, epoch, ctr, src, current_epoch, outcome);
+    }
+
+    fn handle_tunnel_outcome(
+        self: &Arc<Self>,
+        fp: &str,
+        epoch: u32,
+        ctr: u32,
+        src: SocketAddr,
+        current_epoch: Option<u32>,
+        outcome: OpenOutcome,
+    ) {
+        match outcome {
             OpenOutcome::Accepted {
                 ip_packet,
                 advanced,

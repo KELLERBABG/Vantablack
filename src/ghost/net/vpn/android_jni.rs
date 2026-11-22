@@ -161,24 +161,28 @@ fn tunnel_frame(
     if framed.len() % 2 != 0 {
         framed.push(0);
     }
-    let mut nonce = [0u8; 24];
-    nonce[..4].copy_from_slice(&sh);
-    nonce[4..8].copy_from_slice(&ctr.to_be_bytes());
+    let nonce = crate::ghost::layers::l2_aead::random_xnonce();
     let epoch = 0u64;
-    crate::ghost::layers::l2_aead::xchacha_seal_with_aad(key, &nonce, epoch, dir, &mut framed, &[]);
+    let _ = crate::ghost::layers::l2_aead::xchacha_seal_in_place(
+        key,
+        &nonce,
+        epoch,
+        dir,
+        &mut framed,
+    );
     let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
     let shard = frame_shard(&framed);
-    let meta = crate::ghost::net::V2FrameMeta {
+    let meta = crate::ghost::net::GtfV2Header {
         session_hash: sh,
         counter: ctr as u64,
         shard_index: 0,
         epoch,
         nonce,
         bulk: true,
-        flags: crate::ghost::net::FLAG_V2 | 0x02,
+        flags: crate::ghost::net::FLAG_TUNNEL,
         tail: [0u8; crate::ghost::net::V2_TAIL_LEN],
     };
-    crate::ghost::net::build_gtf_v2_frame(&meta, &shard, &tag)
+    crate::ghost::net::try_build_gtf_v2_frame(&meta, &shard, &tag).unwrap_or_default()
 }
 
 fn receiver_open(
@@ -1409,8 +1413,8 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
     };
     let trimmed = raw.trim();
     let res = if trimmed.starts_with("vb-net://") {
-        match crate::ghost::net::discovery::NetworkInvite::decode(trimmed) {
-            Ok(inv) => {
+        match crate::ghost::net::discovery::NetworkInvite::from_uri(trimmed) {
+            Some(inv) => {
                 if let Some(url) = inv.rendezvous_url.as_ref() {
                     *RENDEZVOUS_URL.lock() = url.clone();
                 }
@@ -1422,11 +1426,11 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
                     .unwrap_or_default();
                 format!("ok:{ep}")
             }
-            Err(e) => format!("err:{e}"),
+            None => "err:invalid network invite".to_string(),
         }
     } else if trimmed.starts_with("vb://") {
-        match crate::ghost::net::discovery::PeerDescriptorV2::decode(trimmed) {
-            Ok(desc) => {
+        match crate::ghost::net::discovery::PeerDescriptorV2::from_uri(trimmed) {
+            Some(desc) => {
                 let ep = desc
                     .endpoints
                     .first()
@@ -1434,7 +1438,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
                     .unwrap_or_default();
                 format!("ok:{ep}")
             }
-            Err(e) => format!("err:{e}"),
+            None => "err:invalid peer descriptor".to_string(),
         }
     } else {
         "err:unsupported invite scheme".to_string()

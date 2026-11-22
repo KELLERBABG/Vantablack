@@ -120,18 +120,22 @@ pub fn seal_from_tun(state: &ClientState, ip_packet: &[u8]) -> Option<Vec<u8>> {
     Some(seal_datagram(&state.key(), e, ctr, ip_packet))
 }
 
-/// Open one wire datagram and, if fresh, write it into the TUN.
-/// Returns (accepted, advanced) for the caller's re-anchor logic.
-pub fn open_to_tun(
+/// Frame one IP packet from the TUN for single-AEAD `GVPN2` transport.
+pub fn seal_v2_from_tun(state: &ClientState, ip_packet: &[u8]) -> Option<Vec<u8>> {
+    if ip_packet.len() > MAX_IP_PACKET {
+        return None;
+    }
+    let e = state.current_epoch();
+    let ctr = state.tx_counter.fetch_add(1, Ordering::Relaxed);
+    Some(crate::ghost::net::vpn::seal_datagram_v2(e, ctr, ip_packet))
+}
+
+fn deliver_outcome_to_tun(
     state: &ClientState,
-    wire: &[u8],
+    outcome: OpenOutcome,
     tun: &dyn crate::ghost::net::vpn::tun::TunDevice,
 ) -> (bool, bool) {
-    let e = state.current_epoch();
-    match state
-        .ingress
-        .open(&state.key(), &state.fingerprint, e, wire)
-    {
+    match outcome {
         OpenOutcome::Accepted {
             ip_packet,
             advanced,
@@ -144,6 +148,31 @@ pub fn open_to_tun(
         }
         _ => (false, false),
     }
+}
+
+/// Open one wire datagram and, if fresh, write it into the TUN.
+/// Returns (accepted, advanced) for the caller's re-anchor logic.
+pub fn open_to_tun(
+    state: &ClientState,
+    wire: &[u8],
+    tun: &dyn crate::ghost::net::vpn::tun::TunDevice,
+) -> (bool, bool) {
+    let e = state.current_epoch();
+    let outcome = state
+        .ingress
+        .open(&state.key(), &state.fingerprint, e, wire);
+    deliver_outcome_to_tun(state, outcome, tun)
+}
+
+/// Open one single-AEAD `GVPN2` wire datagram and write it into the TUN.
+pub fn open_v2_to_tun(
+    state: &ClientState,
+    wire: &[u8],
+    tun: &dyn crate::ghost::net::vpn::tun::TunDevice,
+) -> (bool, bool) {
+    let e = state.current_epoch();
+    let outcome = state.ingress.open_v2(&state.fingerprint, e, wire);
+    deliver_outcome_to_tun(state, outcome, tun)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
