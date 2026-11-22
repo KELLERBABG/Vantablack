@@ -16,14 +16,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use vantablack::ghost::layers::l10_qel::{self, QelAnchorState, QuantumRouteResult};
 use vantablack::ghost::net::consumer::{self, ConsumerSettings};
 use vantablack::ghost::net::discovery::{
-    LocalPeerCache, NetworkInvite, PeerDescriptor, PeerDescriptorV2, CAP_EXIT, CAP_QUIC, CAP_RELAY,
-    CAP_VPN_HUB, NAT_CONE, NAT_DIRECT, NAT_RESTRICTED, NAT_SYMMETRIC, NAT_UNKNOWN,
+    LocalPeerCache, NetworkInvite, PeerDescriptor, PeerDescriptorV2, CAP_EXIT, CAP_HOME_EXIT,
+    CAP_QUIC, CAP_RELAY, CAP_VPN_HUB, NAT_CONE, NAT_DIRECT, NAT_RESTRICTED, NAT_SYMMETRIC, NAT_UNKNOWN,
     VB_NET_URI_PREFIX, VB_URI_PREFIX, VB_V2_URI_PREFIX,
 };
 use vantablack::ghost::net::mesh::{
     local_node_offer, peer_telemetry_snapshot, remove_peer_telemetry, update_peer_telemetry,
     wan_telemetry_snapshot, NatType,
 };
+use vantablack::ghost::v2;
+use vantablack::ghost::v2::{api as v2api, regime as v2regime};
 use vantablack::ghost::GhostNode;
 
 /// Port the HTTP control center listens on (`GHOST_WEB_PORT`, else the legacy
@@ -58,7 +60,6 @@ pub fn is_origin_allowed(req: &str, port: u16) -> bool {
         Some(o) => {
             o == format!("http://127.0.0.1:{}", port)
                 || o == format!("http://localhost:{}", port)
-                || o == "null"
         }
     }
 }
@@ -448,6 +449,9 @@ fn local_capability_flags(vpn_role: &str) -> u8 {
     }
     if vpn_role == "hub" || env_true("GHOST_EXIT") {
         caps |= CAP_EXIT;
+        if env_true("GHOST_HOME_EXIT") {
+            caps |= CAP_HOME_EXIT;
+        }
     }
     if vpn_role == "hub" {
         caps |= CAP_VPN_HUB;
@@ -731,6 +735,132 @@ pub fn spawn_control_center(
                                         })
                                         .to_string();
                                         ("HTTP/1.1 401 Unauthorized", body, "application/json")
+                                    } else if req.starts_with("POST /api/v2/btcr/issue") {
+                                        let body = json_body(&req);
+                                        match v2api::btcr_issue(&body, &nc_ref.fingerprint()) {
+                                            Ok(value) => (
+                                                "HTTP/1.1 200 OK",
+                                                value.to_string(),
+                                                "application/json",
+                                            ),
+                                            Err(e) => (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({"success": false, "error": e})
+                                                    .to_string(),
+                                                "application/json",
+                                            ),
+                                        }
+                                    } else if req.starts_with("POST /api/v2/btcr/spend") {
+                                        let body = json_body(&req);
+                                        match v2api::btcr_spend(&body, &nc_ref.fingerprint()) {
+                                            Ok(value) => (
+                                                "HTTP/1.1 200 OK",
+                                                value.to_string(),
+                                                "application/json",
+                                            ),
+                                            Err(e) => (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({"success": false, "error": e})
+                                                    .to_string(),
+                                                "application/json",
+                                            ),
+                                        }
+                                    } else if req.starts_with("POST /api/v2/home-exit/select") {
+                                        let body = json_body(&req);
+                                        let fp = body
+                                            .get("fingerprint")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .trim()
+                                            .to_string();
+                                        match v2::boomerang::select(&fp) {
+                                            Ok(peer) => {
+                                                let connected =
+                                                    nc_ref.sessions.contains_key(&fp);
+                                                (
+                                                    "HTTP/1.1 200 OK",
+                                                    serde_json::json!({
+                                                        "success": true,
+                                                        "selected": peer.fingerprint,
+                                                        "endpoint": peer.endpoint,
+                                                        "connected": connected,
+                                                        "note": if connected {
+                                                            "SOCKS5 exit traffic is pinned to this home exit."
+                                                        } else {
+                                                            "Selected, but no session is live yet; SOCKS5 refuses until it is."
+                                                        }
+                                                    })
+                                                    .to_string(),
+                                                    "application/json",
+                                                )
+                                            }
+                                            Err(e) => (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({
+                                                    "success": false,
+                                                    "error": e
+                                                })
+                                                .to_string(),
+                                                "application/json",
+                                            ),
+                                        }
+                                    } else if req.starts_with("POST /api/v2/home-exit/clear") {
+                                        let previous = v2::boomerang::clear_selection();
+                                        (
+                                            "HTTP/1.1 200 OK",
+                                            serde_json::json!({
+                                                "success": true,
+                                                "cleared": previous
+                                            })
+                                            .to_string(),
+                                            "application/json",
+                                        )
+                                    } else if req.starts_with("POST /api/v2/regime") {
+                                        let body = json_body(&req);
+                                        match v2api::apply_regime(&body) {
+                                            Ok(value) => (
+                                                "HTTP/1.1 200 OK",
+                                                value.to_string(),
+                                                "application/json",
+                                            ),
+                                            Err(e) => (
+                                                "HTTP/1.1 400 Bad Request",
+                                                serde_json::json!({
+                                                    "success": false,
+                                                    "error": e
+                                                })
+                                                .to_string(),
+                                                "application/json",
+                                            ),
+                                        }
+                                    } else if req.starts_with("GET /api/v2/") {
+                                        let peers = nc_ref.sessions.len();
+                                        let state = v2api::ApiState {
+                                            peers,
+                                            regime: v2regime::active()
+                                                .unwrap_or(v2regime::Regime::Ghost),
+                                            socks_port,
+                                            transport: (peers > 0)
+                                                .then(|| "udp".to_string()),
+                                            exit_ip: None,
+                                            node_fingerprint: nc_ref.fingerprint(),
+                                        };
+                                        match v2api::handle(&state, &req) {
+                                            Some(value) => (
+                                                "HTTP/1.1 200 OK",
+                                                value.to_string(),
+                                                "application/json",
+                                            ),
+                                            None => (
+                                                "HTTP/1.1 404 Not Found",
+                                                serde_json::json!({
+                                                    "success": false,
+                                                    "error": "unknown v2 endpoint"
+                                                })
+                                                .to_string(),
+                                                "application/json",
+                                            ),
+                                        }
                                     } else if req.starts_with("GET /api/topology") {
                                         let current_mode = mode_ref.read().clone();
                                         let settings_now = cs_ref.read().clone();
@@ -983,10 +1113,16 @@ pub fn spawn_control_center(
                                                     }
                                                     let endpoint_str = target_addr.to_string();
                                                     record_peer_cache_entry(&endpoint_str);
+                                                    let caps = desc.capabilities;
                                                     record_peer_cache_v2_entry(desc);
                                                     update_peer_telemetry(&fp, |t| {
                                                         t.is_exit = is_exit;
                                                     });
+                                                    // A `vb://2.` invite carries the
+                                                    // descriptor's signature, so it is
+                                                    // enough to register a home-exit
+                                                    // candidate before any session exists.
+                                                    v2::boomerang::note_peer(&fp, caps, &endpoint_str);
                                                     let body = serde_json::json!({
                                                         "success": true,
                                                         "address": endpoint_str,
@@ -1054,10 +1190,12 @@ pub fn spawn_control_center(
                                                             .await;
                                                             let ep_str = ep.to_string();
                                                             record_peer_cache_entry(&ep_str);
+                                                            let caps = bp.capabilities;
                                                             record_peer_cache_v2_entry(bp);
                                                             update_peer_telemetry(&fp, |t| {
                                                                 t.is_exit = is_exit;
                                                             });
+                                                            v2::boomerang::note_peer(&fp, caps, &ep_str);
                                                             target_ep = Some(ep_str);
                                                             peer_fp = Some(fp);
                                                         }

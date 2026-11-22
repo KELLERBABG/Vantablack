@@ -748,6 +748,9 @@ fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
 /// would leak the very routing topology the shards exist to hide, so uniform
 /// treatment per peer is the conservative choice.
 async fn send_cover(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx) {
+    // RACS accounting: this is the point where a cover frame really leaves, so
+    // the shaper and the scavenger see the same event the wire does.
+    let _ = vantablack::ghost::v2::racs::observe_cover(false);
     let (shards, tag) = enc_split(ctx, net::DUMMY_MAGIC);
     let mut batch = MixBatch::new(3, Duration::ZERO);
     let mut ready = None;
@@ -795,6 +798,14 @@ fn spawn_cover_task(
                 continue;
             }
             let now = tokio::time::Instant::now();
+            // RACS: while real traffic is queued, cover yields. The gate is a
+            // no-op unless `GHOST_RACS=1`, so v1 behaviour is unchanged.
+            if vantablack::ghost::v2::racs::enabled()
+                && !vantablack::ghost::v2::racs::cover_allowed()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
             // Collect peer metadata without holding DashMap guards across awaits,
             // and only advance `SealCtx` when a peer is actually due to emit.
             let peer_states: Vec<(String, u64)> = node
@@ -4674,9 +4685,18 @@ async fn handle_pkt(
                 }
                 return;
             }
-            // We are the exit (responder) for this session and this frame is a
-            // CONNECT request → open the destination and answer "OK".
-            if role == SessionRole::Responder && looks_like_dest(payload) {
+            // We are the exit for this session and this frame is a CONNECT
+            // request → open the destination and answer "OK".
+            //
+            // `STREAM!` is the client's explicit CONNECT marker, so a session
+            // role of initiator does not disqualify the request: two peers that
+            // handshake each other simultaneously can both hold the initiator
+            // role for the surviving session, and refusing the marked CONNECT
+            // there would leave a selected home exit silently unusable. The
+            // relay branch above already relies on the same marker.
+            let is_connect_request = looks_like_dest(payload)
+                && (role == SessionRole::Responder || payload.starts_with(b"STREAM!"));
+            if is_connect_request {
                 // Exit authorization: closed by default; the peer's fingerprint
                 // must be allowlisted (or the operator set "any").
                 let allowed = trusted_exits
@@ -5280,6 +5300,13 @@ fn record_active_peer(sa: SocketAddr) {
     }
 }
 
+/// True when this node opted into advertising home-exit service.
+fn home_exit_enabled() -> bool {
+    std::env::var("GHOST_HOME_EXIT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Map [`vantablack::ghost::net::mesh::NatType`] to the `PeerDescriptorV2` wire byte.
 fn nat_type_to_wire(nt: vantablack::ghost::net::mesh::NatType) -> u8 {
     use vantablack::ghost::net::discovery::{
@@ -5306,7 +5333,7 @@ fn build_local_descriptor_v2(
     offer_text: &std::sync::RwLock<String>,
 ) -> vantablack::ghost::net::discovery::PeerDescriptorV2 {
     use vantablack::ghost::net::discovery::{
-        PeerDescriptorV2, CAP_EXIT, CAP_QUIC, CAP_RELAY, CAP_VPN_HUB,
+        PeerDescriptorV2, CAP_EXIT, CAP_HOME_EXIT, CAP_QUIC, CAP_RELAY, CAP_VPN_HUB,
     };
     let wan_snap = vantablack::ghost::net::mesh::wan_telemetry_snapshot();
     let lan_ip: std::net::IpAddr = detect_lan_ip()
@@ -5320,6 +5347,14 @@ fn build_local_descriptor_v2(
     }
     if exit_enabled {
         caps |= CAP_EXIT;
+        // Boomerang home exit (roadmap item 3). The capability is separate from
+        // `CAP_EXIT` so a client can require a deliberately chosen residential
+        // endpoint instead of accepting any exit. The flag is only ever set for a
+        // node that actually runs exit service: advertising it otherwise would
+        // be a promise the packet path cannot keep.
+        if home_exit_enabled() {
+            caps |= CAP_HOME_EXIT;
+        }
     }
     if vpn_hub {
         caps |= CAP_VPN_HUB;
@@ -5382,6 +5417,13 @@ async fn install_peer_descriptor_v2(
     }
     let is_relay = (desc.capabilities & vantablack::ghost::net::discovery::CAP_RELAY) != 0;
     let is_exit = (desc.capabilities & vantablack::ghost::net::discovery::CAP_EXIT) != 0;
+    // Remember (or withdraw) this peer's home-exit advertisement. Only a signed
+    // descriptor that carries `CAP_HOME_EXIT` becomes a selectable exit.
+    vantablack::ghost::v2::boomerang::note_peer(
+        &fp,
+        desc.capabilities,
+        &desc.endpoint.to_string(),
+    );
 
     if let Some(kd) = known_descriptors {
         let should_insert = kd
@@ -6270,6 +6312,28 @@ async fn run_node(
             GhostNode::new("0.0.0.0:0").await?
         }
     };
+    // ── Boomerang home-exit advertisement ──────────────────────────────
+    // A node that runs exit service *and* opted in publishes CAP_HOME_EXIT in
+    // its signed descriptor. If the opt-in is set while exit service is off, the
+    // node refuses to pretend: the flag is not advertised and the conflict is
+    // logged, because a capability bit that claims unimplemented behaviour is a
+    // bug rather than a warning sign.
+    let claims_home_exit = std::env::var("GHOST_HOME_EXIT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let home_exit_live = claims_home_exit && is_exit_node;
+    if claims_home_exit && !is_exit_node {
+        tracing::warn!(
+            "GHOST_HOME_EXIT=1 ignored: this node does not run exit service (set GHOST_EXIT=1 and GHOST_EXIT_ALLOWLIST)"
+        );
+    }
+    vantablack::ghost::v2::boomerang::set_local_advertisement(&node.local_addr, home_exit_live);
+    if home_exit_live {
+        tracing::info!(
+            endpoint = %node.local_addr,
+            "Boomerang: advertising home-exit capability"
+        );
+    }
     node.flow_controller.set_transit_rate_mbps(tm);
     // The rate above is the operator's *policy* ceiling. The governor is the
     // control half: it measures what the paths actually carry and lowers the

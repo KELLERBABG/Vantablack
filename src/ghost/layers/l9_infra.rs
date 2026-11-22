@@ -286,9 +286,8 @@ impl KeyEnclave for SoftwareKeyEnclave {
     fn delete_key(&self, handle: u64) -> Result<(), EnclaveError> {
         let mut keys = self.keys.lock().unwrap();
         if let Some(mut key_data) = keys.remove(&handle) {
-            for byte in key_data.iter_mut() {
-                *byte = 0;
-            }
+            use zeroize::Zeroize;
+            key_data.zeroize();
             debug!("SoftwareKeyEnclave: deleted key handle {}", handle);
             Ok(())
         } else {

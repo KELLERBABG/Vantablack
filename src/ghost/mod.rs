@@ -21,6 +21,10 @@ pub mod layers;
 pub mod net;
 pub mod paths;
 pub mod session;
+// The v2 product surface: file drop, expose, party, regimes, `.vb` DNS, the
+// truth ledger, and the transport-shaping pieces those depend on. See
+// `src/ghost/v2/mod.rs` for the roadmap → module map.
+pub mod v2;
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

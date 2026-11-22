@@ -895,7 +895,7 @@ mod tests {
 
         let mut h = sha3::Sha3_256::new();
         h.update(b"VB-ID-V3");
-        h.update(&ed_pk);
+        h.update(ed_pk);
         h.update(&pq_pk);
         let expected: [u8; 32] = h.finalize().into();
         assert_eq!(node_id.as_bytes(), &expected);

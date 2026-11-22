@@ -51,6 +51,12 @@ pub const CAP_RELAY: u8 = 1 << 0;
 pub const CAP_EXIT: u8 = 1 << 1;
 pub const CAP_VPN_HUB: u8 = 1 << 2;
 pub const CAP_QUIC: u8 = 1 << 3;
+/// This node offers exit service from its own residential connection, i.e. it is
+/// a *home* exit (roadmap item 3). Clients require this bit, not merely
+/// [`CAP_EXIT`], before they will bind their exit path to it: a home exit is a
+/// deliberate, operator-owned endpoint, and choosing one by accident would send
+/// traffic through a stranger's house.
+pub const CAP_HOME_EXIT: u8 = 1 << 4;
 
 /// Fixed wire size for blind mailbox encrypted payloads (`12B nonce + 996B padded plaintext + 16B tag`).
 pub const BLIND_NONCE_LEN: usize = 12;

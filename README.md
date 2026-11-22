@@ -351,6 +351,45 @@ CHAT 9a4f7e2c hello-mesh   # one token only - the console splits on spaces
 
 ---
 
+## v2 — The Everyday Layer
+
+v1 was a strong transport with a cold start: one device was not useful until a
+second one joined, and the privacy claims lived in a README rather than in the
+running node. v2 adds the part a single user can use on day one, and makes the
+privacy claims checkable. Everything below is in the default build — there is no
+entitlement gate.
+
+| Command | What it does |
+| :--- | :--- |
+| `ggn drop <file>` | Serves one file to any browser. The key lives in the URL fragment (`#k=…`), which browsers never transmit, so the sender's server cannot read what it serves. Each 4 MiB chunk is sealed with AES-256-GCM and decrypted by the page with `crypto.subtle`; large files stream to disk through the File System Access API. `--once` makes it single-use. |
+| `ggn expose <host:port>` | Token-gated relay to exactly one local server (`localhost:3000`, an AI endpoint, …) with no port forwarding and no third-party tunnel. WebSocket and streaming pass through; a wrong token gets the same `404` as a wrong path. |
+| `ggn party [--peer ADDR]` | UDP bridge for LAN games: sequences datagrams, drops duplicates with a 1024-sequence window, re-orders through a configurable jitter buffer, and can send each datagram twice so one loss cannot end a frame. |
+| `ggn mode [name]` | Switches between the four regimes — `fast` (1 hop), `shielded` (2), `ghost` (3 strict), `vantablack` (3 strict + network diversity + cover traffic) — and prints the exact hop policy and SOCKS5 port each implies. |
+| `ggn vb-dns [--map name=NODEID]` | Loopback DNS stub answering `<name>.vb` with the deterministic ULA `fd7b::<NodeID>`. Self-certifying (the address is a function of the node id), local only, and `REFUSED` outside the zone so normal browsing falls through. |
+| `ggn xray [--json]` | The Adversary Goggles view: what your ISP, the guard relay and the website can each see, plus live invariant checks. It refuses to print "anonymous" below 200 public relays, and a failing check changes the headline. |
+| `ggn btcr [--demo\|--wallet]` | Relay credits as Ristretto255 VOPRF blind-signed tickets. The issuer proves its key with a Chaum–Pedersen DLEQ, tickets verify as `N == k·M`, and a spent ticket's nullifier cannot be spent twice. Issuance requires a beneficiary-signed work receipt. `--demo` runs issue → verify → spend → replay-refused. |
+| `ggn ladder [--demo\|--json]` | The Continuum Ladder: fixed 180-byte `GhostCell-Nano` frames across six rungs. IP and mesh rungs send over UDP, the mule rung is a content-addressed DTN store with Merkle roots and CRDT union sync, and the hardware/web rungs (`stealth_web`, `lora_kiss`, `abos_hf` without `--features sdr`) refuse with their reason instead of pretending. |
+| `ggn racs [--bench]` | Cover that yields: a four-state burst shaper, a scavenger that gives real traffic priority, and a LEDBAT++ controller. `--bench` measures the real preemption decision (mean 0.028 µs, p99 0.1 µs here). With `GHOST_RACS=1` the daemon's cover task pauses for 25 ms after SOCKS traffic. |
+
+Home exits are live: start a node with `GHOST_EXIT=1 GHOST_EXIT_ALLOWLIST=any
+GHOST_HOME_EXIT=1`, add its `vb://2.` invite on the client, then
+`POST /api/v2/home-exit/select`. SOCKS5 traffic is pinned to that exit and
+**refuses** rather than silently using another one if it is unreachable. The same
+selection is visible at `GET /api/v2/home-exit`.
+
+The **X-Ray** tab in the control center (`6`) reads `GET /api/v2/xray`, alongside
+`GET /api/v2/regime` and `POST /api/v2/regime`. The **Continuum** tab (`5`) shows
+home-exit advertisement/candidates with pin and clear actions, BTCr credits and
+wallet, all six ladder rungs (including each refusal reason), and live RACS
+counters from `GET /api/v2/{home-exit,btcr,ladder,racs}`. The dashboard reports
+the Boomerang three-hop circuit as **deferred** — the runtime still pins the exit
+on the direct path — and `GET /api/v2/capabilities` lists deferred capabilities
+machine-readably. See [`DEV/V2_BUILD_STATUS.md`](DEV/V2_BUILD_STATUS.md) for the
+item-by-item status of the v2.0 roadmap, including what is deliberately deferred
+and why.
+
+---
+
 ## Operational Capabilities & Boundaries
 
 | Threat / Scenario | Defense Mechanism | Protection Level |

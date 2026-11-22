@@ -28,7 +28,7 @@ pub fn select_diverse_hops(
     peer_asns: &std::collections::HashMap<String, u32>,
     pinned_guard: &std::sync::Mutex<Option<String>>,
 ) -> Option<Vec<String>> {
-    if hop_count < 2 || hop_count > 3 {
+    if !(2..=3).contains(&hop_count) {
         return None;
     }
     let mut other_peers: Vec<String> = candidates
@@ -305,34 +305,57 @@ pub async fn handle_socks5_connection(
     }
 
     // ── Exit Node Selection ──────────────────────────────────────────
-    let fp = match de2.lock().unwrap().clone() {
-        Some(fp) if aa.contains_key(&fp) => Some(fp),
-        _ => None,
-    };
-    let (fp, tgt) = match fp {
-        Some(fp) => {
-            let addr = aa
-                .get(&fp)
-                .map(|v| *v.value())
-                .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-            (fp, addr)
-        }
-        None => match nn.sessions.iter().next() {
-            Some(e) => {
-                let fp = e.key().clone();
-                let addr = aa
-                    .get(&fp)
-                    .map(|v| *v.value())
-                    .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
-                (fp, addr)
-            }
-            None => {
-                tracing::warn!("SOCKS5: No session available.");
+    // A pinned home exit (roadmap item 3) outranks any adaptive choice. If it is
+    // pinned but unreachable, refuse: silently using another exit would route
+    // the user's traffic through a node they did not choose, which is exactly
+    // what this feature exists to prevent.
+    let pinned_home = vantablack::ghost::v2::boomerang::selected();
+    let (fp, tgt) = match pinned_home {
+        Some(home_fp) => {
+            if !nn.sessions.contains_key(&home_fp) {
+                tracing::warn!(exit = %home_fp, "SOCKS5 refused: pinned home exit has no live session");
                 let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
                 return;
             }
-        },
+            tracing::info!(exit = %home_fp, "SOCKS5: using pinned home exit");
+            let addr = aa
+                .get(&home_fp)
+                .map(|v| *v.value())
+                .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
+            (home_fp, addr)
+        }
+        None => {
+            let chosen = match de2.lock().unwrap().clone() {
+                Some(fp) if aa.contains_key(&fp) => Some(fp),
+                _ => None,
+            };
+            match chosen {
+                Some(fp) => {
+                    let addr = aa
+                        .get(&fp)
+                        .map(|v| *v.value())
+                        .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
+                    (fp, addr)
+                }
+                None => match nn.sessions.iter().next() {
+                    Some(e) => {
+                        let fp = e.key().clone();
+                        let addr = aa
+                            .get(&fp)
+                            .map(|v| *v.value())
+                            .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 0)));
+                        (fp, addr)
+                    }
+                    None => {
+                        tracing::warn!("SOCKS5: No session available.");
+                        let _ = s.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+                        return;
+                    }
+                },
+            }
+        }
     };
+
 
     // Allocate monotonic stream ID for this SOCKS5 TCP connection
     let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
@@ -504,6 +527,8 @@ pub async fn handle_socks5_connection(
         return;
     }
     tracing::info!(stream_id = stream_id, "SOCKS5 CONNECT_OK established");
+    // RACS: real traffic is flowing, so cover yields for the yield window.
+    vantablack::ghost::v2::racs::note_real_traffic();
     if s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_err() {
         chh.remove(&(exit_sh, stream_id));
         return;
@@ -554,6 +579,7 @@ pub async fn handle_socks5_connection(
                 match rd.read(&mut rbuf[..max_read]).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        vantablack::ghost::v2::racs::note_real_traffic();
                         let current_credit = credit_in.load(Ordering::Relaxed);
                         credit_in.fetch_sub(n.min(current_credit), Ordering::Relaxed);
                         coalesce_buf.extend_from_slice(&stream_id.to_be_bytes());
@@ -568,7 +594,8 @@ pub async fn handle_socks5_connection(
                         match res {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
-                                let current_credit = credit_in.load(Ordering::Relaxed);
+                                vantablack::ghost::v2::racs::note_real_traffic();
+                        let current_credit = credit_in.load(Ordering::Relaxed);
                                 credit_in.fetch_sub(n.min(current_credit), Ordering::Relaxed);
                                 coalesce_buf.extend_from_slice(&rbuf[..n]);
                                 coalesce_buf.len() >= 4 + MAX_STREAM_COALESCE_BYTES

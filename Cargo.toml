@@ -1,6 +1,6 @@
 [package]
 name = "vantablack"
-version = "1.5.0"
+version = "2.0.0"
 edition = "2021"
 description = "Post-quantum, cryptographically layered WAN mesh routing node."
 homepage = "https://vantablack.kellersystems.dev/"
@@ -125,6 +125,12 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 tokio = { version = "1.44", features = ["rt-multi-thread", "io-util", "net", "sync", "time", "macros", "process", "signal"] }
 reed-solomon-erasure = "6.0.0"
 chacha20poly1305 = "0.10"
+# v2 GhostPortal (`ggn drop`) seals each chunk with AES-256-GCM because that is
+# the one AEAD every browser exposes natively through WebCrypto: the receiving
+# page decrypts with `crypto.subtle`, so the drop works with no app, no
+# extension and no WASM download. Already in the lockfile via `wry`'s TLS stack,
+# so this adds no new crate to the graph. All other paths keep XChaCha20-Poly1305.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 hkdf = "0.12"
 sha2 = "0.10"
 sha3 = "0.11"

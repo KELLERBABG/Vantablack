@@ -1113,9 +1113,17 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
         Diagnostics <span class="kbd-hint">4</span>
       </button>
+      <button class="nav-tab" data-tab="tab-continuum" onclick="switchTab('tab-continuum')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17h3v-4H3v4zm5 0h3V7H8v10zm5 0h3v-7h-3v7zm5 0h3V3h-3v14z"/></svg>
+        Continuum <span class="kbd-hint">5</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-xray" onclick="switchTab('tab-xray')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.7 7.6 1 12c1.7 4.4 6 7.5 11 7.5s9.3-3.1 11-7.5c-1.7-4.4-6-7.5-11-7.5zm0 12.5a5 5 0 110-10 5 5 0 010 10zm0-8a3 3 0 100 6 3 3 0 000-6z"/></svg>
+        X-Ray <span class="kbd-hint">6</span>
+      </button>
       <button class="nav-tab" data-tab="tab-settings" onclick="switchTab('tab-settings')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
-        Settings <span class="kbd-hint">5</span>
+        Settings <span class="kbd-hint">7</span>
       </button>
     </div>
 
@@ -1437,7 +1445,96 @@
         </div>
       </div>
 
-      <!-- TAB 5: SETTINGS -->
+      <!-- TAB 5: CONTINUUM (HOME EXIT · BTCR · LADDER · RACS) -->
+      <div class="tab-pane" id="tab-continuum">
+        <div class="section-header">
+          <div>
+            <span class="section-title">Continuum — Live v2 Operations</span>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+              Every value below is read from this node's <code>/api/v2</code> endpoints. A refusing capability shows its reason; nothing is padded with sample data.
+            </div>
+          </div>
+          <button class="secondary-btn" onclick="refreshContinuum()">Refresh</button>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px;">
+          <!-- HOME EXIT -->
+          <div class="setting-panel" style="margin: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+              <div class="setting-title">Boomerang home exit</div>
+              <span class="pill" id="home-exit-local-pill">loading</span>
+            </div>
+            <div class="setting-desc" id="home-exit-local">Reading local advertisement…</div>
+            <div class="setting-desc" id="home-exit-selected" style="margin-top: 8px;">Selected: —</div>
+            <div class="setting-desc" id="home-exit-circuit" style="margin-top: 6px; color: var(--amber, #f59e0b);">Circuit: reading…</div>
+            <div id="home-exit-candidates" style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;"></div>
+            <div class="setting-desc" id="home-exit-note" style="margin-top: 8px; color: var(--text-muted);"></div>
+            <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="secondary-btn" onclick="clearHomeExit()">Clear pin</button>
+            </div>
+          </div>
+
+          <!-- BTCR -->
+          <div class="setting-panel" style="margin: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+              <div class="setting-title">BTCr / Blind-Pass</div>
+              <span class="pill" id="btcr-pill">loading</span>
+            </div>
+            <div class="setting-desc">Ristretto255 VOPRF tickets — issuance is refused without a signed work receipt.</div>
+            <div id="btcr-body" style="margin-top: 10px; font-size: 12px; display: flex; flex-direction: column; gap: 5px;"></div>
+            <div class="setting-desc" id="btcr-note" style="margin-top: 8px; color: var(--text-muted);"></div>
+          </div>
+
+          <!-- LADDER -->
+          <div class="setting-panel" style="margin: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+              <div class="setting-title">Continuum ladder</div>
+              <span class="pill" id="ladder-pill">loading</span>
+            </div>
+            <div class="setting-desc" id="ladder-cell">—</div>
+            <div id="ladder-rungs" style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px;"></div>
+            <div class="setting-desc" id="ladder-mule" style="margin-top: 10px;"></div>
+          </div>
+
+          <!-- RACS -->
+          <div class="setting-panel" style="margin: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+              <div class="setting-title">RACS cover shaping</div>
+              <span class="pill" id="racs-pill">loading</span>
+            </div>
+            <div class="setting-desc" id="racs-gate">—</div>
+            <div id="racs-body" style="margin-top: 10px; font-size: 12px; display: flex; flex-direction: column; gap: 5px;"></div>
+            <div class="setting-desc" id="racs-note" style="margin-top: 8px; color: var(--text-muted);"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 6: X-RAY (ADVERSARY GOGGLES / TRUTH LEDGER) -->
+      <div class="tab-pane" id="tab-xray">
+        <div class="section-header">
+          <div>
+            <span class="section-title">What Can They See?</span>
+            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+              Live, checked against this node. A failing invariant changes the headline — nothing here is asserted.
+            </div>
+          </div>
+          <button class="secondary-btn" onclick="refreshXray()">Re-check</button>
+        </div>
+
+        <div class="setting-panel" style="margin-bottom: 14px;">
+          <div class="setting-title" id="xray-headline" style="font-size: 15px; line-height: 1.5;">Measuring…</div>
+          <div class="setting-desc" id="xray-claim" style="margin-top: 6px;"></div>
+          <div class="setting-desc" id="xray-updated" style="margin-top: 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px;"></div>
+        </div>
+
+        <div id="xray-observers" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 14px;"></div>
+
+        <div class="setting-panel">
+          <div class="setting-title" style="margin-bottom: 8px;">Verified invariants</div>
+          <div id="xray-invariants" style="display: flex; flex-direction: column; gap: 8px;"></div>
+        </div>
+      </div>
+
       <div class="tab-pane" id="tab-settings">
         <div class="section-header">
           <span class="section-title">Multi-Port SOCKS5 &amp; Split-Tunnel</span>
@@ -1821,8 +1918,8 @@
       }, 3400);
     }
 
-    // ── Tab Switching & Keyboard Shortcuts (1–5, Esc) ──
-    const TAB_ORDER = ['tab-shield', 'tab-mesh', 'tab-peers', 'tab-metrics', 'tab-settings'];
+    // ── Tab Switching & Keyboard Shortcuts (1–6, Esc) ──
+    const TAB_ORDER = ['tab-shield', 'tab-mesh', 'tab-peers', 'tab-metrics', 'tab-continuum', 'tab-xray', 'tab-settings'];
 
     function switchTab(tabId) {
       document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
@@ -1834,6 +1931,10 @@
 
       if (tabId === 'tab-mesh') {
         refreshTopology();
+      } else if (tabId === 'tab-continuum') {
+        refreshContinuum();
+      } else if (tabId === 'tab-xray') {
+        refreshXray();
       } else if (tabId === 'tab-settings') {
         loadSettings();
         refreshAnchors();
@@ -3187,6 +3288,202 @@
       }
     }
 
+    // ── Continuum: home exit, credits, ladder and RACS, all live ──
+    // Each card renders the endpoint's own refusal instead of inventing a
+    // success state. Fetch failures are shown per card, not swallowed.
+    async function getV2(path) {
+      const res = await fetch(path, { headers: pinHeaders() });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    }
+
+    function continuumLine(label, value) {
+      return `<div style="display:flex; gap:8px;"><span style="color:var(--text-muted); min-width:132px;">${escapeHtml(label)}</span><span style="font-family:'JetBrains Mono', monospace; word-break:break-all;">${escapeHtml(value)}</span></div>`;
+    }
+
+    async function refreshContinuum() {
+      const localPill = document.getElementById('home-exit-local-pill');
+      if (!localPill) return;
+
+      // Home exit
+      try {
+        const d = await getV2('/api/v2/home-exit');
+        const local = d.local || {};
+        localPill.textContent = local.advertises_home_exit ? 'advertising' : 'not advertising';
+        localPill.style.color = local.advertises_home_exit ? 'var(--emerald, #34d399)' : 'var(--text-muted)';
+        document.getElementById('home-exit-local').textContent = 'This node: ' + (local.endpoint || '—') + ' · capability bit ' + (local.capability_bit ?? '—') + (local.advertises_home_exit ? ' (CAP_HOME_EXIT set)' : ' (exit service off or GHOST_HOME_EXIT unset)');
+        const sel = d.selected;
+        document.getElementById('home-exit-selected').textContent = sel ? ('Selected: ' + sel + ' — SOCKS5 exit traffic is pinned') : 'Selected: none — the adaptive exit choice applies';
+        const pc = d.planned_circuit || {};
+        document.getElementById('home-exit-circuit').textContent = pc.state
+          ? ('Circuit: ' + pc.hops + '-hop plan is ' + pc.state + ' — ' + pc.reason)
+          : 'Circuit: no plan reported';
+        const list = d.candidates || [];
+        document.getElementById('home-exit-candidates').innerHTML = list.length ? list.map(c => `
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; border:1px solid var(--border-subtle); border-radius:6px; font-size:12px;">
+            <span style="font-family:'JetBrains Mono', monospace; word-break:break-all;">${escapeHtml(c.fingerprint)}<br><span style="color:var(--text-muted); font-size:10px;">${escapeHtml(c.endpoint)}</span></span>
+            <button class="secondary-btn" onclick="pinHomeExit('${escapeHtml(c.fingerprint)}')">${sel === c.fingerprint ? 'Pinned' : 'Use as exit'}</button>
+          </div>`).join('') : '<div class="setting-desc" style="color:var(--text-muted);">No peer has advertised <code>CAP_HOME_EXIT</code>. Start a node with <code>GHOST_EXIT=1 GHOST_HOME_EXIT=1</code> and pair it.</div>';
+      } catch (e) {
+        localPill.textContent = 'refused';
+        document.getElementById('home-exit-local').textContent = 'Home-exit state unavailable: ' + e.message;
+      }
+
+      // BTCr
+      try {
+        const d = await getV2('/api/v2/btcr');
+        const pill = document.getElementById('btcr-pill');
+        pill.textContent = d.algorithm || 'unknown';
+        pill.style.color = 'var(--emerald, #34d399)';
+        document.getElementById('btcr-body').innerHTML = [
+          continuumLine('issuer key', d.issuer || '—'),
+          continuumLine('issued (this process)', String(d.issued ?? 0)),
+          continuumLine('spent (this process)', String(d.spent ?? 0)),
+          continuumLine('replays refused', String(d.rejected_replays ?? 0)),
+          continuumLine('receipts refused', String(d.rejected_receipts ?? 0)),
+          continuumLine('wallet tickets', String(d.wallet_tickets ?? 0)),
+          continuumLine('wallet credit', (d.wallet_credit_bytes ?? 0) + ' bytes'),
+          continuumLine('wallet', d.wallet || '—'),
+          continuumLine('ticket size', (d.ticket_bytes ?? 0) + ' bytes'),
+        ].join('');
+        document.getElementById('btcr-note').textContent = 'Issuance requires: ' + (d.issuance_requires || '—');
+      } catch (e) {
+        document.getElementById('btcr-pill').textContent = 'refused';
+        document.getElementById('btcr-body').textContent = 'BTCr state unavailable: ' + e.message;
+      }
+
+      // Ladder
+      try {
+        const d = await getV2('/api/v2/ladder');
+        const rungs = d.rungs || [];
+        const up = rungs.filter(r => r.available).length;
+        const pill = document.getElementById('ladder-pill');
+        pill.textContent = up + '/' + rungs.length + ' rungs';
+        pill.style.color = up ? 'var(--emerald, #34d399)' : '#f43f5e';
+        document.getElementById('ladder-cell').textContent = 'GhostCell-Nano ' + (d.cell_bytes ?? '—') + ' bytes · ' + (d.payload_bytes ?? '—') + ' payload bytes';
+        document.getElementById('ladder-rungs').innerHTML = rungs.map(r => `
+          <div style="display:flex; gap:8px; align-items:flex-start;">
+            <span style="font-weight:700; min-width:38px; color:${r.available ? 'var(--emerald, #34d399)' : '#f43f5e'};">${r.available ? 'UP' : 'NO'}</span>
+            <span style="font-family:'JetBrains Mono', monospace; min-width:118px;">${escapeHtml(r.rung)}</span>
+            <span style="color:var(--text-muted);">${escapeHtml(r.reason)}</span>
+          </div>`).join('');
+        const m = d.mule || {};
+        document.getElementById('ladder-mule').textContent = 'Mule: ' + (m.bundles ?? 0) + ' bundle(s) · merkle ' + (m.merkle_root || '—') + ' · ' + (m.sync || '') + ' · ' + (m.dir || '');
+      } catch (e) {
+        document.getElementById('ladder-pill').textContent = 'refused';
+        document.getElementById('ladder-rungs').textContent = 'Ladder state unavailable: ' + e.message;
+      }
+
+      // RACS
+      try {
+        const d = await getV2('/api/v2/racs');
+        const pill = document.getElementById('racs-pill');
+        pill.textContent = d.enabled ? 'gate active' : 'gate off';
+        pill.style.color = d.enabled ? 'var(--emerald, #34d399)' : 'var(--text-muted)';
+        document.getElementById('racs-gate').textContent = d.enabled
+          ? 'Cover yields for ' + d.yield_window_ms + ' ms after real traffic; cover_allowed=' + d.cover_allowed
+          : 'GHOST_RACS=1 is not set — cover shaping is off and v1 constant cover applies. The numbers below are still live.';
+        const y = d.yield || {};
+        const cc = d.ledbat || {};
+        document.getElementById('racs-body').innerHTML = [
+          continuumLine('machine state', (d.machine && d.machine.state) || '—'),
+          continuumLine('cover emissions', String((d.machine && d.machine.emissions) ?? 0)),
+          continuumLine('real packets', String(d.real_packets ?? 0)),
+          continuumLine('cover packets', String(d.cover_packets ?? 0)),
+          continuumLine('last real traffic', d.last_real_ms_ago == null ? 'never' : d.last_real_ms_ago + ' ms ago'),
+          continuumLine('preemptions', String(y.preemptions ?? 0)),
+          continuumLine('mean / p99', (y.preemptions ?? 0) > 0
+            ? ((y.mean_us ?? 0) + ' / ' + (y.p99_us ?? 0) + ' µs')
+            : 'no live sample yet'),
+          continuumLine('100 µs budget', (y.preemptions ?? 0) > 0
+            ? (y.under_100us ? 'met' : 'MISSED')
+            : 'measure with ggn racs --bench'),
+          continuumLine('LEDBAT++ cwnd', String(cc.cwnd ?? '—')),
+        ].join('');
+        document.getElementById('racs-note').textContent = d.tuning || '';
+      } catch (e) {
+        document.getElementById('racs-pill').textContent = 'refused';
+        document.getElementById('racs-body').textContent = 'RACS state unavailable: ' + e.message;
+      }
+    }
+
+    async function pinHomeExit(fingerprint) {
+      const note = document.getElementById('home-exit-note');
+      try {
+        const res = await fetch('/api/v2/home-exit/select', {
+          method: 'POST',
+          headers: Object.assign({ 'Content-Type': 'application/json' }, pinHeaders()),
+          body: JSON.stringify({ fingerprint: fingerprint })
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || ('HTTP ' + res.status));
+        note.textContent = d.note || 'Selected.';
+        note.style.color = d.connected ? 'var(--emerald, #34d399)' : 'var(--amber, #f59e0b)';
+      } catch (e) {
+        note.textContent = 'Refused: ' + e.message;
+        note.style.color = '#f43f5e';
+      }
+      refreshContinuum();
+    }
+
+    async function clearHomeExit() {
+      const note = document.getElementById('home-exit-note');
+      try {
+        const res = await fetch('/api/v2/home-exit/clear', { method: 'POST', headers: pinHeaders() });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        note.textContent = d.cleared ? ('Cleared pin for ' + d.cleared) : 'No exit was pinned.';
+        note.style.color = 'var(--text-muted)';
+      } catch (e) {
+        note.textContent = 'Refused: ' + e.message;
+        note.style.color = '#f43f5e';
+      }
+      refreshContinuum();
+    }
+
+    // ── Adversary Goggles: the truth ledger ──
+    // The headline is whatever the invariants say it is. Nothing is upgraded for
+    // display: a failed check stays visible, including the relay-population floor
+    // that withholds every anonymity claim below 200 public relays.
+    async function refreshXray() {
+      const headlineEl = document.getElementById('xray-headline');
+      const claimEl = document.getElementById('xray-claim');
+      const updatedEl = document.getElementById('xray-updated');
+      const observersEl = document.getElementById('xray-observers');
+      const invEl = document.getElementById('xray-invariants');
+      if (!headlineEl) return;
+      try {
+        const res = await fetch('/api/v2/xray', { headers: pinHeaders() });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const d = await res.json();
+        headlineEl.textContent = d.headline || 'No ledger available';
+        const failing = (d.invariants || []).some(i => i.state === 'failed');
+        headlineEl.style.color = failing ? 'var(--amber, #f59e0b)' : 'var(--emerald, #34d399)';
+        claimEl.textContent = 'Claim: ' + (d.claim || '—') + ' · regime ' + (d.regime || '—') + ' (' + (d.plane || '—') + ')';
+        updatedEl.textContent = d.generated_at ? ('checked ' + new Date(d.generated_at * 1000).toLocaleTimeString()) : '';
+
+        observersEl.innerHTML = (d.observations || []).map(o => `
+          <div class="setting-panel" style="margin: 0;">
+            <div class="setting-title" style="margin-bottom: 8px;">${escapeHtml(o.observer)}</div>
+            <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">SEES</div>
+            <ul style="margin: 0 0 10px 16px; padding: 0; font-size: 12px;">${(o.sees || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>
+            <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">DOES NOT SEE</div>
+            <ul style="margin: 0 0 0 16px; padding: 0; font-size: 12px; color: var(--text-muted);">${(o.does_not_see || []).map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ul>
+          </div>`).join('');
+
+        const colors = { verified: 'var(--emerald, #34d399)', failed: '#f43f5e', unknown: 'var(--text-muted, #9aa4b2)' };
+        invEl.innerHTML = (d.invariants || []).map(i => `
+          <div style="display: flex; gap: 10px; align-items: flex-start; font-size: 12px;">
+            <span style="color: ${colors[i.state] || 'inherit'}; font-weight: 700; min-width: 62px; text-transform: uppercase; font-size: 10px; padding-top: 2px;">${escapeHtml(i.state)}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; min-width: 150px;">${escapeHtml(i.id)}</span>
+            <span style="color: var(--text-muted);">${escapeHtml(i.detail)}</span>
+          </div>`).join('');
+      } catch (e) {
+        headlineEl.textContent = 'Ledger unavailable: ' + e.message;
+        headlineEl.style.color = '#f43f5e';
+      }
+    }
+
     // ── Bootstrapping & Polling ──
     setTimeout(checkUpdateManual, 3000);
     loadSettings();
@@ -3197,6 +3494,8 @@
     setInterval(refreshStatus, 1200);
     setInterval(refreshTopology, 2500);
     setInterval(refreshAnchors, 5000);
+    setInterval(refreshXray, 4000);
+    setInterval(refreshContinuum, 4000);
 
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {

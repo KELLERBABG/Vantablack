@@ -109,9 +109,8 @@ impl EncryptedMemoryRegion {
 
 impl Drop for EncryptedMemoryRegion {
     fn drop(&mut self) {
-        for byte in self.data.iter_mut() {
-            *byte = 0;
-        }
+        use zeroize::Zeroize;
+        self.data.zeroize();
     }
 }
 
@@ -493,6 +492,7 @@ pub struct TpmQuote {
 #[derive(Debug, Clone)]
 pub struct HardwareRootedIdentity {
     expected_pcr_digest: [u8; 32],
+    verifying_key: Option<[u8; 32]>,
     tpm_enabled: bool,
 }
 
@@ -500,6 +500,21 @@ impl HardwareRootedIdentity {
     pub fn new(expected_pcr_digest: [u8; 32], tpm_enabled: bool) -> Self {
         Self {
             expected_pcr_digest,
+            verifying_key: None,
+            tpm_enabled,
+        }
+    }
+
+    /// Construct a hardware-rooted identity that enforces Ed25519 signature verification
+    /// over `(pcr_digest || nonce)` on every attested [`TpmQuote`].
+    pub fn with_verifying_key(
+        expected_pcr_digest: [u8; 32],
+        verifying_key: [u8; 32],
+        tpm_enabled: bool,
+    ) -> Self {
+        Self {
+            expected_pcr_digest,
+            verifying_key: Some(verifying_key),
             tpm_enabled,
         }
     }
@@ -515,7 +530,8 @@ impl HardwareRootedIdentity {
         hasher.finalize().into()
     }
 
-    /// Attest hardware quote against current session epoch and expected boot integrity
+    /// Attest hardware quote against current session epoch, expected boot integrity,
+    /// and (when configured) the Ed25519 hardware quote signature.
     pub fn attest_quote(&self, quote: &TpmQuote, expected_nonce: &[u8; 32]) -> bool {
         if !self.tpm_enabled {
             return true; // Virtual / soft-attested mode
@@ -526,8 +542,17 @@ impl HardwareRootedIdentity {
         if quote.pcr_digest != self.expected_pcr_digest {
             return false;
         }
-        // Verification succeeds when PCR matches trusted baseline
-        true
+        if let Some(vk_bytes) = self.verifying_key {
+            let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&vk_bytes) else {
+                return false;
+            };
+            let sig = ed25519_dalek::Signature::from_bytes(&quote.signature);
+            let mut msg = [0u8; 64];
+            msg[..32].copy_from_slice(&quote.pcr_digest);
+            msg[32..].copy_from_slice(&quote.nonce);
+            return vk.verify_strict(&msg, &sig).is_ok();
+        }
+        quote.signature != [0u8; 64]
     }
 }
 
@@ -713,6 +738,38 @@ mod tests {
         assert!(
             !hw_identity.attest_quote(&valid_quote, &stale_nonce),
             "Stale quote nonce must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_hardware_quote_ed25519_signature_verification() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let sk = SigningKey::from_bytes(&[0x42u8; 32]);
+        let vk = sk.verifying_key().to_bytes();
+        let pcr = [0x11u8; 32];
+        let nonce = [0x5Au8; 32];
+        let hw = HardwareRootedIdentity::with_verifying_key(pcr, vk, true);
+
+        let mut msg = [0u8; 64];
+        msg[..32].copy_from_slice(&pcr);
+        msg[32..].copy_from_slice(&nonce);
+        let sig = sk.sign(&msg).to_bytes();
+
+        let valid = TpmQuote {
+            pcr_digest: pcr,
+            nonce,
+            signature: sig,
+        };
+        assert!(hw.attest_quote(&valid, &nonce));
+
+        let forged = TpmQuote {
+            pcr_digest: pcr,
+            nonce,
+            signature: [0x99u8; 64],
+        };
+        assert!(
+            !hw.attest_quote(&forged, &nonce),
+            "Forged quote signature must be rejected"
         );
     }
 }

@@ -1,6 +1,12 @@
 //! Command-line interface and argument handling for Vantablack (GGN).
 
 use rand::RngCore;
+use std::path::PathBuf;
+use std::time::Duration;
+use vantablack::ghost::v2::regime::Regime;
+use vantablack::ghost::v2::{
+    btcr, continuum, expose::ExposeConfig, party::PartyConfig, racs, vbdns, xray,
+};
 
 /// Handles command line subcommands and flags.
 /// Returns `Some(result)` if the CLI invocation was handled (and the process should terminate),
@@ -80,6 +86,54 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             );
             Some(Ok(()))
         }
+        "drop" => {
+            let Some(file) = args.get(2).filter(|a| !a.starts_with("--")) else {
+                println!("Usage: ggn drop <file> [--port 8787] [--bind 0.0.0.0:8787] [--ttl-secs 86400] [--once]");
+                return Some(Err(anyhow::anyhow!("a file is required")));
+            };
+            let port = flag_u64(&args, "--port", 8787) as u16;
+            let bind = flag_value(&args, "--bind").unwrap_or_else(|| format!("0.0.0.0:{port}"));
+            let ttl = flag_u64(&args, "--ttl-secs", 86_400);
+            let max_downloads = if has_flag(&args, "--once") { 1 } else { 0 };
+            let path = PathBuf::from(file);
+            Some(block_on(async move {
+                vantablack::ghost::v2::portal::run_cli(
+                    path,
+                    bind,
+                    Duration::from_secs(ttl),
+                    max_downloads,
+                )
+                .await
+            }))
+        }
+        "expose" => {
+            let target = flag_value(&args, "--target")
+                .or_else(|| args.get(2).filter(|a| !a.starts_with("--")).cloned())
+                .unwrap_or_else(|| "127.0.0.1:3000".to_string());
+            let listen = flag_value(&args, "--listen").unwrap_or_else(|| "127.0.0.1:8787".to_string());
+            let token = flag_value(&args, "--token").unwrap_or_else(random_token);
+            let cfg = ExposeConfig {
+                listen,
+                target,
+                token,
+            };
+            Some(block_on(vantablack::ghost::v2::expose::run_cli(cfg)))
+        }
+        "party" => {
+            let port = flag_u64(&args, "--port", 47_077);
+            let listen = flag_value(&args, "--listen").unwrap_or_else(|| format!("0.0.0.0:{port}"));
+            let peer = flag_value(&args, "--peer");
+            let mut cfg = PartyConfig::new(&listen, peer.as_deref());
+            cfg.copies = flag_u64(&args, "--copies", 2) as usize;
+            cfg.jitter_ms = flag_u64(&args, "--jitter-ms", 0);
+            Some(block_on(vantablack::ghost::v2::party::run(cfg)))
+        }
+        "btcr" => Some(run_btcr(&args)),
+        "ladder" | "continuum" => Some(block_on(run_ladder(&args))),
+        "racs" => Some(run_racs(&args)),
+        "mode" | "regime" => Some(run_mode(&args)),
+        "vb-dns" | "vbdns" => Some(run_vb_dns(&args)),
+        "xray" => Some(block_on(run_xray(&args))),
         "--version" | "-v" | "version" => {
             println!("vantablack {}", env!("CARGO_PKG_VERSION"));
             println!("https://github.com/KELLERBABG/Vantablack");
@@ -99,6 +153,17 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!("  --skywave                       Activate the ABOS skywave fallback carrier (GHOST_SKYWAVE=1)");
             println!("  --quantum                       Activate the QEL quantum anchor (GHOST_QUANTUM=1)");
             println!("  --relay-only                    Run as a headless blind relay (GHOST_RELAY=1, GHOST_EXIT=0, GHOST_NO_GUI=1, GHOST_VPN=off)");
+            println!();
+            println!("v2 commands:");
+            println!("  ggn drop <file>                 Share a file with a browser link (key stays in the URL fragment)");
+            println!("  ggn expose <host:port>          Token-gated relay to one local server, no port forwarding");
+            println!("  ggn party [--peer ADDR]         UDP bridge for LAN games (dedupe + jitter buffer)");
+            println!("  ggn mode [fast|shielded|ghost|vantablack]  Show or set the operating regime");
+            println!("  ggn vb-dns [--map name=NODEID]  Serve <name>.vb on a loopback DNS stub");
+            println!("  ggn xray [--json]               What your ISP, the guard and the website can see");
+            println!("  ggn btcr [--demo|--wallet]     Blind-signed relay credits (Ristretto255 VOPRF + DLEQ)");
+            println!("  ggn ladder [--demo|--json]      Six-rung Continuum ladder, GhostCell-Nano, mule DTN");
+            println!("  ggn racs [--bench]              Cover-traffic shaping and measured preemption latency");
             println!("  ggn --version                   Show version information");
             println!("  ggn --help                      Show this help");
             println!();
@@ -147,6 +212,352 @@ fn apply_global_flags(args: &[String]) {
         }
         i += 1;
     }
+}
+
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|a| a == name)
+}
+
+fn flag_value(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn flag_u64(args: &[String], name: &str, default: u64) -> u64 {
+    flag_value(args, name)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn block_on<F>(future: F) -> anyhow::Result<()>
+where
+    F: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(future)
+}
+
+/// `ggn btcr` — inspect credits, or demonstrate blind issuance end to end.
+fn run_btcr(args: &[String]) -> anyhow::Result<()> {
+    use btcr::{blind, issue_for_work, sign_receipt, spend, Issuer, Receipt, Wallet};
+    use ed25519_dalek::SigningKey;
+
+    if has_flag(args, "--wallet") {
+        let path = btcr::wallet_path();
+        let wallet = Wallet::load(&path);
+        println!("Wallet: {}", path.display());
+        println!("  tickets {}", wallet.tickets.len());
+        println!("  credit  {} bytes", wallet.total_credit());
+        for ticket in &wallet.tickets {
+            println!(
+                "  · {} work={} expires={}",
+                &ticket.m[..16.min(ticket.m.len())],
+                ticket.work_bytes,
+                ticket.expires_at
+            );
+        }
+        return Ok(());
+    }
+
+    if !has_flag(args, "--demo") {
+        println!("{}", serde_json::to_string_pretty(&btcr::status_json("cli"))?);
+        return Ok(());
+    }
+
+    let issuer = Issuer::for_node("ggn-btcr-demo");
+    let beneficiary = SigningKey::from_bytes(&[11u8; 32]);
+    let now = vantablack::ghost::v2::now_secs();
+    let to_any = |e: String| anyhow::anyhow!(e);
+    let receipt = sign_receipt(&beneficiary, "demo-home-pc", 4_000_000, now / 3600)
+        .map_err(to_any)?;
+
+    // A tampered receipt must be refused before anything is minted.
+    let mut forged: Receipt = receipt.clone();
+    forged.work_bytes = 400_000_000;
+    let refused = btcr::verify_receipt(&forged, &beneficiary.verifying_key()).is_err();
+
+    let request = blind(b"phone-demo-session");
+    let (ticket, proof) = issue_for_work(
+        &issuer,
+        &receipt,
+        &beneficiary.verifying_key(),
+        &request,
+        now,
+    )
+    .map_err(to_any)?;
+    let encoded = ticket.encode().map_err(to_any)?;
+    let decoded = btcr::Ticket::decode(&encoded).map_err(to_any)?;
+    let verified = issuer.verify_ticket(&decoded);
+    let first_spend = spend(&issuer, &decoded, now);
+    let replay = spend(&issuer, &decoded, now);
+
+    let mut wallet = Wallet::load(&btcr::wallet_path());
+    wallet.tickets.push(decoded.clone());
+    wallet.save(&btcr::wallet_path()).map_err(to_any)?;
+
+    println!("BTCr / Blind-Pass demo (Ristretto255 VOPRF + Chaum–Pedersen DLEQ)");
+    println!("  issuer key        {}", issuer.public_hex());
+    println!("  beneficiary       {}", hex::encode(beneficiary.verifying_key().to_bytes()));
+    println!("  receipt           {} bytes of relay work, epoch {}", receipt.work_bytes, receipt.epoch);
+    println!("  tampered receipt  {}", if refused { "refused" } else { "ACCEPTED — bug" });
+    println!("  blind request     {}", &request.blinded[..32]);
+    let (eval_hex, _) = issuer.evaluate(&request.blinded).map_err(to_any)?;
+    let dleq_ok = btcr::decode_point(&request.blinded)
+        .ok()
+        .zip(btcr::decode_point(&eval_hex).ok())
+        .map(|(b, e)| proof.verify(&issuer.public(), &b, &e))
+        .unwrap_or(false);
+    println!("  DLEQ verified     {dleq_ok}");
+    println!("  ticket            {}", &encoded[..32]);
+    println!(
+        "  ticket length     {} bytes, verifies {}",
+        decoded.encode().map(|v| v.len() / 2).unwrap_or(0),
+        verified
+    );
+    println!("  first spend       {:?}", first_spend.map(|_| "ok"));
+    println!("  replay            {}", replay.err().unwrap_or_else(|| "ACCEPTED — bug".into()));
+    println!("  wallet            {}", btcr::wallet_path().display());
+    println!("  wallet credit     {} bytes", wallet.total_credit());
+    println!("  note              signature is bound to the receipt message; issuance without it is refused");
+    Ok(())
+}
+
+/// `ggn ladder` — rung availability, or a real UDP + mule-store demo.
+async fn run_ladder(args: &[String]) -> anyhow::Result<()> {
+    if has_flag(args, "--demo") {
+        let report = continuum::loopback_demo()
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    if has_flag(args, "--json") {
+        println!("{}", serde_json::to_string_pretty(&continuum::status_json())?);
+        return Ok(());
+    }
+    println!("Continuum ladder — {}-byte GhostCell-Nano", continuum::CELL_LEN);
+    for rung in continuum::ladder() {
+        println!(
+            "  [{}] {:14} mtu={}  {}",
+            if rung.available { "up" } else { "--" },
+            rung.rung,
+            rung.mtu,
+            rung.reason
+        );
+    }
+    let store = continuum::MuleStore::new(continuum::MuleStore::default_path());
+    println!();
+    println!("Mule store: {}", store.dir().display());
+    println!("  bundles     {}", store.list().len());
+    println!("  merkle root {}", store.merkle_root());
+    println!();
+    println!("`ggn ladder --demo` sends three real cells over loopback UDP and unions two mule stores.");
+    Ok(())
+}
+
+/// `ggn racs` — live shaper state, or a real preemption measurement.
+fn run_racs(args: &[String]) -> anyhow::Result<()> {
+    if has_flag(args, "--bench") {
+        let stats = racs::bench(10_000);
+        println!("{}", serde_json::to_string_pretty(&stats)?);
+        if !stats.under_100us {
+            return Err(anyhow::anyhow!(
+                "preemption p99 is {} µs, above the 100 µs budget",
+                stats.p99_us
+            ));
+        }
+        return Ok(());
+    }
+    println!("{}", serde_json::to_string_pretty(&racs::status_json())?);
+    Ok(())
+}
+
+/// `ggn mode` — read or set the persisted regime.
+fn run_mode(args: &[String]) -> anyhow::Result<()> {
+    let path = vantablack::ghost::v2::regime::config_path();
+    if let Some(raw) = args.get(2).filter(|a| !a.starts_with("--")) {
+        let Some(regime) = Regime::parse(raw) else {
+            return Err(anyhow::anyhow!(
+                "{raw:?} is not one of fast, shielded, ghost, vantablack"
+            ));
+        };
+        vantablack::ghost::v2::regime::save_persisted(&path, regime)
+            .map_err(|e| anyhow::anyhow!("cannot save {}: {e}", path.display()))?;
+        std::env::set_var(vantablack::ghost::v2::regime::REGIME_ENV, regime.as_str());
+        println!("Regime set to {} — {}", regime.as_str(), regime.describe());
+        println!("  plane          {}", regime.plane().as_str());
+        println!("  hops           {}", regime.hops().hops());
+        println!("  SOCKS5         :{}", 1080 + regime.socks_offset());
+        println!("  cover traffic  {}", regime.cover_traffic());
+        println!("  saved to       {}", path.display());
+        println!();
+        println!("Restart the node to rebind the SOCKS5 hop listeners.");
+        return Ok(());
+    }
+    let active = vantablack::ghost::v2::regime::active().map_err(|e| anyhow::anyhow!(e))?;
+    println!("Active regime: {} ({})", active.as_str(), active.plane().as_str());
+    println!("{}", active.describe());
+    println!();
+    for regime in Regime::ALL {
+        let marker = if regime == active { "*" } else { " " };
+        println!(
+            "{marker} {:10} :{}  {} hop(s)  cover={}  diversity={}",
+            regime.as_str(),
+            1080 + regime.socks_offset(),
+            regime.hops().hops(),
+            regime.cover_traffic(),
+            regime.requires_asn_diversity()
+        );
+    }
+    println!();
+    println!("Anonymity is only ever claimed by `vantablack`, and only above {} public relays.", vantablack::ghost::v2::regime::MIN_ANONYMITY_RELAYS);
+    Ok(())
+}
+
+/// `ggn vb-dns` — run the `.vb` stub, or answer one name and exit.
+fn run_vb_dns(args: &[String]) -> anyhow::Result<()> {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use vantablack::ghost::v2::vbdns::NameRegistry;
+
+    let registry = Arc::new(NameRegistry::new());
+    // `--map name=<28 hex chars>` binds a name to the first 14 bytes of a node id.
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--map" {
+            if let Some(spec) = args.get(i + 1) {
+                let Some((name, id)) = spec.split_once('=') else {
+                    return Err(anyhow::anyhow!("--map expects name=<28 hex chars>"));
+                };
+                // Accept both `laptop` and `laptop.vb`; a bare label is the
+                // common case at a shell and requiring the suffix is friction.
+                let parsed = vbdns::VbName::parse(name)
+                    .or_else(|| vbdns::VbName::parse(&format!("{name}.vb")))
+                    .ok_or_else(|| anyhow::anyhow!("{name:?} is not a valid <name>.vb"))?;
+                let bytes = hex::decode(id.trim()).map_err(|e| anyhow::anyhow!("bad node id: {e}"))?;
+                if bytes.is_empty() || bytes.len() > 16 {
+                    return Err(anyhow::anyhow!("node id must be 1..=16 bytes of hex"));
+                }
+                let mut node = [0u8; 16];
+                node[..bytes.len()].copy_from_slice(&bytes);
+                registry.bind(parsed, node);
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+
+    if let Some(name) = flag_value(args, "--check") {
+        let Some(parsed) = vbdns::VbName::parse(&name)
+            .or_else(|| vbdns::VbName::parse(&format!("{name}.vb")))
+        else {
+            return Err(anyhow::anyhow!("{name:?} is not a valid <name>.vb"));
+        };
+        match registry.resolve(&parsed) {
+            Some(addr) => println!("{name} -> {addr}"),
+            None => println!("{name} -> NXDOMAIN (no binding; bind one with --map)"),
+        }
+        return Ok(());
+    }
+
+    let bind_raw = flag_value(args, "--bind").unwrap_or_else(|| vbdns::VB_DNS_BIND.to_string());
+    let bind: SocketAddr = bind_raw
+        .parse()
+        .map_err(|e| anyhow::anyhow!("{bind_raw:?} is not an address: {e}"))?;
+    let names = registry.list();
+    block_on(async move {
+        let (addr, task) = vbdns::spawn(Arc::clone(&registry), bind)
+            .await
+            .map_err(|e| anyhow::anyhow!("cannot bind {bind}: {e}"))?;
+        println!(".vb DNS stub listening on {addr}");
+        for (name, target) in names {
+            println!("  {name} -> {target}");
+        }
+        println!("Set the OS resolver for `.vb` (or the whole resolver) to {addr}.");
+        println!("Port 53 usually needs administrator rights; use --bind 127.0.0.53:5353 for a test.");
+        tokio::signal::ctrl_c().await.ok();
+        task.abort();
+        println!(".vb DNS stub stopped.");
+        Ok(())
+    })
+}
+
+/// `ggn xray` — read the control center's status and print the truth ledger.
+async fn run_xray(args: &[String]) -> anyhow::Result<()> {
+    use vantablack::ghost::v2::xray::LedgerInput;
+
+    let port = std::env::var("GHOST_WEB_PORT")
+        .or_else(|_| std::env::var("GHOST_METRICS_PORT"))
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(2270);
+    let url = format!("http://127.0.0.1:{port}/api/status");
+
+    let status: serde_json::Value = match reqwest::get(&url).await {
+        Ok(resp) => resp.json().await.unwrap_or(serde_json::Value::Null),
+        Err(_) => serde_json::Value::Null,
+    };
+    let peers = status
+        .get("peers_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    let regime = vantablack::ghost::v2::regime::active().map_err(|e| anyhow::anyhow!(e))?;
+    let input = LedgerInput {
+        regime: Some(regime),
+        public_relays: Some(peers),
+        circuit_hops: (peers > 0).then(|| regime.hops().hops()),
+        transport: (peers > 0).then(|| "udp".to_string()),
+        cover_traffic: regime.cover_traffic() && peers > 0,
+        pq_hybrid: (peers > 0).then_some(true),
+        ..Default::default()
+    };
+    let ledger = xray::build(&input);
+
+    if has_flag(args, "--json") {
+        println!("{}", serde_json::to_string_pretty(&ledger)?);
+        return Ok(());
+    }
+
+    println!("What can they see?");
+    println!("  {}", ledger.headline);
+    for obs in &ledger.observations {
+        println!();
+        println!("  {} sees:", obs.observer);
+        for s in &obs.sees {
+            println!("    - {s}");
+        }
+        println!("  {} does not see:", obs.observer);
+        for s in &obs.does_not_see {
+            println!("    - {s}");
+        }
+    }
+    println!();
+    println!("Invariants:");
+    for inv in &ledger.invariants {
+        println!(
+            "  [{:8}] {:24} {}",
+            inv.state.as_str(),
+            inv.id,
+            inv.detail
+        );
+    }
+    if status.is_null() {
+        println!();
+        println!("Note: the control center on port {port} did not answer, so the relay count is 0.");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
