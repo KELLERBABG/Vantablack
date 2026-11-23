@@ -57,6 +57,16 @@ pub const CAP_QUIC: u8 = 1 << 3;
 /// deliberate, operator-owned endpoint, and choosing one by accident would send
 /// traffic through a stranger's house.
 pub const CAP_HOME_EXIT: u8 = 1 << 4;
+/// Runs a REALITY TLS 1.3 front (feature `reality-front`) whose admitted streams
+/// carry GTF frames; see `daemon::reality_front`.
+pub const CAP_REALITY_FRONT: u8 = 1 << 5;
+/// The front behind [`CAP_REALITY_FRONT`] admits **only hidden knocks** (a
+/// `GHOST_REALITY_KNOCK_PSK`), never a visible SNI label. A dialer cannot produce
+/// the knock — it lives in the ClientHello random, which the TLS stack generates
+/// itself — so such a front has no outbound path through that dialer. The bit is
+/// advertised beside [`CAP_REALITY_FRONT`] so a peer knows the mode before it
+/// dials, instead of learning it from a refused handshake.
+pub const CAP_REALITY_FRONT_KNOCK: u8 = 1 << 6;
 
 /// Fixed wire size for blind mailbox encrypted payloads (`12B nonce + 996B padded plaintext + 16B tag`).
 pub const BLIND_NONCE_LEN: usize = 12;
