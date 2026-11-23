@@ -811,9 +811,9 @@ pub fn is_dns_aaaa_query(payload: &[u8]) -> bool {
         idx = idx.saturating_add(1).saturating_add(len);
     }
     if let Some(end) = idx.checked_add(4) {
-        if end <= payload.len() {
-            let qtype = u16::from_be_bytes([payload[idx], payload[idx + 1]]);
-            let qclass = u16::from_be_bytes([payload[idx + 2], payload[idx + 3]]);
+        if let Some(tail) = payload.get(idx..end) {
+            let qtype = u16::from_be_bytes([tail[0], tail[1]]);
+            let qclass = u16::from_be_bytes([tail[2], tail[3]]);
             return qtype == 28 && qclass == 1; // 28 = AAAA, 1 = IN
         }
     }

@@ -26,6 +26,8 @@ class MainActivity : Activity() {
     private val QR_SCAN_REQUEST_CODE = 1002
     private var pendingInvite: String? = null
     private var pendingInstallApkFile: java.io.File? = null
+    private var currentModeIndex = 1 // 0 = Fast, 1 = Stealth, 2 = Multi-Hop
+    private val modes = arrayOf("Fast", "Stealth", "Multi-Hop")
 
     private lateinit var editRemoteAddr: EditText
     private lateinit var editDnsServer: EditText
@@ -232,11 +234,11 @@ class MainActivity : Activity() {
         }
         heroSection.addView(centerButtonFrame)
 
-        // Real Flanks Row: Exit Gateway (left) & Latency / Tunnel State (right)
+        // Interactive Flanks Row: Exit Gateway Picker (left) & Mode + Latency (right)
         val flanksRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
-            setPadding(dp(6), dp(22), dp(6), 0)
+            setPadding(0, dp(18), 0, 0)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -246,26 +248,35 @@ class MainActivity : Activity() {
         val leftFlank = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.START
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.15f)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0DFFFFFF"))
+                setStroke(1, Color.parseColor("#1EFFFFFF"))
+                cornerRadius = dp(14).toFloat()
+            }
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, dp(6), 0)
+            }
+            setOnClickListener { showExitPickerDialog() }
             addView(TextView(context).apply {
-                text = "EXIT GATEWAY"
+                text = "EXIT GATEWAY ▾"
                 textSize = 10f
-                letterSpacing = 0.14f
-                setTextColor(Color.parseColor("#787774"))
+                letterSpacing = 0.12f
+                setTextColor(Color.parseColor("#8E8D8A"))
             })
             txtExitValue = TextView(context).apply {
                 text = "Auto Mesh"
-                textSize = 17f
+                textSize = 16f
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
-                setPadding(0, dp(2), 0, 0)
+                setPadding(0, dp(3), 0, 0)
             }
             addView(txtExitValue)
             txtExitSub = TextView(context).apply {
-                text = "Standby"
-                textSize = 12f
+                text = "Tap to choose"
+                textSize = 11f
                 setTextColor(Color.parseColor("#9E9C98"))
             }
             addView(txtExitSub)
@@ -274,25 +285,38 @@ class MainActivity : Activity() {
         val rightFlank = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0DFFFFFF"))
+                setStroke(1, Color.parseColor("#1EFFFFFF"))
+                cornerRadius = dp(14).toFloat()
+            }
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(6), 0, 0, 0)
+            }
+            setOnClickListener {
+                currentModeIndex = (currentModeIndex + 1) % modes.size
+                txtRttValue.text = modes[currentModeIndex]
+                Toast.makeText(this@MainActivity, "Mode: ${modes[currentModeIndex]}", Toast.LENGTH_SHORT).show()
+            }
             addView(TextView(context).apply {
-                text = "LATENCY"
+                text = "MODE ↻"
                 textSize = 10f
-                letterSpacing = 0.14f
+                letterSpacing = 0.12f
                 gravity = Gravity.END
-                setTextColor(Color.parseColor("#787774"))
+                setTextColor(Color.parseColor("#8E8D8A"))
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             })
             txtRttValue = TextView(context).apply {
-                text = "— ms"
-                textSize = 17f
+                text = modes[currentModeIndex]
+                textSize = 16f
                 gravity = Gravity.END
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
-                setPadding(0, dp(2), 0, 0)
+                setPadding(0, dp(3), 0, 0)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -300,8 +324,8 @@ class MainActivity : Activity() {
             }
             addView(txtRttValue)
             txtRttSub = TextView(context).apply {
-                text = "Direct"
-                textSize = 12f
+                text = "Direct • — ms"
+                textSize = 11f
                 gravity = Gravity.END
                 setTextColor(Color.parseColor("#9E9C98"))
                 layoutParams = LinearLayout.LayoutParams(
@@ -829,8 +853,9 @@ class MainActivity : Activity() {
             }
 
             val rtt = GhostVpnService.getRttMs()
-            txtRttValue.text = if (rtt >= 0) "$rtt ms" else "— ms"
-            txtRttSub.text = "Encrypted"
+            val rttStr = if (rtt >= 0) "$rtt ms" else "— ms"
+            txtRttValue.text = modes[currentModeIndex]
+            txtRttSub.text = "Encrypted • $rttStr"
 
             txtConnPath.text = pathStr
             txtDnsServer.text = GhostVpnService.activeDnsDisplay
@@ -885,8 +910,8 @@ class MainActivity : Activity() {
                 txtExitValue.text = "Auto Mesh"
                 txtExitSub.text = "Standby"
             }
-            txtRttValue.text = "— ms"
-            txtRttSub.text = "Direct"
+            txtRttValue.text = modes[currentModeIndex]
+            txtRttSub.text = "Direct • — ms"
             txtConnPath.text = "Standby"
             txtHandovers.text = "0"
             txtDownSpeed.text = "0 B/s"
@@ -916,6 +941,62 @@ class MainActivity : Activity() {
             bytes >= 1024 -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
             else -> "$bytes B"
         }
+    }
+
+    private fun showExitPickerDialog() {
+        val discovered = GhostVpnService.getDiscoveredPeers()
+        val options = mutableListOf("Auto Mesh (Adaptive)")
+        options.addAll(discovered)
+        if (discovered.isEmpty()) {
+            options.add("Scan Wi-Fi for Devices...")
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Choose Exit Gateway")
+            .setItems(options.toTypedArray()) { _, which ->
+                val choice = options[which]
+                when {
+                    which == 0 -> {
+                        editRemoteAddr.setText("")
+                        if (GhostVpnService.isRunning) {
+                            GhostVpnService.selectExitNode("auto") { _ ->
+                                handler.post { updateStatus() }
+                            }
+                        }
+                        Toast.makeText(this, "Exit Gateway: Auto Mesh", Toast.LENGTH_SHORT).show()
+                    }
+                    choice.startsWith("Scan Wi-Fi") -> {
+                        if (GhostVpnService.isRunning) {
+                            GhostVpnService.triggerScan { count ->
+                                handler.post {
+                                    updateStatus()
+                                    Toast.makeText(this, "Found $count device(s)", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        } else {
+                            Toast.makeText(this, "Tap the center button to connect first", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    else -> {
+                        if (GhostVpnService.isRunning) {
+                            GhostVpnService.selectExitNode(choice) { ok ->
+                                handler.post {
+                                    Toast.makeText(
+                                        this,
+                                        if (ok) "Routing through $choice" else "Could not switch exit",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    updateStatus()
+                                }
+                            }
+                        } else {
+                            editRemoteAddr.setText(choice)
+                            updateStatus()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun createPeerRow(addr: String, isExit: Boolean): LinearLayout {

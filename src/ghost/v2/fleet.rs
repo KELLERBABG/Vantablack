@@ -897,7 +897,7 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
     for &b in payload {
         push_bits(&mut data_bytes, &mut bit_len, b as u32, 8);
     }
-    let rem_bits = (total_data * 8).saturating_sub(bit_len).min(4);
+    let rem_bits = total_data.saturating_mul(8).saturating_sub(bit_len).min(4);
     push_bits(&mut data_bytes, &mut bit_len, 0, rem_bits);
     while data_bytes.len() < total_data {
         data_bytes.push(0xec);
@@ -914,10 +914,14 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
         (spec.g2_blocks, spec.g2_data),
     ] {
         for _ in 0..n {
-            let blk = data_bytes[off..off + len].to_vec();
+            let blk_end = off.saturating_add(len);
+            let blk = data_bytes
+                .get(off..blk_end)
+                .ok_or_else(|| "QR block out of range".to_string())?
+                .to_vec();
             eccs.push(rs_remainder(&blk, spec.ecc_per_block));
             blocks.push(blk);
-            off += len;
+            off = blk_end;
         }
     }
     let mut codewords = Vec::new();
@@ -1067,7 +1071,7 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     let mid = size / 2;
     let has_badge = size >= 29;
     let badge_half: usize = if size >= 45 { 4 } else { 2 };
-    let badge_modules = (badge_half * 2 + 1) as f32 + 0.3;
+    let badge_modules = badge_half.saturating_mul(2).saturating_add(1) as f32 + 0.3;
     let in_badge = |r: usize, c: usize| -> bool {
         has_badge
             && r >= mid.saturating_sub(badge_half)

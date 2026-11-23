@@ -473,11 +473,9 @@ pub fn first_aaaa(msg: &[u8]) -> Option<Ipv6Addr> {
         let (_, next) = decode_name(msg, off)?;
         off = next;
         let hdr_end = off.checked_add(10)?;
-        if hdr_end > msg.len() {
-            return None;
-        }
-        let rtype = u16::from_be_bytes([msg[off], msg[off + 1]]);
-        let rdlen = u16::from_be_bytes([msg[off + 8], msg[off + 9]]) as usize;
+        let hdr = msg.get(off..hdr_end)?;
+        let rtype = u16::from_be_bytes([hdr[0], hdr[1]]);
+        let rdlen = u16::from_be_bytes([hdr[8], hdr[9]]) as usize;
         off = hdr_end;
         let rdata_end = off.checked_add(rdlen)?;
         if rdata_end > msg.len() {

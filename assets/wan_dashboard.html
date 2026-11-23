@@ -104,23 +104,66 @@
 
     .hero-grid {
       width: 100%;
-      max-width: 680px;
+      max-width: 740px;
       display: grid;
       grid-template-columns: 1fr auto 1fr;
       align-items: center;
-      gap: 32px;
+      gap: 24px;
     }
-    @media (max-width: 580px) {
-      .hero-grid { grid-template-columns: 1fr; gap: 20px; text-align: center; }
-      .flank-left, .flank-right { text-align: center !important; }
+    @media (max-width: 620px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 16px; text-align: center; }
+      .flank-card { text-align: center !important; align-items: center !important; }
+      .mode-pills { justify-content: center !important; }
     }
-    .flank-left { text-align: left; }
-    .flank-right { text-align: right; }
-    .flank-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--ivory-faint); }
-    .flank-value { font-size: 21px; font-weight: 500; color: var(--ivory); margin-top: 3px; background: none; border: none; padding: 0; font-family: inherit; }
-    button.flank-value { cursor: pointer; }
-    button.flank-value:hover { text-decoration: underline; text-underline-offset: 4px; }
-    .flank-sub { font-size: 12px; color: var(--ivory-muted); margin-top: 2px; }
+    .flank-card {
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 16px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      cursor: pointer;
+      transition: transform 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
+    }
+    .flank-card:hover {
+      background: rgba(255, 255, 255, 0.065);
+      border-color: rgba(244, 241, 234, 0.24);
+      transform: translateY(-1px);
+    }
+    .flank-card.left { text-align: left; align-items: flex-start; }
+    .flank-card.right { text-align: right; align-items: flex-end; }
+    .flank-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--ivory-faint);
+    }
+    .flank-value { font-size: 20px; font-weight: 500; color: var(--ivory); margin-top: 2px; }
+    .flank-sub { font-size: 11.5px; color: var(--ivory-muted); margin-top: 2px; }
+    .mode-pills {
+      display: flex;
+      gap: 4px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .mini-pill {
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--ivory-muted);
+      font-size: 10.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.14s ease;
+    }
+    .mini-pill:hover { color: var(--ivory); border-color: rgba(255, 255, 255, 0.24); }
+    .mini-pill.active { background: var(--ivory); color: var(--coal-deep); border-color: var(--ivory); font-weight: 600; }
 
     /* ── Machined Brushed-Steel Center Button ── */
     .center-btn-wrap { position: relative; display: flex; align-items: center; justify-content: center; }
@@ -1190,12 +1233,18 @@
       }
 
       if (!open) {
+        const speedLine = STATE.connected
+          ? `↓ ${formatBytes(STATE.downSpeed)}/s · ↑ ${formatBytes(STATE.upSpeed)}/s`
+          : ex.sub;
         stage.innerHTML = `
           <div class="hero-grid">
-            <div class="flank-left">
-              <div class="flank-label">Exit Gateway</div>
+            <div class="flank-card left" data-act="open-exits" title="Click to choose Exit Gateway">
+              <div class="flank-head">
+                <span>Exit Gateway</span>
+                <span>▾</span>
+              </div>
               <div class="flank-value">${escapeHtml(ex.title)}</div>
-              <div class="flank-sub">${escapeHtml(ex.sub)}</div>
+              <div class="flank-sub">${escapeHtml(speedLine)}</div>
             </div>
 
             <div class="center-btn-wrap">
@@ -1208,10 +1257,17 @@
               </button>
             </div>
 
-            <div class="flank-right">
-              <div class="flank-label">Mode</div>
-              <button type="button" class="flank-value" data-act="cycle-mode">${escapeHtml(STATE.mode)}</button>
-              <div class="flank-sub">${STATE.connected ? 'Encrypted' : 'Direct'}</div>
+            <div class="flank-card right" data-act="cycle-mode" title="Click to switch protection mode">
+              <div class="flank-head">
+                <span>Mode</span>
+                <span>↻</span>
+              </div>
+              <div class="flank-value">${escapeHtml(STATE.mode)}</div>
+              <div class="mode-pills">
+                ${['Fast', 'Stealth', 'Multi-Hop'].map(m => `
+                  <button type="button" class="mini-pill ${STATE.mode === m ? 'active' : ''}" data-set-mode="${m}">${m}</button>
+                `).join('')}
+              </div>
             </div>
           </div>
         `;
@@ -1247,6 +1303,16 @@
 
     function bindEvents() {
       document.querySelectorAll('[data-act="toggle"]').forEach(b => b.addEventListener('click', toggleConnection));
+      document.querySelectorAll('[data-act="open-exits"]').forEach(b => b.addEventListener('click', () => {
+        STATE.sheet = 'devices';
+        STATE.devicesTab = 'list';
+        refreshTopology();
+        render();
+      }));
+      document.querySelectorAll('[data-set-mode]').forEach(b => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setModeDirect(b.dataset.setMode);
+      }));
       document.querySelectorAll('[data-act="cycle-mode"]').forEach(b => b.addEventListener('click', cycleMode));
       document.querySelectorAll('[data-exit-opt]').forEach(b => b.addEventListener('click', () => selectExitOption(b.dataset.exitOpt)));
       document.querySelectorAll('[data-sheet]').forEach(b => b.addEventListener('click', () => {
@@ -1319,9 +1385,8 @@
       setTimeout(() => { STATE.pulse = false; refreshStatus(); refreshTopology(); }, 800);
     }
 
-    async function cycleMode() {
-      const modes = ['Fast', 'Stealth', 'Multi-Hop'];
-      STATE.mode = modes[(modes.indexOf(STATE.mode) + 1) % modes.length];
+    async function setModeDirect(targetMode) {
+      STATE.mode = targetMode;
       render();
       try {
         await fetch('/api/mode', {
@@ -1329,7 +1394,13 @@
           headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ mode: modeToBackend(STATE.mode) })
         });
+        notify(`Mode: ${STATE.mode}`);
       } catch (_) {}
+    }
+
+    async function cycleMode() {
+      const modes = ['Fast', 'Stealth', 'Multi-Hop'];
+      await setModeDirect(modes[(modes.indexOf(STATE.mode) + 1) % modes.length]);
     }
 
     async function selectExitOption(exitId) {
