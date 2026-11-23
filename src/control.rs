@@ -539,6 +539,7 @@ pub fn spawn_control_center(
     let c_mode_m = Arc::clone(&consumer_mode);
     let c_pin_m = Arc::clone(&consumer_pin);
     let c_settings_m = Arc::clone(&consumer_settings);
+    c_settings_m.read().sync_experimental_flags();
     let c_path_m = consumer_config;
     let lan_host_m = lan_host;
     let pair_uri_m = pair_uri;
@@ -1594,6 +1595,12 @@ pub fn spawn_control_center(
                                         "jurisdiction_tag": s.jurisdiction_tag,
                                         "abos_skywave_enabled": s.abos_skywave_enabled,
                                         "qel_enabled": s.qel_enabled,
+                                        "exp_pow_shield": s.exp_pow_shield,
+                                        "exp_dtn_reconcile": s.exp_dtn_reconcile,
+                                        "exp_universal_tunnel": s.exp_universal_tunnel,
+                                        "exp_collective_defense": s.exp_collective_defense,
+                                        "exp_rendezvous": s.exp_rendezvous,
+                                        "exp_diffusion": s.exp_diffusion,
                                         "adblock_enabled": vantablack::ghost::net::adblock::is_enabled(),
                                         "ads_blocked": vantablack::ghost::net::adblock::blocked_count(),
                                     })
@@ -1687,6 +1694,48 @@ pub fn spawn_control_center(
                                         {
                                             s.qel_enabled = qel;
                                         }
+                                        if let Some(v) =
+                                            val.get("exp_pow_shield").and_then(|v| v.as_bool())
+                                        {
+                                            s.exp_pow_shield = v;
+                                            vantablack::ghost::net::pow::set_enabled(v);
+                                        }
+                                        if let Some(v) =
+                                            val.get("exp_dtn_reconcile").and_then(|v| v.as_bool())
+                                        {
+                                            s.exp_dtn_reconcile = v;
+                                            vantablack::ghost::net::dtn_reconcile::set_enabled(v);
+                                        }
+                                        if let Some(v) = val
+                                            .get("exp_universal_tunnel")
+                                            .and_then(|v| v.as_bool())
+                                        {
+                                            s.exp_universal_tunnel = v;
+                                            vantablack::ghost::net::universal_tunnel::set_enabled(
+                                                v,
+                                            );
+                                        }
+                                        if let Some(v) = val
+                                            .get("exp_collective_defense")
+                                            .and_then(|v| v.as_bool())
+                                        {
+                                            s.exp_collective_defense = v;
+                                            vantablack::ghost::net::collective_defense::set_enabled(
+                                                v,
+                                            );
+                                        }
+                                        if let Some(v) =
+                                            val.get("exp_rendezvous").and_then(|v| v.as_bool())
+                                        {
+                                            s.exp_rendezvous = v;
+                                            vantablack::ghost::net::rendezvous::set_enabled(v);
+                                        }
+                                        if let Some(v) =
+                                            val.get("exp_diffusion").and_then(|v| v.as_bool())
+                                        {
+                                            s.exp_diffusion = v;
+                                            vantablack::ghost::net::diffusion::set_enabled(v);
+                                        }
                                         if !cp_ref.is_empty() && bypass_err.is_none() {
                                             save_consumer_settings(&cp_ref, &s);
                                         }
@@ -1711,6 +1760,12 @@ pub fn spawn_control_center(
                                                 "jurisdiction_tag": s.jurisdiction_tag,
                                                 "abos_skywave_enabled": s.abos_skywave_enabled,
                                                 "qel_enabled": s.qel_enabled,
+                                                "exp_pow_shield": s.exp_pow_shield,
+                                                "exp_dtn_reconcile": s.exp_dtn_reconcile,
+                                                "exp_universal_tunnel": s.exp_universal_tunnel,
+                                                "exp_collective_defense": s.exp_collective_defense,
+                                                "exp_rendezvous": s.exp_rendezvous,
+                                                "exp_diffusion": s.exp_diffusion,
                                             })
                                             .to_string();
                                             ("HTTP/1.1 200 OK", body, "application/json")

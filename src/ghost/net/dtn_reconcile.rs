@@ -1,4 +1,3 @@
-#![cfg(feature = "research")]
 //! Windowing the Blackout (DTN State Reconciliation)
 //!
 //! Merkle-tree anti-entropy synchronization between peers upon reconnecting after
@@ -11,6 +10,19 @@
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether experimental outage state reconciliation is enabled.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable or disable experimental outage state reconciliation.
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 pub const DTN_RECONCILE_MAGIC: &[u8; 4] = b"MREC";
 

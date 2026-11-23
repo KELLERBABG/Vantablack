@@ -1,4 +1,3 @@
-#![cfg(feature = "research")]
 //! Collective Defense from Aggregate Observables
 //!
 //! Architectural collaborative defense without a central collector or honeypot.
@@ -11,6 +10,19 @@
 
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether experimental privacy-preserving peer anomaly sharing is enabled.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable or disable experimental privacy-preserving peer anomaly sharing.
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 pub const COLLECTIVE_DEFENSE_MAGIC: &[u8; 4] = b"CDEF";
 pub const K_ANONYMITY_THRESHOLD: usize = 3;

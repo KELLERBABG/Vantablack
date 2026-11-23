@@ -1,4 +1,3 @@
-#![cfg(feature = "research")]
 //! Proof-of-Work (PoW) Anti-Abuse & Anti-Sybil Engine
 //!
 //! Provides a cryptographic client puzzle mechanism to mitigate denial-of-service,
@@ -12,8 +11,21 @@
 //! - Puzzles automatically expire after `ttl_secs` to prevent pre-computation.
 
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether experimental flood-triggered PoW handshake shielding is enabled.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable or disable experimental flood-triggered PoW handshake shielding.
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 use dashmap::DashMap;
 

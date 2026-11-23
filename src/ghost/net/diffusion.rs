@@ -1,4 +1,3 @@
-#![cfg(feature = "research")]
 //! Diffusion Routing (Opt-in Emergency Mode)
 //!
 //! Epidemic gossip shard dispersal behind `GHOST_DIFFUSION=1` for disaster recovery,
@@ -11,8 +10,24 @@
 //! - Bounded hop counts (`max_hops`) and duplicate suppression caches eliminate broadcast storms.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether experimental emergency broadcast routing is enabled (via settings or `GHOST_DIFFUSION=1`).
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+        || std::env::var("GHOST_DIFFUSION")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+}
+
+/// Enable or disable experimental emergency broadcast routing.
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 use dashmap::DashMap;
 

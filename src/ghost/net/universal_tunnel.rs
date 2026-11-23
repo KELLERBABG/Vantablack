@@ -1,4 +1,3 @@
-#![cfg(feature = "research")]
 //! Universal Shard-Tunnel (Generic Port Forwarder)
 //!
 //! Carries arbitrary legacy protocols (RDP, RTSP, gRPC, SMTP, SOCKS5, HTTP) blind
@@ -12,6 +11,19 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether experimental local-port TCP forwarding over the mesh is enabled.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable or disable experimental local-port TCP forwarding over the mesh.
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 /// Flag bits for Universal Shard-Tunnel frame headers.
 pub const FLAG_SYN: u8 = 0x01;

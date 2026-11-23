@@ -309,6 +309,24 @@ pub struct ConsumerSettings {
     pub abos_skywave_enabled: bool,
     /// Quantum Entanglement Layer (post-quantum crypto routing) enabled.
     pub qel_enabled: bool,
+    /// Experimental: flood-triggered Proof-of-Work handshake shield.
+    #[serde(default)]
+    pub exp_pow_shield: bool,
+    /// Experimental: outage state reconciliation on reconnect.
+    #[serde(default)]
+    pub exp_dtn_reconcile: bool,
+    /// Experimental: local TCP port forwarding over the mesh.
+    #[serde(default)]
+    pub exp_universal_tunnel: bool,
+    /// Experimental: privacy-preserving shared peer anomaly signals.
+    #[serde(default)]
+    pub exp_collective_defense: bool,
+    /// Experimental: serverless peer discovery (higher battery/background use).
+    #[serde(default)]
+    pub exp_rendezvous: bool,
+    /// Experimental: emergency broadcast shard flooding (high data use).
+    #[serde(default)]
+    pub exp_diffusion: bool,
 }
 
 impl Default for ConsumerSettings {
@@ -323,6 +341,12 @@ impl Default for ConsumerSettings {
             jurisdiction_tag: "any".to_string(),
             abos_skywave_enabled: false,
             qel_enabled: true,
+            exp_pow_shield: false,
+            exp_dtn_reconcile: false,
+            exp_universal_tunnel: false,
+            exp_collective_defense: false,
+            exp_rendezvous: false,
+            exp_diffusion: false,
         }
     }
 }
@@ -337,6 +361,16 @@ impl ConsumerSettings {
             }
         }
         s
+    }
+
+    /// Push persisted experimental feature flags into each module's runtime atomic state.
+    pub fn sync_experimental_flags(&self) {
+        super::pow::set_enabled(self.exp_pow_shield);
+        super::dtn_reconcile::set_enabled(self.exp_dtn_reconcile);
+        super::universal_tunnel::set_enabled(self.exp_universal_tunnel);
+        super::collective_defense::set_enabled(self.exp_collective_defense);
+        super::rendezvous::set_enabled(self.exp_rendezvous);
+        super::diffusion::set_enabled(self.exp_diffusion);
     }
 
     /// Validate and set the egress mode. Returns false for unknown modes.

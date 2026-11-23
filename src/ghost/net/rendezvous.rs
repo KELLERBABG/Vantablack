@@ -9,8 +9,21 @@
 //!    over public decentralized relays without single points of failure.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether experimental serverless peer discovery is enabled.
+pub fn is_enabled() -> bool {
+    ENABLED.load(Ordering::Relaxed)
+}
+
+/// Enable or disable experimental serverless peer discovery.
+pub fn set_enabled(enabled: bool) {
+    ENABLED.store(enabled, Ordering::Relaxed);
+}
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

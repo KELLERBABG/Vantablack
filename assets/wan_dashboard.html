@@ -1062,6 +1062,65 @@
               </select>
             </div>
           </div>
+          <details class="coal-card" style="margin-top:10px; padding:12px 14px;">
+            <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; list-style:none; font-weight:600; font-size:13px;">
+              <span>Experimental</span>
+              <span style="display:flex; align-items:center; gap:8px;">
+                <span class="tag-pill">Opt-in</span>
+                <span style="opacity:0.65; font-size:11px;">&#9662;</span>
+              </span>
+            </summary>
+            <div style="margin-top:10px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; font-size:11px; color:rgba(244,241,234,0.68);">
+                <span>Optional mesh capabilities. Off by default to save battery and data.</span>
+                <a href="https://github.com/KELLERBABG/Vantablack/blob/main/docs/EXPERIMENTAL_FEATURES.md" target="_blank" rel="noopener noreferrer" style="color:#F4F1EA; text-decoration:underline; white-space:nowrap;">Docs &#8599;</a>
+              </div>
+              <div class="grid-2">
+                <button type="button" class="coal-row setting-card" data-setting-tog="exp_pow_shield">
+                  <div>
+                    <div class="setting-title">Flood Shield</div>
+                    <div class="setting-sub">Requires a quick puzzle from new peers during traffic floods</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.exp_pow_shield))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="exp_dtn_reconcile">
+                  <div>
+                    <div class="setting-title">Offline Sync</div>
+                    <div class="setting-sub">Syncs missed messages automatically after you come back online</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.exp_dtn_reconcile))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="exp_universal_tunnel">
+                  <div>
+                    <div class="setting-title">App Port Tunnel</div>
+                    <div class="setting-sub">Forwards non-proxy apps over the mesh via a local port</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.exp_universal_tunnel))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="exp_collective_defense">
+                  <div>
+                    <div class="setting-title">Shared Threat Signals</div>
+                    <div class="setting-sub">Shares anonymous drop stats so peers route around bad links</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.exp_collective_defense))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="exp_rendezvous">
+                  <div>
+                    <div class="setting-title">Serverless Discovery</div>
+                    <div class="setting-sub">Finds peers without central seed servers (uses more battery)</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.exp_rendezvous))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="exp_diffusion">
+                  <div>
+                    <div class="setting-title">Emergency Broadcast</div>
+                    <div class="setting-sub">Floods traffic across nearby peers if routing breaks (high data use)</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.exp_diffusion))}
+                </button>
+              </div>
+            </div>
+          </details>
         `;
       } else if (tab === 'routing') {
         const basePort = STATE.status.socks_port || 1080;
