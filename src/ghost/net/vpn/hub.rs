@@ -797,23 +797,25 @@ pub fn is_dns_aaaa_query(payload: &[u8]) -> bool {
         return false;
     }
     // Walk QNAME to find QTYPE
-    let mut idx = 12;
+    let mut idx: usize = 12;
     while idx < payload.len() {
         let len = payload[idx] as usize;
         if len == 0 {
-            idx += 1;
+            idx = idx.saturating_add(1);
             break;
         }
         if (len & 0xC0) == 0xC0 {
-            idx += 2;
+            idx = idx.saturating_add(2);
             break;
         }
-        idx += 1 + len;
+        idx = idx.saturating_add(1).saturating_add(len);
     }
-    if idx + 4 <= payload.len() {
-        let qtype = u16::from_be_bytes([payload[idx], payload[idx + 1]]);
-        let qclass = u16::from_be_bytes([payload[idx + 2], payload[idx + 3]]);
-        return qtype == 28 && qclass == 1; // 28 = AAAA, 1 = IN
+    if let Some(end) = idx.checked_add(4) {
+        if end <= payload.len() {
+            let qtype = u16::from_be_bytes([payload[idx], payload[idx + 1]]);
+            let qclass = u16::from_be_bytes([payload[idx + 2], payload[idx + 3]]);
+            return qtype == 28 && qclass == 1; // 28 = AAAA, 1 = IN
+        }
     }
     false
 }
@@ -837,21 +839,22 @@ pub fn build_dns_nodata_response(query: &[u8]) -> Option<Vec<u8>> {
     resp[10] = 0;
     resp[11] = 0;
 
-    let mut idx = 12;
+    let mut idx: usize = 12;
     while idx < resp.len() {
         let len = resp[idx] as usize;
         if len == 0 {
-            idx += 1;
+            idx = idx.saturating_add(1);
             break;
         }
         if (len & 0xC0) == 0xC0 {
-            idx += 2;
+            idx = idx.saturating_add(2);
             break;
         }
-        idx += 1 + len;
+        idx = idx.saturating_add(1).saturating_add(len);
     }
-    if idx + 4 <= resp.len() {
-        resp.truncate(idx + 4);
+    let end = idx.checked_add(4)?;
+    if end <= resp.len() {
+        resp.truncate(end);
         Some(resp)
     } else {
         None

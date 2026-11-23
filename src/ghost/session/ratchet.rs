@@ -458,7 +458,7 @@ impl SessionRatchet {
     ) -> (u64, [u8; 32]) {
         let (root_key, chain_to_resp, chain_to_init) =
             kdf_rk_hybrid(&self.root_key, &secrets.dh, &secrets.kem);
-        let epoch = self.epoch + 1;
+        let epoch = self.epoch.saturating_add(1);
         let to_resp = ChainState::seed(chain_to_resp, epoch);
         let to_init = ChainState::seed(chain_to_init, epoch);
         let key = match peer_direction {
@@ -641,7 +641,7 @@ impl SessionRatchet {
     ) -> (u64, [u8; 32]) {
         let (root_key, chain_to_resp, chain_to_init) =
             kdf_rk_quantum_mix(&self.root_key, quantum_key);
-        let epoch = self.epoch + 1;
+        let epoch = self.epoch.saturating_add(1);
         let to_resp = ChainState::seed(chain_to_resp, epoch);
         let to_init = ChainState::seed(chain_to_init, epoch);
         let key = match peer_direction {
@@ -676,7 +676,7 @@ impl SessionRatchet {
         direction: NonceDirection,
     ) -> (u64, [u8; 32]) {
         let (_root, chain_to_resp, chain_to_init) = kdf_rk_quantum_mix(&self.root_key, quantum_key);
-        let epoch = self.epoch + 1;
+        let epoch = self.epoch.saturating_add(1);
         let chain = match direction {
             NonceDirection::InitiatorToResponder => chain_to_resp,
             NonceDirection::ResponderToInitiator => chain_to_init,

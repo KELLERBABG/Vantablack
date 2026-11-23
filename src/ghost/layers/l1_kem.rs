@@ -255,9 +255,14 @@ pub fn derive_hybrid_master_key_with_transcript(
     initiator_pq_commitment: &[u8; 32],
     responder_pq_commitment: &[u8; 32],
 ) -> [u8; 32] {
-    let mut ikm = Vec::with_capacity(
-        HYBRID_BIND_LABEL.len() + 32 + kyber_shared.len() + 32 + 32 + kyber_ct.len() + 32 + 32,
-    );
+    let cap = HYBRID_BIND_LABEL
+        .len()
+        .saturating_add(32)
+        .saturating_add(kyber_shared.len())
+        .saturating_add(64)
+        .saturating_add(kyber_ct.len())
+        .saturating_add(64);
+    let mut ikm = Vec::with_capacity(cap);
     ikm.extend_from_slice(HYBRID_BIND_LABEL);
     ikm.extend_from_slice(x25519_shared);
     ikm.extend_from_slice(kyber_shared);
@@ -886,7 +891,7 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
         {
             return None;
         }
-        let count = data[16] as usize;
+        let count = *data.get(16)? as usize;
         if count == 0 || count > 2 || len <= 17 + 32 + 32 + 64 + if allow_reserved { 1 } else { 0 }
         {
             return None;

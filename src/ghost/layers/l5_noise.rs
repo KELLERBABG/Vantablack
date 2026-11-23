@@ -93,7 +93,9 @@ impl MimicProfile {
         }
         // Map 16 bins across JITTER_MAX (0..64)
         let bin_width = JITTER_MAX / MIMIC_BINS; // 4 bytes per bin
-        let jitter = selected_bin * bin_width + rng.gen_range(0..bin_width);
+        let jitter = selected_bin
+            .saturating_mul(bin_width)
+            .saturating_add(rng.gen_range(0..bin_width));
         jitter.min(JITTER_MAX)
     }
 }

@@ -32,27 +32,47 @@ impl Interleaver {
 
     /// Interleave bits: reorder according to the permutation
     pub fn interleave(&self, bits: &[u8]) -> Vec<u8> {
-        assert!(
-            bits.len() <= self.block_size,
-            "Bit vector exceeds block size"
-        );
-        let mut output = vec![0u8; self.block_size];
-        for (i, &bit) in bits.iter().enumerate() {
-            output[self.permutation[i]] = bit;
+        if self.block_size == 0 {
+            return Vec::new();
         }
-        output
+        if bits.len() <= self.block_size {
+            let mut output = vec![0u8; self.block_size];
+            for (i, &bit) in bits.iter().enumerate() {
+                output[self.permutation[i]] = bit;
+            }
+            return output;
+        }
+        let mut out = Vec::with_capacity(bits.len().div_ceil(self.block_size) * self.block_size);
+        for chunk in bits.chunks(self.block_size) {
+            let mut block = vec![0u8; self.block_size];
+            for (i, &bit) in chunk.iter().enumerate() {
+                block[self.permutation[i]] = bit;
+            }
+            out.extend_from_slice(&block);
+        }
+        out
     }
 
     /// Deinterleave bits: restore original order using the inverse permutation
     pub fn deinterleave(&self, bits: &[u8]) -> Vec<u8> {
-        assert!(
-            bits.len() <= self.block_size,
-            "Bit vector exceeds block size"
-        );
-        let mut output = vec![0u8; self.block_size];
-        for (i, &bit) in bits.iter().enumerate() {
-            output[self.inverse_permutation[i]] = bit;
+        if self.block_size == 0 {
+            return Vec::new();
         }
-        output
+        if bits.len() <= self.block_size {
+            let mut output = vec![0u8; self.block_size];
+            for (i, &bit) in bits.iter().enumerate() {
+                output[self.inverse_permutation[i]] = bit;
+            }
+            return output;
+        }
+        let mut out = Vec::with_capacity(bits.len().div_ceil(self.block_size) * self.block_size);
+        for chunk in bits.chunks(self.block_size) {
+            let mut block = vec![0u8; self.block_size];
+            for (i, &bit) in chunk.iter().enumerate() {
+                block[self.inverse_permutation[i]] = bit;
+            }
+            out.extend_from_slice(&block);
+        }
+        out
     }
 }

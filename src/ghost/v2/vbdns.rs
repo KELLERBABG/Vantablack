@@ -257,23 +257,24 @@ fn decode_name(msg: &[u8], mut offset: usize) -> Option<(String, usize)> {
     let mut total = 0usize;
     loop {
         let len = *msg.get(offset)? as usize;
-        offset += 1;
+        offset = offset.checked_add(1)?;
         if len == 0 {
             break;
         }
         if len & 0xC0 != 0 {
             return None;
         }
-        if len > 63 || offset + len > msg.len() {
+        let next_off = offset.checked_add(len)?;
+        if len > 63 || next_off > msg.len() {
             return None;
         }
-        total += len + 1;
+        total = total.saturating_add(len).saturating_add(1);
         if total > 255 {
             return None;
         }
-        let label = std::str::from_utf8(&msg[offset..offset + len]).ok()?;
+        let label = std::str::from_utf8(msg.get(offset..next_off)?).ok()?;
         labels.push(label.to_ascii_lowercase());
-        offset += len;
+        offset = next_off;
     }
     Some((labels.join("."), offset))
 }
@@ -467,25 +468,27 @@ pub fn first_aaaa(msg: &[u8]) -> Option<Ipv6Addr> {
         return None;
     }
     let (_, mut off) = decode_name(msg, 12)?;
-    off += 4;
+    off = off.checked_add(4)?;
     for _ in 0..ancount {
         let (_, next) = decode_name(msg, off)?;
         off = next;
-        if off + 10 > msg.len() {
+        let hdr_end = off.checked_add(10)?;
+        if hdr_end > msg.len() {
             return None;
         }
         let rtype = u16::from_be_bytes([msg[off], msg[off + 1]]);
         let rdlen = u16::from_be_bytes([msg[off + 8], msg[off + 9]]) as usize;
-        off += 10;
-        if off + rdlen > msg.len() {
+        off = hdr_end;
+        let rdata_end = off.checked_add(rdlen)?;
+        if rdata_end > msg.len() {
             return None;
         }
         if rtype == QTYPE_AAAA && rdlen == 16 {
             let mut o = [0u8; 16];
-            o.copy_from_slice(&msg[off..off + 16]);
+            o.copy_from_slice(msg.get(off..rdata_end)?);
             return Some(Ipv6Addr::from(o));
         }
-        off += rdlen;
+        off = rdata_end;
     }
     None
 }

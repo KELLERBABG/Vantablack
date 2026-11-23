@@ -463,14 +463,13 @@ fn ledger() -> &'static Mutex<Ledger> {
 }
 
 pub fn record_issue() {
-    ledger().lock().unwrap_or_else(|e| e.into_inner()).issued += 1;
+    let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
+    guard.issued = guard.issued.saturating_add(1);
 }
 
 pub fn record_rejected_receipt() {
-    ledger()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .rejected_receipts += 1;
+    let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
+    guard.rejected_receipts = guard.rejected_receipts.saturating_add(1);
 }
 
 /// Spend a ticket. A second spend of the same ticket is refused.
@@ -483,10 +482,10 @@ pub fn spend(issuer: &Issuer, ticket: &Ticket, now: u64) -> Result<(), String> {
     }
     let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
     if !guard.nullifiers.insert(ticket.nullifier()) {
-        guard.rejected_replays += 1;
+        guard.rejected_replays = guard.rejected_replays.saturating_add(1);
         return Err("ticket already spent (nullifier replay refused)".into());
     }
-    guard.spent += 1;
+    guard.spent = guard.spent.saturating_add(1);
     Ok(())
 }
 
@@ -535,7 +534,7 @@ impl Wallet {
 
     /// Merge tickets by `M` (the unique blinded input), newest credit wins.
     pub fn merge(&mut self, other: &Wallet) -> usize {
-        let mut added = 0;
+        let mut added: usize = 0;
         for ticket in &other.tickets {
             if let Some(existing) = self.tickets.iter_mut().find(|t| t.m == ticket.m) {
                 if ticket.work_bytes > existing.work_bytes {
@@ -544,7 +543,7 @@ impl Wallet {
                 continue;
             }
             self.tickets.push(ticket.clone());
-            added += 1;
+            added = added.saturating_add(1);
         }
         added
     }

@@ -183,7 +183,7 @@ impl LeaseTable {
                 host = OVERLAY_FIRST_CLIENT_HOST;
             }
             if !used.contains(&host) {
-                *next = host + 1;
+                *next = host.saturating_add(1);
                 let ip = Ipv4Addr::new(OVERLAY_PREFIX, OVERLAY_SECOND_OCTET, 0, host);
                 self.by_ip.lock().insert(ip, fingerprint.to_string());
                 fps.insert(
@@ -200,7 +200,7 @@ impl LeaseTable {
                 );
                 return Some(ip);
             }
-            host += 1;
+            host = host.saturating_add(1);
         }
         None // pool exhausted
     }

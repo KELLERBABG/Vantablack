@@ -1123,7 +1123,7 @@ impl AdaptiveShardRouter {
     /// How many peers a shard dispatch should aim to use: one per RS shard, so
     /// `k` data shards plus one parity shard can take `k + 1` distinct paths.
     pub fn shard_target_count(&self) -> usize {
-        self.data_shards + 1
+        self.data_shards.saturating_add(1)
     }
 
     /// Get the fitness score for a peer path.

@@ -303,10 +303,10 @@ fn guard_ok(guard: &RelayDescriptor, middle: &RelayDescriptor, home: &RelayDescr
 }
 
 fn count_new_networks(others: &[&RelayDescriptor]) -> usize {
-    let mut count = 0;
+    let mut count: usize = 0;
     for (i, a) in others.iter().enumerate() {
         if !others[..i].iter().any(|b| a.same_network(b)) {
-            count += 1;
+            count = count.saturating_add(1);
         }
     }
     count

@@ -240,7 +240,8 @@ async fn handle(mut client: TcpStream, cfg: Arc<ExposeConfig>) -> std::io::Resul
         let _ = tokio::io::copy(&mut ur, &mut cw).await;
         let _ = cw.shutdown().await;
     });
-    let _ = tokio::join!(up, down);
+    let _ = up.await;
+    let _ = down.await;
     Ok(())
 }
 

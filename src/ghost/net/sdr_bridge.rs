@@ -220,8 +220,19 @@ fn spawn_dsp_actor() -> Option<std::sync::mpsc::Sender<Vec<u8>>> {
                     let _ = online_tx.send(true);
                     info!("skywave: ABOS DSP actor online — full TX chain owned by the actor thread");
                     for payload in payload_rx {
-                        if let Err(e) = rt.block_on(system.transmit(&payload)) {
-                            error!(error = %e, "skywave: DSP transmit failed");
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            rt.block_on(system.transmit(&payload))
+                        })) {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                error!(error = %e, "skywave: DSP transmit failed");
+                            }
+                            Err(_) => {
+                                error!(
+                                    len = payload.len(),
+                                    "skywave: DSP transmit panicked — recovered actor thread"
+                                );
+                            }
                         }
                     }
                 }

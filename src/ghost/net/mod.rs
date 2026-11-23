@@ -1021,6 +1021,9 @@ pub struct GtfV3Frame {
 fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
     #[inline]
     fn qr(s: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
+        if a >= 16 || b >= 16 || c >= 16 || d >= 16 {
+            return;
+        }
         s[a] = s[a].wrapping_add(s[b]);
         s[d] = (s[d] ^ s[a]).rotate_left(16);
         s[c] = s[c].wrapping_add(s[d]);

@@ -198,7 +198,7 @@ fn encode_socket_addr(buf: &mut Vec<u8>, addr: SocketAddr) {
 
 fn decode_socket_addr(bytes: &[u8], at: &mut usize) -> Option<SocketAddr> {
     let ip_ver = *bytes.get(*at)?;
-    *at += 1;
+    *at = at.checked_add(1)?;
     let ip = match ip_ver {
         4 => {
             let end = at.checked_add(4)?;
@@ -335,7 +335,7 @@ impl PeerDescriptor {
         if bytes.len() < 4 + 32 + 16 + 1 + 4 + 2 + 1 + 8 + 64 || &bytes[..4] != Self::MAGIC {
             return None;
         }
-        let mut at = 4;
+        let mut at: usize = 4;
         let mut ed25519_pk = [0u8; 32];
         ed25519_pk.copy_from_slice(bytes.get(at..at + 32)?);
         at += 32;
@@ -487,7 +487,8 @@ impl PeerDescriptorV2 {
         ice_offer: Option<&str>,
         timestamp: u64,
     ) -> Vec<u8> {
-        let mut b = Vec::with_capacity(128 + lan_endpoints.len() * 8);
+        let mut b =
+            Vec::with_capacity(128usize.saturating_add(lan_endpoints.len().saturating_mul(8)));
         b.extend_from_slice(Self::MAGIC);
         b.extend_from_slice(ed25519_pk);
         b.extend_from_slice(pq_commitment);
@@ -577,7 +578,7 @@ impl PeerDescriptorV2 {
         {
             return None;
         }
-        let mut at = 4;
+        let mut at: usize = 4;
 
         let ed25519_pk: [u8; 32] = bytes.get(at..at + 32)?.try_into().ok()?;
         at += 32;
@@ -734,26 +735,29 @@ impl NetworkInvite {
         if bytes.len() < 4 + 2 + 32 + 1 + 1 || &bytes[..4] != Self::MAGIC {
             return None;
         }
-        let mut at = 4;
+        let mut at: usize = 4;
 
-        let name_len = u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?) as usize;
-        at += 2;
+        let name_len_end = at.checked_add(2)?;
+        let name_len = u16::from_be_bytes(bytes.get(at..name_len_end)?.try_into().ok()?) as usize;
+        at = name_len_end;
         let name_end = at.checked_add(name_len)?;
         let network_name = std::str::from_utf8(bytes.get(at..name_end)?)
             .ok()?
             .to_string();
         at = name_end;
 
-        let swarm_secret: [u8; 32] = bytes.get(at..at + 32)?.try_into().ok()?;
-        at += 32;
+        let secret_end = at.checked_add(32)?;
+        let swarm_secret: [u8; 32] = bytes.get(at..secret_end)?.try_into().ok()?;
+        at = secret_end;
 
         let has_url = *bytes.get(at)?;
-        at += 1;
+        at = at.checked_add(1)?;
         let rendezvous_url = match has_url {
             0 => None,
             1 => {
-                let len = u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?) as usize;
-                at += 2;
+                let len_end = at.checked_add(2)?;
+                let len = u16::from_be_bytes(bytes.get(at..len_end)?.try_into().ok()?) as usize;
+                at = len_end;
                 let end = at.checked_add(len)?;
                 let url = std::str::from_utf8(bytes.get(at..end)?).ok()?.to_string();
                 at = end;
@@ -763,12 +767,13 @@ impl NetworkInvite {
         };
 
         let has_peer = *bytes.get(at)?;
-        at += 1;
+        at = at.checked_add(1)?;
         let bootstrap_peer = match has_peer {
             0 => None,
             1 => {
-                let len = u16::from_be_bytes(bytes.get(at..at + 2)?.try_into().ok()?) as usize;
-                at += 2;
+                let len_end = at.checked_add(2)?;
+                let len = u16::from_be_bytes(bytes.get(at..len_end)?.try_into().ok()?) as usize;
+                at = len_end;
                 let end = at.checked_add(len)?;
                 let peer = PeerDescriptorV2::from_bytes(bytes.get(at..end)?)?;
                 at = end;
@@ -1745,7 +1750,7 @@ impl OmrPublisher {
                 encrypted_blob: encrypted_blob.clone(),
             };
             if substrate.publish_share(&slot_hex, &envelope).await.is_ok() {
-                succeeded += 1;
+                succeeded = succeeded.saturating_add(1);
             }
         }
 

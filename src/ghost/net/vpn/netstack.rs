@@ -749,9 +749,8 @@ fn nat_ingress(
     if proto != 6 && proto != 17 {
         return None; // ICMP handled elsewhere
     }
-    let oct = |o: usize| std::net::Ipv4Addr::new(pkt[o], pkt[o + 1], pkt[o + 2], pkt[o + 3]);
-    let src = oct(12);
-    let dst = oct(16);
+    let src = std::net::Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
+    let dst = std::net::Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
     let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
     let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
     let tuple: Tuple = (src, sport, dst, dport);

@@ -549,10 +549,13 @@ pub fn ingest_gossip_revocation_batch(bytes: &[u8]) -> usize {
     let mut merged = 0usize;
     let mut guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
     for _ in 0..count {
-        if pos + REVOCATION_BYTES > bytes.len() {
+        let Some(end) = pos.checked_add(REVOCATION_BYTES) else {
+            break;
+        };
+        if end > bytes.len() {
             break;
         }
-        if let Some(rev) = Revocation::decode(&bytes[pos..pos + REVOCATION_BYTES]) {
+        if let Some(rev) = Revocation::decode(&bytes[pos..end]) {
             let already = guard
                 .raw_entries
                 .iter()
@@ -560,11 +563,11 @@ pub fn ingest_gossip_revocation_batch(bytes: &[u8]) -> usize {
             if !already && guard.set.merge(&rev, &root_pk) {
                 guard.raw_entries.retain(|e| e.device_id != rev.device_id);
                 guard.raw_entries.push(rev);
-                guard.gossip_merged += 1;
-                merged += 1;
+                guard.gossip_merged = guard.gossip_merged.saturating_add(1);
+                merged = merged.saturating_add(1);
             }
         }
-        pos += REVOCATION_BYTES;
+        pos = end;
     }
     merged
 }
@@ -813,14 +816,19 @@ fn gf_mul(mut x: u8, mut y: u8) -> u8 {
 }
 
 fn rs_remainder(data: &[u8], ecc_len: usize) -> Vec<u8> {
+    if ecc_len == 0 {
+        return Vec::new();
+    }
+    let last = ecc_len.saturating_sub(1);
     let mut gen = vec![0u8; ecc_len];
-    gen[ecc_len - 1] = 1;
+    gen[last] = 1;
     let mut root = 1u8;
     for _ in 0..ecc_len {
         for j in 0..ecc_len {
             gen[j] = gf_mul(gen[j], root);
-            if j + 1 < ecc_len {
-                gen[j] ^= gen[j + 1];
+            let next = j.saturating_add(1);
+            if next < ecc_len {
+                gen[j] ^= gen[next];
             }
         }
         root = gf_mul(root, 2);
@@ -829,7 +837,7 @@ fn rs_remainder(data: &[u8], ecc_len: usize) -> Vec<u8> {
     for &b in data {
         let factor = b ^ rem[0];
         rem.copy_within(1.., 0);
-        rem[ecc_len - 1] = 0;
+        rem[last] = 0;
         for j in 0..ecc_len {
             rem[j] ^= gf_mul(gen[j], factor);
         }
@@ -843,10 +851,11 @@ fn push_bits(buf: &mut Vec<u8>, bit_len: &mut usize, val: u32, count: usize) {
         if idx >= buf.len() {
             buf.push(0);
         }
-        if (val >> i) & 1 != 0 {
-            buf[idx] |= 1 << (7 - (*bit_len % 8));
+        if (val.checked_shr(i as u32).unwrap_or(0)) & 1 != 0 {
+            let shift = 7usize.saturating_sub(*bit_len % 8) as u32;
+            buf[idx] |= 1u8.wrapping_shl(shift);
         }
-        *bit_len += 1;
+        *bit_len = bit_len.saturating_add(1);
     }
 }
 
@@ -856,9 +865,13 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
     let spec = QR_SPECS
         .iter()
         .find(|s| {
-            let total_data = s.g1_blocks * s.g1_data + s.g2_blocks * s.g2_data;
-            let hdr_bits = if s.version >= 10 { 20 } else { 12 };
-            (hdr_bits + payload.len() * 8).div_ceil(8) <= total_data
+            let total_data = s
+                .g1_blocks
+                .saturating_mul(s.g1_data)
+                .saturating_add(s.g2_blocks.saturating_mul(s.g2_data));
+            let hdr_bits: usize = if s.version >= 10 { 20 } else { 12 };
+            let total_bits = hdr_bits.saturating_add(payload.len().saturating_mul(8));
+            total_bits.div_ceil(8) <= total_data
         })
         .ok_or_else(|| {
             format!(
@@ -867,7 +880,10 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
             )
         })?;
 
-    let total_data = spec.g1_blocks * spec.g1_data + spec.g2_blocks * spec.g2_data;
+    let total_data = spec
+        .g1_blocks
+        .saturating_mul(spec.g1_data)
+        .saturating_add(spec.g2_blocks.saturating_mul(spec.g2_data));
     let mut data_bytes = Vec::with_capacity(total_data);
     let mut bit_len = 0usize;
     push_bits(&mut data_bytes, &mut bit_len, 0b0100, 4);
@@ -1042,7 +1058,7 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     let matrix = encode_qr_matrix(text)?;
     let size = matrix.len();
     let quiet = 4usize;
-    let total = size + quiet * 2;
+    let total = size.saturating_add(quiet.saturating_mul(2));
 
     // Reserve a small 5x5 center medallion on Version 3+ matrices (<= 2% area,
     // safely within ECC-L's ~7% recovery capacity).
@@ -1051,9 +1067,9 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     let in_badge = |r: usize, c: usize| -> bool {
         has_badge
             && r >= mid.saturating_sub(2)
-            && r <= mid + 2
+            && r <= mid.saturating_add(2)
             && c >= mid.saturating_sub(2)
-            && c <= mid + 2
+            && c <= mid.saturating_add(2)
     };
     let in_finder = |r: usize, c: usize| -> bool {
         (r < 7 && c < 7)
@@ -1066,28 +1082,31 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
         let mut c = 0usize;
         while c < size {
             if !row[c] || in_finder(r, c) || in_badge(r, c) {
-                c += 1;
+                c = c.saturating_add(1);
                 continue;
             }
             let mut end = c;
-            while end + 1 < size && row[end + 1] && !in_finder(r, end + 1) && !in_badge(r, end + 1)
+            while end.saturating_add(1) < size
+                && row[end.saturating_add(1)]
+                && !in_finder(r, end.saturating_add(1))
+                && !in_badge(r, end.saturating_add(1))
             {
-                end += 1;
+                end = end.saturating_add(1);
             }
-            let x = (c + quiet) as f32 + 0.08;
-            let y = (r + quiet) as f32 + 0.12;
-            let w = (end - c + 1) as f32 - 0.16;
+            let x = c.saturating_add(quiet) as f32 + 0.08;
+            let y = r.saturating_add(quiet) as f32 + 0.12;
+            let w = end.saturating_sub(c).saturating_add(1) as f32 - 0.16;
             let _ = write!(
                 tracks,
                 "<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"0.76\" rx=\"0.38\" fill=\"#0C0D0F\"/>"
             );
-            c = end + 1;
+            c = end.saturating_add(1);
         }
     }
 
     let finder_eye = |ox: usize, oy: usize| -> String {
-        let cx = (ox + quiet) as f32 + 3.5;
-        let cy = (oy + quiet) as f32 + 3.5;
+        let cx = ox.saturating_add(quiet) as f32 + 3.5;
+        let cy = oy.saturating_add(quiet) as f32 + 3.5;
         format!(
             "<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"3.05\" fill=\"none\" stroke=\"#0C0D0F\" stroke-width=\"0.92\"/><circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"1.52\" fill=\"#0C0D0F\"/>"
         )

@@ -469,7 +469,7 @@ impl Bbr {
         let by_model = self.bdp_bytes() * self.cwnd_gain;
         // Startup must be able to grow even before the model is populated, which
         // is what lets the first rounds discover a rate at all.
-        let startup_floor = (self.round_count + 1) as f64 * self.mss as f64;
+        let startup_floor = self.round_count.saturating_add(1) as f64 * self.mss as f64;
         by_model.max(startup_floor).max(floor).min(self.max_cwnd) as u64
     }
 

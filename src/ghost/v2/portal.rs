@@ -838,7 +838,7 @@ pub async fn serve(registry: Arc<PortalRegistry>, listener: tokio::net::TcpListe
             let split = head
                 .windows(4)
                 .position(|w| w == b"\r\n\r\n")
-                .map(|p| p + 4)
+                .map(|p| p.saturating_add(4))
                 .unwrap_or(head.len());
             let (header_bytes, body) = head.split_at(split);
             let text = String::from_utf8_lossy(header_bytes);

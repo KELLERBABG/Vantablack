@@ -339,11 +339,11 @@ pub fn plan(bytes: usize, max_rungs: usize) -> Result<LadderPlan, String> {
     // Spread the remaining cells evenly over the chosen rungs.
     let mut remaining = needed.saturating_sub(steps.len());
     let step_count = steps.len();
-    let mut i = 0;
+    let mut i: usize = 0;
     while remaining > 0 {
-        steps[i % step_count].cells += 1;
-        remaining -= 1;
-        i += 1;
+        steps[i % step_count].cells = steps[i % step_count].cells.saturating_add(1);
+        remaining = remaining.saturating_sub(1);
+        i = i.saturating_add(1);
     }
     Ok(LadderPlan {
         cells: needed,
@@ -497,7 +497,7 @@ impl MuleStore {
     /// idempotent; two mules that meet twice end with the same set.
     pub fn sync_from(&self, other: &MuleStore) -> Result<usize, String> {
         self.ensure()?;
-        let mut copied = 0;
+        let mut copied: usize = 0;
         for bundle in other.list() {
             if self.get(&bundle.id).is_some() {
                 continue;
@@ -507,7 +507,7 @@ impl MuleStore {
                 std::fs::write(&tmp, &bytes).map_err(|e| format!("copy bundle: {e}"))?;
                 std::fs::rename(&tmp, self.dir.join(format!("{}.cell", bundle.id)))
                     .map_err(|e| format!("commit bundle: {e}"))?;
-                copied += 1;
+                copied = copied.saturating_add(1);
             }
         }
         Ok(copied)
@@ -564,7 +564,12 @@ pub async fn loopback_demo() -> Result<DemoReport, String> {
     ];
     let mut sent = Vec::new();
     for (i, payload) in payloads.iter().enumerate() {
-        let cell = GhostCellNano::seal(&key, [0xAB, 0xCD, 0xEF, i as u8], i as u64 + 1, payload)?;
+        let cell = GhostCellNano::seal(
+            &key,
+            [0xAB, 0xCD, 0xEF, i as u8],
+            (i as u64).saturating_add(1),
+            payload,
+        )?;
         send_cell(&sender, dst, &cell)
             .await
             .map_err(|e| format!("send: {e}"))?;
@@ -589,21 +594,21 @@ pub async fn loopback_demo() -> Result<DemoReport, String> {
     let merged = b.sync_from(&a)?;
     let merkle_after = b.merkle_root();
 
-    let mut received = 0;
+    let mut received: usize = 0;
     let mut ok = true;
     for (i, expected) in payloads.iter().enumerate() {
         let cell = recv_cell(&receiver, 2_000).await?;
         let plain = cell.open(&key)?;
         ok &= plain == *expected;
-        ok &= cell.seq == i as u64 + 1;
-        received += 1;
+        ok &= cell.seq == (i as u64).saturating_add(1);
+        received = received.saturating_add(1);
     }
     let _ = std::fs::remove_dir_all(&base);
 
     Ok(DemoReport {
         cells_sent: sent.len(),
         cells_received: received,
-        bytes_on_wire: sent.len() * CELL_LEN,
+        bytes_on_wire: sent.len().saturating_mul(CELL_LEN),
         merkle_before,
         merkle_after,
         bundles_merged: merged,

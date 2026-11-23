@@ -89,12 +89,12 @@ impl LdpcCodec {
             // Main diagonal
             cols.push(i);
             // Super-diagonal (except last row)
-            if i < LDPC_DATA_BITS - 1 {
-                cols.push(i + 1);
+            if i < LDPC_DATA_BITS.saturating_sub(1) {
+                cols.push(i.saturating_add(1));
             }
             // Add a third column with a staggered pattern for weight-3 regularity
-            let extra_col = (i * 7 + 13) % LDPC_DATA_BITS;
-            if extra_col != i && extra_col != i + 1 {
+            let extra_col = i.saturating_mul(7).saturating_add(13) % LDPC_DATA_BITS;
+            if extra_col != i && extra_col != i.saturating_add(1) {
                 cols.push(extra_col);
             }
             parity_cols.push(cols);
@@ -344,8 +344,10 @@ fn bits_to_bytes(bits: &[bool]) -> Vec<u8> {
     for (i, &bit) in bits.iter().enumerate() {
         if bit {
             let byte_idx = i / 8;
-            let bit_idx = 7 - (i % 8);
-            bytes[byte_idx] |= 1 << bit_idx;
+            let bit_idx = 7usize.saturating_sub(i % 8);
+            if let Some(slot) = bytes.get_mut(byte_idx) {
+                *slot |= 1u8.wrapping_shl(bit_idx as u32);
+            }
         }
     }
     bytes

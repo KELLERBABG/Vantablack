@@ -234,7 +234,7 @@ impl Scavenger {
         let started = Instant::now();
         let decision = if real_pending {
             if background_due {
-                self.preemptions += 1;
+                self.preemptions = self.preemptions.saturating_add(1);
             }
             Decision::SendReal
         } else if background_due {
@@ -286,16 +286,16 @@ impl Scavenger {
     /// keeps the timer out of the measurement.
     pub fn bench(&mut self, iterations: usize) -> YieldStats {
         const BATCH: usize = 4_096;
-        let mut done = 0;
+        let mut done: usize = 0;
         while done < iterations {
-            let n = BATCH.min(iterations - done);
+            let n = BATCH.min(iterations.saturating_sub(done));
             let started = Instant::now();
             for _ in 0..n {
                 self.decide(true, true);
             }
             let per_decision_us = started.elapsed().as_nanos() as f64 / n as f64 / 1_000.0;
             self.samples_us.push(per_decision_us);
-            done += n;
+            done = done.saturating_add(n);
         }
         self.stats()
     }
