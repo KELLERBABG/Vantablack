@@ -18,6 +18,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.widget.*
+import java.util.Locale
 
 class MainActivity : Activity() {
 
@@ -26,30 +27,42 @@ class MainActivity : Activity() {
     private var pendingInvite: String? = null
     private var pendingInstallApkFile: java.io.File? = null
 
-    private var currentModeIndex = 1 // 0 = Fast, 1 = Stealth, 2 = Multi-Hop
-    private val modes = arrayOf("Fast", "Stealth", "Multi-Hop")
-
     private lateinit var editRemoteAddr: EditText
     private lateinit var editDnsServer: EditText
     private lateinit var centerButtonFrame: FrameLayout
     private lateinit var centerLedView: View
     private lateinit var txtCenterState: TextView
-    private lateinit var txtLocationValue: TextView
-    private lateinit var txtLocationSub: TextView
-    private lateinit var txtModeValue: TextView
-    private lateinit var txtModeSub: TextView
+    private lateinit var txtExitValue: TextView
+    private lateinit var txtExitSub: TextView
+    private lateinit var txtRttValue: TextView
+    private lateinit var txtRttSub: TextView
     private lateinit var btnUpdateBadge: Button
     private lateinit var txtUpdateStatus: TextView
     private lateinit var btnUpdateAction: TextView
+
+    // Real live telemetry views
+    private lateinit var txtDownSpeed: TextView
+    private lateinit var txtDownTotal: TextView
+    private lateinit var txtUpSpeed: TextView
+    private lateinit var txtUpTotal: TextView
+    private lateinit var txtConnPath: TextView
+    private lateinit var txtDnsServer: TextView
+    private lateinit var txtHandovers: TextView
+    private lateinit var txtFingerprint: TextView
     private lateinit var txtPeersHeader: TextView
     private lateinit var peerListContainer: LinearLayout
+    private lateinit var advancedContainer: LinearLayout
+    private lateinit var txtAdvancedToggle: TextView
 
     private val handler = Handler(Looper.getMainLooper())
+    private var lastRxBytes: Long = 0
+    private var lastTxBytes: Long = 0
+    private var lastTimestamp: Long = 0
 
     private val statusUpdater = object : Runnable {
         override fun run() {
             updateStatus()
-            handler.postDelayed(this, 1200)
+            handler.postDelayed(this, 1000)
         }
     }
 
@@ -78,7 +91,7 @@ class MainActivity : Activity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(28), dp(24), dp(28))
+            setPadding(dp(22), dp(22), dp(22), dp(28))
         }
         scroll.addView(root)
 
@@ -86,12 +99,12 @@ class MainActivity : Activity() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(24))
+            setPadding(0, 0, 0, dp(18))
         }
 
         val title = TextView(this).apply {
             text = "Vantablack"
-            textSize = 17f
+            textSize = 18f
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             setTextColor(Color.parseColor("#F4F1EA"))
         }
@@ -127,15 +140,15 @@ class MainActivity : Activity() {
         header.addView(btnUpdateBadge)
         root.addView(header)
 
-        // ── Center Stage: Machined Brushed-Steel Button + Location / Mode Flanks ──
+        // ── Center Stage: Machined Brushed-Steel Button + Real Exit / Latency Flanks ──
         val heroSection = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, dp(16), 0, dp(24))
+            setPadding(0, dp(8), 0, dp(20))
         }
 
         centerButtonFrame = FrameLayout(this).apply {
-            val size = dp(176)
+            val size = dp(170)
             layoutParams = LinearLayout.LayoutParams(size, size).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
             }
@@ -189,6 +202,7 @@ class MainActivity : Activity() {
             centerLedView = View(context).apply {
                 val d = dp(11)
                 layoutParams = LinearLayout.LayoutParams(d, d).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
                     setMargins(0, 0, 0, dp(10))
                 }
                 background = GradientDrawable().apply {
@@ -214,16 +228,15 @@ class MainActivity : Activity() {
                 }
             }
             innerCol.addView(txtCenterState)
-
             addView(innerCol)
         }
         heroSection.addView(centerButtonFrame)
 
-        // Flanks Row (Location & Mode)
+        // Real Flanks Row: Exit Gateway (left) & Latency / Tunnel State (right)
         val flanksRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
-            setPadding(dp(8), dp(24), dp(8), 0)
+            setPadding(dp(6), dp(22), dp(6), 0)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -233,39 +246,37 @@ class MainActivity : Activity() {
         val leftFlank = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.START
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.15f)
             addView(TextView(context).apply {
-                text = "LOCATION"
+                text = "EXIT GATEWAY"
                 textSize = 10f
                 letterSpacing = 0.14f
                 setTextColor(Color.parseColor("#787774"))
             })
-            txtLocationValue = TextView(context).apply {
-                text = "Zurich"
-                textSize = 19f
+            txtExitValue = TextView(context).apply {
+                text = "Auto Mesh"
+                textSize = 17f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
                 setPadding(0, dp(2), 0, 0)
             }
-            addView(txtLocationValue)
-            txtLocationSub = TextView(context).apply {
-                text = "Switzerland"
+            addView(txtExitValue)
+            txtExitSub = TextView(context).apply {
+                text = "Standby"
                 textSize = 12f
                 setTextColor(Color.parseColor("#9E9C98"))
             }
-            addView(txtLocationSub)
+            addView(txtExitSub)
         }
 
         val rightFlank = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener {
-                currentModeIndex = (currentModeIndex + 1) % modes.size
-                txtModeValue.text = modes[currentModeIndex]
-            }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.85f)
             addView(TextView(context).apply {
-                text = "MODE"
+                text = "LATENCY"
                 textSize = 10f
                 letterSpacing = 0.14f
                 gravity = Gravity.END
@@ -275,9 +286,9 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             })
-            txtModeValue = TextView(context).apply {
-                text = modes[currentModeIndex]
-                textSize = 19f
+            txtRttValue = TextView(context).apply {
+                text = "— ms"
+                textSize = 17f
                 gravity = Gravity.END
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
@@ -287,8 +298,8 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
-            addView(txtModeValue)
-            txtModeSub = TextView(context).apply {
+            addView(txtRttValue)
+            txtRttSub = TextView(context).apply {
                 text = "Direct"
                 textSize = 12f
                 gravity = Gravity.END
@@ -298,7 +309,7 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             }
-            addView(txtModeSub)
+            addView(txtRttSub)
         }
 
         flanksRow.addView(leftFlank)
@@ -306,7 +317,7 @@ class MainActivity : Activity() {
         heroSection.addView(flanksRow)
         root.addView(heroSection)
 
-        // ── Quick Pairing Pill Dock (+ Pair Phone QR & Paste Invite) ──
+        // ── Quick Pairing Pill Dock (+ Scan QR Code & Paste Invite Link) ──
         val dockRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             weightSum = 2f
@@ -319,7 +330,7 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 0, dp(16)) }
+            ).apply { setMargins(0, 0, 0, dp(14)) }
         }
 
         val btnScanQr = Button(this).apply {
@@ -360,7 +371,120 @@ class MainActivity : Activity() {
         dockRow.addView(btnPasteInvite)
         root.addView(dockRow)
 
-        // ── Linked Devices Sheet ──
+        // ── Live Traffic & Tunnel Card (Real Telemetry) ──
+        val cardTelemetry = createCoalCard().apply {
+            addView(createSectionLabel("TRAFFIC & TUNNEL"))
+
+            val speedRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                weightSum = 2f
+                setPadding(0, dp(4), 0, dp(12))
+            }
+
+            val colDown = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(createDimLabel("DOWNLINK"))
+                txtDownSpeed = TextView(context).apply {
+                    text = "0 B/s"
+                    textSize = 15f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                }
+                addView(txtDownSpeed)
+                txtDownTotal = TextView(context).apply {
+                    text = "0 B • 0 pkts"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#8E8D8A"))
+                }
+                addView(txtDownTotal)
+            }
+
+            val colUp = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(createDimLabel("UPLINK"))
+                txtUpSpeed = TextView(context).apply {
+                    text = "0 B/s"
+                    textSize = 15f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                }
+                addView(txtUpSpeed)
+                txtUpTotal = TextView(context).apply {
+                    text = "0 B • 0 pkts"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#8E8D8A"))
+                }
+                addView(txtUpTotal)
+            }
+
+            speedRow.addView(colDown)
+            speedRow.addView(colUp)
+            addView(speedRow)
+
+            // Hairline divider
+            addView(View(context).apply {
+                setBackgroundColor(Color.parseColor("#14FFFFFF"))
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
+                    setMargins(0, 0, 0, dp(10))
+                }
+            })
+
+            val detailRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                weightSum = 3f
+            }
+
+            val colPath = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f)
+                addView(createDimLabel("PATH"))
+                txtConnPath = TextView(context).apply {
+                    text = "Standby"
+                    textSize = 12f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                }
+                addView(txtConnPath)
+            }
+
+            val colDns = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f)
+                addView(createDimLabel("DNS"))
+                txtDnsServer = TextView(context).apply {
+                    text = "Auto (10.66.0.1)"
+                    textSize = 12f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                }
+                addView(txtDnsServer)
+            }
+
+            val colHandover = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.7f)
+                addView(createDimLabel("HANDOVERS"))
+                txtHandovers = TextView(context).apply {
+                    text = "0"
+                    textSize = 12f
+                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                }
+                addView(txtHandovers)
+            }
+
+            detailRow.addView(colPath)
+            detailRow.addView(colDns)
+            detailRow.addView(colHandover)
+            addView(detailRow)
+        }
+        root.addView(cardTelemetry)
+
+        // ── Linked Devices Card ──
         val cardPeers = createCoalCard().apply {
             val topRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -368,7 +492,7 @@ class MainActivity : Activity() {
                 setPadding(0, 0, 0, dp(10))
             }
             txtPeersHeader = TextView(context).apply {
-                text = "Linked Devices"
+                text = "Linked Devices (0)"
                 textSize = 13f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
@@ -408,20 +532,153 @@ class MainActivity : Activity() {
         }
         root.addView(cardPeers)
 
-        // ── Hidden / Optional Endpoint & DNS state (preserved for invite import) ──
+        // ── Node Identity & Advanced Gateway Overrides ──
         val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
         val savedHub = prefs.getString("hub_addr", null)
         val savedDns = prefs.getString("dns_server", null)
-        editRemoteAddr = EditText(this).apply {
-            setText(savedHub ?: "")
-            visibility = View.GONE
+
+        val cardIdentity = createCoalCard().apply {
+            addView(createSectionLabel("NODE FINGERPRINT"))
+            val idRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(10))
+            }
+            txtFingerprint = TextView(context).apply {
+                text = "—"
+                textSize = 13f
+                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            idRow.addView(txtFingerprint)
+
+            val btnCopyFp = TextView(context).apply {
+                text = "Copy"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(12), dp(5), dp(12), dp(5))
+                setOnClickListener {
+                    val fp = txtFingerprint.text.toString()
+                    if (fp.isNotEmpty() && fp != "—") {
+                        val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clip.setPrimaryClip(ClipData.newPlainText("Vantablack Fingerprint", fp))
+                        Toast.makeText(this@MainActivity, "Fingerprint copied", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            idRow.addView(btnCopyFp)
+            addView(idRow)
+
+            // Expandable Gateway & DNS Overrides
+            txtAdvancedToggle = TextView(context).apply {
+                text = "Gateway & DNS Overrides ▾"
+                textSize = 11f
+                setTextColor(Color.parseColor("#9E9C98"))
+                setPadding(0, dp(4), 0, dp(4))
+                setOnClickListener {
+                    val show = advancedContainer.visibility != View.VISIBLE
+                    advancedContainer.visibility = if (show) View.VISIBLE else View.GONE
+                    text = if (show) "Gateway & DNS Overrides ▴" else "Gateway & DNS Overrides ▾"
+                }
+            }
+            addView(txtAdvancedToggle)
+
+            advancedContainer = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                setPadding(0, dp(8), 0, 0)
+
+                editRemoteAddr = EditText(context).apply {
+                    hint = "Exit Gateway: Auto (or Hub IP:Port)"
+                    setText(savedHub ?: "")
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                    setHintTextColor(Color.parseColor("#6E6D6A"))
+                    textSize = 12f
+                    setTypeface(Typeface.MONOSPACE)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#14000000"))
+                        setStroke(1, Color.parseColor("#22FFFFFF"))
+                        cornerRadius = dp(10).toFloat()
+                    }
+                    setPadding(dp(14), dp(10), dp(14), dp(10))
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { setMargins(0, 0, 0, dp(8)) }
+                }
+                addView(editRemoteAddr)
+
+                editDnsServer = EditText(context).apply {
+                    hint = "DNS Server: Auto via Exit Hub (or custom IP)"
+                    setText(savedDns ?: "")
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                    setHintTextColor(Color.parseColor("#6E6D6A"))
+                    textSize = 12f
+                    setTypeface(Typeface.MONOSPACE)
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#14000000"))
+                        setStroke(1, Color.parseColor("#22FFFFFF"))
+                        cornerRadius = dp(10).toFloat()
+                    }
+                    setPadding(dp(14), dp(10), dp(14), dp(10))
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply { setMargins(0, 0, 0, dp(10)) }
+                }
+                addView(editDnsServer)
+
+                val toolsRow = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    weightSum = 2f
+                }
+                val btnLeak = TextView(context).apply {
+                    text = "DNS Leak Test ↗"
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#14FFFFFF"))
+                        cornerRadius = dp(999).toFloat()
+                    }
+                    setPadding(0, dp(8), 0, dp(8))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        setMargins(0, 0, dp(4), 0)
+                    }
+                    setOnClickListener {
+                        try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.dnsleaktest.com"))) } catch (_: Throwable) {}
+                    }
+                }
+                val btnRepo = TextView(context).apply {
+                    text = "GitHub Repo ↗"
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                    background = GradientDrawable().apply {
+                        setColor(Color.parseColor("#14FFFFFF"))
+                        cornerRadius = dp(999).toFloat()
+                    }
+                    setPadding(0, dp(8), 0, dp(8))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        setMargins(dp(4), 0, 0, 0)
+                    }
+                    setOnClickListener {
+                        try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/KELLERBABG/Vantablack"))) } catch (_: Throwable) {}
+                    }
+                }
+                toolsRow.addView(btnLeak)
+                toolsRow.addView(btnRepo)
+                addView(toolsRow)
+            }
+            addView(advancedContainer)
         }
-        editDnsServer = EditText(this).apply {
-            setText(savedDns ?: "")
-            visibility = View.GONE
-        }
-        root.addView(editRemoteAddr)
-        root.addView(editDnsServer)
+        root.addView(cardIdentity)
 
         // ── App Updates Row (One-Tap Update) ──
         val cardUpdate = createCoalCard().apply {
@@ -468,7 +725,6 @@ class MainActivity : Activity() {
         setContentView(scroll)
         updateStatus()
 
-        // Automatic update check shortly after launch
         handler.postDelayed({ checkUpdate(userInitiated = false) }, 1500)
 
         if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isVpnActive(this)) {
@@ -492,7 +748,6 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         handler.post(statusUpdater)
-        // If user just returned from granting "Install unknown apps" permission, resume APK install automatically
         val pendingApk = pendingInstallApkFile
         if (pendingApk != null && pendingApk.exists()) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
@@ -523,7 +778,7 @@ class MainActivity : Activity() {
                 setStroke(1, Color.parseColor("#18FFFFFF"))
                 cornerRadius = dp(16).toFloat()
             }
-            setPadding(dp(18), dp(16), dp(18), dp(16))
+            setPadding(dp(18), dp(15), dp(18), dp(15))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -531,20 +786,77 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun createSectionLabel(label: String): TextView {
+        return TextView(this).apply {
+            text = label
+            textSize = 10f
+            letterSpacing = 0.12f
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setTextColor(Color.parseColor("#787774"))
+            setPadding(0, 0, 0, dp(8))
+        }
+    }
+
+    private fun createDimLabel(label: String): TextView {
+        return TextView(this).apply {
+            text = label
+            textSize = 10f
+            letterSpacing = 0.08f
+            setTextColor(Color.parseColor("#787774"))
+        }
+    }
+
     private fun updateStatus() {
+        val now = System.currentTimeMillis()
+        val dt = if (lastTimestamp > 0) ((now - lastTimestamp) / 1000.0).coerceAtLeast(0.1) else 1.0
+
         val isConnected = GhostVpnService.isVpnActive(this)
         if (isConnected) {
+            val fp = GhostVpnService.getFingerprint()
+            if (fp.isNotEmpty()) txtFingerprint.text = fp
+
             val peers = GhostVpnService.getPeersCount()
             txtPeersHeader.text = "Linked Devices ($peers)"
 
             val activeExit = GhostVpnService.getActiveExitNode()
+            val pathStr = GhostVpnService.getConnectionPath()
             if (activeExit.isNotEmpty() && activeExit != "auto") {
-                txtLocationValue.text = activeExit
-                txtLocationSub.text = "Home Exit"
+                txtExitValue.text = activeExit
+                txtExitSub.text = pathStr
             } else {
-                txtLocationValue.text = "Zurich"
-                txtLocationSub.text = "Switzerland"
+                txtExitValue.text = "Auto Mesh"
+                txtExitSub.text = pathStr
             }
+
+            val rtt = GhostVpnService.getRttMs()
+            txtRttValue.text = if (rtt >= 0) "$rtt ms" else "— ms"
+            txtRttSub.text = "Encrypted"
+
+            txtConnPath.text = pathStr
+            txtDnsServer.text = GhostVpnService.activeDnsDisplay
+            txtHandovers.text = GhostVpnService.getHandoverCount().toString()
+
+            val stats = GhostVpnService.getStats()
+            val rxPkts = if (stats.isNotEmpty()) stats[0] else 0L
+            val txPkts = if (stats.size > 1) stats[1] else 0L
+            val currentRxBytes = if (stats.size > 4 && stats[4] > 0) stats[4] else rxPkts * 576L
+            val currentTxBytes = if (stats.size > 5 && stats[5] > 0) stats[5] else txPkts * 576L
+
+            val rxRate = if (lastTimestamp > 0 && lastRxBytes >= 0 && dt > 0.05) {
+                if (currentRxBytes >= lastRxBytes) (currentRxBytes - lastRxBytes) / dt else 0.0
+            } else 0.0
+            val txRate = if (lastTimestamp > 0 && lastTxBytes >= 0 && dt > 0.05) {
+                if (currentTxBytes >= lastTxBytes) (currentTxBytes - lastTxBytes) / dt else 0.0
+            } else 0.0
+
+            lastRxBytes = currentRxBytes
+            lastTxBytes = currentTxBytes
+            lastTimestamp = now
+
+            txtDownSpeed.text = formatRate(rxRate)
+            txtDownTotal.text = "${formatBytes(currentRxBytes)} • $rxPkts pkts"
+            txtUpSpeed.text = formatRate(txRate)
+            txtUpTotal.text = "${formatBytes(currentTxBytes)} • $txPkts pkts"
 
             peerListContainer.removeAllViews()
             val discovered = GhostVpnService.getDiscoveredPeers()
@@ -552,7 +864,7 @@ class MainActivity : Activity() {
                 peerListContainer.addView(createPeerRow(activeExit.ifEmpty { "Linked Mesh Exit" }, true))
             } else if (discovered.isEmpty()) {
                 peerListContainer.addView(TextView(this).apply {
-                    text = "Protected — waiting for linked devices..."
+                    text = "Listening for mesh peers..."
                     textSize = 12f
                     setTextColor(Color.parseColor("#8E8D8A"))
                     setPadding(0, dp(4), 0, dp(4))
@@ -567,12 +879,18 @@ class MainActivity : Activity() {
             txtPeersHeader.text = "Linked Devices (0)"
             val configured = editRemoteAddr.text.toString().trim()
             if (configured.isNotEmpty() && configured != "auto") {
-                txtLocationValue.text = configured
-                txtLocationSub.text = "Paired Exit"
+                txtExitValue.text = configured
+                txtExitSub.text = "Configured Exit"
             } else {
-                txtLocationValue.text = "Zurich"
-                txtLocationSub.text = "Switzerland"
+                txtExitValue.text = "Auto Mesh"
+                txtExitSub.text = "Standby"
             }
+            txtRttValue.text = "— ms"
+            txtRttSub.text = "Direct"
+            txtConnPath.text = "Standby"
+            txtHandovers.text = "0"
+            txtDownSpeed.text = "0 B/s"
+            txtUpSpeed.text = "0 B/s"
             peerListContainer.removeAllViews()
             peerListContainer.addView(TextView(this).apply {
                 text = "Scan a QR code from your computer or tap the center button"
@@ -581,6 +899,22 @@ class MainActivity : Activity() {
                 setPadding(0, dp(4), 0, dp(4))
             })
             updateUiState(false)
+        }
+    }
+
+    private fun formatRate(bytesPerSec: Double): String {
+        return when {
+            bytesPerSec >= 1_048_576.0 -> String.format(Locale.US, "%.1f MB/s", bytesPerSec / 1_048_576.0)
+            bytesPerSec >= 1024.0 -> String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0)
+            else -> String.format(Locale.US, "%.0f B/s", bytesPerSec)
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        return when {
+            bytes >= 1_048_576 -> String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
+            bytes >= 1024 -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
+            else -> "$bytes B"
         }
     }
 
@@ -626,12 +960,13 @@ class MainActivity : Activity() {
             addView(TextView(context).apply {
                 text = addr
                 textSize = 12f
+                setTypeface(Typeface.MONOSPACE)
                 setTextColor(Color.parseColor("#F4F1EA"))
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
 
             addView(TextView(context).apply {
-                text = if (isExit) "Home Exit" else "Use as Exit"
+                text = if (isExit) "Active Exit" else "Use as Exit"
                 textSize = 11f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(if (isExit) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
@@ -647,7 +982,6 @@ class MainActivity : Activity() {
     private fun updateUiState(connected: Boolean) {
         if (connected) {
             txtCenterState.text = "PROTECTED"
-            txtModeSub.text = "Encrypted"
             centerLedView.background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#F4F1EA"))
@@ -655,7 +989,6 @@ class MainActivity : Activity() {
             centerLedView.elevation = dp(6).toFloat()
         } else {
             txtCenterState.text = "OFF"
-            txtModeSub.text = "Direct"
             centerLedView.background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.parseColor("#33FFFFFF"))
@@ -809,7 +1142,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // ── In-App Software Updater (Redirect-Safe & Instant Install) ──
+    // ── In-App Software Updater ──
     private var availableUpdateUrl: String? = null
     private var availableUpdateVer: String? = null
 

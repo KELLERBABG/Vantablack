@@ -522,12 +522,6 @@
       updateApplying: false,
       updateInfo: null,
 
-      cities: [
-        { id: 'zurich',    city: 'Zurich',    country: 'Switzerland' },
-        { id: 'reykjavik', city: 'Reykjavik', country: 'Iceland' },
-        { id: 'frankfurt', city: 'Frankfurt', country: 'Germany' },
-        { id: 'tokyo',     city: 'Tokyo',     country: 'Japan' }
-      ],
       peers: []
     };
 
@@ -600,13 +594,44 @@
       }
     }
 
-    function curCity() {
+    function curExitDisplay() {
       const pinned = STATE.continuum.homeExit && STATE.continuum.homeExit.selected;
       if (pinned) {
         const peer = STATE.peers.find(p => p.fingerprint === pinned);
-        return { id: 'pinned', city: (peer && peer.name) || pinned.slice(0, 10), country: 'Pinned Home Exit' };
+        return {
+          id: pinned,
+          title: (peer && peer.name) || pinned.slice(0, 12),
+          sub: (peer && peer.address) ? ('Pinned Exit · ' + peer.address) : 'Pinned Home Exit'
+        };
       }
-      return STATE.cities.find(c => c.id === STATE.cityId) || STATE.cities[0];
+      const onlineCount = STATE.peers.filter(p => p.connected).length;
+      return {
+        id: 'auto',
+        title: 'Auto Mesh',
+        sub: onlineCount > 0 ? `${onlineCount} peer${onlineCount === 1 ? '' : 's'} online` : 'Adaptive Routing'
+      };
+    }
+
+    function dockExitOptions() {
+      const opts = [{ id: 'auto', label: 'Auto Mesh' }];
+      const candidates = (STATE.continuum.homeExit && Array.isArray(STATE.continuum.homeExit.candidates))
+        ? STATE.continuum.homeExit.candidates
+        : [];
+      const seen = new Set();
+      candidates.forEach(c => {
+        if (!c.fingerprint || seen.has(c.fingerprint)) return;
+        seen.add(c.fingerprint);
+        const peer = STATE.peers.find(p => p.fingerprint === c.fingerprint);
+        opts.push({ id: c.fingerprint, label: (peer && peer.name) || c.fingerprint.slice(0, 8) });
+      });
+      STATE.peers.forEach(p => {
+        if (!p.fingerprint || seen.has(p.fingerprint)) return;
+        if (p.is_exit || String(p.role || '').toLowerCase().includes('exit')) {
+          seen.add(p.fingerprint);
+          opts.push({ id: p.fingerprint, label: p.name || p.fingerprint.slice(0, 8) });
+        }
+      });
+      return opts.slice(0, 4);
     }
 
     function modeToBackend(uiMode) {
@@ -1144,7 +1169,7 @@
     }
 
     function render() {
-      const c = curCity();
+      const ex = curExitDisplay();
       const open = STATE.sheet !== null;
       const stage = document.getElementById('stage-root');
       const dock = document.getElementById('dock-root');
@@ -1168,9 +1193,9 @@
         stage.innerHTML = `
           <div class="hero-grid">
             <div class="flank-left">
-              <div class="flank-label">Location</div>
-              <div class="flank-value">${escapeHtml(c.city)}</div>
-              <div class="flank-sub">${escapeHtml(c.country)}</div>
+              <div class="flank-label">Exit Gateway</div>
+              <div class="flank-value">${escapeHtml(ex.title)}</div>
+              <div class="flank-sub">${escapeHtml(ex.sub)}</div>
             </div>
 
             <div class="center-btn-wrap">
@@ -1198,11 +1223,12 @@
         stage.innerHTML = renderSettingsSheet();
       }
 
+      const exitPills = dockExitOptions();
       dock.innerHTML = `
         <div class="dock-cluster">
-          ${STATE.cities.map(loc => {
-            const act = loc.id === c.id && !open;
-            return `<button type="button" class="pill-btn ${act ? 'active' : ''}" data-city="${escapeHtml(loc.id)}">${escapeHtml(loc.city)}</button>`;
+          ${exitPills.map(opt => {
+            const act = opt.id === ex.id && !open;
+            return `<button type="button" class="pill-btn ${act ? 'active' : ''}" data-exit-opt="${escapeHtml(opt.id)}">${escapeHtml(opt.label)}</button>`;
           }).join('')}
         </div>
         <div class="dock-cluster">
@@ -1222,7 +1248,7 @@
     function bindEvents() {
       document.querySelectorAll('[data-act="toggle"]').forEach(b => b.addEventListener('click', toggleConnection));
       document.querySelectorAll('[data-act="cycle-mode"]').forEach(b => b.addEventListener('click', cycleMode));
-      document.querySelectorAll('[data-city]').forEach(b => b.addEventListener('click', () => selectCity(b.dataset.city)));
+      document.querySelectorAll('[data-exit-opt]').forEach(b => b.addEventListener('click', () => selectExitOption(b.dataset.exitOpt)));
       document.querySelectorAll('[data-sheet]').forEach(b => b.addEventListener('click', () => {
         const s = b.dataset.sheet;
         STATE.sheet = STATE.sheet === s ? null : s;
@@ -1306,33 +1332,23 @@
       } catch (_) {}
     }
 
-    async function selectCity(cityId) {
-      STATE.cityId = cityId;
+    async function selectExitOption(exitId) {
       STATE.sheet = null;
-      const wasOff = !STATE.connected;
-      STATE.connected = true;
       STATE.pulse = true;
       render();
-      const mapTag = { zurich: 'CH', reykjavik: 'IS', frankfurt: 'DE', tokyo: 'JP' };
       try {
-        if (STATE.continuum.homeExit && STATE.continuum.homeExit.selected) {
+        if (exitId === 'auto') {
           await fetch('/api/v2/home-exit/clear', { method: 'POST', headers: pinHeaders() });
-          STATE.continuum.homeExit.selected = null;
-        }
-        await fetch('/api/settings', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ jurisdiction_tag: mapTag[cityId] || 'AUTO' })
-        });
-        if (wasOff) {
-          await fetch('/api/connect', {
+        } else {
+          await fetch('/api/v2/home-exit/select', {
             method: 'POST',
             headers: pinHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ connected: true })
+            body: JSON.stringify({ fingerprint: exitId })
           });
         }
+        await refreshContinuum();
       } catch (_) {}
-      setTimeout(() => { STATE.pulse = false; render(); }, 850);
+      setTimeout(() => { STATE.pulse = false; render(); }, 750);
     }
 
     async function fetchInvite() {
