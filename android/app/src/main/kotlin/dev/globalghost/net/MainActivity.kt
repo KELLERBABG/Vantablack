@@ -734,10 +734,11 @@ class MainActivity : Activity() {
     private fun launchQrScanner() {
         try {
             com.google.zxing.integration.android.IntentIntegrator(this)
+                .setCaptureActivity(PortraitCaptureActivity::class.java)
                 .setDesiredBarcodeFormats(com.google.zxing.integration.android.IntentIntegrator.QR_CODE)
                 .setPrompt("Scan Vantablack QR Code")
                 .setBeepEnabled(false)
-                .setOrientationLocked(false)
+                .setOrientationLocked(true)
                 .setRequestCode(QR_SCAN_REQUEST_CODE)
                 .initiateScan()
         } catch (_: Throwable) {
