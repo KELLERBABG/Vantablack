@@ -982,23 +982,25 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
         }
     }
 
-    // Reserve format areas + write ECC-L Mask 0 format bits (0x77c4).
+    // Reserve format areas + write ECC-L Mask 0 format bits (0x77c4, MSB-first).
     const FORMAT_L_M0: u16 = 0x77c4;
     for i in 0..15 {
-        let bit = ((FORMAT_L_M0 >> i) & 1) != 0;
+        let bit = ((FORMAT_L_M0 >> (14 - i)) & 1) != 0;
+        // Top-left copy: bits 14..=8 along row 8, bit 7 at (8,8), bits 6..=0 up col 8.
         if i < 6 {
             set_fn(8, i, bit);
         } else if i < 8 {
             set_fn(8, i + 1, bit);
-        } else {
-            set_fn(8, n - 15 + i, bit);
-        }
-        if i < 8 {
-            set_fn(n - 1 - i, 8, bit);
         } else if i == 8 {
             set_fn(7, 8, bit);
         } else {
             set_fn(14 - i, 8, bit);
+        }
+        // Split copy: bits 14..=8 up col 8 from bottom, bits 7..=0 along row 8 from right.
+        if i < 7 {
+            set_fn(n - 1 - i, 8, bit);
+        } else {
+            set_fn(8, n - 15 + i, bit);
         }
     }
 
@@ -1060,16 +1062,18 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     let quiet = 4usize;
     let total = size.saturating_add(quiet.saturating_mul(2));
 
-    // Reserve a small 5x5 center medallion on Version 3+ matrices (<= 2% area,
+    // Reserve a small center medallion on Version 3+ matrices (<= 2.2% area,
     // safely within ECC-L's ~7% recovery capacity).
     let mid = size / 2;
     let has_badge = size >= 29;
+    let badge_half: usize = if size >= 45 { 4 } else { 2 };
+    let badge_modules = (badge_half * 2 + 1) as f32 + 0.3;
     let in_badge = |r: usize, c: usize| -> bool {
         has_badge
-            && r >= mid.saturating_sub(2)
-            && r <= mid.saturating_add(2)
-            && c >= mid.saturating_sub(2)
-            && c <= mid.saturating_add(2)
+            && r >= mid.saturating_sub(badge_half)
+            && r <= mid.saturating_add(badge_half)
+            && c >= mid.saturating_sub(badge_half)
+            && c <= mid.saturating_add(badge_half)
     };
     let in_finder = |r: usize, c: usize| -> bool {
         (r < 7 && c < 7)
@@ -1119,10 +1123,11 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     );
 
     let badge = if has_badge {
-        let bx = (mid.saturating_sub(2) + quiet) as f32 - 0.15;
-        let by = (mid.saturating_sub(2) + quiet) as f32 - 0.15;
+        let bx = (mid.saturating_sub(badge_half) + quiet) as f32 - 0.15;
+        let by = (mid.saturating_sub(badge_half) + quiet) as f32 - 0.15;
+        let scale = badge_modules / 8.7;
         format!(
-            "<g transform=\"translate({bx:.2},{by:.2}) scale(0.6092)\">\
+            "<g transform=\"translate({bx:.2},{by:.2}) scale({scale:.4})\">\
              <rect x=\"0\" y=\"0\" width=\"8.7\" height=\"8.7\" rx=\"2.5\" fill=\"#0C0D0F\" stroke=\"#EAE6DC\" stroke-width=\"0.45\"/>\
              <path d=\"M2.1 4.3 C2.1 1.8, 6.6 1.8, 6.6 4.3 L6.7 6.6 C6.2 6.1, 5.7 6.65, 5.15 6.65 C4.65 6.65, 4.35 6.15, 4.35 6.15 C4.35 6.15, 4.05 6.65, 3.55 6.65 C3.0 6.65, 2.5 6.1, 2.0 6.6 Z\" fill=\"#F4F1EA\"/>\
              <rect x=\"2.65\" y=\"3.45\" width=\"3.4\" height=\"1.25\" rx=\"0.62\" fill=\"#0C0D0F\"/>\
@@ -1135,7 +1140,7 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     };
 
     Ok(format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {total} {total}\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"Vantablack Fleet Invite QR\"><rect width=\"100%\" height=\"100%\" rx=\"3\" fill=\"#EAE6DC\"/>{eyes}{tracks}{badge}</svg>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {total} {total}\" role=\"img\" aria-label=\"Vantablack Fleet Invite QR\"><rect width=\"100%\" height=\"100%\" rx=\"3\" fill=\"#EAE6DC\"/>{eyes}{tracks}{badge}</svg>"
     ))
 }
 
@@ -1286,7 +1291,8 @@ mod tests {
         let cert = root.issue(device(11), "Pixel", 2_000, DEFAULT_CERT_TTL_SECS);
         let svg = render_invite_qr_svg(&root.public_key(), &cert).expect("render fleet QR");
         assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
-        assert!(svg.contains("shape-rendering=\"crispEdges\""));
+        assert!(svg.contains("<circle cx="));
+        assert!(svg.contains("rx=\"0.38\""));
         assert!(svg.ends_with("</svg>"));
 
         let uri = encode_invite(&root.public_key(), &cert).unwrap();
@@ -1295,6 +1301,9 @@ mod tests {
         assert!(n >= 21 && (n - 17).is_multiple_of(4));
         // Top-left 7x7 finder border & center must be dark.
         assert!(matrix[0][0] && matrix[0][6] && matrix[6][0] && matrix[3][3]);
+        // Top-left MSB-first format bits for ECC-L Mask 0 (0x77c4 -> 111011111000100):
+        // bit 14 = 1 at (8,0), bit 11 = 0 at (8,3), bit 0 = 0 at (0,8).
+        assert!(matrix[8][0] && !matrix[8][3] && !matrix[0][8]);
     }
 
     #[test]

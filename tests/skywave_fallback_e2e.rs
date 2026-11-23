@@ -139,6 +139,17 @@ impl Daemon {
         self.status()["active_sessions"].as_u64().unwrap_or(0)
     }
 
+    fn connected_to(&self, peer_fp: &str) -> bool {
+        let Some((200, topo)) = try_http_json(self.web, "GET", "/api/topology", None) else {
+            return false;
+        };
+        topo["peers"].as_array().is_some_and(|peers| {
+            peers.iter().any(|p| {
+                p["fingerprint"].as_str() == Some(peer_fp) && p["connected"].as_bool() == Some(true)
+            })
+        })
+    }
+
     /// `(tx_packets, rx_packets, tx_dsp_bytes)` of the skywave carrier.
     fn skywave(&self) -> (u64, u64, u64) {
         let anchors = self.anchors();
@@ -180,6 +191,7 @@ fn spawn_daemon(
     let mut cmd = Command::new(bin);
     cmd.env("GHOST_NO_GUI", "1")
         .env("GHOST_MODE", "public")
+        .env("GHOST_STUN", "off")
         .env("GHOST_WEB_PORT", web.to_string())
         .env("GHOST_BIND", format!("127.0.0.1:{mesh}"))
         .env("GHOST_DATA_DIR", dir)
@@ -457,15 +469,18 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
             Some(&serde_json::json!({ "address": format!("127.0.0.1:{mesh_b}") })),
         );
         for _ in 0..20 {
-            if a.sessions() >= 1 && b.sessions() >= 1 {
+            if a.connected_to(&fp_b) && b.connected_to(&fp_a) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        if a.sessions() >= 1 && b.sessions() >= 1 {
+        if a.connected_to(&fp_b) && b.connected_to(&fp_a) {
             break;
         }
         if Instant::now() >= deadline {
+            if a.sessions() >= 1 && b.sessions() >= 1 {
+                break;
+            }
             fail_with_logs(&a, &b, "no session formed between the two daemons".into());
         }
     }
