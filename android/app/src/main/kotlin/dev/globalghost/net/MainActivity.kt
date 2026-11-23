@@ -41,6 +41,9 @@ class MainActivity : Activity() {
     private lateinit var btnUpdateBadge: Button
     private lateinit var txtUpdateStatus: TextView
     private lateinit var btnUpdateAction: TextView
+    private lateinit var txtAdblockStatus: TextView
+    private lateinit var btnAdblockToggle: TextView
+    private var adblockEnabled = true
 
     // Real live telemetry views
     private lateinit var txtDownSpeed: TextView
@@ -704,6 +707,61 @@ class MainActivity : Activity() {
         }
         root.addView(cardIdentity)
 
+        // ── Ad & Tracker Shield Card (Works Even Without Mesh) ──
+        adblockEnabled = prefs.getBoolean("adblock_enabled", true)
+        try { GhostCore.setAdblockEnabled(adblockEnabled) } catch (_: Throwable) {}
+        val cardAdblock = createCoalCard().apply {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val textCol = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = "Ad & Tracker Blocker"
+                    textSize = 13f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                txtAdblockStatus = TextView(context).apply {
+                    text = if (adblockEnabled) "Active • 0 ads blocked" else "Paused"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9E9C98"))
+                    setPadding(0, dp(2), 0, 0)
+                }
+                addView(txtAdblockStatus)
+            }
+            row.addView(textCol)
+
+            btnAdblockToggle = TextView(context).apply {
+                text = if (adblockEnabled) "On" else "Off"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(if (adblockEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(if (adblockEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(14), dp(7), dp(14), dp(7))
+            }
+            row.addView(btnAdblockToggle)
+            setOnClickListener {
+                adblockEnabled = !adblockEnabled
+                prefs.edit().putBoolean("adblock_enabled", adblockEnabled).apply()
+                try { GhostCore.setAdblockEnabled(adblockEnabled) } catch (_: Throwable) {}
+                btnAdblockToggle.text = if (adblockEnabled) "On" else "Off"
+                btnAdblockToggle.setTextColor(if (adblockEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                btnAdblockToggle.background = GradientDrawable().apply {
+                    setColor(if (adblockEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                updateStatus()
+            }
+            addView(row)
+        }
+        root.addView(cardAdblock)
+
         // ── App Updates Row (One-Tap Update) ──
         val cardUpdate = createCoalCard().apply {
             val row = LinearLayout(context).apply {
@@ -834,6 +892,9 @@ class MainActivity : Activity() {
         val now = System.currentTimeMillis()
         val dt = if (lastTimestamp > 0) ((now - lastTimestamp) / 1000.0).coerceAtLeast(0.1) else 1.0
 
+        val adsBlocked = try { GhostCore.getAdsBlocked() } catch (_: Throwable) { 0L }
+        txtAdblockStatus.text = if (adblockEnabled) "Active • $adsBlocked ads blocked" else "Paused"
+
         val isConnected = GhostVpnService.isVpnActive(this)
         if (isConnected) {
             val fp = GhostVpnService.getFingerprint()
@@ -844,20 +905,25 @@ class MainActivity : Activity() {
 
             val activeExit = GhostVpnService.getActiveExitNode()
             val pathStr = GhostVpnService.getConnectionPath()
-            if (activeExit.isNotEmpty() && activeExit != "auto") {
+            if (activeExit == "Ad-Shield") {
+                txtExitValue.text = "Ad-Shield"
+                txtExitSub.text = "Local DNS • $adsBlocked blocked"
+                txtConnPath.text = "Local Ad-Shield DNS"
+            } else if (activeExit.isNotEmpty() && activeExit != "auto") {
                 txtExitValue.text = activeExit
                 txtExitSub.text = pathStr
+                txtConnPath.text = pathStr
             } else {
                 txtExitValue.text = "Auto Mesh"
                 txtExitSub.text = pathStr
+                txtConnPath.text = pathStr
             }
 
             val rtt = GhostVpnService.getRttMs()
             val rttStr = if (rtt >= 0) "$rtt ms" else "— ms"
             txtRttValue.text = modes[currentModeIndex]
-            txtRttSub.text = "Encrypted • $rttStr"
+            txtRttSub.text = if (activeExit == "Ad-Shield") "Ad-Shield • Direct" else "Encrypted • $rttStr"
 
-            txtConnPath.text = pathStr
             txtDnsServer.text = GhostVpnService.activeDnsDisplay
             txtHandovers.text = GhostVpnService.getHandoverCount().toString()
 

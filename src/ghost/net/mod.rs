@@ -5,6 +5,7 @@
 //! Also implements the ACK reliability engine, adaptive token-bucket flow controller,
 //! and mesh networking primitives.
 
+pub mod adblock;
 #[cfg(feature = "quic")]
 pub mod carrier;
 pub mod cc;

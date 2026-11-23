@@ -259,6 +259,14 @@ pub async fn handle_socks5_connection(
     }
     let port = u16::from_be_bytes(pb);
 
+    // ── Ad & tracker blocking (works immediately even with 0 mesh peers) ──
+    if vantablack::ghost::net::adblock::is_blocked_domain(&addr) {
+        vantablack::ghost::net::adblock::record_blocked();
+        tracing::debug!(dest = %addr, port = port, "SOCKS5: blocked ad/tracker domain");
+        let _ = s.write_all(&[5, 2, 0, 1, 0, 0, 0, 0, 0, 0]).await;
+        return;
+    }
+
     // ── Split tunneling bypass ───────────────────────────────────────
     if cs2.read().should_bypass(&addr) {
         let dest_direct = format!("{addr}:{port}");

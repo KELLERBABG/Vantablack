@@ -691,48 +691,107 @@ fn perform_lan_discovery(
 /// One TUN→mesh step: read a packet from the TUN, seal it, wrap in GTF bulk frame,
 /// and send via the protected socket to the hub.
 pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
-    let (Some(tun), Some(sock), Some(hub)) = (core.tun.as_mut(), core.sock.as_ref(), core.hub_addr)
-    else {
+    let Some(tun) = core.tun.as_mut() else {
         std::thread::sleep(Duration::from_millis(50));
         return;
     };
+
+    let n = match TunDevice::read_packet(tun, buf) {
+        Ok(n) if n >= 20 && (buf[0] >> 4) == 4 => n,
+        _ => return,
+    };
+
+    // Intercept DNS queries (UDP dst port 53) for instant Ad/Tracker blocking
+    // even when zero mesh peers are connected (Local Ad-Shield DNS mode).
+    let ihl = ((buf[0] & 0x0F) as usize) * 4;
+    let is_udp_dns = buf[9] == 17
+        && ihl >= 20
+        && n > ihl + 8
+        && u16::from_be_bytes([buf[ihl + 2], buf[ihl + 3]]) == 53;
+
+    if is_udp_dns {
+        let dns_payload = &buf[ihl + 8..n];
+        if let Some(qname) = crate::ghost::net::adblock::extract_dns_qname(dns_payload) {
+            if crate::ghost::net::adblock::is_blocked_domain(&qname) {
+                crate::ghost::net::adblock::record_blocked();
+                if let Some(nx) =
+                    crate::ghost::net::adblock::build_dns_nxdomain_response(dns_payload)
+                {
+                    if let Some(reply_pkt) =
+                        crate::ghost::net::adblock::synthesize_ipv4_udp_reply(&buf[..n], &nx)
+                    {
+                        if let Some(t) = core.tun.as_ref() {
+                            let _ = t.write_packet(&reply_pkt);
+                        }
+                        core.rx_ctr.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // In Local Ad-Shield mode (no Exit Hub connected yet), tun0 only routes
+        // 10.66.0.1/32, so direct UDP to 1.1.1.1:53 / 9.9.9.9:53 bypasses tun0
+        // and keeps normal internet working while filtering ads/trackers!
+        if core.hub_addr.is_none() || core.session_key.lock().is_none() {
+            if let Ok(dns_sock) = UdpSocket::bind("0.0.0.0:0") {
+                let _ = dns_sock.set_read_timeout(Some(Duration::from_millis(1200)));
+                let _ = dns_sock.send_to(dns_payload, "1.1.1.1:53");
+                let mut dns_buf = [0u8; 1500];
+                let recv_res = dns_sock.recv_from(&mut dns_buf).or_else(|_| {
+                    let _ = dns_sock.send_to(dns_payload, "9.9.9.9:53");
+                    dns_sock.recv_from(&mut dns_buf)
+                });
+                if let Ok((rn, _)) = recv_res {
+                    if let Some(reply_pkt) = crate::ghost::net::adblock::synthesize_ipv4_udp_reply(
+                        &buf[..n],
+                        &dns_buf[..rn],
+                    ) {
+                        if let Some(t) = core.tun.as_ref() {
+                            let _ = t.write_packet(&reply_pkt);
+                        }
+                        core.rx_ctr.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    let (Some(sock), Some(hub)) = (core.sock.as_ref(), core.hub_addr) else {
+        return;
+    };
     let Some(session_key) = *core.session_key.lock() else {
-        std::thread::sleep(Duration::from_millis(50));
         return;
     };
     let session_hash = *core.session_hash.lock();
 
-    match TunDevice::read_packet(tun, buf) {
-        Ok(n) if n >= 20 && (buf[0] >> 4) == 4 => {
-            if let Some(wire) = seal_from_tun(&core.state, &buf[..n]) {
-                let (epoch, ctr, seal_key) = {
-                    let mut rg = core.ratchet.lock();
-                    if let Some(r) = rg.as_mut() {
-                        let (c, k) = r.advance_seal(NonceDirection::InitiatorToResponder);
-                        (r.epoch(), c, k)
-                    } else {
-                        (
-                            0,
-                            core.tx_seq.fetch_add(1, Ordering::Relaxed) as u64,
-                            session_key,
-                        )
-                    }
-                };
-                let frame = tunnel_frame(
-                    &seal_key,
-                    session_hash,
-                    epoch,
-                    ctr,
-                    NonceDirection::InitiatorToResponder,
-                    &wire,
-                );
-                core.tx_ctr.fetch_add(1, Ordering::Relaxed);
-                core.tx_bytes
-                    .fetch_add(frame.len() as u64, Ordering::Relaxed);
-                let _ = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame));
+    if let Some(wire) = seal_from_tun(&core.state, &buf[..n]) {
+        let (epoch, ctr, seal_key) = {
+            let mut rg = core.ratchet.lock();
+            if let Some(r) = rg.as_mut() {
+                let (c, k) = r.advance_seal(NonceDirection::InitiatorToResponder);
+                (r.epoch(), c, k)
+            } else {
+                (
+                    0,
+                    core.tx_seq.fetch_add(1, Ordering::Relaxed) as u64,
+                    session_key,
+                )
             }
-        }
-        _ => {}
+        };
+        let frame = tunnel_frame(
+            &seal_key,
+            session_hash,
+            epoch,
+            ctr,
+            NonceDirection::InitiatorToResponder,
+            &wire,
+        );
+        core.tx_ctr.fetch_add(1, Ordering::Relaxed);
+        core.tx_bytes
+            .fetch_add(frame.len() as u64, Ordering::Relaxed);
+        let _ = sock.send_to(&frame, hub).or_else(|_| sock.send(&frame));
     }
 }
 
@@ -1033,6 +1092,37 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_setSessionKey(
     let arr: [u8; 32] = k.try_into().unwrap();
     core.state.set_key(arr);
     core.install_session(arr, compute_session_hash(&arr));
+}
+
+/// `fun updateTun(ptr: Long, tunFd: Int)`
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_updateTun(
+    _env: JNIEnv,
+    _class: JClass,
+    ptr: jlong,
+    tun_fd: jint,
+) {
+    let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
+        return;
+    };
+    core.tun = Some(AndroidTun::from_fd(tun_fd));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_setAdblockEnabled(
+    _env: JNIEnv,
+    _class: JClass,
+    enabled: jboolean,
+) {
+    crate::ghost::net::adblock::set_enabled(enabled != 0);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getAdsBlocked(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    crate::ghost::net::adblock::blocked_count() as jlong
 }
 
 /// `fun start(ptr: Long, tunFd: Int, sockFd: Int, hubAddr: String): Boolean`

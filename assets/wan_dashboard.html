@@ -992,6 +992,13 @@
         const anchors = STATE.anchors || {};
         bodyHtml = `
           <div class="grid-2">
+            <button type="button" class="coal-row setting-card" data-setting-tog="adblock_enabled">
+              <div>
+                <div class="setting-title">Ad &amp; Tracker Blocking</div>
+                <div class="setting-sub">Blocks ads &amp; trackers immediately (${STATE.status.ads_blocked || 0} blocked)</div>
+              </div>
+              ${toggleSwitchHtml(st.adblock_enabled !== false)}
+            </button>
             <button type="button" class="coal-row setting-card" data-setting-tog="low_latency">
               <div>
                 <div class="setting-title">Low-Latency Mode</div>
@@ -1544,7 +1551,8 @@
     }
 
     async function toggleSettingKey(key) {
-      const next = !Boolean(STATE.settings[key]);
+      const cur = key === 'adblock_enabled' ? (STATE.settings[key] !== false) : Boolean(STATE.settings[key]);
+      const next = !cur;
       const patch = { [key]: next };
       if (key === 'low_latency') patch.mix_batch_ms = next ? 1 : 20;
       await saveSettingPatch(patch, 'Preference saved');

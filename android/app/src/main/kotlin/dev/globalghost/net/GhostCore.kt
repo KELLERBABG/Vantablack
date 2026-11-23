@@ -80,4 +80,13 @@ object GhostCore {
 
     /** Record a network handover event in native telemetry. */
     external fun recordHandover(ptr: Long)
+
+    /** Swap the TUN file descriptor when upgrading from Local Ad-Shield to Full Tunnel. */
+    external fun updateTun(ptr: Long, tunFd: Int)
+
+    /** Enable or disable built-in DNS ad & tracker blocking. */
+    external fun setAdblockEnabled(enabled: Boolean)
+
+    /** Return total number of ad/tracker DNS queries blocked in this session. */
+    external fun getAdsBlocked(): Long
 }

@@ -1057,86 +1057,101 @@ pub fn spawn_control_center(
                                                 consumer::ROUTE_MODE_SYSTEM_VPN => vpn_available,
                                                 _ => socks_listening,
                                             };
-                                        let body = serde_json::json!({
-                                        "version": env!("CARGO_PKG_VERSION"),
-                                        "connected": is_conn,
-                                        "mode": current_mode,
-                                        "nat_type": nat_type_label(wan_snap.nat_type),
-                                        "public_addr": if pin_ok { wan_snap.public_addr.map(|a| serde_json::json!(a.to_string())).unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null },
-                                        "stun_ok": wan_snap.stun_server.is_some(),
-                                        "upnp_ok": wan_snap.upnp_mapped,
-                                        "relay_count": wan_snap.relay_count,
-                                        "network_id": if pin_ok { serde_json::json!(nc_ref.fingerprint()) } else { serde_json::Value::Null },
-                                        "device_name": if pin_ok { serde_json::json!(settings_now.device_name(&nc_ref.fingerprint())) } else { serde_json::Value::Null },
-                                        "device_os": consumer::local_os(),
-                                        "host": lan_host_ref,
-                                        "multicast_addr": format!("{}:{}", vantablack::ghost::net::BEACON_MULTICAST_ADDR, vantablack::ghost::net::BEACON_PORT),
-                                        "pair_uri": if pin_ok { serde_json::json!(pair_uri_ref) } else { serde_json::Value::Null },
-                                        "route_mode": settings_now.route_mode,
-                                        "route_mode_active": route_mode_active,
-                                        "bypass_count": settings_now.bypass.len(),
-                                        "socks_listening": socks_listening,
-                                        "socks_port": socks_port,
-                                        "socks_ports": [
-                                            socks_port,
-                                            socks_port.saturating_add(1),
-                                            socks_port.saturating_add(2),
-                                            socks_port.saturating_add(3),
-                                        ],
-                                        "vpn_available": vpn_available,
-                                        "pin_protected": has_pin,
-                                        "pin_required": has_pin && !pin_ok,
-                                        "uptime_seconds": uptime,
-                                        "peers_count": peers_count,
-                                        "active_sessions": sessions_count,
-                                        "private_mesh": {
-                                            "active_nodes": if sessions_count > 0 { 1 + sessions_count } else { 1 },
-                                            "autonomous_local": (sessions_count + 1) >= 5,
-                                            "mode": if (sessions_count + 1) >= 5 { "autonomous_local" } else { "wan_mesh_assisted" },
-                                            "scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
-                                        },
-                                        "latency_ms": serde_json::Value::Null,
-                                        "active_carrier_paths": if is_conn {
-                                            std::cmp::min(3, 1 + nc_ref.sessions.len().min(2))
-                                        } else {
-                                            0
-                                        },
-                                        "carrier": serde_json::json!({
-                                            "enabled": carrier_ref.enabled(),
-                                            "label": carrier_ref.label(),
-                                            "path_count": carrier_ref.path_count(),
-                                            "peer_count": carrier_ref.peer_count(),
-                                            "link_count": carrier_ref.link_count(),
-                                        }),
-                                        "skywave": serde_json::json!({
-                                            "enabled": cfg!(feature = "sdr"),
-                                            "carrier": "ABOS (Atmospheric Broadcast OS)",
-                                            "band": "2-10 MHz NVIS HF",
-                                            "propagation": "Near-Vertical Incidence Skywave (Zero Skip Zone)",
-                                        }),
-                                        "traffic": {
-                                            "bytes_sent": sent_bytes,
-                                            "bytes_recv": recv_bytes,
-                                            "packets_sent": sent_pkts,
-                                            "packets_recv": recv_pkts,
-                                            "cover_traffic_rate_hz": 2.0,
-                                            "cover_traffic_active": sessions_count > 0,
-                                        },
-                                        "throughput": {
-                                            "bytes_sent": sent_bytes,
-                                            "bytes_recv": recv_bytes,
-                                            "packets_sent": sent_pkts,
-                                            "packets_recv": recv_pkts,
-                                        },
-                                        "low_latency": vantablack::ghost::net::is_low_latency(),
-                                        "mix_batch_ms": vantablack::ghost::net::mix_batch_delay_ms(),
-                                        "zero_admin": vantablack::ghost::net::is_zero_admin(),
-                                        "vpn": vpn_role,
-                                        "vpn_stats": vpn_json,
-                                        "exit_node": vpn_role == "hub",
-                                        "peers": if pin_ok { serde_json::json!(peer_entries) } else { serde_json::json!([]) },
-                                    })
-                                    .to_string();
+                                        let mut body_val = serde_json::json!({
+                                            "version": env!("CARGO_PKG_VERSION"),
+                                            "connected": is_conn,
+                                            "mode": current_mode,
+                                            "nat_type": nat_type_label(wan_snap.nat_type),
+                                            "public_addr": if pin_ok { wan_snap.public_addr.map(|a| serde_json::json!(a.to_string())).unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null },
+                                            "stun_ok": wan_snap.stun_server.is_some(),
+                                            "upnp_ok": wan_snap.upnp_mapped,
+                                            "relay_count": wan_snap.relay_count,
+                                            "network_id": if pin_ok { serde_json::json!(nc_ref.fingerprint()) } else { serde_json::Value::Null },
+                                            "device_name": if pin_ok { serde_json::json!(settings_now.device_name(&nc_ref.fingerprint())) } else { serde_json::Value::Null },
+                                            "device_os": consumer::local_os(),
+                                            "host": lan_host_ref,
+                                            "multicast_addr": format!("{}:{}", vantablack::ghost::net::BEACON_MULTICAST_ADDR, vantablack::ghost::net::BEACON_PORT),
+                                            "pair_uri": if pin_ok { serde_json::json!(pair_uri_ref) } else { serde_json::Value::Null },
+                                            "route_mode": settings_now.route_mode,
+                                            "route_mode_active": route_mode_active,
+                                            "bypass_count": settings_now.bypass.len(),
+                                            "socks_listening": socks_listening,
+                                            "socks_port": socks_port,
+                                            "socks_ports": [
+                                                socks_port,
+                                                socks_port.saturating_add(1),
+                                                socks_port.saturating_add(2),
+                                                socks_port.saturating_add(3),
+                                            ],
+                                            "vpn_available": vpn_available,
+                                            "pin_protected": has_pin,
+                                            "pin_required": has_pin && !pin_ok,
+                                            "uptime_seconds": uptime,
+                                            "peers_count": peers_count,
+                                            "active_sessions": sessions_count,
+                                            "private_mesh": {
+                                                "active_nodes": if sessions_count > 0 { 1 + sessions_count } else { 1 },
+                                                "autonomous_local": (sessions_count + 1) >= 5,
+                                                "mode": if (sessions_count + 1) >= 5 { "autonomous_local" } else { "wan_mesh_assisted" },
+                                                "scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
+                                            },
+                                            "latency_ms": serde_json::Value::Null,
+                                            "active_carrier_paths": if is_conn {
+                                                std::cmp::min(3, 1 + nc_ref.sessions.len().min(2))
+                                            } else {
+                                                0
+                                            },
+                                            "carrier": serde_json::json!({
+                                                "enabled": carrier_ref.enabled(),
+                                                "label": carrier_ref.label(),
+                                                "path_count": carrier_ref.path_count(),
+                                                "peer_count": carrier_ref.peer_count(),
+                                                "link_count": carrier_ref.link_count(),
+                                            }),
+                                            "skywave": serde_json::json!({
+                                                "enabled": cfg!(feature = "sdr"),
+                                                "carrier": "ABOS (Atmospheric Broadcast OS)",
+                                                "band": "2-10 MHz NVIS HF",
+                                                "propagation": "Near-Vertical Incidence Skywave (Zero Skip Zone)",
+                                            }),
+                                            "traffic": {
+                                                "bytes_sent": sent_bytes,
+                                                "bytes_recv": recv_bytes,
+                                                "packets_sent": sent_pkts,
+                                                "packets_recv": recv_pkts,
+                                                "cover_traffic_rate_hz": 2.0,
+                                                "cover_traffic_active": sessions_count > 0,
+                                            },
+                                            "throughput": {
+                                                "bytes_sent": sent_bytes,
+                                                "bytes_recv": recv_bytes,
+                                                "packets_sent": sent_pkts,
+                                                "packets_recv": recv_pkts,
+                                            },
+                                            "low_latency": vantablack::ghost::net::is_low_latency(),
+                                            "mix_batch_ms": vantablack::ghost::net::mix_batch_delay_ms(),
+                                            "zero_admin": vantablack::ghost::net::is_zero_admin(),
+                                            "vpn": vpn_role,
+                                            "vpn_stats": vpn_json,
+                                            "exit_node": vpn_role == "hub",
+                                            "peers": if pin_ok { serde_json::json!(peer_entries) } else { serde_json::json!([]) },
+                                        });
+                                        if let Some(obj) = body_val.as_object_mut() {
+                                            obj.insert(
+                                                "adblock_enabled".to_string(),
+                                                serde_json::json!(
+                                                    vantablack::ghost::net::adblock::is_enabled()
+                                                ),
+                                            );
+                                            obj.insert(
+                                                "ads_blocked".to_string(),
+                                                serde_json::json!(
+                                                    vantablack::ghost::net::adblock::blocked_count(
+                                                    )
+                                                ),
+                                            );
+                                        }
+                                        let body = body_val.to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("POST /api/peers/add") {
                                         let val = json_body(&req);
@@ -1579,6 +1594,8 @@ pub fn spawn_control_center(
                                         "jurisdiction_tag": s.jurisdiction_tag,
                                         "abos_skywave_enabled": s.abos_skywave_enabled,
                                         "qel_enabled": s.qel_enabled,
+                                        "adblock_enabled": vantablack::ghost::net::adblock::is_enabled(),
+                                        "ads_blocked": vantablack::ghost::net::adblock::blocked_count(),
                                     })
                                     .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
@@ -1596,6 +1613,11 @@ pub fn spawn_control_center(
                                             val.get("low_latency").and_then(|v| v.as_bool())
                                         {
                                             vantablack::ghost::net::set_low_latency(ll);
+                                        }
+                                        if let Some(ab) =
+                                            val.get("adblock_enabled").and_then(|v| v.as_bool())
+                                        {
+                                            vantablack::ghost::net::adblock::set_enabled(ab);
                                         }
                                         if let Some(ms) =
                                             val.get("mix_batch_ms").and_then(|v| v.as_u64())

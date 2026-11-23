@@ -352,6 +352,33 @@ impl VpnHub {
                 if pkt.len() > payload_start {
                     let udp_payload = pkt[payload_start..].to_vec();
 
+                    // Ad & tracker DNS blocking (returns NXDOMAIN before forwarding upstream)
+                    if is_hub_dns || dport == 53 {
+                        if let Some(qname) =
+                            crate::ghost::net::adblock::extract_dns_qname(&udp_payload)
+                        {
+                            if crate::ghost::net::adblock::is_blocked_domain(&qname) {
+                                crate::ghost::net::adblock::record_blocked();
+                                if let Some(nx) =
+                                    crate::ghost::net::adblock::build_dns_nxdomain_response(
+                                        &udp_payload,
+                                    )
+                                {
+                                    if let Some(reply_pkt) = build_udp_packet(
+                                        IpAddr::V4(dst),
+                                        dport,
+                                        IpAddr::V4(overlay),
+                                        sport,
+                                        &nx,
+                                    ) {
+                                        let _ = self.egress_tx.send((fp.to_string(), reply_pkt));
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Anti-leak protection: if client queries AAAA (IPv6) on port 53, immediately reply
                     // with standard RFC NOERROR/NODATA (0 answers). This prevents dual-stack clients from
                     // attempting IPv6 connections that would bypass the mesh tunnel or stall, eliminating

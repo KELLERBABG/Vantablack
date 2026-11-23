@@ -36,6 +36,7 @@ class GhostVpnService : VpnService() {
     private var dnsServer: String = "10.66.0.1"
     private var searchDomain: String? = null
     private var activeNetwork: Network? = null
+    @Volatile private var fullTunnelActive = false
     private val tunnelLock = Any()
 
     private val cm by lazy { getSystemService(ConnectivityManager::class.java) }
@@ -120,52 +121,54 @@ class GhostVpnService : VpnService() {
         val fpHex = try { GhostCore.getFingerprint(ptr) } catch (_: Throwable) { "" }
         val hostByte = ((fpHex.take(4).toIntOrNull(16) ?: 10) % 240) + 10
 
-        // 1. TUN: IPv4 overlay IP (10.66.0.x/24) + Default Route (0.0.0.0/0) + Dynamic/Mesh DNS.
-        // Do NOT assign an IPv6 address to tun0: VpnHub is an IPv4 NAT/netstack, and assigning
-        // fd00:66::10 causes Android netd to prefer AAAA (IPv6) lookups and blackhole traffic.
-        val builder = Builder()
-            .setSession("Vantablack Mesh")
-            .addAddress("10.66.0.$hostByte", 24)
-            .addRoute("0.0.0.0", 0)        // Encapsulate ALL IPv4 internet traffic into mesh tunnel
-            .addRoute("10.66.0.0", 24)     // Mesh overlay network
-            .setMtu(1280)
-            .setBlocking(true)
+        fun buildTun(fullTunnel: Boolean): ParcelFileDescriptor? {
+            val builder = Builder()
+                .setSession(if (fullTunnel) "Vantablack Mesh" else "Vantablack Ad-Shield")
+                .addAddress("10.66.0.$hostByte", 24)
+                .addRoute("10.66.0.0", 24)
+                .addRoute("10.66.0.1", 32)
+                .setMtu(1280)
+                .setBlocking(true)
 
-        // IPv6 Leak Prevention: Trap all IPv6 traffic inside the TUN interface
-        // Combined with the Hub's AAAA NODATA responder, this ensures dual-stack clients never leak IPv6
-        try {
-            builder.addAddress("fd00:66::1", 128)
-            builder.addRoute("::", 0)
-        } catch (_: Throwable) {}
+            if (fullTunnel) {
+                builder.addRoute("0.0.0.0", 0)
+                try {
+                    builder.addAddress("fd00:66::1", 128)
+                    builder.addRoute("::", 0)
+                } catch (_: Throwable) {}
+            }
 
-        val customDns = dnsServer.trim()
-        val addedCustomDns = ArrayList<String>()
-        if (customDns.isNotEmpty() && !customDns.equals("auto", ignoreCase = true)) {
-            for (part in customDns.split(",", " ", ";")) {
-                val candidate = part.trim()
-                if (candidate.isNotEmpty()) {
-                    try {
-                        builder.addDnsServer(candidate)
-                        addedCustomDns.add(candidate)
-                    } catch (_: Throwable) {}
+            val customDns = dnsServer.trim()
+            val addedCustomDns = ArrayList<String>()
+            if (customDns.isNotEmpty() && !customDns.equals("auto", ignoreCase = true)) {
+                for (part in customDns.split(",", " ", ";")) {
+                    val candidate = part.trim()
+                    if (candidate.isNotEmpty()) {
+                        try {
+                            builder.addDnsServer(candidate)
+                            addedCustomDns.add(candidate)
+                        } catch (_: Throwable) {}
+                    }
                 }
             }
-        }
-        if (addedCustomDns.isEmpty()) {
-            // Strictly tunnel all DNS lookups to the Mesh Exit Node overlay resolver (10.66.0.1)
-            // No direct external DNS IPs are passed to Android netd, ensuring zero ISP leaks
-            builder.addDnsServer("10.66.0.1")
-            activeDnsDisplay = "Auto (Mesh 10.66.0.1)"
-        } else {
-            if (!addedCustomDns.contains("10.66.0.1")) {
-                try { builder.addDnsServer("10.66.0.1") } catch (_: Throwable) {}
+            if (addedCustomDns.isEmpty()) {
+                builder.addDnsServer("10.66.0.1")
+                activeDnsDisplay = if (fullTunnel) "Auto (Mesh 10.66.0.1)" else "Ad-Shield (10.66.0.1)"
+            } else {
+                if (!addedCustomDns.contains("10.66.0.1")) {
+                    try { builder.addDnsServer("10.66.0.1") } catch (_: Throwable) {}
+                }
+                activeDnsDisplay = addedCustomDns.joinToString(", ")
             }
-            activeDnsDisplay = addedCustomDns.joinToString(", ")
+
+            searchDomain?.let { builder.addSearchDomain(it) }
+            return builder.establish()
         }
 
-        searchDomain?.let { builder.addSearchDomain(it) }
-
-        tun = builder.establish()
+        // Start in safe Local Ad-Shield mode (10.66.0.1/32 only) so normal internet
+        // works immediately even before an Exit Hub handshake completes.
+        fullTunnelActive = false
+        tun = buildTun(fullTunnel = false)
         val tunFd = tun?.fd ?: run { stopSelf(); return }
 
         // 2. Outer UDP socket: bind to standard mesh port 55225 (with fallback), enable broadcast, and PROTECT.
@@ -217,20 +220,19 @@ class GhostVpnService : VpnService() {
             try { GhostCore.importInvite(ptr, pendingInviteUri) } catch (_: Throwable) {}
         }
         val activeHub = try { GhostCore.getActiveHub(ptr) } catch (_: Throwable) { "" }
-        if (activeHub.isEmpty()) {
-            // Do not blackhole 0.0.0.0/0 when no Exit Node session could be established
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                android.widget.Toast.makeText(
-                    applicationContext,
-                    "No Exit Node connected — pair with Vantablack Desktop or check Wi-Fi",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+        if (activeHub.isNotEmpty()) {
+            currentHubAddr = activeHub
+            val upgraded = buildTun(fullTunnel = true)
+            if (upgraded != null) {
+                val oldTun = tun
+                tun = upgraded
+                try { GhostCore.updateTun(ptr, upgraded.fd) } catch (_: Throwable) {}
+                try { oldTun?.close() } catch (_: Throwable) {}
+                fullTunnelActive = true
             }
-            shutdown()
-            stopSelf()
-            return
+        } else {
+            currentHubAddr = "adblock"
         }
-        currentHubAddr = activeHub
 
         // 4. Pumps: TUN→mesh and mesh→TUN (map the desktop binary's pumps).
         running = true
@@ -270,7 +272,21 @@ class GhostVpnService : VpnService() {
                     }
                     try {
                         val active = GhostCore.getActiveHub(ptr)
-                        currentHubAddr = if (active.isNotEmpty()) active else "auto"
+                        if (active.isNotEmpty()) {
+                            currentHubAddr = active
+                            if (!fullTunnelActive) {
+                                val upgraded = buildTun(fullTunnel = true)
+                                if (upgraded != null) {
+                                    val oldTun = tun
+                                    tun = upgraded
+                                    try { GhostCore.updateTun(ptr, upgraded.fd) } catch (_: Throwable) {}
+                                    try { oldTun?.close() } catch (_: Throwable) {}
+                                    fullTunnelActive = true
+                                }
+                            }
+                        } else {
+                            currentHubAddr = "adblock"
+                        }
                         val known = GhostCore.getKnownPeers(ptr)
                             .split(",")
                             .map { it.trim() }
@@ -497,12 +513,13 @@ class GhostVpnService : VpnService() {
                         currentHubAddr = nativeHub
                         return nativeHub
                     } else {
-                        currentHubAddr = "auto"
+                        currentHubAddr = "adblock"
+                        return "Ad-Shield"
                     }
                 } catch (_: Throwable) {}
             }
-            return if (currentHubAddr.isNotEmpty() && currentHubAddr != "auto") currentHubAddr else {
-                discoveredPeersList.firstOrNull() ?: "Auto-Discovering..."
+            return if (currentHubAddr.isNotEmpty() && currentHubAddr != "auto" && currentHubAddr != "adblock") currentHubAddr else {
+                discoveredPeersList.firstOrNull() ?: "Ad-Shield"
             }
         }
 
