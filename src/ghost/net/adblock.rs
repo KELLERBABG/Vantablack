@@ -7,7 +7,25 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static ADBLOCK_ENABLED: AtomicBool = AtomicBool::new(true);
+static ADBLOCK_DOH_GUARD: AtomicBool = AtomicBool::new(true);
 static ADBLOCK_BLOCKED_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Well-known public DoH/DoT resolvers blocked when `ADBLOCK_DOH_GUARD` is active
+/// so browsers/SDKs cannot silently bypass filtered port-53 DNS.
+const DOH_RESOLVERS: &[&str] = &[
+    "dns.google",
+    "dns.google.com",
+    "cloudflare-dns.com",
+    "mozilla.cloudflare-dns.com",
+    "1dot1dot1dot1.cloudflare-dns.com",
+    "dns.quad9.net",
+    "dns9.quad9.net",
+    "dns.adguard.com",
+    "dns.adguard-dns.com",
+    "doh.opendns.com",
+    "dns.nextdns.io",
+    "doh.cleanbrowsing.org",
+];
 
 /// Curated list of ad networks, mobile interstitial SDKs, and telemetry trackers.
 /// Matched by exact domain or subdomain suffix (e.g. `foo.doubleclick.net` matches `doubleclick.net`).
@@ -114,6 +132,14 @@ pub fn set_enabled(enabled: bool) {
     ADBLOCK_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
+pub fn is_doh_guard_enabled() -> bool {
+    ADBLOCK_DOH_GUARD.load(Ordering::Relaxed)
+}
+
+pub fn set_doh_guard_enabled(enabled: bool) {
+    ADBLOCK_DOH_GUARD.store(enabled, Ordering::Relaxed);
+}
+
 pub fn blocked_count() -> u64 {
     ADBLOCK_BLOCKED_COUNT.load(Ordering::Relaxed)
 }
@@ -124,16 +150,12 @@ pub fn record_blocked() -> u64 {
         .saturating_add(1)
 }
 
-/// Check if `domain` (case-insensitive, optional trailing dot) is blocked when adblock is enabled.
-pub fn is_blocked_domain(domain: &str) -> bool {
-    if !is_enabled() {
-        return false;
-    }
+fn matches_domain_list(domain: &str, list: &[&str]) -> bool {
     let clean = domain.trim().trim_end_matches('.').to_ascii_lowercase();
     if clean.is_empty() {
         return false;
     }
-    for &pattern in BLOCKED_DOMAINS {
+    for &pattern in list {
         if clean == pattern {
             return true;
         }
@@ -145,6 +167,26 @@ pub fn is_blocked_domain(domain: &str) -> bool {
         }
     }
     false
+}
+
+/// Check if `domain` (case-insensitive, optional trailing dot) is blocked when adblock is enabled.
+pub fn is_blocked_domain(domain: &str) -> bool {
+    is_enabled() && matches_domain_list(domain, BLOCKED_DOMAINS)
+}
+
+/// Check if `domain` is a DoH/DoT bootstrap resolver when adblock + DoH guard are enabled.
+pub fn is_doh_blocked_domain(domain: &str) -> bool {
+    is_enabled() && is_doh_guard_enabled() && matches_domain_list(domain, DOH_RESOLVERS)
+}
+
+/// Check if `domain` is blocked either as an ad/tracker or as a DoH/DoT bypass resolver.
+pub fn is_blocked_target(domain: &str) -> bool {
+    is_blocked_domain(domain) || is_doh_blocked_domain(domain)
+}
+
+/// Check if `port` (e.g. TCP/UDP 853 for DoT/DoQ) should be blocked to prevent DNS bypass.
+pub fn is_blocked_port(port: u16) -> bool {
+    port == 853 && is_enabled() && is_doh_guard_enabled()
 }
 
 /// Extract the QNAME from a standard DNS query payload (UDP port 53).
@@ -310,6 +352,159 @@ pub fn synthesize_ipv4_udp_reply(req_pkt: &[u8], dns_resp: &[u8]) -> Option<Vec<
     Some(pkt)
 }
 
+/// Read a DNS name starting at `offset`, following at most 16 compression pointers.
+/// Returns `(decoded_name, next_offset_after_initial_name)`.
+fn read_dns_name(msg: &[u8], offset: usize) -> Option<(String, usize)> {
+    let mut labels: Vec<String> = Vec::new();
+    let mut pos = offset;
+    let mut jumped = false;
+    let mut end_pos = 0;
+    let mut jumps = 0u8;
+
+    loop {
+        let len = *msg.get(pos)?;
+        if (len & 0xC0) == 0xC0 {
+            let b2 = *msg.get(pos + 1)?;
+            let ptr = (((len & 0x3F) as usize) << 8) | (b2 as usize);
+            if !jumped {
+                end_pos = pos + 2;
+                jumped = true;
+            }
+            jumps += 1;
+            if jumps > 16 || ptr >= msg.len() {
+                return None;
+            }
+            pos = ptr;
+        } else if (len & 0xC0) != 0 {
+            return None;
+        } else if len == 0 {
+            if !jumped {
+                end_pos = pos + 1;
+            }
+            break;
+        } else {
+            let l = len as usize;
+            let start = pos + 1;
+            let end = start.checked_add(l)?;
+            let label = std::str::from_utf8(msg.get(start..end)?).ok()?;
+            labels.push(label.to_string());
+            pos = end;
+        }
+    }
+    Some((labels.join("."), end_pos))
+}
+
+/// Extract all `CNAME` (type 5) target domains from a DNS response packet.
+pub fn extract_dns_cnames(response: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    if response.len() < 12 || (response[2] & 0x80) == 0 {
+        return out;
+    }
+    let qdcount = u16::from_be_bytes([response[4], response[5]]) as usize;
+    let ancount = u16::from_be_bytes([response[6], response[7]]) as usize;
+    let mut pos = 12usize;
+
+    for _ in 0..qdcount {
+        let Some((_, next)) = read_dns_name(response, pos) else {
+            return out;
+        };
+        pos = next.saturating_add(4);
+        if pos > response.len() {
+            return out;
+        }
+    }
+
+    for _ in 0..ancount {
+        let Some((_, after_name)) = read_dns_name(response, pos) else {
+            break;
+        };
+        if after_name + 10 > response.len() {
+            break;
+        }
+        let rtype = u16::from_be_bytes([response[after_name], response[after_name + 1]]);
+        let rdlen =
+            u16::from_be_bytes([response[after_name + 8], response[after_name + 9]]) as usize;
+        let rdata_start = after_name + 10;
+        let Some(rdata_end) = rdata_start.checked_add(rdlen) else {
+            break;
+        };
+        if rdata_end > response.len() {
+            break;
+        }
+        if rtype == 5 {
+            if let Some((cname, _)) = read_dns_name(response, rdata_start) {
+                if !cname.is_empty() {
+                    out.push(cname);
+                }
+            }
+        }
+        pos = rdata_end;
+    }
+    out
+}
+
+/// CNAME uncloaking: if an upstream DNS response contains a `CNAME` pointing to a
+/// blocked domain, record the block and return a synthesized `NXDOMAIN` response.
+pub fn filter_dns_response(response: &[u8]) -> Option<Vec<u8>> {
+    if !is_enabled() {
+        return None;
+    }
+    let cnames = extract_dns_cnames(response);
+    if !cnames.iter().any(|c| is_blocked_target(c)) {
+        return None;
+    }
+    record_blocked();
+    build_dns_nxdomain_response(response)
+}
+
+/// Extract the TLS Server Name Indication (SNI) hostname from an initial TLS `ClientHello`
+/// record without decrypting or modifying any bytes.
+pub fn extract_tls_sni(payload: &[u8]) -> Option<String> {
+    // TLS record header (5B): ContentType=0x16 (Handshake), version, length
+    if payload.len() < 43 || payload[0] != 0x16 {
+        return None;
+    }
+    // Handshake header: HandshakeType=0x01 (ClientHello)
+    if payload[5] != 0x01 {
+        return None;
+    }
+    // Skip record (5) + handshake header (4) + client_version (2) + random (32) = 43
+    let mut pos = 43usize;
+    let sid_len = *payload.get(pos)? as usize;
+    pos = pos.checked_add(1 + sid_len)?;
+
+    let cs_len = u16::from_be_bytes([*payload.get(pos)?, *payload.get(pos + 1)?]) as usize;
+    pos = pos.checked_add(2 + cs_len)?;
+
+    let comp_len = *payload.get(pos)? as usize;
+    pos = pos.checked_add(1 + comp_len)?;
+
+    let ext_total = u16::from_be_bytes([*payload.get(pos)?, *payload.get(pos + 1)?]) as usize;
+    pos = pos.checked_add(2)?;
+    let ext_end = pos.checked_add(ext_total)?.min(payload.len());
+
+    while pos + 4 <= ext_end {
+        let ext_type = u16::from_be_bytes([payload[pos], payload[pos + 1]]);
+        let ext_len = u16::from_be_bytes([payload[pos + 2], payload[pos + 3]]) as usize;
+        pos += 4;
+        let next_ext = pos.checked_add(ext_len)?;
+        if next_ext > ext_end {
+            break;
+        }
+        if ext_type == 0x0000 && ext_len >= 5 {
+            // server_name_list_len (2) + name_type (1, 0x00=host_name) + name_len (2)
+            let name_type = payload[pos + 2];
+            let name_len = u16::from_be_bytes([payload[pos + 3], payload[pos + 4]]) as usize;
+            if name_type == 0x00 && pos + 5 + name_len <= next_ext {
+                let sni = std::str::from_utf8(&payload[pos + 5..pos + 5 + name_len]).ok()?;
+                return Some(sni.to_string());
+            }
+        }
+        pos = next_ext;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +550,83 @@ mod tests {
         assert_eq!(u16::from_be_bytes([reply[20], reply[21]]), 53);
         assert_eq!(u16::from_be_bytes([reply[22], reply[23]]), 12345);
         assert_eq!(&reply[28..], &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn doh_guard_blocks_known_resolvers_and_port_853() {
+        set_enabled(true);
+        set_doh_guard_enabled(true);
+        assert!(is_doh_blocked_domain("dns.google"));
+        assert!(is_doh_blocked_domain("cloudflare-dns.com"));
+        assert!(is_blocked_target("dns.quad9.net"));
+        assert!(is_blocked_port(853));
+        assert!(!is_blocked_port(443));
+        set_doh_guard_enabled(false);
+        assert!(!is_doh_blocked_domain("dns.google"));
+        assert!(!is_blocked_port(853));
+        set_doh_guard_enabled(true);
+    }
+
+    #[test]
+    fn uncloaks_blocked_cname_into_nxdomain() {
+        set_enabled(true);
+        // Query: metrics.example.com -> Answer: CNAME tracker.doubleclick.net
+        let qname = [
+            7, b'm', b'e', b't', b'r', b'i', b'c', b's', 7, b'e', b'x', b'a', b'm', b'p', b'l',
+            b'e', 3, b'c', b'o', b'm', 0,
+        ];
+        let cname = [
+            7, b't', b'r', b'a', b'c', b'k', b'e', b'r', 11, b'd', b'o', b'u', b'b', b'l', b'e',
+            b'c', b'l', b'i', b'c', b'k', 3, b'n', b'e', b't', 0,
+        ];
+        let mut resp = vec![
+            0x12, 0x34, 0x81, 0x80, // ID, standard response
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, // QD=1, AN=1
+        ];
+        resp.extend_from_slice(&qname);
+        resp.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE=A, IN
+        resp.extend_from_slice(&[0xC0, 0x0C]); // Name pointer to offset 12
+        resp.extend_from_slice(&[0x00, 0x05, 0x00, 0x01]); // TYPE=CNAME, IN
+        resp.extend_from_slice(&[0x00, 0x00, 0x00, 0x3C]); // TTL=60
+        resp.extend_from_slice(&(cname.len() as u16).to_be_bytes());
+        resp.extend_from_slice(&cname);
+
+        let cnames = extract_dns_cnames(&resp);
+        assert_eq!(cnames, vec!["tracker.doubleclick.net".to_string()]);
+        let nx = filter_dns_response(&resp).expect("blocked CNAME should yield NXDOMAIN");
+        assert_eq!(nx[3] & 0x0F, 3);
+    }
+
+    #[test]
+    fn extracts_sni_from_tls_client_hello() {
+        let host = b"ads.vungle.com";
+        let sni_ext_len = 2 + 1 + 2 + host.len();
+        let mut ext = Vec::new();
+        ext.extend_from_slice(&0x0000u16.to_be_bytes());
+        ext.extend_from_slice(&(sni_ext_len as u16).to_be_bytes());
+        ext.extend_from_slice(&((sni_ext_len - 2) as u16).to_be_bytes());
+        ext.push(0x00); // host_name
+        ext.extend_from_slice(&(host.len() as u16).to_be_bytes());
+        ext.extend_from_slice(host);
+
+        let mut hello = Vec::new();
+        hello.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+        hello.extend_from_slice(&[0u8; 32]); // random
+        hello.push(0); // session_id len
+        hello.extend_from_slice(&2u16.to_be_bytes());
+        hello.extend_from_slice(&[0x13, 0x01]); // cipher suite
+        hello.push(1);
+        hello.push(0); // compression
+        hello.extend_from_slice(&(ext.len() as u16).to_be_bytes());
+        hello.extend_from_slice(&ext);
+
+        let mut pkt = vec![0x16, 0x03, 0x01];
+        pkt.extend_from_slice(&((4 + hello.len()) as u16).to_be_bytes());
+        pkt.push(0x01); // ClientHello
+        let hl = hello.len() as u32;
+        pkt.extend_from_slice(&hl.to_be_bytes()[1..4]);
+        pkt.extend_from_slice(&hello);
+
+        assert_eq!(extract_tls_sni(&pkt).as_deref(), Some("ads.vungle.com"));
     }
 }

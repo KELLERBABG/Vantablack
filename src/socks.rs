@@ -293,9 +293,11 @@ pub async fn handle_socks5_connection(
     let port = u16::from_be_bytes(pb);
 
     // ── Ad & tracker blocking (works immediately even with 0 mesh peers) ──
-    if vantablack::ghost::net::adblock::is_blocked_domain(&addr) {
+    if vantablack::ghost::net::adblock::is_blocked_target(&addr)
+        || vantablack::ghost::net::adblock::is_blocked_port(port)
+    {
         vantablack::ghost::net::adblock::record_blocked();
-        tracing::debug!(dest = %addr, port = port, "SOCKS5: blocked ad/tracker domain");
+        tracing::debug!(dest = %addr, port = port, "SOCKS5: blocked ad/tracker/DoH target");
         let _ = s.write_all(&[5, 2, 0, 1, 0, 0, 0, 0, 0, 0]).await;
         return;
     }
@@ -610,6 +612,7 @@ pub async fn handle_socks5_connection(
     tokio::spawn(async move {
         let mut rbuf = vec![0u8; MAX_STREAM_COALESCE_BYTES];
         let mut coalesce_buf: Vec<u8> = Vec::with_capacity(4 + MAX_STREAM_COALESCE_BYTES);
+        let mut checked_sni = port != 443;
 
         loop {
             while credit_in.load(Ordering::Relaxed) == 0 {
@@ -624,6 +627,22 @@ pub async fn handle_socks5_connection(
                 match rd.read(&mut rbuf[..max_read]).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        if !checked_sni {
+                            checked_sni = true;
+                            if let Some(sni) =
+                                vantablack::ghost::net::adblock::extract_tls_sni(&rbuf[..n])
+                            {
+                                if vantablack::ghost::net::adblock::is_blocked_target(&sni) {
+                                    vantablack::ghost::net::adblock::record_blocked();
+                                    tracing::debug!(
+                                        sni = %sni,
+                                        stream_id = stream_id,
+                                        "SOCKS5: blocked TLS ClientHello SNI"
+                                    );
+                                    break;
+                                }
+                            }
+                        }
                         vantablack::ghost::v2::racs::note_real_traffic();
                         let current_credit = credit_in.load(Ordering::Relaxed);
                         credit_in.fetch_sub(n.min(current_credit), Ordering::Relaxed);

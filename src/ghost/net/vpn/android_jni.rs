@@ -712,7 +712,7 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
     if is_udp_dns {
         let dns_payload = &buf[ihl + 8..n];
         if let Some(qname) = crate::ghost::net::adblock::extract_dns_qname(dns_payload) {
-            if crate::ghost::net::adblock::is_blocked_domain(&qname) {
+            if crate::ghost::net::adblock::is_blocked_target(&qname) {
                 crate::ghost::net::adblock::record_blocked();
                 if let Some(nx) =
                     crate::ghost::net::adblock::build_dns_nxdomain_response(dns_payload)
@@ -743,10 +743,11 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
                     dns_sock.recv_from(&mut dns_buf)
                 });
                 if let Ok((rn, _)) = recv_res {
-                    if let Some(reply_pkt) = crate::ghost::net::adblock::synthesize_ipv4_udp_reply(
-                        &buf[..n],
-                        &dns_buf[..rn],
-                    ) {
+                    let filtered = crate::ghost::net::adblock::filter_dns_response(&dns_buf[..rn]);
+                    let reply_dns = filtered.as_deref().unwrap_or(&dns_buf[..rn]);
+                    if let Some(reply_pkt) =
+                        crate::ghost::net::adblock::synthesize_ipv4_udp_reply(&buf[..n], reply_dns)
+                    {
                         if let Some(t) = core.tun.as_ref() {
                             let _ = t.write_packet(&reply_pkt);
                         }

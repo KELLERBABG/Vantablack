@@ -352,12 +352,18 @@ impl VpnHub {
                 if pkt.len() > payload_start {
                     let udp_payload = pkt[payload_start..].to_vec();
 
+                    // Block DoQ/DoT bypass port (853) when adblock + DoH guard are active
+                    if crate::ghost::net::adblock::is_blocked_port(dport) {
+                        crate::ghost::net::adblock::record_blocked();
+                        return;
+                    }
+
                     // Ad & tracker DNS blocking (returns NXDOMAIN before forwarding upstream)
                     if is_hub_dns || dport == 53 {
                         if let Some(qname) =
                             crate::ghost::net::adblock::extract_dns_qname(&udp_payload)
                         {
-                            if crate::ghost::net::adblock::is_blocked_domain(&qname) {
+                            if crate::ghost::net::adblock::is_blocked_target(&qname) {
                                 crate::ghost::net::adblock::record_blocked();
                                 if let Some(nx) =
                                     crate::ghost::net::adblock::build_dns_nxdomain_response(
@@ -462,12 +468,18 @@ impl VpnHub {
                         Ok(n) if n > 0 => {
                             quiet = Duration::ZERO;
                             tracing::info!(peer = %fp, dst = %dst_ip, bytes = n, "VPN UDP flow reply received from WAN/LAN");
+                            let filtered_dns = if dst_port == 53 {
+                                crate::ghost::net::adblock::filter_dns_response(&buf[..n])
+                            } else {
+                                None
+                            };
+                            let reply_payload = filtered_dns.as_deref().unwrap_or(&buf[..n]);
                             if let Some(ip) = build_udp_packet(
                                 IpAddr::V4(dst_ip),
                                 dst_port,
                                 IpAddr::V4(client_ip),
                                 client_port,
-                                &buf[..n],
+                                reply_payload,
                             ) {
                                 // Flaw #4: Enqueue unsealed raw IP packet. Sealing happens at drain time
                                 // in poll_egress, preventing stale epochs/counters on mid-queue re-anchor.
