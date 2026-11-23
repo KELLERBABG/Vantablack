@@ -5550,10 +5550,19 @@ fn sync_peer_topology_telemetry(
     for entry in addrs.iter() {
         let fp = entry.key();
         let addr = *entry.value();
-        let rtt_ms = nat_puncher
-            .selected_rtt(fp)
-            .map(|d| (d.as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
+        let raw_rtt = nat_puncher.selected_rtt(fp);
+        let rtt_ms = raw_rtt.map(|d| (d.as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
         let fb_path = fallback.path(fp);
+        if let Some(rtt) = raw_rtt {
+            if matches!(
+                fb_path,
+                Some(vantablack::ghost::net::fallback::FallbackPath::MeshRelay { .. })
+            ) {
+                vantablack::ghost::v2::chronos::observe_inner_rtt(rtt);
+            } else {
+                vantablack::ghost::v2::chronos::observe_outer_rtt(rtt);
+            }
+        }
         let desc_exit = known_descriptors
             .get(fp)
             .map(|d| (d.capabilities & vantablack::ghost::net::discovery::CAP_EXIT) != 0)
@@ -7566,6 +7575,9 @@ async fn run_node(
                                             // routes on observations rather than
                                             // on assumptions.
                                             if let Some(rtt) = np.selected_rtt(&fp) {
+                                                vantablack::ghost::v2::chronos::observe_outer_rtt(
+                                                    rtt,
+                                                );
                                                 node.contact_plan.write().await.observe_link(
                                                     &me,
                                                     &fp,

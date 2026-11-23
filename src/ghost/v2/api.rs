@@ -57,7 +57,7 @@ fn ledger_input(state: &ApiState) -> LedgerInput {
         // The hybrid handshake is mandatory in this build: a session cannot be
         // established without it, so a live session is direct evidence.
         pq_hybrid: connected.then_some(true),
-        clock_consistent: None,
+        clock_consistent: super::chronos::clock_consistent(),
     }
 }
 
@@ -147,6 +147,7 @@ pub fn handle(state: &ApiState, req: &str) -> Option<Value> {
         "/api/v2/fleet" => Some(super::fleet::status_json()),
         "/api/v2/ladder" => Some(super::continuum::status_json()),
         "/api/v2/racs" => Some(super::racs::status_json()),
+        "/api/v2/chronos" => Some(super::chronos::status_json()),
         _ => None,
     }
 }

@@ -24,6 +24,7 @@
 //!   pacer.
 
 use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Default ceiling on artificial ACK delay.
@@ -215,6 +216,109 @@ pub fn classify(plan: &SplicePlan) -> ClockVerdict {
     }
 }
 
+struct ChronosRuntime {
+    outer_rtt: Option<Duration>,
+    inner_rtt: Option<Duration>,
+    pacer: AckPacer,
+    observations: u64,
+}
+
+impl ChronosRuntime {
+    fn new() -> Self {
+        Self {
+            outer_rtt: None,
+            inner_rtt: None,
+            pacer: AckPacer::new(Duration::ZERO, 1024),
+            observations: 0,
+        }
+    }
+
+    fn plan(&self) -> Option<SplicePlan> {
+        let (inner, outer) = (self.inner_rtt?, self.outer_rtt?);
+        Some(ChronosSplice::new(inner, outer).plan())
+    }
+
+    fn sync_pacer(&mut self) {
+        if let Some(plan) = self.plan() {
+            self.pacer.set_delay(plan.delay_per_ack);
+        }
+    }
+}
+
+static RT: OnceLock<Mutex<ChronosRuntime>> = OnceLock::new();
+
+fn runtime() -> &'static Mutex<ChronosRuntime> {
+    RT.get_or_init(|| Mutex::new(ChronosRuntime::new()))
+}
+
+/// Record a measured outer transport RTT (e.g. direct ICE/link probe).
+pub fn observe_outer_rtt(rtt: Duration) {
+    let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    rt.outer_rtt = Some(rtt);
+    rt.observations = rt.observations.saturating_add(1);
+    rt.sync_pacer();
+}
+
+/// Record a measured inner circuit RTT (e.g. multi-hop / relayed path).
+pub fn observe_inner_rtt(rtt: Duration) {
+    let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    rt.inner_rtt = Some(rtt);
+    rt.observations = rt.observations.saturating_add(1);
+    rt.sync_pacer();
+}
+
+/// Compute the current splice plan once both outer and inner RTTs are known.
+pub fn current_plan() -> Option<SplicePlan> {
+    let rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    rt.plan()
+}
+
+/// Whether the outer and inner clocks currently agree, or `None` if unmeasured.
+pub fn clock_consistent() -> Option<bool> {
+    current_plan().map(|p| p.is_indistinguishable())
+}
+
+/// Current per-ACK splice delay, if both outer and inner RTTs have been observed.
+pub fn suggested_ack_delay() -> Option<Duration> {
+    current_plan().map(|p| p.delay_per_ack)
+}
+
+/// Queue an ACK sequence number on the shared pacer.
+pub fn schedule_ack(seq: u64, now: Instant) {
+    let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    rt.pacer.schedule(seq, now);
+}
+
+/// Drain all due ACKs from the shared pacer.
+pub fn drain_due_acks(now: Instant) -> Vec<u64> {
+    let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    rt.pacer.due(now)
+}
+
+/// JSON summary for `/api/v2/chronos` and diagnostics.
+pub fn status_json() -> serde_json::Value {
+    let rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    let plan = rt.plan();
+    let verdict = plan.as_ref().map(classify).map(|v| match v {
+        ClockVerdict::Consistent => "consistent",
+        ClockVerdict::Masking => "masking",
+        ClockVerdict::Divergent => "divergent",
+    });
+    serde_json::json!({
+        "observed": plan.is_some(),
+        "observations": rt.observations,
+        "max_splice_ms": DEFAULT_MAX_SPLICE.as_millis() as u64,
+        "outer_rtt_ms": rt.outer_rtt.map(|d| d.as_secs_f64() * 1000.0),
+        "inner_rtt_ms": rt.inner_rtt.map(|d| d.as_secs_f64() * 1000.0),
+        "delay_per_ack_ms": plan.as_ref().map(|p| p.delay_per_ack.as_secs_f64() * 1000.0),
+        "paced_outer_rtt_ms": plan.as_ref().map(|p| p.paced_outer_rtt.as_secs_f64() * 1000.0),
+        "residual_ms": plan.as_ref().map(|p| p.residual.as_secs_f64() * 1000.0),
+        "verdict": verdict.unwrap_or("unmeasured"),
+        "pacer_queued": rt.pacer.len(),
+        "pacer_dropped": rt.pacer.dropped(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,5 +384,17 @@ mod tests {
     fn tolerance_scales_with_rtt_and_has_a_floor() {
         assert_eq!(tolerance_for(ms(20)), ms(2));
         assert_eq!(tolerance_for(ms(200)), ms(10));
+    }
+
+    #[test]
+    fn runtime_reports_plan_and_status_after_both_clocks_observed() {
+        observe_outer_rtt(ms(30));
+        observe_inner_rtt(ms(150));
+        let plan = current_plan().expect("plan available after both observations");
+        assert_eq!(plan.delay_per_ack, ms(60));
+        assert_eq!(clock_consistent(), Some(true));
+        let json = status_json();
+        assert_eq!(json["observed"], true);
+        assert_eq!(json["verdict"], "consistent");
     }
 }
