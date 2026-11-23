@@ -148,7 +148,8 @@ const GHOST_BYE_MAGIC: &[u8] = crate::ghost::net::vpn::hub::GHOST_BYE_MAGIC;
 fn tunnel_frame(
     key: &[u8; 32],
     sh: [u8; 4],
-    ctr: u32,
+    epoch: u64,
+    ctr: u64,
     dir: NonceDirection,
     wire: &[u8],
 ) -> Vec<u8> {
@@ -160,14 +161,13 @@ fn tunnel_frame(
         framed.push(0);
     }
     let nonce = crate::ghost::layers::l2_aead::random_xnonce();
-    let epoch = 0u64;
     let _ =
         crate::ghost::layers::l2_aead::xchacha_seal_in_place(key, &nonce, epoch, dir, &mut framed);
     let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap();
     let shard = frame_shard(&framed);
     let meta = crate::ghost::net::GtfV2Header {
         session_hash: sh,
-        counter: ctr as u64,
+        counter: ctr,
         shard_index: 0,
         epoch,
         nonce,
@@ -181,11 +181,12 @@ fn tunnel_frame(
 fn receiver_open(
     frame: &[u8],
     amt: usize,
+    ratchet_lock: &Mutex<Option<crate::ghost::session::ratchet::SessionRatchet>>,
     key: &[u8; 32],
     sh: [u8; 4],
     ctr: u32,
 ) -> Option<Vec<u8>> {
-    // 1. Support GTF v2 wire format from updated hubs
+    // 1. Support GTF v2 wire format from updated hubs (using SessionRatchet per-counter keys)
     if let Some(h) = crate::ghost::net::parse_gtf_v2_header(&frame[..amt]) {
         let tag_start = if h.bulk {
             amt.saturating_sub(16)
@@ -196,25 +197,35 @@ fn receiver_open(
             let shard_bytes = &frame[crate::ghost::net::V2_OFFSET_PAYLOAD_START..tag_start];
             if let Some(msg) = unframe(shard_bytes) {
                 let aad: &[u8] = if h.bulk { &[] } else { &h.tail };
-                for dir in [
-                    NonceDirection::ResponderToInitiator,
-                    NonceDirection::InitiatorToResponder,
-                ] {
-                    let mut trial = msg.clone();
-                    if crate::ghost::layers::l2_aead::xchacha_open_with_aad(
-                        key, &h.nonce, h.epoch, dir, &mut trial, aad,
-                    )
-                    .is_ok()
-                    {
-                        if trial.len() >= 2 {
-                            let n = u16::from_be_bytes([trial[0], trial[1]]) as usize;
-                            if let Some(payload) = trial.get(2..2 + n) {
-                                if payload.len() > MAGIC.len()
-                                    && &payload[..MAGIC.len()] == MAGIC.as_slice()
-                                {
-                                    return Some(payload[MAGIC.len()..].to_vec());
-                                } else if payload.starts_with(GHOST_BYE_MAGIC) {
-                                    return Some(GHOST_BYE_MAGIC.to_vec());
+                let mut ratchet_guard = ratchet_lock.lock();
+                if let Some(ratchet) = ratchet_guard.as_mut() {
+                    for dir in [
+                        NonceDirection::ResponderToInitiator,
+                        NonceDirection::InitiatorToResponder,
+                    ] {
+                        let plan = ratchet.plan_open(h.epoch, dir, h.counter);
+                        let open_key = match &plan {
+                            crate::ghost::session::ratchet::OpenPlan::Forward { key, .. } => *key,
+                            crate::ghost::session::ratchet::OpenPlan::Cached { key, .. } => *key,
+                            crate::ghost::session::ratchet::OpenPlan::Refused => continue,
+                        };
+                        let mut trial = msg.clone();
+                        if crate::ghost::layers::l2_aead::xchacha_open_with_aad(
+                            &open_key, &h.nonce, h.epoch, dir, &mut trial, aad,
+                        )
+                        .is_ok()
+                        {
+                            ratchet.commit_open(h.epoch, dir, plan);
+                            if trial.len() >= 2 {
+                                let n = u16::from_be_bytes([trial[0], trial[1]]) as usize;
+                                if let Some(payload) = trial.get(2..2 + n) {
+                                    if payload.len() > MAGIC.len()
+                                        && &payload[..MAGIC.len()] == MAGIC.as_slice()
+                                    {
+                                        return Some(payload[MAGIC.len()..].to_vec());
+                                    } else if payload.starts_with(GHOST_BYE_MAGIC) {
+                                        return Some(GHOST_BYE_MAGIC.to_vec());
+                                    }
                                 }
                             }
                         }
@@ -293,9 +304,24 @@ pub struct AndroidCore {
     pub identity: GhostIdentity,
     pub session_key: Mutex<Option<[u8; 32]>>,
     pub session_hash: Mutex<[u8; 4]>,
+    pub ratchet: Mutex<Option<crate::ghost::session::ratchet::SessionRatchet>>,
     pub tx_seq: AtomicU32,
     pub known_peers: Mutex<std::collections::HashMap<std::net::SocketAddr, ([u8; 32], [u8; 4])>>,
     pub bye_sent: AtomicBool,
+}
+
+impl AndroidCore {
+    fn install_session(&self, key: [u8; 32], sh: [u8; 4]) {
+        *self.session_key.lock() = Some(key);
+        *self.session_hash.lock() = sh;
+        *self.ratchet.lock() = Some(crate::ghost::session::ratchet::SessionRatchet::new(key));
+        self.tx_seq.store(0, Ordering::Relaxed);
+    }
+
+    fn clear_session(&self) {
+        *self.session_key.lock() = None;
+        *self.ratchet.lock() = None;
+    }
 }
 
 unsafe impl Send for AndroidCore {}
@@ -321,10 +347,11 @@ fn send_goodbye(core: &AndroidCore) {
     }
     for (peer, key, sh) in targets {
         for _ in 0..2 {
-            let ctr = core.tx_seq.fetch_add(1, Ordering::Relaxed);
+            let ctr = core.tx_seq.fetch_add(1, Ordering::Relaxed) as u64;
             let frame = tunnel_frame(
                 &key,
                 sh,
+                0,
                 ctr,
                 NonceDirection::InitiatorToResponder,
                 GHOST_BYE_MAGIC,
@@ -678,10 +705,23 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
     match TunDevice::read_packet(tun, buf) {
         Ok(n) if n >= 20 && (buf[0] >> 4) == 4 => {
             if let Some(wire) = seal_from_tun(&core.state, &buf[..n]) {
-                let ctr = core.tx_seq.fetch_add(1, Ordering::Relaxed);
+                let (epoch, ctr, seal_key) = {
+                    let mut rg = core.ratchet.lock();
+                    if let Some(r) = rg.as_mut() {
+                        let (c, k) = r.advance_seal(NonceDirection::InitiatorToResponder);
+                        (r.epoch(), c, k)
+                    } else {
+                        (
+                            0,
+                            core.tx_seq.fetch_add(1, Ordering::Relaxed) as u64,
+                            session_key,
+                        )
+                    }
+                };
                 let frame = tunnel_frame(
-                    &session_key,
+                    &seal_key,
                     session_hash,
+                    epoch,
                     ctr,
                     NonceDirection::InitiatorToResponder,
                     &wire,
@@ -779,9 +819,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
                     core.state.rotate_epoch();
                     core.state.set_key(key);
                     core.state.note_inbound();
-                    *core.session_key.lock() = Some(key);
-                    *core.session_hash.lock() = sh;
-                    core.tx_seq.store(2, Ordering::Relaxed);
+                    core.install_session(key, sh);
                     alog!(
                         "drain_once: peer handshake established new session with hub {:?}",
                         src
@@ -802,7 +840,9 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         if non_hub {
             let peer_sess = core.known_peers.lock().get(&src).copied();
             if let Some((peer_key, peer_sh)) = peer_sess {
-                if let Some(wire) = receiver_open(&buf[..n], n, &peer_key, peer_sh, ctr) {
+                if let Some(wire) =
+                    receiver_open(&buf[..n], n, &core.ratchet, &peer_key, peer_sh, ctr)
+                {
                     if wire.starts_with(GHOST_BYE_MAGIC) {
                         core.known_peers
                             .lock()
@@ -827,7 +867,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
                 core.hub_addr = Some(src);
             }
             if flags & 0x02 != 0 {
-                match receiver_open(&buf[..n], n, &session_key, session_hash, ctr) {
+                match receiver_open(&buf[..n], n, &core.ratchet, &session_key, session_hash, ctr) {
                     Some(wire) => {
                         if wire.starts_with(GHOST_BYE_MAGIC) {
                             let next_peer = {
@@ -840,9 +880,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
                                 core.state.rotate_epoch();
                                 core.state.set_key(next_key);
                                 core.state.note_inbound();
-                                *core.session_key.lock() = Some(next_key);
-                                *core.session_hash.lock() = next_sh;
-                                core.tx_seq.store(2, Ordering::Relaxed);
+                                core.install_session(next_key, next_sh);
                                 alog!(
                                     "drain_once: hub {:?} sent GHOST_BYE — failed over to {:?}",
                                     src,
@@ -850,7 +888,7 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
                                 );
                             } else {
                                 core.hub_addr = None;
-                                *core.session_key.lock() = None;
+                                core.clear_session();
                                 alog!(
                                     "drain_once: hub {:?} sent GHOST_BYE — no remaining peers, awaiting discovery",
                                     src
@@ -966,7 +1004,8 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
         identity,
         session_key: Mutex::new(None),
         session_hash: Mutex::new([0u8; 4]),
-        tx_seq: AtomicU32::new(2),
+        ratchet: Mutex::new(None),
+        tx_seq: AtomicU32::new(0),
         known_peers: Mutex::new(std::collections::HashMap::new()),
         bye_sent: AtomicBool::new(false),
     });
@@ -993,8 +1032,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_setSessionKey(
     }
     let arr: [u8; 32] = k.try_into().unwrap();
     core.state.set_key(arr);
-    *core.session_key.lock() = Some(arr);
-    *core.session_hash.lock() = compute_session_hash(&arr);
+    core.install_session(arr, compute_session_hash(&arr));
 }
 
 /// `fun start(ptr: Long, tunFd: Int, sockFd: Int, hubAddr: String): Boolean`
@@ -1034,9 +1072,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
                 core.state.rotate_epoch();
                 core.state.set_key(key);
                 core.state.note_inbound();
-                *core.session_key.lock() = Some(key);
-                *core.session_hash.lock() = sh;
-                core.tx_seq.store(2, Ordering::Relaxed);
+                core.install_session(key, sh);
             }
         }
     }
@@ -1051,9 +1087,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
                 core.state.rotate_epoch();
                 core.state.set_key(key);
                 core.state.note_inbound();
-                *core.session_key.lock() = Some(key);
-                *core.session_hash.lock() = sh;
-                core.tx_seq.store(2, Ordering::Relaxed);
+                core.install_session(key, sh);
             }
         }
     }
@@ -1118,9 +1152,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
             core.state.rotate_epoch();
             core.state.set_key(key);
             core.state.note_inbound();
-            *core.session_key.lock() = Some(key);
-            *core.session_hash.lock() = sh;
-            core.tx_seq.store(2, Ordering::Relaxed);
+            core.install_session(key, sh);
             alog!(
                 "scanLan: re-established session with designated hub {:?}",
                 hub
@@ -1137,9 +1169,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
             core.state.rotate_epoch();
             core.state.set_key(key);
             core.state.note_inbound();
-            *core.session_key.lock() = Some(key);
-            *core.session_hash.lock() = sh;
-            core.tx_seq.store(2, Ordering::Relaxed);
+            core.install_session(key, sh);
             alog!("scanLan: adopted hub peer {:?}", peer);
         }
     }
@@ -1194,9 +1224,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
             core.state.rotate_epoch();
             core.state.set_key(key);
             core.state.note_inbound();
-            *core.session_key.lock() = Some(key);
-            *core.session_hash.lock() = sh;
-            core.tx_seq.store(2, Ordering::Relaxed);
+            core.install_session(key, sh);
             alog!("connectPeer: connected and adopted hub {:?}", peer);
         }
         tracing::info!(peer = %peer, "Connected to bootstrap peer");
@@ -1242,9 +1270,7 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_selectHub(
         core.state.rotate_epoch();
         core.state.set_key(key);
         core.state.note_inbound();
-        *core.session_key.lock() = Some(key);
-        *core.session_hash.lock() = sh;
-        core.tx_seq.store(2, Ordering::Relaxed);
+        core.install_session(key, sh);
         alog!("selectHub: switched active exit hub to {:?}", peer);
         1
     } else {

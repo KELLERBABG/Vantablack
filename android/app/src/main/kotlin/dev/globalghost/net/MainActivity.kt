@@ -1130,6 +1130,7 @@ class MainActivity : Activity() {
                 putExtra(GhostVpnService.EXTRA_HUB_FP, "auto")
                 putExtra(GhostVpnService.EXTRA_HUB_ADDR, targetAddr)
                 putExtra(GhostVpnService.EXTRA_DNS, customDns)
+                pendingInvite?.let { putExtra(GhostVpnService.EXTRA_INVITE, it) }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)

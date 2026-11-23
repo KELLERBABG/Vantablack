@@ -100,17 +100,15 @@ class GhostVpnService : VpnService() {
         intent.getStringExtra(EXTRA_RENDEZVOUS_URL)?.trim()?.takeIf { it.isNotEmpty() }?.let { url ->
             try { GhostCore.setRendezvousUrl(ptr, url) } catch (_: Throwable) {}
         }
-        intent.getStringExtra(EXTRA_INVITE)?.trim()?.takeIf { it.isNotEmpty() }?.let { invite ->
-            try { GhostCore.importInvite(ptr, invite) } catch (_: Throwable) {}
-        }
+        val queuedInvite = intent.getStringExtra(EXTRA_INVITE)?.trim()?.takeIf { it.isNotEmpty() }
         Thread {
-            startTunnel()
+            startTunnel(pendingInviteUri = queuedInvite)
         }.start()
         return START_NOT_STICKY
     }
 
     @Synchronized
-    private fun startTunnel(network: Network? = null) {
+    private fun startTunnel(network: Network? = null, pendingInviteUri: String? = null) {
         val targetNetwork = network ?: activeNetwork ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) cm.activeNetwork else null
         activeNetwork = targetNetwork
 
@@ -215,10 +213,24 @@ class GhostVpnService : VpnService() {
         if (!GhostCore.start(ptr, tunFd, sockFd, hubAddrStr)) {
             stopSelf(); return
         }
-        try {
-            val active = GhostCore.getActiveHub(ptr)
-            if (active.isNotEmpty()) currentHubAddr = active
-        } catch (_: Throwable) {}
+        if (!pendingInviteUri.isNullOrEmpty()) {
+            try { GhostCore.importInvite(ptr, pendingInviteUri) } catch (_: Throwable) {}
+        }
+        val activeHub = try { GhostCore.getActiveHub(ptr) } catch (_: Throwable) { "" }
+        if (activeHub.isEmpty()) {
+            // Do not blackhole 0.0.0.0/0 when no Exit Node session could be established
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    applicationContext,
+                    "No Exit Node connected — pair with Vantablack Desktop or check Wi-Fi",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+            shutdown()
+            stopSelf()
+            return
+        }
+        currentHubAddr = activeHub
 
         // 4. Pumps: TUN→mesh and mesh→TUN (map the desktop binary's pumps).
         running = true
