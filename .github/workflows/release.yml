@@ -96,6 +96,24 @@ jobs:
         shell: pwsh
         run: ./scripts/build_installer.ps1 -BinDir "target/${{ matrix.target }}/release" -SkipBuild
 
+      - name: Sign Windows artifacts (Authenticode / SignPath when configured)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ($env:WINDOWS_CERT_BASE64) {
+            [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
+            $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+            if ($signtool) {
+              & $signtool sign /fd SHA256 /f cert.pfx /p $env:WINDOWS_CERT_PASSWORD /tr http://timestamp.digicert.com /td SHA256 "target/${{ matrix.target }}/release/ggn.exe" dist\ggn-*-windows-setup.exe
+            }
+            Remove-Item cert.pfx -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "WINDOWS_CERT_BASE64 secret not set; skipping Authenticode step."
+          }
+
       - name: Package Windows artifacts
         if: matrix.os == 'windows-latest'
         shell: bash
@@ -120,14 +138,28 @@ jobs:
           cp LICENSE staging/ 2>/dev/null || true
           tar -czvf ggn-${{ github.ref_name }}-${{ matrix.target }}.tar.gz -C staging .
 
-      - name: Build Debian package (.deb)
+      - name: Build Debian (.deb) and RPM (.rpm) packages
         if: matrix.os == 'ubuntu-latest'
         run: |
-          cargo install cargo-deb --locked
+          cargo install cargo-deb cargo-generate-rpm --locked
           mkdir -p target/release
           cp target/${{ matrix.target }}/release/ggn target/release/ggn
           cargo deb --no-build
           cp target/debian/*.deb ./
+          cargo generate-rpm
+          cp target/generate-rpm/*.rpm ./
+
+      - name: Build macOS Disk Image (.dmg) & Notarize (when configured)
+        if: matrix.os == 'macos-latest'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          chmod +x packaging/macos/build_dmg.sh
+          ./packaging/macos/build_dmg.sh "$VERSION" "target/${{ matrix.target }}/release/ggn" "ggn-${GITHUB_REF_NAME}-${{ matrix.target }}.dmg"
 
       - name: Upload artifact to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -135,8 +167,10 @@ jobs:
           files: |
             ggn-*.zip
             ggn-*.tar.gz
+            ggn-*.dmg
             dist/*.exe
             *.deb
+            *.rpm
           body_path: RELEASE_NOTES.md
           generate_release_notes: false
           draft: false

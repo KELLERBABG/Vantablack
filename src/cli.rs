@@ -203,6 +203,7 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
         "mode" | "regime" => Some(run_mode(&args)),
         "vb-dns" | "vbdns" => Some(run_vb_dns(&args)),
         "xray" => Some(block_on(run_xray(&args))),
+        "service" => Some(run_service(&args)),
         "--version" | "-v" | "version" => {
             println!("vantablack {}", env!("CARGO_PKG_VERSION"));
             println!("https://github.com/KELLERBABG/Vantablack");
@@ -239,6 +240,7 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!("  ggn ladder [--demo|--json]      Six-rung Continuum ladder, GhostCell-Nano, mule DTN");
             println!("  ggn racs [--bench]              Cover-traffic shaping and measured preemption latency");
             println!("  ggn hpeb [--listen ADDR] [--paths A,B]  AONT+RS multipath: one bound UDP socket per path (--client --file F)");
+            println!("  ggn service <install|uninstall|start|stop|status>  Manage Vantablack background OS service");
             println!("  ggn --version                   Show version information");
             println!("  ggn --help                      Show this help");
             println!();
@@ -317,6 +319,10 @@ fn apply_global_flags(args: &[String]) {
                 std::env::set_var("GHOST_EXIT", "0");
                 std::env::set_var("GHOST_NO_GUI", "1");
                 std::env::set_var("GHOST_VPN", "off");
+            }
+            "--service" | "--headless" | "--no-gui" => {
+                std::env::set_var("GHOST_NO_GUI", "1");
+                std::env::set_var("GHOST_SERVICE_MODE", "1");
             }
             "--zero-admin" | "--userspace" => {
                 std::env::set_var("GHOST_ZERO_ADMIN", "1");
@@ -832,6 +838,102 @@ async fn run_xray(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Pure command-line specification for OS service management (`sc.exe`, `systemctl`, `launchctl`).
+pub(crate) fn service_command_spec(
+    action: &str,
+    exe_path: &str,
+    os: &str,
+) -> Result<(&'static str, Vec<String>), String> {
+    match (os, action) {
+        ("windows", "install") => Ok((
+            "sc.exe",
+            vec![
+                "create".into(),
+                "Vantablack".into(),
+                format!("binPath= \"{exe_path}\" --service"),
+                "start= auto".into(),
+                "DisplayName= Vantablack Post-Quantum Mesh Daemon".into(),
+            ],
+        )),
+        ("windows", "uninstall") => Ok(("sc.exe", vec!["delete".into(), "Vantablack".into()])),
+        ("windows", "start") => Ok(("sc.exe", vec!["start".into(), "Vantablack".into()])),
+        ("windows", "stop") => Ok(("sc.exe", vec!["stop".into(), "Vantablack".into()])),
+        ("windows", "status") => Ok(("sc.exe", vec!["query".into(), "Vantablack".into()])),
+        ("linux", "install") => Ok((
+            "systemctl",
+            vec!["enable".into(), "--now".into(), "vantablack.service".into()],
+        )),
+        ("linux", "uninstall") => Ok((
+            "systemctl",
+            vec![
+                "disable".into(),
+                "--now".into(),
+                "vantablack.service".into(),
+            ],
+        )),
+        ("linux", "start") => Ok((
+            "systemctl",
+            vec!["start".into(), "vantablack.service".into()],
+        )),
+        ("linux", "stop") => Ok((
+            "systemctl",
+            vec!["stop".into(), "vantablack.service".into()],
+        )),
+        ("linux", "status") => Ok((
+            "systemctl",
+            vec![
+                "status".into(),
+                "--no-pager".into(),
+                "vantablack.service".into(),
+            ],
+        )),
+        ("macos", "install" | "start") => Ok((
+            "launchctl",
+            vec![
+                "load".into(),
+                "-w".into(),
+                "/Library/LaunchDaemons/dev.kellersystems.vantablack.plist".into(),
+            ],
+        )),
+        ("macos", "uninstall" | "stop") => Ok((
+            "launchctl",
+            vec![
+                "unload".into(),
+                "-w".into(),
+                "/Library/LaunchDaemons/dev.kellersystems.vantablack.plist".into(),
+            ],
+        )),
+        ("macos", "status") => Ok((
+            "launchctl",
+            vec!["list".into(), "dev.kellersystems.vantablack".into()],
+        )),
+        (_, other) => Err(format!(
+            "unknown service action {other:?} (expected install, uninstall, start, stop, or status)"
+        )),
+    }
+}
+
+fn run_service(args: &[String]) -> anyhow::Result<()> {
+    let action = args.get(2).map(String::as_str).unwrap_or("status");
+    let exe = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("ggn"))
+        .to_string_lossy()
+        .to_string();
+    let (prog, cmd_args) =
+        service_command_spec(action, &exe, std::env::consts::OS).map_err(anyhow::Error::msg)?;
+    println!("Running: {prog} {}", cmd_args.join(" "));
+    let status = std::process::Command::new(prog)
+        .args(&cmd_args)
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to execute {prog}: {e}"))?;
+    if !status.success() {
+        return Err(anyhow::anyhow!(
+            "{prog} exited with status {status} (Administrator/root privileges may be required)"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,5 +946,24 @@ mod tests {
         assert_eq!(std::env::var("GHOST_EXIT").as_deref(), Ok("0"));
         assert_eq!(std::env::var("GHOST_NO_GUI").as_deref(), Ok("1"));
         assert_eq!(std::env::var("GHOST_VPN").as_deref(), Ok("off"));
+    }
+
+    #[test]
+    fn service_command_specs_cover_windows_linux_and_macos() {
+        let (prog, args) =
+            service_command_spec("install", "C:\\Program Files\\ggn.exe", "windows").unwrap();
+        assert_eq!(prog, "sc.exe");
+        assert_eq!(args[0], "create");
+        assert!(args[2].contains("--service"));
+
+        let (lprog, largs) = service_command_spec("status", "/usr/bin/ggn", "linux").unwrap();
+        assert_eq!(lprog, "systemctl");
+        assert_eq!(largs[0], "status");
+
+        let (mprog, margs) = service_command_spec("start", "/usr/local/bin/ggn", "macos").unwrap();
+        assert_eq!(mprog, "launchctl");
+        assert_eq!(margs[0], "load");
+
+        assert!(service_command_spec("bogus", "ggn", "windows").is_err());
     }
 }

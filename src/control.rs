@@ -1578,198 +1578,16 @@ pub fn spawn_control_center(
                                             "application/json",
                                         )
                                     } else if req.starts_with("GET /api/settings") {
-                                        let s = cs_ref.read().clone();
-                                        let body = serde_json::json!({
-                                        "success": true,
-                                        "route_mode": s.route_mode,
-                                        "device_names": s.device_names,
-                                        "device_os": s.device_os,
-                                        "bypass": s.bypass,
-                                        "bypass_count": s.bypass.len(),
-                                        "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
-                                        "low_latency": vantablack::ghost::net::is_low_latency(),
-                                        "mix_batch_ms": vantablack::ghost::net::mix_batch_delay_ms(),
-                                        "zero_admin": vantablack::ghost::net::is_zero_admin(),
-                                        "stego_carrier_mode": s.stego_carrier_mode,
-                                        "energy_ledger_enabled": s.energy_ledger_enabled,
-                                        "jurisdiction_tag": s.jurisdiction_tag,
-                                        "abos_skywave_enabled": s.abos_skywave_enabled,
-                                        "qel_enabled": s.qel_enabled,
-                                        "exp_pow_shield": s.exp_pow_shield,
-                                        "exp_dtn_reconcile": s.exp_dtn_reconcile,
-                                        "exp_universal_tunnel": s.exp_universal_tunnel,
-                                        "exp_collective_defense": s.exp_collective_defense,
-                                        "exp_rendezvous": s.exp_rendezvous,
-                                        "exp_diffusion": s.exp_diffusion,
-                                        "adblock_enabled": vantablack::ghost::net::adblock::is_enabled(),
-                                        "ads_blocked": vantablack::ghost::net::adblock::blocked_count(),
-                                    })
-                                    .to_string();
-                                        ("HTTP/1.1 200 OK", body, "application/json")
+                                        handle_get_settings(&cs_ref, &scan_interval_ref)
                                     } else if req.starts_with("POST /api/settings")
                                         || req.starts_with("POST /api/mesh/config")
                                     {
-                                        let val = json_body(&req);
-                                        let mut s = cs_ref.write();
-                                        if let Some(r) =
-                                            val.get("route_mode").and_then(|v| v.as_str())
-                                        {
-                                            s.set_route_mode(r);
-                                        }
-                                        if let Some(ll) =
-                                            val.get("low_latency").and_then(|v| v.as_bool())
-                                        {
-                                            vantablack::ghost::net::set_low_latency(ll);
-                                        }
-                                        if let Some(ab) =
-                                            val.get("adblock_enabled").and_then(|v| v.as_bool())
-                                        {
-                                            vantablack::ghost::net::adblock::set_enabled(ab);
-                                        }
-                                        if let Some(ms) =
-                                            val.get("mix_batch_ms").and_then(|v| v.as_u64())
-                                        {
-                                            vantablack::ghost::net::set_mix_batch_delay_ms(ms);
-                                        }
-                                        if let Some(za) =
-                                            val.get("zero_admin").and_then(|v| v.as_bool())
-                                        {
-                                            vantablack::ghost::net::set_zero_admin(za);
-                                        }
-                                        let mut bypass_err: Option<String> = None;
-                                        if let Some(add) =
-                                            val.get("bypass_add").and_then(|v| v.as_str())
-                                        {
-                                            if let Err(e) = s.add_bypass(add) {
-                                                bypass_err = Some(e);
-                                            }
-                                        }
-                                        if let Some(rem) =
-                                            val.get("bypass_remove").and_then(|v| v.as_str())
-                                        {
-                                            s.remove_bypass(rem);
-                                        }
-                                        if let Some(secs) = val
-                                            .get("private_mesh_scan_interval_secs")
-                                            .or_else(|| val.get("scan_interval_secs"))
-                                            .and_then(|v| v.as_u64())
-                                        {
-                                            scan_interval_ref.store(secs as u32, Ordering::Relaxed);
-                                        }
-                                        if let Some(names) = val
-                                            .get("set_device_name")
-                                            .or_else(|| val.get("set_peer_name"))
-                                            .and_then(|v| v.as_object())
-                                        {
-                                            for (k, v) in names {
-                                                if let Some(name_str) = v.as_str() {
-                                                    let _ = s.set_device_name(k, name_str);
-                                                }
-                                            }
-                                        }
-                                        if let Some(stego) =
-                                            val.get("stego_carrier_mode").and_then(|v| v.as_bool())
-                                        {
-                                            s.stego_carrier_mode = stego;
-                                        }
-                                        if let Some(energy) = val
-                                            .get("energy_ledger_enabled")
-                                            .and_then(|v| v.as_bool())
-                                        {
-                                            s.energy_ledger_enabled = energy;
-                                        }
-                                        if let Some(juris) =
-                                            val.get("jurisdiction_tag").and_then(|v| v.as_str())
-                                        {
-                                            s.set_jurisdiction_tag(juris);
-                                        }
-                                        if let Some(abos) = val
-                                            .get("abos_skywave_enabled")
-                                            .and_then(|v| v.as_bool())
-                                        {
-                                            s.abos_skywave_enabled = abos;
-                                        }
-                                        if let Some(qel) =
-                                            val.get("qel_enabled").and_then(|v| v.as_bool())
-                                        {
-                                            s.qel_enabled = qel;
-                                        }
-                                        if let Some(v) =
-                                            val.get("exp_pow_shield").and_then(|v| v.as_bool())
-                                        {
-                                            s.exp_pow_shield = v;
-                                            vantablack::ghost::net::pow::set_enabled(v);
-                                        }
-                                        if let Some(v) =
-                                            val.get("exp_dtn_reconcile").and_then(|v| v.as_bool())
-                                        {
-                                            s.exp_dtn_reconcile = v;
-                                            vantablack::ghost::net::dtn_reconcile::set_enabled(v);
-                                        }
-                                        if let Some(v) = val
-                                            .get("exp_universal_tunnel")
-                                            .and_then(|v| v.as_bool())
-                                        {
-                                            s.exp_universal_tunnel = v;
-                                            vantablack::ghost::net::universal_tunnel::set_enabled(
-                                                v,
-                                            );
-                                        }
-                                        if let Some(v) = val
-                                            .get("exp_collective_defense")
-                                            .and_then(|v| v.as_bool())
-                                        {
-                                            s.exp_collective_defense = v;
-                                            vantablack::ghost::net::collective_defense::set_enabled(
-                                                v,
-                                            );
-                                        }
-                                        if let Some(v) =
-                                            val.get("exp_rendezvous").and_then(|v| v.as_bool())
-                                        {
-                                            s.exp_rendezvous = v;
-                                            vantablack::ghost::net::rendezvous::set_enabled(v);
-                                        }
-                                        if let Some(v) =
-                                            val.get("exp_diffusion").and_then(|v| v.as_bool())
-                                        {
-                                            s.exp_diffusion = v;
-                                            vantablack::ghost::net::diffusion::set_enabled(v);
-                                        }
-                                        if !cp_ref.is_empty() && bypass_err.is_none() {
-                                            save_consumer_settings(&cp_ref, &s);
-                                        }
-                                        if let Some(err_msg) = bypass_err {
-                                            let body = serde_json::json!({
-                                                "success": false,
-                                                "error": err_msg,
-                                                "bypass": s.bypass,
-                                                "bypass_count": s.bypass.len(),
-                                            })
-                                            .to_string();
-                                            ("HTTP/1.1 400 Bad Request", body, "application/json")
-                                        } else {
-                                            let body = serde_json::json!({
-                                                "success": true,
-                                                "route_mode": s.route_mode,
-                                                "bypass": s.bypass,
-                                                "bypass_count": s.bypass.len(),
-                                                "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
-                                                "stego_carrier_mode": s.stego_carrier_mode,
-                                                "energy_ledger_enabled": s.energy_ledger_enabled,
-                                                "jurisdiction_tag": s.jurisdiction_tag,
-                                                "abos_skywave_enabled": s.abos_skywave_enabled,
-                                                "qel_enabled": s.qel_enabled,
-                                                "exp_pow_shield": s.exp_pow_shield,
-                                                "exp_dtn_reconcile": s.exp_dtn_reconcile,
-                                                "exp_universal_tunnel": s.exp_universal_tunnel,
-                                                "exp_collective_defense": s.exp_collective_defense,
-                                                "exp_rendezvous": s.exp_rendezvous,
-                                                "exp_diffusion": s.exp_diffusion,
-                                            })
-                                            .to_string();
-                                            ("HTTP/1.1 200 OK", body, "application/json")
-                                        }
+                                        handle_post_settings(
+                                            &req,
+                                            &cs_ref,
+                                            &scan_interval_ref,
+                                            &cp_ref,
+                                        )
                                     } else if req.starts_with("GET /api/wan_telemetry") {
                                         let sent_bytes =
                                             nc_ref.stats.bytes_sent.load(Ordering::Relaxed);
@@ -2206,4 +2024,163 @@ pub async fn apply_github_update() -> Result<String, String> {
 
     #[cfg(windows)]
     Ok("Installer launched silently. Vantablack is restarting...".to_string())
+}
+
+fn handle_get_settings(
+    cs_ref: &Arc<parking_lot::RwLock<ConsumerSettings>>,
+    scan_interval_ref: &Arc<AtomicU32>,
+) -> (&'static str, String, &'static str) {
+    let s = cs_ref.read().clone();
+    let body = serde_json::json!({
+        "success": true,
+        "route_mode": s.route_mode,
+        "device_names": s.device_names,
+        "device_os": s.device_os,
+        "bypass": s.bypass,
+        "bypass_count": s.bypass.len(),
+        "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
+        "low_latency": vantablack::ghost::net::is_low_latency(),
+        "mix_batch_ms": vantablack::ghost::net::mix_batch_delay_ms(),
+        "zero_admin": vantablack::ghost::net::is_zero_admin(),
+        "stego_carrier_mode": s.stego_carrier_mode,
+        "energy_ledger_enabled": s.energy_ledger_enabled,
+        "jurisdiction_tag": s.jurisdiction_tag,
+        "abos_skywave_enabled": s.abos_skywave_enabled,
+        "qel_enabled": s.qel_enabled,
+        "exp_pow_shield": s.exp_pow_shield,
+        "exp_dtn_reconcile": s.exp_dtn_reconcile,
+        "exp_universal_tunnel": s.exp_universal_tunnel,
+        "exp_collective_defense": s.exp_collective_defense,
+        "exp_rendezvous": s.exp_rendezvous,
+        "exp_diffusion": s.exp_diffusion,
+        "adblock_enabled": vantablack::ghost::net::adblock::is_enabled(),
+        "ads_blocked": vantablack::ghost::net::adblock::blocked_count(),
+    })
+    .to_string();
+    ("HTTP/1.1 200 OK", body, "application/json")
+}
+
+fn handle_post_settings(
+    req: &str,
+    cs_ref: &Arc<parking_lot::RwLock<ConsumerSettings>>,
+    scan_interval_ref: &Arc<AtomicU32>,
+    cp_ref: &str,
+) -> (&'static str, String, &'static str) {
+    let val = json_body(req);
+    let mut s = cs_ref.write();
+    if let Some(r) = val.get("route_mode").and_then(|v| v.as_str()) {
+        s.set_route_mode(r);
+    }
+    if let Some(ll) = val.get("low_latency").and_then(|v| v.as_bool()) {
+        vantablack::ghost::net::set_low_latency(ll);
+    }
+    if let Some(ab) = val.get("adblock_enabled").and_then(|v| v.as_bool()) {
+        vantablack::ghost::net::adblock::set_enabled(ab);
+    }
+    if let Some(ms) = val.get("mix_batch_ms").and_then(|v| v.as_u64()) {
+        vantablack::ghost::net::set_mix_batch_delay_ms(ms);
+    }
+    if let Some(za) = val.get("zero_admin").and_then(|v| v.as_bool()) {
+        vantablack::ghost::net::set_zero_admin(za);
+    }
+    let mut bypass_err: Option<String> = None;
+    if let Some(add) = val.get("bypass_add").and_then(|v| v.as_str()) {
+        if let Err(e) = s.add_bypass(add) {
+            bypass_err = Some(e);
+        }
+    }
+    if let Some(rem) = val.get("bypass_remove").and_then(|v| v.as_str()) {
+        s.remove_bypass(rem);
+    }
+    if let Some(secs) = val
+        .get("private_mesh_scan_interval_secs")
+        .or_else(|| val.get("scan_interval_secs"))
+        .and_then(|v| v.as_u64())
+    {
+        scan_interval_ref.store(secs as u32, Ordering::Relaxed);
+    }
+    if let Some(names) = val
+        .get("set_device_name")
+        .or_else(|| val.get("set_peer_name"))
+        .and_then(|v| v.as_object())
+    {
+        for (k, v) in names {
+            if let Some(name_str) = v.as_str() {
+                let _ = s.set_device_name(k, name_str);
+            }
+        }
+    }
+    if let Some(stego) = val.get("stego_carrier_mode").and_then(|v| v.as_bool()) {
+        s.stego_carrier_mode = stego;
+    }
+    if let Some(energy) = val.get("energy_ledger_enabled").and_then(|v| v.as_bool()) {
+        s.energy_ledger_enabled = energy;
+    }
+    if let Some(juris) = val.get("jurisdiction_tag").and_then(|v| v.as_str()) {
+        s.set_jurisdiction_tag(juris);
+    }
+    if let Some(abos) = val.get("abos_skywave_enabled").and_then(|v| v.as_bool()) {
+        s.abos_skywave_enabled = abos;
+    }
+    if let Some(qel) = val.get("qel_enabled").and_then(|v| v.as_bool()) {
+        s.qel_enabled = qel;
+    }
+    if let Some(v) = val.get("exp_pow_shield").and_then(|v| v.as_bool()) {
+        s.exp_pow_shield = v;
+        vantablack::ghost::net::pow::set_enabled(v);
+    }
+    if let Some(v) = val.get("exp_dtn_reconcile").and_then(|v| v.as_bool()) {
+        s.exp_dtn_reconcile = v;
+        vantablack::ghost::net::dtn_reconcile::set_enabled(v);
+    }
+    if let Some(v) = val.get("exp_universal_tunnel").and_then(|v| v.as_bool()) {
+        s.exp_universal_tunnel = v;
+        vantablack::ghost::net::universal_tunnel::set_enabled(v);
+    }
+    if let Some(v) = val.get("exp_collective_defense").and_then(|v| v.as_bool()) {
+        s.exp_collective_defense = v;
+        vantablack::ghost::net::collective_defense::set_enabled(v);
+    }
+    if let Some(v) = val.get("exp_rendezvous").and_then(|v| v.as_bool()) {
+        s.exp_rendezvous = v;
+        vantablack::ghost::net::rendezvous::set_enabled(v);
+    }
+    if let Some(v) = val.get("exp_diffusion").and_then(|v| v.as_bool()) {
+        s.exp_diffusion = v;
+        vantablack::ghost::net::diffusion::set_enabled(v);
+    }
+    if !cp_ref.is_empty() && bypass_err.is_none() {
+        save_consumer_settings(cp_ref, &s);
+    }
+    if let Some(err_msg) = bypass_err {
+        let body = serde_json::json!({
+            "success": false,
+            "error": err_msg,
+            "bypass": s.bypass,
+            "bypass_count": s.bypass.len(),
+        })
+        .to_string();
+        ("HTTP/1.1 400 Bad Request", body, "application/json")
+    } else {
+        let body = serde_json::json!({
+            "success": true,
+            "route_mode": s.route_mode,
+            "bypass": s.bypass,
+            "bypass_count": s.bypass.len(),
+            "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
+            "stego_carrier_mode": s.stego_carrier_mode,
+            "energy_ledger_enabled": s.energy_ledger_enabled,
+            "jurisdiction_tag": s.jurisdiction_tag,
+            "abos_skywave_enabled": s.abos_skywave_enabled,
+            "qel_enabled": s.qel_enabled,
+            "exp_pow_shield": s.exp_pow_shield,
+            "exp_dtn_reconcile": s.exp_dtn_reconcile,
+            "exp_universal_tunnel": s.exp_universal_tunnel,
+            "exp_collective_defense": s.exp_collective_defense,
+            "exp_rendezvous": s.exp_rendezvous,
+            "exp_diffusion": s.exp_diffusion,
+        })
+        .to_string();
+        ("HTTP/1.1 200 OK", body, "application/json")
+    }
 }

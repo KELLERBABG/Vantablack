@@ -275,3 +275,78 @@ fn dns_second_query_reuses_flow_and_reader() {
     let (_in, _out, dropped, _tcp, _udp) = hub.stats();
     assert_eq!(dropped, 0, "two queries must not trip any cap");
 }
+
+#[test]
+fn two_node_hub_blocks_ads_doh_and_port_853_e2e() {
+    vantablack::ghost::net::adblock::set_enabled(true);
+    vantablack::ghost::net::adblock::set_doh_guard_enabled(true);
+    let before = vantablack::ghost::net::adblock::blocked_count();
+
+    let hub = VpnHub::start(VpnConfig {
+        role: VpnRole::Hub,
+        allowed_fingerprints: vec![FP.to_string()],
+        ..VpnConfig::default()
+    });
+    let phone_addr: std::net::SocketAddr = "198.51.100.11:47000".parse().unwrap();
+    hub.on_handshake(FP, phone_addr);
+
+    let mut tun = FakeTun::new();
+    let phone = ClientState::new(FP, KEY);
+
+    // 1. Query for blocked ad domain (`doubleclick.net`) to hub DNS (`10.66.0.1:53`)
+    let q_ad = build_udp_packet(
+        std::net::IpAddr::V4(PHONE.0.into()),
+        PHONE.1,
+        std::net::IpAddr::V4([10, 66, 0, 1].into()),
+        53,
+        &dns_query(0x9001, "doubleclick.net"),
+    )
+    .expect("ad query packet");
+    tun.push_inbound(q_ad);
+    let mut rbuf = [0u8; 1500];
+    let n = TunDevice::read_packet(&mut tun, &mut rbuf).expect("TUN read");
+    let wire = seal_from_tun(&phone, &rbuf[..n]).expect("seal");
+    let frame = tunnel_frame(&KEY, SH, 10, NonceDirection::InitiatorToResponder, &wire);
+    let body = receiver_open(&frame, frame.len(), &KEY, SH, 10).expect("frame intact");
+    hub.handle_tunnel_payload(FP, &KEY, SH, &body, phone_addr);
+
+    // Hub must immediately return an encrypted NXDOMAIN response without touching upstream
+    let mut units = poll_units(&hub, 1, 2);
+    let u = units.pop().expect("hub must synthesize NXDOMAIN reply");
+    let f = tunnel_frame(
+        &KEY,
+        SH,
+        2010,
+        NonceDirection::ResponderToInitiator,
+        &u.wire,
+    );
+    let reply = receiver_open(&f, f.len(), &KEY, SH, 2010).expect("reply intact");
+    let (accepted, _) = open_to_tun(&phone, &reply, &tun);
+    assert!(accepted, "NXDOMAIN reply accepted by phone TUN");
+    let mut out = tun.drain_outbound();
+    let ip_reply = out.pop().expect("NXDOMAIN written to phone TUN");
+    let (_, _, dns_payload) = parse_udp(&ip_reply).expect("valid UDP reply");
+    assert_eq!(&dns_payload[0..2], &[0x90, 0x01]);
+    assert_eq!(dns_payload[3] & 0x0F, 3, "RCODE must be NXDOMAIN (3)");
+
+    // 2. UDP packet to port 853 (DoQ/DoT bypass) must be blocked & counted
+    let q_doq = build_udp_packet(
+        std::net::IpAddr::V4(PHONE.0.into()),
+        PHONE.1,
+        std::net::IpAddr::V4([8, 8, 8, 8].into()),
+        853,
+        b"doq-bypass-probe",
+    )
+    .expect("doq packet");
+    tun.push_inbound(q_doq);
+    let n2 = TunDevice::read_packet(&mut tun, &mut rbuf).expect("TUN read");
+    let wire2 = seal_from_tun(&phone, &rbuf[..n2]).expect("seal");
+    let frame2 = tunnel_frame(&KEY, SH, 11, NonceDirection::InitiatorToResponder, &wire2);
+    let body2 = receiver_open(&frame2, frame2.len(), &KEY, SH, 11).expect("frame intact");
+    hub.handle_tunnel_payload(FP, &KEY, SH, &body2, phone_addr);
+
+    assert!(
+        vantablack::ghost::net::adblock::blocked_count() >= before + 2,
+        "both ad query and port-853 DoQ probe must increment blocked_count"
+    );
+}

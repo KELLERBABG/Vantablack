@@ -1181,9 +1181,9 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getXrayJson<'local>(
 ) -> jstring {
     let (peers, connected, fp) = match unsafe { (ptr as *const AndroidCore).as_ref() } {
         Some(core) => {
-            let peers = core.known_peers.lock().map(|m| m.len()).unwrap_or(0);
-            let connected = core.active_hub.lock().map(|h| h.is_some()).unwrap_or(false);
-            let fp = core.our_fp.clone();
+            let peers = core.known_peers.lock().len();
+            let connected = core.hub_addr.is_some() && core.session_key.lock().is_some();
+            let fp = core.identity.fingerprint();
             (peers, connected, fp)
         }
         None => (0, false, String::new()),

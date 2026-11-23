@@ -176,7 +176,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 dashmap = "6.1.0"
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 arc-swap = "1.7"
 parking_lot = "0.12"
 crossbeam = "0.8"
@@ -230,4 +230,17 @@ assets = [
     ["packaging/debian/vantablack.service", "lib/systemd/system/vantablack.service", "644"],
     ["assets/icon.svg", "usr/share/icons/hicolor/scalable/apps/vantablack.svg", "644"],
     ["README.md", "usr/share/doc/vantablack/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "vantablack"
+license = "MIT"
+summary = "Post-quantum, cryptographically layered WAN mesh routing node."
+assets = [
+    { source = "target/release/ggn", dest = "/usr/bin/ggn", mode = "755" },
+    { source = "target/release/ggn", dest = "/usr/bin/vantablack", mode = "755" },
+    { source = "packaging/debian/vantablack.desktop", dest = "/usr/share/applications/vantablack.desktop", mode = "644" },
+    { source = "packaging/debian/vantablack.service", dest = "/lib/systemd/system/vantablack.service", mode = "644" },
+    { source = "assets/icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/vantablack.svg", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/vantablack/README.md", mode = "644", doc = true },
 ]
