@@ -1125,6 +1125,86 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getAdsBlocked(
     crate::ghost::net::adblock::blocked_count() as jlong
 }
 
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_setExperimentalFlag(
+    mut env: JNIEnv,
+    _class: JClass,
+    key: JString,
+    enabled: jboolean,
+) {
+    let key_str: String = match env.get_string(&key) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let on = enabled != 0;
+    match key_str.as_str() {
+        "exp_pow_shield" => crate::ghost::net::pow::set_enabled(on),
+        "exp_dtn_reconcile" => crate::ghost::net::dtn_reconcile::set_enabled(on),
+        "exp_universal_tunnel" => crate::ghost::net::universal_tunnel::set_enabled(on),
+        "exp_collective_defense" => crate::ghost::net::collective_defense::set_enabled(on),
+        "exp_rendezvous" => crate::ghost::net::rendezvous::set_enabled(on),
+        "exp_diffusion" => crate::ghost::net::diffusion::set_enabled(on),
+        _ => {}
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_setRegime(
+    mut env: JNIEnv,
+    _class: JClass,
+    regime: JString,
+) {
+    let raw: String = match env.get_string(&regime) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    if let Some(parsed) = crate::ghost::v2::regime::Regime::parse(&raw) {
+        std::env::set_var(crate::ghost::v2::regime::REGIME_ENV, parsed.as_str());
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_setQelEnabled(
+    _env: JNIEnv,
+    _class: JClass,
+    enabled: jboolean,
+) {
+    std::env::set_var("GHOST_QEL_ENABLED", if enabled != 0 { "1" } else { "0" });
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getXrayJson<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    ptr: jlong,
+) -> jstring {
+    let (peers, connected, fp) = match unsafe { (ptr as *const AndroidCore).as_ref() } {
+        Some(core) => {
+            let peers = core.known_peers.lock().map(|m| m.len()).unwrap_or(0);
+            let connected = core.active_hub.lock().map(|h| h.is_some()).unwrap_or(false);
+            let fp = core.our_fp.clone();
+            (peers, connected, fp)
+        }
+        None => (0, false, String::new()),
+    };
+    let regime = std::env::var(crate::ghost::v2::regime::REGIME_ENV)
+        .ok()
+        .and_then(|s| crate::ghost::v2::regime::Regime::parse(&s))
+        .unwrap_or(crate::ghost::v2::regime::Regime::Ghost);
+    let state = crate::ghost::v2::api::ApiState {
+        peers: if connected { peers.max(1) } else { peers },
+        regime,
+        socks_port: 1080,
+        transport: connected.then(|| "gtf_v2".to_string()),
+        exit_ip: None,
+        node_fingerprint: fp,
+    };
+    let json = crate::ghost::v2::api::xray(&state).to_string();
+    env.new_string(json)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// `fun start(ptr: Long, tunFd: Int, sockFd: Int, hubAddr: String): Boolean`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(

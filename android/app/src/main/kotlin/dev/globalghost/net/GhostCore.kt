@@ -89,4 +89,16 @@ object GhostCore {
 
     /** Return total number of ad/tracker DNS queries blocked in this session. */
     external fun getAdsBlocked(): Long
+
+    /** Enable or disable an experimental mesh capability by key. */
+    external fun setExperimentalFlag(key: String, enabled: Boolean)
+
+    /** Set the operating regime ("fast", "shielded", "ghost", "vantablack"). */
+    external fun setRegime(regime: String)
+
+    /** Enable or disable post-quantum QEL key mixing. */
+    external fun setQelEnabled(enabled: Boolean)
+
+    /** Return JSON truth ledger from `v2::api::xray` for the active node. */
+    external fun getXrayJson(ptr: Long): String
 }

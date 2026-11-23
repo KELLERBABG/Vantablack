@@ -762,6 +762,353 @@ class MainActivity : Activity() {
         }
         root.addView(cardAdblock)
 
+        // ── Operating Regime & QEL Parity Card ──
+        val regimes = arrayOf("fast", "shielded", "ghost", "vantablack")
+        var activeRegime = prefs.getString("regime", "ghost") ?: "ghost"
+        if (!regimes.contains(activeRegime)) activeRegime = "ghost"
+        var qelEnabled = prefs.getBoolean("qel_enabled", true)
+        try {
+            GhostCore.setRegime(activeRegime)
+            GhostCore.setQelEnabled(qelEnabled)
+        } catch (_: Throwable) {}
+
+        val cardRegimeQel = createCoalCard().apply {
+            lateinit var pillRegime: TextView
+            lateinit var pillQel: TextView
+
+            val rRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(10))
+            }
+            val rCol = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = "Privacy Regime"
+                    textSize = 14f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                addView(TextView(context).apply {
+                    text = "Tap to cycle Fast / Shielded / Ghost / Vantablack"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9AA0A6"))
+                })
+            }
+            pillRegime = TextView(context).apply {
+                text = activeRegime.replaceFirstChar { it.uppercase() }
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#0C0D0F"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#F4F1EA"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+            }
+            rRow.addView(rCol)
+            rRow.addView(pillRegime)
+            rRow.setOnClickListener {
+                val nextIdx = (regimes.indexOf(activeRegime) + 1) % regimes.size
+                activeRegime = regimes[nextIdx]
+                prefs.edit().putString("regime", activeRegime).apply()
+                try { GhostCore.setRegime(activeRegime) } catch (_: Throwable) {}
+                pillRegime.text = activeRegime.replaceFirstChar { it.uppercase() }
+            }
+            addView(rRow)
+
+            val qRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val qCol = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = "Quantum Protection (QEL)"
+                    textSize = 14f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                addView(TextView(context).apply {
+                    text = "Post-quantum key mixing"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9AA0A6"))
+                })
+            }
+            pillQel = TextView(context).apply {
+                text = if (qelEnabled) "On" else "Off"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(if (qelEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(if (qelEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(14), dp(7), dp(14), dp(7))
+            }
+            qRow.addView(qCol)
+            qRow.addView(pillQel)
+            qRow.setOnClickListener {
+                qelEnabled = !qelEnabled
+                prefs.edit().putBoolean("qel_enabled", qelEnabled).apply()
+                try { GhostCore.setQelEnabled(qelEnabled) } catch (_: Throwable) {}
+                pillQel.text = if (qelEnabled) "On" else "Off"
+                pillQel.setTextColor(if (qelEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                pillQel.background = GradientDrawable().apply {
+                    setColor(if (qelEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+            }
+            addView(qRow)
+        }
+        root.addView(cardRegimeQel)
+
+        // ── Split-Tunnel (App Bypass) Card ──
+        val cardSplitTunnel = createCoalCard().apply {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            lateinit var txtSplitSub: TextView
+            fun countBypass(): Int {
+                val raw = prefs.getString("split_tunnel_packages", "") ?: ""
+                return raw.split(",", "\n", ";", " ").count { it.trim().isNotEmpty() }
+            }
+            val col = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = "Split Tunnel (App Bypass)"
+                    textSize = 14f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                txtSplitSub = TextView(context).apply {
+                    val c = countBypass()
+                    text = if (c == 0) "All apps routed through tunnel" else "$c app(s) bypassed (applies on reconnect)"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9AA0A6"))
+                }
+                addView(txtSplitSub)
+            }
+            val btnEdit = TextView(context).apply {
+                text = "Edit"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+            }
+            row.addView(col)
+            row.addView(btnEdit)
+            setOnClickListener {
+                val input = EditText(context).apply {
+                    hint = "com.example.app, org.example.bank"
+                    setText(prefs.getString("split_tunnel_packages", "") ?: "")
+                }
+                android.app.AlertDialog.Builder(context)
+                    .setTitle("Bypassed App Packages")
+                    .setMessage("Comma-separated Android package IDs excluded from the VPN tunnel:")
+                    .setView(input)
+                    .setPositiveButton("Save") { _, _ ->
+                        prefs.edit().putString("split_tunnel_packages", input.text.toString().trim()).apply()
+                        val c = countBypass()
+                        txtSplitSub.text = if (c == 0) "All apps routed through tunnel" else "$c app(s) bypassed (applies on reconnect)"
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            addView(row)
+        }
+        root.addView(cardSplitTunnel)
+
+        // ── X-Ray Privacy Check Card ──
+        val cardXray = createCoalCard().apply {
+            lateinit var txtXrayHeadline: TextView
+            lateinit var txtXrayClaim: TextView
+            fun refreshXrayCard() {
+                try {
+                    val raw = GhostCore.getXrayJson(GhostVpnService.corePtr)
+                    val obj = org.json.JSONObject(raw)
+                    txtXrayHeadline.text = obj.optString("headline", "X-Ray ready")
+                    txtXrayClaim.text = obj.optString("claim", "Tap to inspect visibility")
+                } catch (_: Throwable) {
+                    txtXrayHeadline.text = "X-Ray Privacy Check"
+                    txtXrayClaim.text = "Tap to inspect what ISP / Guard / Website see"
+                }
+            }
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val col = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                txtXrayHeadline = TextView(context).apply {
+                    text = "X-Ray Privacy Check"
+                    textSize = 14f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                }
+                txtXrayClaim = TextView(context).apply {
+                    text = "Tap to inspect what ISP / Guard / Website see"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9AA0A6"))
+                }
+                addView(txtXrayHeadline)
+                addView(txtXrayClaim)
+            }
+            val btnCheck = TextView(context).apply {
+                text = "Inspect"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+            }
+            row.addView(col)
+            row.addView(btnCheck)
+            setOnClickListener { refreshXrayCard() }
+            addView(row)
+        }
+        root.addView(cardXray)
+
+        // ── Experimental Dropdown Card ──
+        val expSpecs = listOf(
+            Triple("exp_pow_shield", "Flood Shield", "Requires a quick puzzle from new peers during traffic floods"),
+            Triple("exp_dtn_reconcile", "Offline Sync", "Syncs missed messages automatically after you come back online"),
+            Triple("exp_universal_tunnel", "App Port Tunnel", "Forwards non-proxy apps over the mesh via a local port"),
+            Triple("exp_collective_defense", "Shared Threat Signals", "Shares anonymous drop stats so peers route around bad links"),
+            Triple("exp_rendezvous", "Serverless Discovery", "Finds peers without central seed servers (uses more battery)"),
+            Triple("exp_diffusion", "Emergency Broadcast", "Floods traffic across nearby peers if routing breaks (high data use)")
+        )
+        for ((k, _, _) in expSpecs) {
+            try { GhostCore.setExperimentalFlag(k, prefs.getBoolean(k, false)) } catch (_: Throwable) {}
+        }
+        val cardExperimental = createCoalCard().apply {
+            var expanded = false
+            lateinit var bodyContainer: LinearLayout
+            lateinit var pillArrow: TextView
+
+            val header = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val hCol = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = "Experimental"
+                    textSize = 14f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                addView(TextView(context).apply {
+                    text = "Opt-in mesh capabilities (off by default)"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9AA0A6"))
+                })
+            }
+            pillArrow = TextView(context).apply {
+                text = "Opt-in ▾"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+            }
+            header.addView(hCol)
+            header.addView(pillArrow)
+            addView(header)
+
+            bodyContainer = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                setPadding(0, dp(10), 0, 0)
+            }
+            bodyContainer.addView(TextView(context).apply {
+                text = "Learn more in the documentation ↗"
+                textSize = 11f
+                setTextColor(Color.parseColor("#F4F1EA"))
+                setPadding(0, 0, 0, dp(10))
+                setOnClickListener {
+                    startActivity(Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://github.com/KELLERBABG/Vantablack/blob/main/docs/EXPERIMENTAL_FEATURES.md")
+                    ))
+                }
+            })
+
+            for ((key, title, desc) in expSpecs) {
+                var on = prefs.getBoolean(key, false)
+                lateinit var pill: TextView
+                val itemRow = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(6), 0, dp(6))
+                }
+                val itemCol = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(TextView(context).apply {
+                        text = title
+                        textSize = 13f
+                        setTypeface(Typeface.DEFAULT_BOLD)
+                        setTextColor(Color.parseColor("#F4F1EA"))
+                    })
+                    addView(TextView(context).apply {
+                        text = desc
+                        textSize = 11f
+                        setTextColor(Color.parseColor("#9AA0A6"))
+                    })
+                }
+                pill = TextView(context).apply {
+                    text = if (on) "On" else "Off"
+                    textSize = 11f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(if (on) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                    background = GradientDrawable().apply {
+                        setColor(if (on) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                        cornerRadius = dp(999).toFloat()
+                    }
+                    setPadding(dp(12), dp(5), dp(12), dp(5))
+                }
+                itemRow.addView(itemCol)
+                itemRow.addView(pill)
+                itemRow.setOnClickListener {
+                    on = !on
+                    prefs.edit().putBoolean(key, on).apply()
+                    try { GhostCore.setExperimentalFlag(key, on) } catch (_: Throwable) {}
+                    pill.text = if (on) "On" else "Off"
+                    pill.setTextColor(if (on) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                    pill.background = GradientDrawable().apply {
+                        setColor(if (on) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                        cornerRadius = dp(999).toFloat()
+                    }
+                }
+                bodyContainer.addView(itemRow)
+            }
+
+            header.setOnClickListener {
+                expanded = !expanded
+                bodyContainer.visibility = if (expanded) View.VISIBLE else View.GONE
+                pillArrow.text = if (expanded) "Opt-in ▴" else "Opt-in ▾"
+            }
+            addView(bodyContainer)
+        }
+        root.addView(cardExperimental)
+
         // ── App Updates Row (One-Tap Update) ──
         val cardUpdate = createCoalCard().apply {
             val row = LinearLayout(context).apply {

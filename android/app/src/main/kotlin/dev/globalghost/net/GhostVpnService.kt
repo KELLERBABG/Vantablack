@@ -162,6 +162,16 @@ class GhostVpnService : VpnService() {
             }
 
             searchDomain?.let { builder.addSearchDomain(it) }
+            val bypassRaw = getSharedPreferences("vantablack_prefs", MODE_PRIVATE)
+                .getString("split_tunnel_packages", "") ?: ""
+            for (rawPkg in bypassRaw.split(",", "\n", ";", " ")) {
+                val pkg = rawPkg.trim()
+                if (pkg.isNotEmpty() && pkg != packageName) {
+                    try {
+                        builder.addDisallowedApplication(pkg)
+                    } catch (_: Throwable) {}
+                }
+            }
             return builder.establish()
         }
 
