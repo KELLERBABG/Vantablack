@@ -16,13 +16,13 @@
       --hairline: rgba(255, 255, 255, 0.10);
       --surface-row: rgba(255, 255, 255, 0.045);
       --visor-glint: #DCFF02;
+      --emerald: #34D399;
+      --amber: #FBBF24;
+      --rose: #FB7185;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     html, body {
       width: 100%;
@@ -50,29 +50,13 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 16px 24px;
+      padding: 15px 24px;
       z-index: 20;
     }
 
-    .brand-group {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .brand-title {
-      font-size: 14px;
-      font-weight: 500;
-      letter-spacing: -0.01em;
-      color: var(--ivory);
-      cursor: pointer;
-    }
-
-    .brand-version {
-      font-size: 11px;
-      color: var(--ivory-faint);
-      font-variant-numeric: tabular-nums;
-    }
+    .brand-group { display: flex; align-items: center; gap: 10px; }
+    .brand-title { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; color: var(--ivory); cursor: pointer; }
+    .brand-version { font-size: 11px; color: var(--ivory-faint); font-variant-numeric: tabular-nums; }
 
     .update-pill {
       display: none;
@@ -86,18 +70,11 @@
       font-weight: 600;
       border: none;
       cursor: pointer;
-      transition: transform 0.15s ease, opacity 0.15s ease;
+      transition: transform 0.15s ease;
     }
-    .update-pill:hover {
-      transform: scale(1.03);
-    }
+    .update-pill:hover { transform: scale(1.03); }
 
-    .win-controls {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
+    .win-controls { display: flex; align-items: center; gap: 6px; }
     .win-btn {
       width: 28px;
       height: 28px;
@@ -111,23 +88,17 @@
       cursor: pointer;
       transition: background-color 0.15s ease, color 0.15s ease;
     }
-    .win-btn:hover {
-      background: rgba(255, 255, 255, 0.08);
-      color: var(--ivory);
-    }
-    .win-btn.close:hover {
-      background: rgba(239, 68, 68, 0.22);
-      color: #FCA5A5;
-    }
+    .win-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--ivory); }
+    .win-btn.close:hover { background: rgba(239, 68, 68, 0.22); color: #FCA5A5; }
 
     /* ── Center Stage ── */
     .stage {
       flex: 1;
       display: flex;
-       flex-direction: column;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 12px 28px;
+      padding: 8px 26px;
       overflow-y: auto;
     }
 
@@ -139,65 +110,20 @@
       align-items: center;
       gap: 32px;
     }
-
     @media (max-width: 580px) {
-      .hero-grid {
-        grid-template-columns: 1fr;
-        gap: 20px;
-        text-align: center;
-      }
-      .flank-left, .flank-right {
-        text-align: center !important;
-      }
+      .hero-grid { grid-template-columns: 1fr; gap: 20px; text-align: center; }
+      .flank-left, .flank-right { text-align: center !important; }
     }
-
-    .flank-left {
-      text-align: left;
-    }
-    .flank-right {
-      text-align: right;
-    }
-
-    .flank-label {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
-      color: var(--ivory-faint);
-    }
-
-    .flank-value {
-      font-size: 21px;
-      font-weight: 500;
-      color: var(--ivory);
-      margin-top: 3px;
-      background: none;
-      border: none;
-      padding: 0;
-      font-family: inherit;
-    }
-
-    button.flank-value {
-      cursor: pointer;
-    }
-    button.flank-value:hover {
-      text-decoration: underline;
-      text-underline-offset: 4px;
-    }
-
-    .flank-sub {
-      font-size: 12px;
-      color: var(--ivory-muted);
-      margin-top: 2px;
-    }
+    .flank-left { text-align: left; }
+    .flank-right { text-align: right; }
+    .flank-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--ivory-faint); }
+    .flank-value { font-size: 21px; font-weight: 500; color: var(--ivory); margin-top: 3px; background: none; border: none; padding: 0; font-family: inherit; }
+    button.flank-value { cursor: pointer; }
+    button.flank-value:hover { text-decoration: underline; text-underline-offset: 4px; }
+    .flank-sub { font-size: 12px; color: var(--ivory-muted); margin-top: 2px; }
 
     /* ── Machined Brushed-Steel Center Button ── */
-    .center-btn-wrap {
-      position: relative;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
+    .center-btn-wrap { position: relative; display: flex; align-items: center; justify-content: center; }
     .center-btn-steel {
       width: 164px;
       height: 164px;
@@ -216,12 +142,8 @@
         inset 0 -2px 4px rgba(0, 0, 0, 0.45);
       transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
     }
-    .center-btn-steel:hover {
-      transform: scale(1.028);
-    }
-    .center-btn-steel:active {
-      transform: scale(0.965);
-    }
+    .center-btn-steel:hover { transform: scale(1.028); }
+    .center-btn-steel:active { transform: scale(0.965); }
 
     .center-btn-core {
       width: 100%;
@@ -232,9 +154,7 @@
       align-items: center;
       justify-content: center;
       background: radial-gradient(circle at 50% 32%, #2B2D32 0%, #191A1D 75%, #121316 100%);
-      box-shadow:
-        inset 0 1px 1px rgba(255, 255, 255, 0.14),
-        0 3px 10px rgba(0, 0, 0, 0.55);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.14), 0 3px 10px rgba(0, 0, 0, 0.55);
     }
 
     .center-led {
@@ -245,18 +165,8 @@
       background: rgba(255, 255, 255, 0.2);
       transition: background-color 0.2s ease, box-shadow 0.2s ease;
     }
-    .center-led.on {
-      background: var(--ivory);
-      box-shadow: 0 0 12px var(--ivory);
-    }
-
-    .center-status-label {
-      font-size: 12px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.16em;
-      color: var(--ivory);
-    }
+    .center-led.on { background: var(--ivory); box-shadow: 0 0 12px var(--ivory); }
+    .center-status-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.16em; color: var(--ivory); }
 
     @keyframes pulseRing {
       0% { opacity: 0.52; transform: scale(0.88); }
@@ -272,34 +182,41 @@
       animation: pulseRing 0.85s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     }
 
-    /* ── Sheet Cards (QR / Devices / Settings) ── */
+    /* ── Sheet Cards ── */
     .coal-sheet {
       width: 100%;
-      max-width: 560px;
+      max-width: 760px;
+      max-height: calc(100vh - 156px);
+      display: flex;
+      flex-direction: column;
       background: rgba(20, 21, 24, 0.96);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
       border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 16px;
-      padding: 20px;
+      padding: 18px 20px;
       box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
     }
+
+    .sheet-body {
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .sheet-body::-webkit-scrollbar { width: 5px; }
+    .sheet-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 99px; }
 
     .sheet-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 10px;
       padding-bottom: 11px;
       margin-bottom: 14px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      flex-shrink: 0;
     }
 
-    .sheet-title {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--ivory);
-    }
-
+    .sheet-title { font-size: 14px; font-weight: 600; color: var(--ivory); }
     .sheet-close {
       background: none;
       border: none;
@@ -309,19 +226,11 @@
       padding: 4px 8px;
       border-radius: 8px;
     }
-    .sheet-close:hover {
-      color: var(--ivory);
-      background: rgba(255, 255, 255, 0.06);
-    }
+    .sheet-close:hover { color: var(--ivory); background: rgba(255, 255, 255, 0.06); }
 
-    .pill-tabs {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
+    .pill-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
     .pill-btn {
-      padding: 6px 13px;
+      padding: 6px 12px;
       border-radius: 999px;
       border: none;
       font-size: 12px;
@@ -331,13 +240,8 @@
       color: rgba(244, 241, 234, 0.68);
       transition: background-color 0.15s ease, color 0.15s ease;
     }
-    .pill-btn:hover {
-      color: var(--ivory);
-    }
-    .pill-btn.active {
-      background: var(--ivory);
-      color: var(--coal-deep);
-    }
+    .pill-btn:hover { color: var(--ivory); }
+    .pill-btn.active { background: var(--ivory); color: var(--coal-deep); }
 
     .qr-card-spring {
       display: inline-block;
@@ -347,67 +251,50 @@
       box-shadow: 0 20px 44px rgba(0, 0, 0, 0.55);
       transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
     }
-    .qr-card-spring:hover {
-      transform: scale(1.035) rotate(-0.8deg);
-    }
-    .qr-card-spring svg {
-      width: 184px;
-      height: 184px;
-      display: block;
-    }
-
-    .sheet-footer {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding-top: 12px;
-      margin-top: 12px;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-      font-size: 12px;
-    }
+    .qr-card-spring:hover { transform: scale(1.035) rotate(-0.8deg); }
+    .qr-card-spring svg { width: 176px; height: 176px; display: block; }
 
     .coal-row {
       background: var(--surface-row);
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 12px;
-      padding: 12px 15px;
+      padding: 11px 14px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
     }
-
-    .device-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-height: 210px;
-      overflow-y: auto;
-      margin-bottom: 12px;
+    .coal-card {
+      background: var(--surface-row);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 13px 15px;
     }
 
-    .input-pill-row {
-      display: flex;
-      gap: 8px;
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    @media (max-width: 600px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
     }
 
-    .input-pill {
+    .input-pill-row { display: flex; gap: 8px; align-items: center; }
+    .input-pill, .select-pill {
       flex: 1;
-      padding: 9px 14px;
+      padding: 8px 13px;
       font-size: 12px;
       border-radius: 999px;
       background: rgba(0, 0, 0, 0.35);
       border: 1px solid rgba(255, 255, 255, 0.12);
       color: var(--ivory);
       outline: none;
+      font-family: inherit;
     }
-    .input-pill:focus {
-      border-color: rgba(244, 241, 234, 0.45);
-    }
+    .select-pill { flex: 0 0 auto; cursor: pointer; }
+    .select-pill option { background: #141518; color: #F4F1EA; }
+    .input-pill:focus, .select-pill:focus { border-color: rgba(244, 241, 234, 0.45); }
 
     .action-pill {
-      padding: 8px 16px;
+      padding: 8px 15px;
       font-size: 12px;
       font-weight: 500;
       border-radius: 999px;
@@ -415,14 +302,11 @@
       background: var(--ivory);
       color: var(--coal-deep);
       cursor: pointer;
-      transition: opacity 0.15s ease;
     }
-    .action-pill:hover {
-      opacity: 0.92;
-    }
+    .action-pill:hover { opacity: 0.92; }
 
     .subtle-pill {
-      padding: 6px 13px;
+      padding: 6px 12px;
       font-size: 11px;
       font-weight: 500;
       border-radius: 999px;
@@ -431,43 +315,37 @@
       color: var(--ivory);
       cursor: pointer;
     }
-    .subtle-pill:hover {
-      background: rgba(255, 255, 255, 0.15);
-    }
+    .subtle-pill:hover { background: rgba(255, 255, 255, 0.16); }
 
-    .settings-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 10px;
-    }
-    @media (max-width: 540px) {
-      .settings-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .setting-card {
-      text-align: left;
-      cursor: pointer;
-      color: var(--ivory);
-      font-family: inherit;
-      transition: border-color 0.15s ease, background-color 0.15s ease;
-    }
-    .setting-card:hover {
-      border-color: rgba(255, 255, 255, 0.18);
-      background: rgba(255, 255, 255, 0.065);
-    }
-
-    .setting-title {
-      font-size: 12px;
-      font-weight: 500;
-      color: var(--ivory);
-    }
-    .setting-sub {
+    .danger-pill {
+      padding: 5px 11px;
       font-size: 11px;
-      color: var(--ivory-muted);
-      margin-top: 2px;
+      font-weight: 500;
+      border-radius: 999px;
+      border: 1px solid rgba(251, 113, 133, 0.35);
+      background: rgba(251, 113, 133, 0.12);
+      color: var(--rose);
+      cursor: pointer;
     }
+
+    .tag-pill {
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.09);
+      color: var(--ivory-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .tag-pill.ok { background: rgba(52, 211, 153, 0.15); color: var(--emerald); }
+    .tag-pill.warn { background: rgba(251, 191, 36, 0.15); color: var(--amber); }
+
+    .setting-card { text-align: left; cursor: pointer; color: var(--ivory); font-family: inherit; transition: border-color 0.15s ease, background-color 0.15s ease; }
+    .setting-card:hover { border-color: rgba(255, 255, 255, 0.18); background: rgba(255, 255, 255, 0.065); }
+    .setting-title { font-size: 12px; font-weight: 500; color: var(--ivory); }
+    .setting-sub { font-size: 11px; color: var(--ivory-muted); margin-top: 2px; }
+    .mono { font-family: var(--mono); user-select: text; }
 
     .ivory-switch {
       width: 38px;
@@ -486,9 +364,28 @@
       transition: transform 0.15s cubic-bezier(0.22, 1, 0.36, 1);
     }
 
+    .mesh-svg-box {
+      width: 100%;
+      height: 250px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .kv-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 11.5px;
+      padding: 3px 0;
+    }
+    .kv-k { color: var(--ivory-muted); }
+    .kv-v { color: var(--ivory); font-family: var(--mono); text-align: right; word-break: break-all; }
+
     /* ── Bottom Pill Dock ── */
     .bottom-dock {
-      padding: 16px 24px 22px;
+      padding: 14px 24px 20px;
       display: flex;
       flex-wrap: wrap;
       align-items: center;
@@ -496,7 +393,6 @@
       gap: 10px;
       z-index: 20;
     }
-
     .dock-cluster {
       padding: 5px;
       border-radius: 999px;
@@ -510,7 +406,7 @@
     /* ── Toast & PIN Modal ── */
     .toast-pill {
       position: fixed;
-      bottom: 78px;
+      bottom: 76px;
       left: 50%;
       transform: translateX(-50%);
       padding: 7px 16px;
@@ -534,9 +430,7 @@
       justify-content: center;
       z-index: 60;
     }
-    .modal-backdrop.open {
-      display: flex;
-    }
+    .modal-backdrop.open { display: flex; }
   </style>
 </head>
 <body>
@@ -591,31 +485,54 @@
       connected: false,
       mode: 'Stealth',
       cityId: 'zurich',
-      sheet: null, // null | 'qr' | 'devices' | 'settings'
-      qrTab: 'phone', // 'phone' | 'guest'
+      sheet: null,             // null | 'qr' | 'devices' | 'settings'
+      qrTab: 'phone',          // 'phone' | 'voucher'
+      devicesTab: 'list',      // 'list' | 'map'
+      settingsTab: 'general',  // 'general' | 'routing' | 'continuum' | 'diagnostics'
+      meshFilter: 'all',       // 'all' | 'lan' | 'wan' | 'exit'
+      showHopOverlay: false,
+      inspectedFp: null,
       pulse: false,
+
+      // Live node & invite data
+      status: {},
+      topology: null,
+      settings: {},
+      anchors: null,
       pairUri: '',
-      guestUri: '',
       qrSvg: '',
-      localBypass: true,
-      radioBackup: true,
-      quantumLock: true,
+      mintedVoucherHex: '',
+      voucherMinting: false,
+
+      // Speed tracking
+      prevSent: null,
+      prevRecv: null,
+      prevTs: null,
+      downSpeed: 0,
+      upSpeed: 0,
+
+      // Benchmark, Continuum v2, X-Ray
+      benchmarkRunning: false,
+      benchmarkResult: null,
+      continuum: { homeExit: null, btcr: null, ladder: null, racs: null, error: null },
+      xray: null,
+
+      // Software updates
       updateChecking: false,
       updateApplying: false,
       updateInfo: null,
+
       cities: [
-        { id: 'zurich',    city: 'Zurich',    country: 'Switzerland', endpoint: null },
-        { id: 'reykjavik', city: 'Reykjavik', country: 'Iceland',     endpoint: null },
-        { id: 'frankfurt', city: 'Frankfurt', country: 'Germany',     endpoint: null },
-        { id: 'tokyo',     city: 'Tokyo',     country: 'Japan',       endpoint: null }
+        { id: 'zurich',    city: 'Zurich',    country: 'Switzerland' },
+        { id: 'reykjavik', city: 'Reykjavik', country: 'Iceland' },
+        { id: 'frankfurt', city: 'Frankfurt', country: 'Germany' },
+        { id: 'tokyo',     city: 'Tokyo',     country: 'Japan' }
       ],
-      devices: []
+      peers: []
     };
 
     function nativeSend(action) {
-      if (window.ipc && window.ipc.postMessage) {
-        window.ipc.postMessage(action);
-      }
+      if (window.ipc && window.ipc.postMessage) window.ipc.postMessage(action);
     }
 
     const dragBar = document.getElementById('drag-handle');
@@ -628,17 +545,13 @@
 
     document.getElementById('brand-home').addEventListener('click', () => {
       STATE.sheet = null;
+      STATE.inspectedFp = null;
       render();
     });
 
-    document.getElementById('titlebar-update-pill').addEventListener('click', () => {
-      triggerUpdateAction();
-    });
+    document.getElementById('titlebar-update-pill').addEventListener('click', () => triggerUpdateAction());
 
-    function storedPin() {
-      return sessionStorage.getItem(PIN_KEY);
-    }
-
+    function storedPin() { return sessionStorage.getItem(PIN_KEY); }
     function pinHeaders(extra) {
       const headers = Object.assign({}, extra || {});
       const pin = storedPin();
@@ -653,34 +566,59 @@
       el.textContent = msg;
       el.style.display = 'block';
       if (toastTimer) clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => {
-        el.style.display = 'none';
-      }, 2400);
+      toastTimer = setTimeout(() => { el.style.display = 'none'; }, 2500);
     }
 
     function escapeHtml(s) {
       return String(s == null ? '' : s)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes <= 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
+      return (bytes / Math.pow(k, i)).toFixed(i === 0 ? 0 : 1) + ' ' + sizes[i];
+    }
+
+    function formatDuration(secs) {
+      if (!secs) return '00:00:00';
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = Math.floor(secs % 60);
+      return [h, m, s].map(v => String(v).padStart(2, '0')).join(':');
+    }
+
+    function copyText(text, label) {
+      if (!text) { notify('Nothing to copy yet'); return; }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => notify((label || 'Copied') + ' to clipboard'))
+          .catch(() => notify('Clipboard blocked'));
+      }
     }
 
     function curCity() {
+      const pinned = STATE.continuum.homeExit && STATE.continuum.homeExit.selected;
+      if (pinned) {
+        const peer = STATE.peers.find(p => p.fingerprint === pinned);
+        return { id: 'pinned', city: (peer && peer.name) || pinned.slice(0, 10), country: 'Pinned Home Exit' };
+      }
       return STATE.cities.find(c => c.id === STATE.cityId) || STATE.cities[0];
     }
 
     function modeToBackend(uiMode) {
-      if (uiMode === 'Fast') return 'fast';
-      if (uiMode === 'Multi-Hop') return 'multihop';
+      if (uiMode === 'Fast') return 'public';
+      if (uiMode === 'Multi-Hop') return 'paranoid';
       return 'stealth';
     }
 
     function backendToUiMode(raw) {
       const m = String(raw || '').toLowerCase();
-      if (m === 'fast' || m === 'direct') return 'Fast';
-      if (m === 'multihop' || m === 'multi-hop' || m === 'paranoid') return 'Multi-Hop';
+      if (m === 'public' || m === 'fast' || m === 'direct') return 'Fast';
+      if (m === 'paranoid' || m === 'multihop' || m === 'multi-hop') return 'Multi-Hop';
       return 'Stealth';
     }
 
@@ -692,7 +630,7 @@
       `;
     }
 
-    // ── Connected Liquid Tracks QR + Stealth Visor Ghost Renderer ──
+    // ── Connected Liquid Tracks QR + Stealth Visor Ghost ──
     function hashSeedFromText(str) {
       let h = 2166136261 >>> 0;
       for (let i = 0; i < str.length; i++) {
@@ -705,12 +643,8 @@
     function buildLiquidQrGrid(seed) {
       const N = 25;
       const grid = Array.from({ length: N }, () => Array(N).fill(false));
-      function inFinder(r, c) {
-        return (r < 8 && c < 8) || (r < 8 && c >= N - 8) || (r >= N - 8 && c < 8);
-      }
-      function inCenter(r, c) {
-        return r >= 8 && r <= 16 && c >= 8 && c <= 16;
-      }
+      const inFinder = (r, c) => (r < 8 && c < 8) || (r < 8 && c >= N - 8) || (r >= N - 8 && c < 8);
+      const inCenter = (r, c) => r >= 8 && r <= 16 && c >= 8 && c <= 16;
       for (let r = 0; r < N; r++) {
         for (let c = 0; c < N; c++) {
           if (inFinder(r, c) || inCenter(r, c)) continue;
@@ -726,15 +660,7 @@
       return `
         <g transform="translate(8.15, 8.15)">
           <rect x="0" y="0" width="8.7" height="8.7" rx="2.5" fill="#0C0D0F" stroke="#EAE6DC" stroke-width="0.45" />
-          <path d="M2.1 4.3
-                   C2.1 1.8, 6.6 1.8, 6.6 4.3
-                   L6.7 6.6
-                   C6.2 6.1, 5.7 6.65, 5.15 6.65
-                   C4.65 6.65, 4.35 6.15, 4.35 6.15
-                   C4.35 6.15, 4.05 6.65, 3.55 6.65
-                   C3.0 6.65, 2.5 6.1, 2.0 6.6
-                   Z"
-                fill="#F4F1EA" />
+          <path d="M2.1 4.3 C2.1 1.8, 6.6 1.8, 6.6 4.3 L6.7 6.6 C6.2 6.1, 5.7 6.65, 5.15 6.65 C4.65 6.65, 4.35 6.15, 4.35 6.15 C4.35 6.15, 4.05 6.65, 3.55 6.65 C3.0 6.65, 2.5 6.1, 2.0 6.6 Z" fill="#F4F1EA" />
           <rect x="2.65" y="3.45" width="3.4" height="1.25" rx="0.62" fill="#0C0D0F" />
           <line x1="3.1" y1="3.85" x2="4.15" y2="3.85" stroke="#DCFF02" stroke-width="0.32" stroke-linecap="round" />
           <circle cx="5.25" cy="3.85" r="0.18" fill="#DCFF02" />
@@ -742,14 +668,12 @@
       `;
     }
 
-    function renderConnectedLiquidTracksQr(isGuest) {
-      if (!isGuest && STATE.qrSvg && STATE.qrSvg.startsWith('<svg')) {
+    function renderConnectedLiquidTracksQr() {
+      if (STATE.qrSvg && STATE.qrSvg.startsWith('<svg')) {
         return `<div class="qr-card-spring">${STATE.qrSvg}</div>`;
       }
       const N = 25;
-      const uriText = isGuest ? (STATE.guestUri || 'vb-guest://24h') : (STATE.pairUri || 'vb-net://pair');
-      const grid = buildLiquidQrGrid(hashSeedFromText(uriText));
-
+      const grid = buildLiquidQrGrid(hashSeedFromText(STATE.pairUri || 'vb-net://pair'));
       let bars = '';
       for (let r = 0; r < N; r++) {
         let c = 0;
@@ -762,13 +686,11 @@
           c = end + 1;
         }
       }
-
       const eye = (x, y) => `
         <g transform="translate(${x},${y})">
           <circle cx="3.5" cy="3.5" r="3.08" fill="none" stroke="#0C0D0F" stroke-width="0.95" />
           <circle cx="3.5" cy="3.5" r="1.52" fill="#0C0D0F" />
         </g>`;
-
       return `
         <div class="qr-card-spring">
           <svg viewBox="-1 -1 27 27" role="img" aria-label="Vantablack Connected Liquid Tracks QR">
@@ -780,129 +702,443 @@
       `;
     }
 
+    // ── Interactive Monolith Coal Mesh SVG Map ──
+    function renderMeshTopologySvg() {
+      const peers = filteredPeers();
+      const cx = 340, cy = 125, r = 88;
+      const selfLabel = (STATE.topology && STATE.topology.self && STATE.topology.self.name) || 'This Device';
+      let edges = '';
+      let nodes = '';
+
+      peers.forEach((p, idx) => {
+        const angle = (idx / Math.max(1, peers.length)) * Math.PI * 2 - Math.PI / 2;
+        const x = cx + Math.cos(angle) * r;
+        const y = cy + Math.sin(angle) * r;
+        const isSelected = STATE.inspectedFp === p.fingerprint;
+        const stroke = p.connected ? 'rgba(244,241,234,0.45)' : 'rgba(244,241,234,0.16)';
+        const dash = p.scope === 'lan' ? '' : 'stroke-dasharray="4 3"';
+        edges += `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${stroke}" stroke-width="${isSelected ? 2 : 1.2}" ${dash} />`;
+        if (STATE.showHopOverlay && p.latency_ms != null) {
+          const mx = (cx + x) / 2, my = (cy + y) / 2;
+          edges += `<text x="${mx.toFixed(1)}" y="${(my - 4).toFixed(1)}" fill="rgba(244,241,234,0.65)" font-size="9" text-anchor="middle">${p.latency_ms}ms</text>`;
+        }
+        const label = (p.name || p.address || p.fingerprint || 'Peer').slice(0, 14);
+        nodes += `
+          <g style="cursor:pointer;" data-inspect-fp="${escapeHtml(p.fingerprint)}">
+            <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${isSelected ? 12 : 9}" fill="${p.connected ? '#F4F1EA' : '#32343A'}" stroke="${isSelected ? '#DCFF02' : '#0C0D0F'}" stroke-width="2" />
+            <text x="${x.toFixed(1)}" y="${(y + 22).toFixed(1)}" fill="#F4F1EA" font-size="10" text-anchor="middle">${escapeHtml(label)}</text>
+          </g>
+        `;
+      });
+
+      return `
+        <div class="mesh-svg-box">
+          <svg viewBox="0 0 680 250" width="100%" height="100%">
+            <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-dasharray="3 5" />
+            ${edges}
+            <circle cx="${cx}" cy="${cy}" r="15" fill="#F4F1EA" stroke="rgba(244,241,234,0.35)" stroke-width="5" />
+            <text x="${cx}" y="${cy + 30}" fill="#F4F1EA" font-size="11" font-weight="600" text-anchor="middle">${escapeHtml(selfLabel)}</text>
+            ${nodes}
+            ${peers.length === 0 ? `<text x="${cx}" y="${cy + 58}" fill="rgba(244,241,234,0.45)" font-size="11" text-anchor="middle">No peers matching current filter</text>` : ''}
+          </svg>
+        </div>
+      `;
+    }
+
+    function filteredPeers() {
+      return STATE.peers.filter(p => {
+        if (STATE.meshFilter === 'lan') return p.scope === 'lan';
+        if (STATE.meshFilter === 'wan') return p.scope !== 'lan';
+        if (STATE.meshFilter === 'exit') return Boolean(p.is_exit) || String(p.role || '').toLowerCase().includes('exit');
+        return true;
+      });
+    }
+
     // ── Sheet Renderers ──
-    function renderSheet() {
-      if (STATE.sheet === 'qr') {
-        const isGuest = STATE.qrTab === 'guest';
-        return `
-          <div class="coal-sheet" style="text-align:center;">
-            <div class="sheet-header">
-              <div class="pill-tabs">
-                <button type="button" class="pill-btn ${!isGuest ? 'active' : ''}" data-qrtab="phone">Pair My Phone</button>
-                <button type="button" class="pill-btn ${isGuest ? 'active' : ''}" data-qrtab="guest">24h Guest Pass</button>
+    function renderQrSheet() {
+      const isVoucher = STATE.qrTab === 'voucher';
+      const fp = STATE.status.network_id || '—';
+      const host = STATE.status.host || '—';
+      return `
+        <div class="coal-sheet" style="max-width: 580px;">
+          <div class="sheet-header">
+            <div class="pill-tabs">
+              <button type="button" class="pill-btn ${!isVoucher ? 'active' : ''}" data-qrtab="phone">Pair My Phone</button>
+              <button type="button" class="pill-btn ${isVoucher ? 'active' : ''}" data-qrtab="voucher">24h Guest Voucher</button>
+            </div>
+            <button type="button" class="sheet-close" data-close>Back ✕</button>
+          </div>
+          <div class="sheet-body">
+            ${!isVoucher ? `
+              <div style="text-align:center; padding: 6px 0 10px;">
+                ${renderConnectedLiquidTracksQr()}
               </div>
-              <button type="button" class="sheet-close" data-close>Back ✕</button>
-            </div>
+              <div class="coal-card" style="margin-top:8px;">
+                <div class="kv-line"><span class="kv-k">Node Fingerprint</span><span class="kv-v">${escapeHtml(fp)}</span></div>
+                <div class="kv-line"><span class="kv-k">Mesh Endpoint</span><span class="kv-v">${escapeHtml(host)}</span></div>
+              </div>
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:12px;">
+                <span style="font-size:11px; color:var(--ivory-muted);">Scan with phone camera or Vantablack Android app</span>
+                <div style="display:flex; gap:6px;">
+                  <button type="button" class="subtle-pill" data-act="copy-fp">Copy Fingerprint</button>
+                  <button type="button" class="action-pill" data-act="copy-link">Copy Signed Invite</button>
+                </div>
+              </div>
+            ` : `
+              <div style="display:flex; flex-direction:column; gap:10px;">
+                <div style="font-size:12px; color:var(--ivory-muted);">
+                  Mint a cryptographically signed temporary exit voucher for a guest peer.
+                </div>
+                <input id="voucher-peer-fp" class="input-pill" placeholder="Guest peer fingerprint (hex)" />
+                <div class="grid-2">
+                  <input id="voucher-allowed-host" class="input-pill" value="*" placeholder="Allowed host (* for any)" />
+                  <input id="voucher-ttl-secs" class="input-pill" type="number" value="86400" placeholder="TTL seconds (86400 = 24h)" />
+                </div>
+                <div style="display:flex; justify-content:flex-end;">
+                  <button type="button" class="action-pill" data-act="mint-voucher">${STATE.voucherMinting ? 'Minting...' : 'Mint Exit Voucher'}</button>
+                </div>
+                ${STATE.mintedVoucherHex ? `
+                  <div class="coal-card">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                      <span class="setting-title">Signed Voucher Hex</span>
+                      <button type="button" class="subtle-pill" data-act="copy-voucher">Copy Hex</button>
+                    </div>
+                    <div class="mono" style="font-size:11px; color:var(--ivory-muted); word-break:break-all;">${escapeHtml(STATE.mintedVoucherHex)}</div>
+                  </div>
+                ` : ''}
+              </div>
+            `}
+          </div>
+        </div>
+      `;
+    }
 
-            <div style="padding: 8px 0 6px;">
-              ${renderConnectedLiquidTracksQr(isGuest)}
-            </div>
+    function renderDevicesSheet() {
+      const isMap = STATE.devicesTab === 'map';
+      const peers = filteredPeers();
+      const inspected = STATE.peers.find(p => p.fingerprint === STATE.inspectedFp);
+      const selectedHomeExit = STATE.continuum.homeExit && STATE.continuum.homeExit.selected;
+      const scanInterval = STATE.settings.private_mesh_scan_interval_secs || 60;
 
-            <div class="sheet-footer">
-              <span style="font-size:11px; color:var(--ivory-muted); text-align:left;">
-                ${isGuest ? 'Temporary 24-hour exit pass for a friend' : 'Scan with your phone camera or Vantablack Android app'}
-              </span>
-              <button type="button" class="subtle-pill" data-act="copy-link">Copy Link</button>
+      return `
+        <div class="coal-sheet">
+          <div class="sheet-header">
+            <div class="pill-tabs">
+              <button type="button" class="pill-btn ${!isMap ? 'active' : ''}" data-devtab="list">Devices (${STATE.peers.length})</button>
+              <button type="button" class="pill-btn ${isMap ? 'active' : ''}" data-devtab="map">Mesh Map</button>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <select class="select-pill" id="scan-interval-sel" title="Auto-scan interval">
+                ${[[30,'Scan 30s'],[60,'Scan 1m'],[300,'Scan 5m'],[1800,'Scan 30m']].map(([v, lbl]) =>
+                  `<option value="${v}" ${Number(scanInterval) === v ? 'selected' : ''}>${lbl}</option>`
+                ).join('')}
+              </select>
+              <button type="button" class="subtle-pill" data-act="scan-lan">Find on Wi-Fi</button>
+              <button type="button" class="sheet-close" data-close>✕</button>
             </div>
           </div>
-        `;
-      }
 
-      if (STATE.sheet === 'devices') {
-        const listHtml = STATE.devices.length > 0
-          ? STATE.devices.map(d => `
-              <div class="coal-row">
-                <div style="display:flex; align-items:center; gap:11px; text-align:left;">
-                  <span style="width:8px; height:8px; border-radius:50%; background:var(--ivory); display:inline-block;"></span>
-                  <div>
-                    <div style="font-size:12px; font-weight:500;">${escapeHtml(d.name)}</div>
-                    <div style="font-size:11px; color:var(--ivory-muted);">${escapeHtml(d.type)}</div>
-                  </div>
+          <div class="sheet-body" style="display:flex; flex-direction:column; gap:10px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+              <div class="pill-tabs">
+                ${[['all','All'],['lan','LAN'],['wan','WAN'],['exit','Exits']].map(([id, lbl]) =>
+                  `<button type="button" class="subtle-pill" style="${STATE.meshFilter === id ? 'background:#F4F1EA;color:#0C0D0F;' : ''}" data-mfilter="${id}">${lbl}</button>`
+                ).join('')}
+              </div>
+              ${isMap ? `
+                <button type="button" class="subtle-pill" style="${STATE.showHopOverlay ? 'background:#F4F1EA;color:#0C0D0F;' : ''}" data-act="toggle-hops">
+                  ${STATE.showHopOverlay ? 'Latency Labels: On' : 'Latency Labels: Off'}
+                </button>
+              ` : ''}
+            </div>
+
+            ${isMap ? renderMeshTopologySvg() : `
+              <div style="display:flex; flex-direction:column; gap:7px; max-height:220px; overflow-y:auto;">
+                ${peers.length > 0 ? peers.map(p => {
+                  const isExit = selectedHomeExit === p.fingerprint;
+                  return `
+                    <div class="coal-row" style="cursor:pointer;" data-inspect-fp="${escapeHtml(p.fingerprint)}">
+                      <div style="display:flex; align-items:center; gap:10px;">
+                        <span style="width:8px; height:8px; border-radius:50%; background:${p.connected ? '#F4F1EA' : 'rgba(255,255,255,0.2)'};"></span>
+                        <div>
+                          <div style="font-size:12px; font-weight:500;">${escapeHtml(p.name || 'Anonymous Node')}</div>
+                          <div class="mono" style="font-size:10.5px; color:var(--ivory-muted);">${escapeHtml(p.address || 'Unknown')} · ${escapeHtml((p.fingerprint || '').slice(0, 12))}</div>
+                        </div>
+                      </div>
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        ${p.scope ? `<span class="tag-pill">${escapeHtml(p.scope)}</span>` : ''}
+                        ${p.latency_ms != null ? `<span class="tag-pill">${p.latency_ms}ms</span>` : ''}
+                        <button type="button" class="subtle-pill" style="${isExit ? 'background:#F4F1EA;color:#0C0D0F;' : ''}" data-pin-exit="${escapeHtml(p.fingerprint)}">
+                          ${isExit ? 'Home Exit' : 'Use as Exit'}
+                        </button>
+                        <button type="button" class="danger-pill" data-remove-dev="${escapeHtml(p.fingerprint)}">Remove</button>
+                      </div>
+                    </div>
+                  `;
+                }).join('') : `<div class="coal-row" style="justify-content:center; color:var(--ivory-muted); font-size:12px;">No linked devices found yet. Scan QR or paste an invite link below.</div>`}
+              </div>
+            `}
+
+            ${inspected ? `
+              <div class="coal-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                  <span class="setting-title">Peer Inspector — ${escapeHtml(inspected.name || 'Node')}</span>
+                  <button type="button" class="sheet-close" data-act="close-inspect">✕</button>
                 </div>
-                <div style="display:flex; align-items:center; gap:8px;">
-                  <button type="button" data-use-exit="${escapeHtml(d.id)}"
-                    style="padding:5px 12px; font-size:11px; font-weight:500; border-radius:999px; border:none; cursor:pointer; background:${d.activeExit ? '#F4F1EA' : 'rgba(255,255,255,0.08)'}; color:${d.activeExit ? '#0C0D0F' : '#F4F1EA'};">
-                    ${d.activeExit ? 'Home Exit' : 'Use as Exit'}
-                  </button>
-                  ${d.removable ? `<button type="button" class="sheet-close" data-remove-dev="${escapeHtml(d.id)}">Remove</button>` : ''}
+                <div class="grid-2" style="margin-bottom:8px;">
+                  <div class="kv-line"><span class="kv-k">Fingerprint</span><span class="kv-v">${escapeHtml(inspected.fingerprint)}</span></div>
+                  <div class="kv-line"><span class="kv-k">Endpoint</span><span class="kv-v">${escapeHtml(inspected.address || '—')}</span></div>
+                  <div class="kv-line"><span class="kv-k">Transport</span><span class="kv-v">${escapeHtml(inspected.transport || inspected.scope || '—')}</span></div>
+                  <div class="kv-line"><span class="kv-k">Latency</span><span class="kv-v">${inspected.latency_ms != null ? inspected.latency_ms + ' ms' : '—'}</span></div>
+                </div>
+                <div class="input-pill-row">
+                  <input id="rename-peer-inp" class="input-pill" value="${escapeHtml(inspected.name || '')}" placeholder="Friendly device name" />
+                  <button type="button" class="action-pill" data-act="rename-peer">Save Name</button>
                 </div>
               </div>
-            `).join('')
-          : `<div class="coal-row" style="justify-content:center; color:var(--ivory-muted); font-size:12px;">No linked devices yet — scan your QR code or paste an invite link below.</div>`;
+            ` : ''}
 
-        return `
-          <div class="coal-sheet">
-            <div class="sheet-header">
-              <span class="sheet-title">Linked Devices (${STATE.devices.length})</span>
-              <div style="display:flex; align-items:center; gap:6px;">
-                <button type="button" class="subtle-pill" data-act="scan-lan">Find on Wi-Fi</button>
-                <button type="button" class="sheet-close" data-close>✕</button>
-              </div>
-            </div>
-            <div class="device-list">
-              ${listHtml}
-            </div>
             <div class="input-pill-row">
-              <input id="dev-inp" type="text" class="input-pill" placeholder="Paste an invite link from another device..." />
+              <input id="dev-inp" type="text" class="input-pill" placeholder="Paste vb:// / vb-net:// invite link or IP:Port..." />
               <button type="button" class="action-pill" data-act="add-device">Link Device</button>
             </div>
           </div>
-        `;
-      }
+        </div>
+      `;
+    }
 
+    function renderSettingsSheet() {
+      const tab = STATE.settingsTab;
+      const st = STATE.settings || {};
       const up = STATE.updateInfo;
       const hasUpdate = Boolean(up && up.update_available);
-      let updateSubtitle = `Vantablack v${escapeHtml(STATE.version)} is up to date`;
-      let updateBadge = 'Check';
-      if (STATE.updateApplying) {
-        updateSubtitle = 'Downloading & installing update...';
-        updateBadge = 'Installing...';
-      } else if (STATE.updateChecking) {
-        updateSubtitle = 'Checking GitHub releases...';
-        updateBadge = 'Checking...';
-      } else if (hasUpdate) {
-        updateSubtitle = `Vantablack v${escapeHtml(up.latest_version)} is ready to install`;
-        updateBadge = `Install v${escapeHtml(up.latest_version)}`;
+      let updateSub = `Vantablack v${escapeHtml(STATE.version)} is up to date`;
+      let updateBtn = 'Check';
+      if (STATE.updateApplying) { updateSub = 'Downloading & installing...'; updateBtn = 'Installing...'; }
+      else if (STATE.updateChecking) { updateSub = 'Checking GitHub...'; updateBtn = 'Checking...'; }
+      else if (hasUpdate) { updateSub = `v${escapeHtml(up.latest_version)} ready to install`; updateBtn = `Install v${escapeHtml(up.latest_version)}`; }
+
+      let bodyHtml = '';
+
+      if (tab === 'general') {
+        const anchors = STATE.anchors || {};
+        bodyHtml = `
+          <div class="grid-2">
+            <button type="button" class="coal-row setting-card" data-setting-tog="low_latency">
+              <div>
+                <div class="setting-title">Low-Latency Mode</div>
+                <div class="setting-sub">1ms mix batching for calls &amp; gaming</div>
+              </div>
+              ${toggleSwitchHtml(Boolean(st.low_latency))}
+            </button>
+            <button type="button" class="coal-row setting-card" data-setting-tog="abos_skywave_enabled">
+              <div>
+                <div class="setting-title">Off-Grid Radio Backup</div>
+                <div class="setting-sub">Skywave HF fallback if internet is cut</div>
+              </div>
+              ${toggleSwitchHtml(Boolean(st.abos_skywave_enabled))}
+            </button>
+            <button type="button" class="coal-row setting-card" data-setting-tog="qel_enabled">
+              <div>
+                <div class="setting-title">Quantum Protection (QEL)</div>
+                <div class="setting-sub">${anchors.qel ? ('Anchor: ' + escapeHtml(anchors.qel.state || 'ready')) : 'Post-quantum key mixing'}</div>
+              </div>
+              ${toggleSwitchHtml(Boolean(st.qel_enabled))}
+            </button>
+            <button type="button" class="coal-row setting-card" data-setting-tog="stego_carrier_mode">
+              <div>
+                <div class="setting-title">Stego Carrier</div>
+                <div class="setting-sub">Covert carrier framing</div>
+              </div>
+              ${toggleSwitchHtml(Boolean(st.stego_carrier_mode))}
+            </button>
+            <button type="button" class="coal-row setting-card" data-setting-tog="energy_ledger_enabled">
+              <div>
+                <div class="setting-title">Energy Ledger</div>
+                <div class="setting-sub">Relay credit accounting</div>
+              </div>
+              ${toggleSwitchHtml(Boolean(st.energy_ledger_enabled))}
+            </button>
+            <button type="button" class="coal-row setting-card" data-act="update-btn">
+              <div>
+                <div class="setting-title">App Updates</div>
+                <div class="setting-sub">${updateSub}</div>
+              </div>
+              <span style="padding:5px 11px; font-size:11px; font-weight:600; border-radius:999px; background:${hasUpdate ? '#F4F1EA' : 'rgba(255,255,255,0.09)'}; color:${hasUpdate ? '#0C0D0F' : '#F4F1EA'};">${updateBtn}</span>
+            </button>
+          </div>
+          <div class="grid-2" style="margin-top:10px;">
+            <div class="coal-row">
+              <div>
+                <div class="setting-title">Mix Batch Window</div>
+                <div class="setting-sub">Traffic mixing delay</div>
+              </div>
+              <select class="select-pill" id="mix-batch-sel">
+                ${[1, 10, 20, 50].map(ms => `<option value="${ms}" ${Number(st.mix_batch_ms || 20) === ms ? 'selected' : ''}>${ms} ms</option>`).join('')}
+              </select>
+            </div>
+            <div class="coal-row">
+              <div>
+                <div class="setting-title">Jurisdiction Tag</div>
+                <div class="setting-sub">Preferred routing region</div>
+              </div>
+              <select class="select-pill" id="jurisdiction-sel">
+                ${['AUTO','CH','IS','DE','JP','NL','US'].map(j => `<option value="${j}" ${(st.jurisdiction_tag || 'AUTO') === j ? 'selected' : ''}>${j}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        `;
+      } else if (tab === 'routing') {
+        const basePort = STATE.status.socks_port || 1080;
+        const listening = Boolean(STATE.status.socks_listening);
+        const pacUrl = `${window.location.origin}/proxy.pac`;
+        const bypass = Array.isArray(st.bypass) ? st.bypass : [];
+        bodyHtml = `
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div class="coal-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <span class="setting-title">Multi-Port SOCKS5 &amp; PAC Proxy</span>
+                <span class="tag-pill ${listening ? 'ok' : ''}">${listening ? `LISTENING :${basePort}–:${basePort + 3}` : 'OFF'}</span>
+              </div>
+              <div class="kv-line"><span class="kv-k">Primary SOCKS5</span><span class="kv-v">127.0.0.1:${basePort}</span></div>
+              <div class="kv-line"><span class="kv-k">Auto-Config PAC URL</span><span class="kv-v">${escapeHtml(pacUrl)}</span></div>
+              <div style="margin-top:8px; display:flex; justify-content:flex-end;">
+                <button type="button" class="subtle-pill" data-act="copy-pac">Copy PAC URL</button>
+              </div>
+            </div>
+
+            <div class="coal-card">
+              <div class="setting-title" style="margin-bottom:8px;">Split-Tunnel Bypass Rules (${bypass.length})</div>
+              <div class="input-pill-row" style="margin-bottom:10px;">
+                <input id="bypass-inp" class="input-pill" placeholder="Domain or CIDR to bypass (e.g. local.lan, 192.168.0.0/16)" />
+                <button type="button" class="action-pill" data-act="add-bypass">Add Rule</button>
+              </div>
+              <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                ${bypass.length > 0 ? bypass.map(rule => `
+                  <span class="coal-row" style="padding:5px 10px; border-radius:999px; gap:8px;">
+                    <span class="mono" style="font-size:11px;">${escapeHtml(rule)}</span>
+                    <button type="button" class="sheet-close" style="padding:0 3px;" data-del-bypass="${escapeHtml(rule)}">✕</button>
+                  </span>
+                `).join('') : `<span style="font-size:11px; color:var(--ivory-muted);">No custom bypass rules configured.</span>`}
+              </div>
+            </div>
+          </div>
+        `;
+      } else if (tab === 'continuum') {
+        const he = STATE.continuum.homeExit || {};
+        const xr = STATE.xray || {};
+        const btcr = STATE.continuum.btcr || {};
+        const racs = STATE.continuum.racs || {};
+        bodyHtml = `
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div class="coal-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span class="setting-title">Home Exit &amp; Boomerang Circuit</span>
+                <div style="display:flex; gap:6px;">
+                  ${he.selected ? `<button type="button" class="subtle-pill" data-act="clear-home-exit">Clear Pin</button>` : ''}
+                  <button type="button" class="subtle-pill" data-act="refresh-v2">Refresh</button>
+                </div>
+              </div>
+              <div class="kv-line"><span class="kv-k">Selected Exit</span><span class="kv-v">${escapeHtml(he.selected || 'Adaptive (Auto)')}</span></div>
+              <div class="kv-line"><span class="kv-k">Planned Circuit</span><span class="kv-v">${escapeHtml((he.planned_circuit && (he.planned_circuit.state + (he.planned_circuit.hops ? ' (' + he.planned_circuit.hops + ' hops)' : ''))) || '—')}</span></div>
+              <div class="kv-line"><span class="kv-k">BTCR Balance</span><span class="kv-v">${escapeHtml(btcr.balance != null ? String(btcr.balance) : (btcr.state || '—'))}</span></div>
+              <div class="kv-line"><span class="kv-k">RACS Congestion</span><span class="kv-v">${escapeHtml((racs.cc && racs.cc.cwnd != null) ? ('cwnd ' + racs.cc.cwnd) : (racs.state || '—'))}</span></div>
+            </div>
+
+            <div class="coal-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span class="setting-title">Adversary Goggles (X-Ray Truth Ledger)</span>
+                <span class="tag-pill">${escapeHtml(xr.regime || 'live')}</span>
+              </div>
+              <div style="font-size:12px; font-weight:500; margin-bottom:6px; color:${(xr.invariants || []).some(i => i.state === 'failed') ? 'var(--amber)' : 'var(--emerald)'};">
+                ${escapeHtml(xr.headline || 'Loading truth ledger...')}
+              </div>
+              <div style="display:flex; flex-direction:column; gap:4px; margin-bottom:8px;">
+                ${(xr.invariants || []).map(i => `
+                  <div class="kv-line">
+                    <span class="kv-k"><strong style="color:${i.state === 'verified' ? 'var(--emerald)' : i.state === 'failed' ? 'var(--rose)' : 'var(--ivory-muted)'};">${escapeHtml(i.state)}</strong> · ${escapeHtml(i.id)}</span>
+                    <span class="kv-v">${escapeHtml(i.detail || '')}</span>
+                  </div>
+                `).join('')}
+              </div>
+              ${(xr.observations || []).length ? `
+                <div class="grid-2">
+                  ${xr.observations.map(o => `
+                    <div class="coal-card" style="padding:9px 11px;">
+                      <div class="setting-title" style="margin-bottom:4px;">${escapeHtml(o.observer)}</div>
+                      <div style="font-size:10.5px; color:var(--ivory-muted);">Sees: ${escapeHtml((o.sees || []).join(', ') || 'none')}</div>
+                      <div style="font-size:10.5px; color:var(--ivory-faint); margin-top:2px;">Hidden: ${escapeHtml((o.does_not_see || []).join(', ') || 'none')}</div>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      } else {
+        const tp = STATE.status.throughput || STATE.status.traffic || {};
+        const bench = STATE.benchmarkResult;
+        bodyHtml = `
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <div class="grid-3">
+              <div class="coal-card">
+                <div class="flank-label">Downlink</div>
+                <div style="font-size:16px; font-weight:600; margin-top:4px;">${formatBytes(STATE.downSpeed)}/s</div>
+                <div class="setting-sub">${formatBytes(tp.bytes_recv || 0)} total</div>
+              </div>
+              <div class="coal-card">
+                <div class="flank-label">Uplink</div>
+                <div style="font-size:16px; font-weight:600; margin-top:4px;">${formatBytes(STATE.upSpeed)}/s</div>
+                <div class="setting-sub">${formatBytes(tp.bytes_sent || 0)} total</div>
+              </div>
+              <div class="coal-card">
+                <div class="flank-label">Sessions &amp; Uptime</div>
+                <div style="font-size:16px; font-weight:600; margin-top:4px;">${STATE.status.active_sessions || 0} active</div>
+                <div class="setting-sub">${formatDuration(STATE.status.uptime_secs || 0)}</div>
+              </div>
+            </div>
+
+            <div class="coal-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div>
+                  <div class="setting-title">Crypto &amp; Reed-Solomon RS(2,1) Benchmark</div>
+                  <div class="setting-sub">In-process XChaCha20-Poly1305 + erasure coding probe</div>
+                </div>
+                <button type="button" class="action-pill" data-act="run-bench">${STATE.benchmarkRunning ? 'Running...' : 'Run Benchmark'}</button>
+              </div>
+              ${bench ? `
+                <div class="grid-3">
+                  <div class="kv-line"><span class="kv-k">Throughput</span><span class="kv-v">${Number(bench.throughput_mbps || 0).toFixed(1)} Mbps</span></div>
+                  <div class="kv-line"><span class="kv-k">p50 / p99</span><span class="kv-v">${(bench.latency_us && bench.latency_us.p50) ?? '—'} / ${(bench.latency_us && bench.latency_us.p99) ?? '—'} µs</span></div>
+                  <div class="kv-line"><span class="kv-k">Duration</span><span class="kv-v">${bench.duration_ms ?? '—'} ms</span></div>
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="coal-card">
+              <div class="kv-line"><span class="kv-k">LAN Multicast Discovery</span><span class="kv-v">${escapeHtml(STATE.status.multicast_addr || '239.255.0.1:2270')}</span></div>
+              <div class="kv-line"><span class="kv-k">Mesh Socket</span><span class="kv-v">${escapeHtml(STATE.status.host || '—')} (UDP)</span></div>
+            </div>
+          </div>
+        `;
       }
 
       return `
         <div class="coal-sheet">
           <div class="sheet-header">
-            <span class="sheet-title">Preferences</span>
+            <div class="pill-tabs">
+              ${[
+                ['general', 'General'],
+                ['routing', 'Routing & Proxy'],
+                ['continuum', 'Continuum & X-Ray'],
+                ['diagnostics', 'Diagnostics']
+              ].map(([id, lbl]) => `
+                <button type="button" class="pill-btn ${tab === id ? 'active' : ''}" data-settab="${id}">${lbl}</button>
+              `).join('')}
+            </div>
             <button type="button" class="sheet-close" data-close>✕</button>
           </div>
-          <div class="settings-grid">
-            <button type="button" class="coal-row setting-card" data-tog="localBypass">
-              <div>
-                <div class="setting-title">Local Network Access</div>
-                <div class="setting-sub">Keep printers &amp; LAN devices direct</div>
-              </div>
-              ${toggleSwitchHtml(STATE.localBypass)}
-            </button>
-            <button type="button" class="coal-row setting-card" data-tog="radioBackup">
-              <div>
-                <div class="setting-title">Off-Grid Radio Backup</div>
-                <div class="setting-sub">Fallback to Skywave HF if internet is cut</div>
-              </div>
-              ${toggleSwitchHtml(STATE.radioBackup)}
-            </button>
-            <button type="button" class="coal-row setting-card" data-tog="quantumLock">
-              <div>
-                <div class="setting-title">Quantum Protection</div>
-                <div class="setting-sub">Post-quantum key protection</div>
-              </div>
-              ${toggleSwitchHtml(STATE.quantumLock)}
-            </button>
-            <button type="button" class="coal-row setting-card" data-act="update-btn">
-              <div>
-                <div class="setting-title">App Updates</div>
-                <div class="setting-sub">${updateSubtitle}</div>
-              </div>
-              <span style="padding:5px 12px; font-size:11px; font-weight:600; border-radius:999px; background:${hasUpdate ? '#F4F1EA' : 'rgba(255,255,255,0.09)'}; color:${hasUpdate ? '#0C0D0F' : '#F4F1EA'};">
-                ${updateBadge}
-              </span>
-            </button>
-          </div>
+          <div class="sheet-body">${bodyHtml}</div>
         </div>
       `;
     }
@@ -954,34 +1190,29 @@
             </div>
           </div>
         `;
+      } else if (STATE.sheet === 'qr') {
+        stage.innerHTML = renderQrSheet();
+      } else if (STATE.sheet === 'devices') {
+        stage.innerHTML = renderDevicesSheet();
       } else {
-        stage.innerHTML = renderSheet();
+        stage.innerHTML = renderSettingsSheet();
       }
 
       dock.innerHTML = `
         <div class="dock-cluster">
           ${STATE.cities.map(loc => {
             const act = loc.id === c.id && !open;
-            return `
-              <button type="button" class="pill-btn ${act ? 'active' : ''}" data-city="${escapeHtml(loc.id)}">
-                ${escapeHtml(loc.city)}
-              </button>
-            `;
+            return `<button type="button" class="pill-btn ${act ? 'active' : ''}" data-city="${escapeHtml(loc.id)}">${escapeHtml(loc.city)}</button>`;
           }).join('')}
         </div>
         <div class="dock-cluster">
           ${[
             ['qr', '+ Pair Phone (QR)'],
-            ['devices', `Devices (${STATE.devices.length})`],
+            ['devices', `Devices (${STATE.peers.length})`],
             ['settings', 'Settings']
-          ].map(([id, label]) => {
-            const act = STATE.sheet === id;
-            return `
-              <button type="button" class="pill-btn ${act ? 'active' : ''}" data-sheet="${id}">
-                ${escapeHtml(label)}
-              </button>
-            `;
-          }).join('')}
+          ].map(([id, label]) => `
+            <button type="button" class="pill-btn ${STATE.sheet === id ? 'active' : ''}" data-sheet="${id}">${escapeHtml(label)}</button>
+          `).join('')}
         </div>
       `;
 
@@ -989,54 +1220,63 @@
     }
 
     function bindEvents() {
-      document.querySelectorAll('[data-act="toggle"]').forEach(b => {
-        b.addEventListener('click', toggleConnection);
+      document.querySelectorAll('[data-act="toggle"]').forEach(b => b.addEventListener('click', toggleConnection));
+      document.querySelectorAll('[data-act="cycle-mode"]').forEach(b => b.addEventListener('click', cycleMode));
+      document.querySelectorAll('[data-city]').forEach(b => b.addEventListener('click', () => selectCity(b.dataset.city)));
+      document.querySelectorAll('[data-sheet]').forEach(b => b.addEventListener('click', () => {
+        const s = b.dataset.sheet;
+        STATE.sheet = STATE.sheet === s ? null : s;
+        if (STATE.sheet === 'qr') fetchInvite();
+        if (STATE.sheet === 'devices') refreshTopology();
+        if (STATE.sheet === 'settings') {
+          loadSettings();
+          refreshAnchors();
+          if (STATE.settingsTab === 'continuum') { refreshContinuum(); refreshXray(); }
+        }
+        render();
+      }));
+      document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => { STATE.sheet = null; render(); }));
+      document.querySelectorAll('[data-qrtab]').forEach(b => b.addEventListener('click', () => { STATE.qrTab = b.dataset.qrtab; render(); }));
+      document.querySelectorAll('[data-devtab]').forEach(b => b.addEventListener('click', () => { STATE.devicesTab = b.dataset.devtab; render(); }));
+      document.querySelectorAll('[data-settab]').forEach(b => b.addEventListener('click', () => {
+        STATE.settingsTab = b.dataset.settab;
+        if (STATE.settingsTab === 'continuum') { refreshContinuum(); refreshXray(); }
+        render();
+      }));
+      document.querySelectorAll('[data-mfilter]').forEach(b => b.addEventListener('click', () => { STATE.meshFilter = b.dataset.mfilter; render(); }));
+      document.querySelectorAll('[data-act="toggle-hops"]').forEach(b => b.addEventListener('click', () => { STATE.showHopOverlay = !STATE.showHopOverlay; render(); }));
+      document.querySelectorAll('[data-inspect-fp]').forEach(el => el.addEventListener('click', () => { STATE.inspectedFp = el.dataset.inspectFp; render(); }));
+      document.querySelectorAll('[data-act="close-inspect"]').forEach(b => b.addEventListener('click', () => { STATE.inspectedFp = null; render(); }));
+      document.querySelectorAll('[data-act="rename-peer"]').forEach(b => b.addEventListener('click', renameInspectedPeer));
+      document.querySelectorAll('[data-act="copy-link"]').forEach(b => b.addEventListener('click', () => copyText(STATE.pairUri, 'Invite link')));
+      document.querySelectorAll('[data-act="copy-fp"]').forEach(b => b.addEventListener('click', () => copyText(STATE.status.network_id, 'Fingerprint')));
+      document.querySelectorAll('[data-act="copy-voucher"]').forEach(b => b.addEventListener('click', () => copyText(STATE.mintedVoucherHex, 'Voucher hex')));
+      document.querySelectorAll('[data-act="copy-pac"]').forEach(b => b.addEventListener('click', () => copyText(window.location.origin + '/proxy.pac', 'PAC URL')));
+      document.querySelectorAll('[data-act="mint-voucher"]').forEach(b => b.addEventListener('click', mintExitVoucher));
+      document.querySelectorAll('[data-act="scan-lan"]').forEach(b => b.addEventListener('click', triggerLanScan));
+      document.querySelectorAll('[data-act="add-device"]').forEach(b => b.addEventListener('click', linkDeviceFromInput));
+      document.querySelectorAll('[data-pin-exit]').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); pinHomeExit(b.dataset.pinExit); }));
+      document.querySelectorAll('[data-remove-dev]').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); disconnectPeer(b.dataset.removeDev); }));
+      document.querySelectorAll('[data-setting-tog]').forEach(b => b.addEventListener('click', () => toggleSettingKey(b.dataset.settingTog)));
+      document.querySelectorAll('[data-act="add-bypass"]').forEach(b => b.addEventListener('click', addBypassRule));
+      document.querySelectorAll('[data-del-bypass]').forEach(b => b.addEventListener('click', () => removeBypassRule(b.dataset.delBypass)));
+      document.querySelectorAll('[data-act="clear-home-exit"]').forEach(b => b.addEventListener('click', clearHomeExit));
+      document.querySelectorAll('[data-act="refresh-v2"]').forEach(b => b.addEventListener('click', () => { refreshContinuum(); refreshXray(); }));
+      document.querySelectorAll('[data-act="run-bench"]').forEach(b => b.addEventListener('click', runPipelineBenchmark));
+      document.querySelectorAll('[data-act="update-btn"]').forEach(b => b.addEventListener('click', triggerUpdateAction));
+
+      const scanSel = document.getElementById('scan-interval-sel');
+      if (scanSel) scanSel.addEventListener('change', (e) => saveSettingPatch({ private_mesh_scan_interval_secs: parseInt(e.target.value, 10) }, 'Scan interval updated'));
+      const mixSel = document.getElementById('mix-batch-sel');
+      if (mixSel) mixSel.addEventListener('change', (e) => {
+        const ms = parseInt(e.target.value, 10);
+        saveSettingPatch({ mix_batch_ms: ms, low_latency: ms <= 1 }, `Mix batch set to ${ms}ms`);
       });
-      document.querySelectorAll('[data-act="cycle-mode"]').forEach(b => {
-        b.addEventListener('click', cycleMode);
-      });
-      document.querySelectorAll('[data-city]').forEach(b => {
-        b.addEventListener('click', () => selectCity(b.dataset.city));
-      });
-      document.querySelectorAll('[data-sheet]').forEach(b => {
-        b.addEventListener('click', () => {
-          const s = b.dataset.sheet;
-          STATE.sheet = STATE.sheet === s ? null : s;
-          if (STATE.sheet === 'qr') fetchInvite();
-          if (STATE.sheet === 'devices') refreshPeers();
-          render();
-        });
-      });
-      document.querySelectorAll('[data-close]').forEach(b => {
-        b.addEventListener('click', () => { STATE.sheet = null; render(); });
-      });
-      document.querySelectorAll('[data-qrtab]').forEach(b => {
-        b.addEventListener('click', () => { STATE.qrTab = b.dataset.qrtab; render(); });
-      });
-      document.querySelectorAll('[data-act="copy-link"]').forEach(b => {
-        b.addEventListener('click', copyInviteLink);
-      });
-      document.querySelectorAll('[data-act="scan-lan"]').forEach(b => {
-        b.addEventListener('click', triggerLanScan);
-      });
-      document.querySelectorAll('[data-act="add-device"]').forEach(b => {
-        b.addEventListener('click', linkDeviceFromInput);
-      });
-      document.querySelectorAll('[data-use-exit]').forEach(b => {
-        b.addEventListener('click', () => selectDeviceAsExit(b.dataset.useExit));
-      });
-      document.querySelectorAll('[data-remove-dev]').forEach(b => {
-        b.addEventListener('click', () => removeDevice(b.dataset.removeDev));
-      });
-      document.querySelectorAll('[data-tog]').forEach(b => {
-        b.addEventListener('click', () => togglePreference(b.dataset.tog));
-      });
-      document.querySelectorAll('[data-act="update-btn"]').forEach(b => {
-        b.addEventListener('click', triggerUpdateAction);
-      });
+      const jurSel = document.getElementById('jurisdiction-sel');
+      if (jurSel) jurSel.addEventListener('change', (e) => saveSettingPatch({ jurisdiction_tag: e.target.value }, `Region set to ${e.target.value}`));
     }
 
-    // ── Backend Actions ──
+    // ── Backend API Actions ──
     async function toggleConnection() {
       const next = !STATE.connected;
       STATE.connected = next;
@@ -1048,11 +1288,9 @@
           headers: pinHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ connected: next })
         });
-        if (res.status === 401) {
-          openPinModal('PIN required to toggle protection.');
-        }
+        if (res.status === 401) openPinModal('PIN required to toggle protection.');
       } catch (_) {}
-      setTimeout(() => { STATE.pulse = false; refreshStatus(); }, 800);
+      setTimeout(() => { STATE.pulse = false; refreshStatus(); refreshTopology(); }, 800);
     }
 
     async function cycleMode() {
@@ -1075,15 +1313,17 @@
       STATE.connected = true;
       STATE.pulse = true;
       render();
-      const chosen = curCity();
+      const mapTag = { zurich: 'CH', reykjavik: 'IS', frankfurt: 'DE', tokyo: 'JP' };
       try {
-        if (chosen && chosen.endpoint) {
-          await fetch('/api/exit/select', {
-            method: 'POST',
-            headers: pinHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ exit: chosen.endpoint })
-          });
+        if (STATE.continuum.homeExit && STATE.continuum.homeExit.selected) {
+          await fetch('/api/v2/home-exit/clear', { method: 'POST', headers: pinHeaders() });
+          STATE.continuum.homeExit.selected = null;
         }
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ jurisdiction_tag: mapTag[cityId] || 'AUTO' })
+        });
         if (wasOff) {
           await fetch('/api/connect', {
             method: 'POST',
@@ -1100,49 +1340,52 @@
         const res = await fetch('/api/invite', { headers: pinHeaders() });
         if (!res.ok) return;
         const data = await res.json();
-        if (data.vb_net_uri || data.vb_uri) {
-          STATE.pairUri = data.vb_net_uri || data.vb_uri;
-          STATE.guestUri = data.vb_uri || data.vb_net_uri;
-        }
-        if (data.qr_svg) {
-          STATE.qrSvg = data.qr_svg;
-        }
+        if (data.vb_uri) STATE.pairUri = data.vb_uri;
+        if (data.qr_svg) STATE.qrSvg = data.qr_svg;
         if (STATE.sheet === 'qr') render();
       } catch (_) {}
     }
 
-    function copyInviteLink() {
-      const isGuest = STATE.qrTab === 'guest';
-      const link = isGuest
-        ? (STATE.guestUri || STATE.pairUri)
-        : (STATE.pairUri || STATE.guestUri);
-      if (!link) {
-        notify('Generating invite link...');
-        fetchInvite();
-        return;
-      }
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(link)
-          .then(() => notify('Invite link copied to clipboard'))
-          .catch(() => notify('Could not access clipboard'));
+    async function mintExitVoucher() {
+      const fp = (document.getElementById('voucher-peer-fp')?.value || '').trim();
+      const host = (document.getElementById('voucher-allowed-host')?.value || '*').trim() || '*';
+      const ttl = parseInt(document.getElementById('voucher-ttl-secs')?.value || '86400', 10) || 86400;
+      if (!fp) { notify('Enter a guest peer fingerprint'); return; }
+      STATE.voucherMinting = true;
+      render();
+      try {
+        const res = await fetch('/api/exit/voucher', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ peer_fingerprint: fp, allowed_host: host, ttl_secs: ttl })
+        });
+        const data = await res.json();
+        if (data.success && data.voucher_hex) {
+          STATE.mintedVoucherHex = data.voucher_hex;
+          notify('Exit voucher minted');
+        } else {
+          notify(data.error || 'Failed to mint voucher');
+        }
+      } catch (_) {
+        notify('Voucher request failed');
+      } finally {
+        STATE.voucherMinting = false;
+        render();
       }
     }
 
     async function triggerLanScan() {
-      notify('Scanning local network for devices...');
+      notify('Scanning local Wi-Fi for Vantablack nodes...');
       try {
-        await fetch('/api/peers/scan', { method: 'POST', headers: pinHeaders() });
-        setTimeout(refreshPeers, 700);
+        await fetch('/api/scan', { method: 'POST', headers: pinHeaders() });
+        setTimeout(() => { refreshStatus(); refreshTopology(); }, 900);
       } catch (_) {}
     }
 
     async function linkDeviceFromInput() {
       const inp = document.getElementById('dev-inp');
       const val = inp ? inp.value.trim() : '';
-      if (!val) {
-        notify('Paste an invite link first');
-        return;
-      }
+      if (!val) { notify('Paste an invite link or IP:Port first'); return; }
       try {
         const res = await fetch('/api/peers/add', {
           method: 'POST',
@@ -1152,62 +1395,129 @@
         const data = await res.json();
         if (res.ok && data.success) {
           if (inp) inp.value = '';
-          notify('Device linked');
-          refreshPeers();
+          notify(data.message || 'Device linked');
+          setTimeout(() => { refreshStatus(); refreshTopology(); }, 400);
         } else {
-          notify(data.error || 'Invalid invite link');
+          notify(data.error || 'Could not link device');
+        }
+      } catch (_) { notify('Link request failed'); }
+    }
+
+    async function renameInspectedPeer() {
+      if (!STATE.inspectedFp) return;
+      const newName = (document.getElementById('rename-peer-inp')?.value || '').trim();
+      await saveSettingPatch({ set_device_name: { [STATE.inspectedFp]: newName } }, 'Device name updated');
+      refreshTopology();
+    }
+
+    async function disconnectPeer(fp) {
+      try {
+        const res = await fetch('/api/peers/disconnect', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ fingerprint: fp })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          if (STATE.inspectedFp === fp) STATE.inspectedFp = null;
+          notify('Device disconnected');
+          refreshStatus();
+          refreshTopology();
+        } else {
+          notify(data.error || 'Could not disconnect peer');
+        }
+      } catch (_) {}
+    }
+
+    async function pinHomeExit(fp) {
+      try {
+        const res = await fetch('/api/v2/home-exit/select', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ fingerprint: fp })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          notify(data.note || 'Pinned Home Exit');
+          await refreshContinuum();
+          render();
+        } else {
+          notify(data.error || 'Could not pin Home Exit');
+        }
+      } catch (_) {}
+    }
+
+    async function clearHomeExit() {
+      try {
+        await fetch('/api/v2/home-exit/clear', { method: 'POST', headers: pinHeaders() });
+        notify('Cleared pinned Home Exit');
+        await refreshContinuum();
+        render();
+      } catch (_) {}
+    }
+
+    async function toggleSettingKey(key) {
+      const next = !Boolean(STATE.settings[key]);
+      const patch = { [key]: next };
+      if (key === 'low_latency') patch.mix_batch_ms = next ? 1 : 20;
+      await saveSettingPatch(patch, 'Preference saved');
+    }
+
+    async function saveSettingPatch(patch, msg) {
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(patch)
+        });
+        if (res.status === 401) { openPinModal('PIN required to update settings.'); return; }
+        if (res.ok) {
+          const data = await res.json();
+          STATE.settings = Object.assign({}, STATE.settings, patch, data);
+          render();
+          if (msg) notify(msg);
+        }
+      } catch (_) {}
+    }
+
+    async function addBypassRule() {
+      const inp = document.getElementById('bypass-inp');
+      const rule = inp ? inp.value.trim() : '';
+      if (!rule) return;
+      await saveSettingPatch({ bypass_add: rule }, `Bypass added: ${rule}`);
+      if (inp) inp.value = '';
+    }
+
+    async function removeBypassRule(rule) {
+      await saveSettingPatch({ bypass_remove: rule }, `Bypass removed: ${rule}`);
+    }
+
+    async function runPipelineBenchmark() {
+      if (STATE.benchmarkRunning) return;
+      STATE.benchmarkRunning = true;
+      render();
+      try {
+        const res = await fetch('/api/pipeline_probe', {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ total_bytes: 2000000 })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'completed') {
+          STATE.benchmarkResult = data;
+          notify(`Benchmark: ${(Number(data.throughput_mbps || 0) / 8).toFixed(1)} MB/s`);
+        } else {
+          notify('Benchmark failed');
         }
       } catch (_) {
-        notify('Could not link device');
+        notify('Benchmark request failed');
+      } finally {
+        STATE.benchmarkRunning = false;
+        render();
       }
     }
 
-    async function selectDeviceAsExit(id) {
-      const dev = STATE.devices.find(d => d.id === id);
-      if (!dev) return;
-      STATE.devices.forEach(d => { d.activeExit = (d.id === id); });
-      render();
-      try {
-        await fetch('/api/exit/select', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ exit: dev.endpoint || dev.id })
-        });
-        notify(`Routing through ${dev.name}`);
-      } catch (_) {}
-    }
-
-    async function removeDevice(id) {
-      const dev = STATE.devices.find(d => d.id === id);
-      if (!dev) return;
-      try {
-        await fetch('/api/peers/disconnect', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ peer: dev.endpoint || dev.id })
-        });
-        STATE.devices = STATE.devices.filter(d => d.id !== id);
-        render();
-        notify('Device removed');
-      } catch (_) {}
-    }
-
-    async function togglePreference(key) {
-      STATE[key] = !STATE[key];
-      render();
-      try {
-        await fetch('/api/settings', {
-          method: 'POST',
-          headers: pinHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({
-            lan_bypass: STATE.localBypass,
-            pq_strict: STATE.quantumLock
-          })
-        });
-      } catch (_) {}
-    }
-
-    // ── Software Update Flow (Check + Instant Install) ──
+    // ── Software Update Flow ──
     async function checkUpdateSilent(userInitiated) {
       if (STATE.updateChecking || STATE.updateApplying) return;
       STATE.updateChecking = true;
@@ -1219,11 +1529,8 @@
         STATE.updateChecking = false;
         render();
         if (userInitiated) {
-          if (data.update_available) {
-            await applyUpdateNow();
-          } else {
-            notify(`Vantablack v${data.current_version || STATE.version} is up to date`);
-          }
+          if (data.update_available) await applyUpdateNow();
+          else notify(`Vantablack v${data.current_version || STATE.version} is up to date`);
         }
       } catch (_) {
         STATE.updateChecking = false;
@@ -1234,11 +1541,8 @@
 
     async function triggerUpdateAction() {
       if (STATE.updateApplying) return;
-      if (STATE.updateInfo && STATE.updateInfo.update_available) {
-        await applyUpdateNow();
-      } else {
-        await checkUpdateSilent(true);
-      }
+      if (STATE.updateInfo && STATE.updateInfo.update_available) await applyUpdateNow();
+      else await checkUpdateSilent(true);
     }
 
     async function applyUpdateNow() {
@@ -1247,10 +1551,7 @@
       render();
       notify('Downloading update & restarting Vantablack...');
       try {
-        const res = await fetch('/api/update/apply', {
-          method: 'POST',
-          headers: pinHeaders()
-        });
+        const res = await fetch('/api/update/apply', { method: 'POST', headers: pinHeaders() });
         const data = await res.json();
         if (res.ok && data.success) {
           notify('Installing update — Vantablack will reopen automatically...');
@@ -1264,7 +1565,6 @@
           nativeSend('open_url:' + fallbackUrl);
         }
       } catch (_) {
-        // Node may already be exiting for self-update
         pollForRestart();
       }
     }
@@ -1275,52 +1575,53 @@
         attempts++;
         try {
           const res = await fetch('/api/status');
-          if (res.ok) {
-            clearInterval(timer);
-            window.location.reload();
-          }
+          if (res.ok) { clearInterval(timer); window.location.reload(); }
         } catch (_) {
-          if (attempts > 45) {
-            clearInterval(timer);
-            STATE.updateApplying = false;
-            render();
-          }
+          if (attempts > 45) { clearInterval(timer); STATE.updateApplying = false; render(); }
         }
       }, 1500);
     }
 
-    // ── Status & Peer Polling ──
+    // ── Live Polling ──
     async function refreshStatus() {
       try {
         const res = await fetch('/api/status', { headers: pinHeaders() });
         if (!res.ok) return;
         const data = await res.json();
-        if (data.pin_required && !pinModalDismissed) {
-          openPinModal();
-        }
+        if (data.pin_required && !pinModalDismissed) openPinModal();
+        STATE.status = data;
         if (data.version) STATE.version = data.version;
         if (typeof data.connected === 'boolean') STATE.connected = data.connected;
         if (data.mode) STATE.mode = backendToUiMode(data.mode);
         if (data.pair_uri && !STATE.pairUri) STATE.pairUri = data.pair_uri;
+
+        const tp = data.throughput || data.traffic;
+        if (tp) {
+          const sent = tp.bytes_sent || 0;
+          const recv = tp.bytes_recv || 0;
+          const now = Date.now();
+          if (STATE.prevTs !== null) {
+            const dt = (now - STATE.prevTs) / 1000;
+            if (dt > 0.1) {
+              STATE.upSpeed = Math.max(0, (sent - STATE.prevSent) / dt);
+              STATE.downSpeed = Math.max(0, (recv - STATE.prevRecv) / dt);
+            }
+          }
+          STATE.prevSent = sent;
+          STATE.prevRecv = recv;
+          STATE.prevTs = now;
+        }
         render();
       } catch (_) {}
     }
 
-    async function refreshPeers() {
+    async function refreshTopology() {
       try {
-        const res = await fetch('/api/peers', { headers: pinHeaders() });
+        const res = await fetch('/api/topology', { headers: pinHeaders() });
         if (!res.ok) return;
         const data = await res.json();
-        const peers = Array.isArray(data.peers) ? data.peers : [];
-        const selectedExit = data.selected_exit || '';
-        STATE.devices = peers.map(p => ({
-          id: p.fingerprint || p.address || p.id || 'peer',
-          name: p.name || p.label || (p.is_self ? 'This Device' : (p.address || 'Linked Peer')),
-          type: p.is_exit ? 'Exit Node' : (p.scope || 'Mesh Peer'),
-          endpoint: p.address || p.fingerprint,
-          activeExit: Boolean(selectedExit && (p.address === selectedExit || p.fingerprint === selectedExit)) || Boolean(p.selected_exit),
-          removable: !p.is_self
-        }));
+        STATE.topology = data;
+        STATE.peers = Array.isArray(data.peers) ? data.peers : [];
         render();
       } catch (_) {}
     }
@@ -1329,9 +1630,40 @@
       try {
         const res = await fetch('/api/settings', { headers: pinHeaders() });
         if (!res.ok) return;
-        const data = await res.json();
-        if (typeof data.lan_bypass === 'boolean') STATE.localBypass = data.lan_bypass;
-        if (typeof data.pq_strict === 'boolean') STATE.quantumLock = data.pq_strict;
+        STATE.settings = await res.json();
+        render();
+      } catch (_) {}
+    }
+
+    async function refreshAnchors() {
+      try {
+        const res = await fetch('/api/v1/anchors/status', { headers: pinHeaders() });
+        if (!res.ok) return;
+        STATE.anchors = await res.json();
+        render();
+      } catch (_) {}
+    }
+
+    async function refreshContinuum() {
+      const fetchJson = async (p) => {
+        const r = await fetch(p, { headers: pinHeaders() });
+        return r.ok ? await r.json() : null;
+      };
+      const [he, btcr, ladder, racs] = await Promise.all([
+        fetchJson('/api/v2/home-exit').catch(() => null),
+        fetchJson('/api/v2/btcr').catch(() => null),
+        fetchJson('/api/v2/ladder').catch(() => null),
+        fetchJson('/api/v2/racs').catch(() => null)
+      ]);
+      STATE.continuum = { homeExit: he, btcr, ladder, racs };
+      render();
+    }
+
+    async function refreshXray() {
+      try {
+        const res = await fetch('/api/v2/xray', { headers: pinHeaders() });
+        if (!res.ok) return;
+        STATE.xray = await res.json();
         render();
       } catch (_) {}
     }
@@ -1340,12 +1672,8 @@
       const m = document.getElementById('pin-modal');
       const err = document.getElementById('pin-modal-error');
       if (!m) return;
-      if (errMsg && err) {
-        err.textContent = errMsg;
-        err.style.display = 'block';
-      } else if (err) {
-        err.style.display = 'none';
-      }
+      if (errMsg && err) { err.textContent = errMsg; err.style.display = 'block'; }
+      else if (err) { err.style.display = 'none'; }
       m.classList.add('open');
     }
 
@@ -1371,19 +1699,21 @@
       }
       dismissPinModal();
       refreshStatus();
-      refreshPeers();
+      refreshTopology();
+      loadSettings();
       fetchInvite();
     }
 
     // Boot
     render();
     refreshStatus();
-    refreshPeers();
+    refreshTopology();
     loadSettings();
     fetchInvite();
+    refreshContinuum();
     setTimeout(() => checkUpdateSilent(false), 1800);
     setInterval(refreshStatus, 3500);
-    setInterval(refreshPeers, 6000);
+    setInterval(refreshTopology, 6500);
   </script>
 </body>
 </html>
