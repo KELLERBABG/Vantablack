@@ -750,3 +750,63 @@ limits, which are load-bearing: three paths are needed for the whitepaper's disp
 shards over two paths split 2 + 1), the address set is named rather than discovered, and the gate
 is loopback-only.
 
+
+### 11.5 HPEB bonding in the live path (§Phase 5)
+
+`ghost::v2::hpeb` owns the scheduler and handover state; `daemon::bonding` supplies the platform
+binder and the live sockets, so a multi-homed node sends **one GTFv2 carrier per physical
+interface** instead of three carriers down one route.
+
+The three carriers of a message are already RS(2,1) shards of one ciphertext, so bonding is applied
+at that level rather than by running a second AONT/RS stage over them: the peer's spool rebuilds
+from any two, and each shard leaves by a socket pinned to a different interface. `HpebScheduler`
+chooses the assignment (cost-ordered, round-robin), `HandoverState` owns preference and the
+anti-flap cooldown, and a failed send marks the path unavailable for 30 s before retrying it. The
+standalone `ggn hpeb` multipath client keeps using `HpebScheduler::bond` for arbitrary payloads.
+
+Wire shape of one bonded shard: `[GBND 4][version 1][carrier index 1][sender mesh port 2][GTFv2
+carrier …]`. The sender's mesh port travels with the shard because the datagram arrives on the
+*bond* port while every reply the daemon builds must go to the peer's mesh address. The carrier
+inside is unchanged, so a shard that arrives this way enters `RxContext::ingest` exactly like a
+plain UDP datagram.
+
+| Variable | Effect |
+| :-- | :-- |
+| `GHOST_BOND=1` | Enables bonded sending and the bond listeners. |
+| `GHOST_BOND_PATHS` | `interface=local_ip` entries, comma separated (e.g. `wlan0=192.168.1.42`). |
+| `GHOST_BOND_INDEX` | `interface=index` map for Windows/macOS, whose binders take an index. |
+| `GHOST_BOND_PORT` | Port the peer's bond listener uses (default `2272`). |
+| `GHOST_BOND_COOLDOWN_MS` | Handover cooldown (default `500`). |
+
+Binders: Linux/Android `SO_BINDTODEVICE` (socket2), macOS/iOS `IP_BOUND_IF`, Windows
+`IP_UNICAST_IF` (Winsock directly — socket2 0.5 exposes no Windows binding for it). Android's
+`Network.bindSocket()` has no Rust entry point, so that target refuses with an explicit error
+rather than claiming a path is pinned. Fewer than two bound paths is **not** a bond: the daemon
+logs it and keeps the ordinary UDP send.
+
+### 11.6 MASQUE (HTTP/3 CONNECT-UDP) in the live path (§Phase 4)
+
+`ghost::v2::masque` implements HTTP/3 SETTINGS, extended CONNECT, capsules and datagrams;
+`daemon::masque` admits a peer by **post-quantum session binding** and carries ordinary GTFv2
+frames as datagram capsules.
+
+Admission is no longer a string. The CONNECT request carries `ghost-identity` (the peer's mesh
+fingerprint) and `ghost-proof`: a signature over `GGN_MASQUE_V1 ‖ connection exporter ‖ fingerprint`,
+using the TLS exporter value from RFC 5705 (`EXPORT-Vantablack-Masque`). The server verifies it
+against `Session::peer_identity_pk()` — the key the hybrid handshake pinned — so a peer that holds
+no session cannot be admitted, and a proof captured on one connection does not transfer to another.
+Label admission remains for the standalone `ggn masque` endpoint, where it authenticates a name and
+nothing else.
+
+| Variable | Effect |
+| :-- | :-- |
+| `GHOST_MASQUE=1` | Runs the HTTP/3 endpoint (requires `--features quic`). |
+| `GHOST_MASQUE_LISTEN` | Bind address (default `0.0.0.0:8444`). |
+| `GHOST_MASQUE_DIAL=1` | Dial a peer's endpoint when its UDP path fails. |
+| `GHOST_MASQUE_PORT` | Port a peer's endpoint listens on (default `8444`). |
+| `GHOST_MASQUE_SNI` | SNI presented when dialing (default `masque.origin.test`). |
+
+A dialed or admitted stream is registered under the peer's mesh address and under every session
+hash seen on it, so `srtp::send_v2`/`send_raw` and the fallback ladder find it without knowing a
+QUIC connection exists. `send3_adaptive` skips a relay route for a peer a MASQUE stream already
+reaches, for the same reason it skips one for a REALITY front: the stream goes to the peer itself.

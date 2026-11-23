@@ -67,6 +67,9 @@ pub(crate) struct BeaconSections<'a> {
     pub(crate) pq_commitment: Option<&'a [u8; 32]>,
     /// Sender's real mesh UDP listening port (`nc.socket`).
     pub(crate) mesh_port: Option<u16>,
+    /// Coarse, bucketed loss observation for collective defense
+    /// (`exp_collective_defense`), when the sender has that toggle on.
+    pub(crate) cdef: Option<&'a [u8]>,
 }
 
 /// Parse the trailing optional sections of a beacon.
@@ -82,6 +85,7 @@ pub(crate) fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSect
     let mut relay_capable = false;
     let mut pq_commitment = None;
     let mut mesh_port = None;
+    let mut cdef = None;
     while pos < amt {
         if pos + 6 > amt {
             return None;
@@ -120,6 +124,11 @@ pub(crate) fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSect
                 return None;
             }
             mesh_port = Some(u16::from_be_bytes([buf[start], buf[start + 1]]));
+        } else if magic == super::experimental::BEACON_SECTION_CDEF {
+            if len != 15 {
+                return None;
+            }
+            cdef = Some(&buf[start..end]);
         } else {
             return None;
         }
@@ -131,6 +140,7 @@ pub(crate) fn parse_beacon_sections(buf: &[u8], amt: usize) -> Option<BeaconSect
         relay_capable,
         pq_commitment,
         mesh_port,
+        cdef,
     })
 }
 

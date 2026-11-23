@@ -52,8 +52,26 @@ pub(crate) async fn handle_pkt(
         tracing::debug!(peer = %src, "C4: rate-limited ctr==0 handshake/beacon");
         return;
     }
+    // Flood shield (`exp_pow_shield`): a token frame redeemed *before* the
+    // handshake it pays for. Handled here, ahead of every handshake branch, so no
+    // handshake variant can bypass the gate by using a different magic.
+    if ctr == 0 && data.len() >= 12 && &data[..4] == super::experimental::POW_TOKEN_MAGIC {
+        let our_port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
+        super::experimental::pow_redeem(
+            data,
+            *src,
+            our_port,
+            super::beacon::unix_now_secs() as u64,
+        );
+        return;
+    }
+
     // Explicit suite-list negotiation handshake (counter == 0).
     if ctr == 0 && data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC) {
+        if !super::experimental::pow_admit(*src) {
+            tracing::debug!(peer = %src, "PoW shield: suite-list handshake without a token — dropped");
+            return;
+        }
         let Some(hs) = parse_negotiated_handshake_pdu(data) else {
             tracing::warn!(peer = %src, "Invalid suite-list handshake");
             return;
@@ -232,6 +250,10 @@ pub(crate) async fn handle_pkt(
         && ctr == 0
         && data.len() >= vantablack::ghost::layers::l1_kem::UNIFORM_HANDSHAKE_BLOB_LEN
     {
+        if !super::experimental::pow_admit(*src) {
+            tracing::debug!(peer = %src, "PoW shield: uniform handshake without a token — dropped");
+            return;
+        }
         let wire = &data[..vantablack::ghost::layers::l1_kem::UNIFORM_HANDSHAKE_BLOB_LEN];
         let Some(hs) = parse_uniform_handshake_pdu(wire) else {
             return;
@@ -294,6 +316,21 @@ pub(crate) async fn handle_pkt(
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&data[48..112]);
         if l0_identity::verify_peer_signature(&pk, &data[16..48], &sig) {
+            // Collective defense (`exp_collective_defense`): the beacon's coarse
+            // observation is the *only* thing shared, and only when both ends have
+            // the toggle on. A region is reported once, when the k-anonymity
+            // threshold is first met.
+            if let Some(sections) = super::beacon::parse_beacon_sections(data, data.len()) {
+                if let Some(cdef) = sections.cdef {
+                    if super::experimental::note_observable(cdef, *src) {
+                        tracing::warn!(
+                            peer = %src,
+                            "Collective defense: a region crossed the k-anonymity threshold — \
+                             peers report sustained loss there"
+                        );
+                    }
+                }
+            }
             let beacon_fp = hex::encode(&pk[..8]);
             if beacon_fp != node.fingerprint() {
                 tracing::info!(peer = %src, fingerprint = %beacon_fp, "Mesh beacon received on main socket");
@@ -307,6 +344,10 @@ pub(crate) async fn handle_pkt(
 
     // Handshake (counter == 0)
     if ctr == 0 && data.len() >= 16 && &data[..16] == b"GHOST_HANDSHAKE_" {
+        if !super::experimental::pow_admit(*src) {
+            tracing::debug!(peer = %src, "PoW shield: handshake without a token — dropped");
+            return;
+        }
         if data.len() < HANDSHAKE_BLOB_LEN {
             tracing::warn!(peer = %src, "Short handshake");
             return;

@@ -22,6 +22,7 @@ use quinn::rustls::SignatureScheme;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 use crate::ghost::v2::reality::{decode_datagram_capsule, decode_varint, encode_datagram_capsule};
 
@@ -365,7 +366,9 @@ fn put_string(out: &mut Vec<u8>, value: &str) {
         out.push(bytes.len() as u8);
     } else {
         out.push(0x7f);
-        let mut v = bytes.len() as u64;
+        // A 7-bit-prefix integer continues at `len - 127`: the prefix itself already
+        // carries 127, so the continuation must not count it again.
+        let mut v = bytes.len() as u64 - 127;
         while v >= 128 {
             out.push((v as u8 & 0x7f) | 0x80);
             v >>= 7;
@@ -533,15 +536,201 @@ fn handshake(conn: &quinn::Connection) -> (String, String) {
     }
 }
 
+/// Header naming the peer's mesh fingerprint on a CONNECT request.
+pub const IDENTITY_HEADER: &str = "ghost-identity";
+/// Header carrying the peer's signature over this connection's exporter value.
+pub const PROOF_HEADER: &str = "ghost-proof";
+/// TLS exporter label that binds a proof to one QUIC connection.
+pub const ID_BINDING_LABEL: &[u8] = b"EXPORT-Vantablack-Masque";
+
+/// How the endpoint decides that a CONNECT belongs to a peer we already trust.
+pub enum Admission {
+    /// Label admission, kept for the standalone `ggn masque` endpoint: the first
+    /// label of `:authority` must equal the token. It authenticates a *string*,
+    /// which is all a demo endpoint needs and not enough for the mesh.
+    Label(String),
+    /// Post-quantum session binding: the request names the peer's fingerprint and
+    /// carries a signature over this connection's exporter value, checked against
+    /// the identity the mesh session pinned. A peer that holds no session cannot
+    /// produce it, so admission follows the PQ handshake rather than a name.
+    Session(Arc<dyn Fn(&str, &[u8; 32], &[u8]) -> bool + Send + Sync>),
+}
+
+impl std::fmt::Debug for Admission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Admission::Label(token) => write!(f, "Admission::Label({token})"),
+            Admission::Session(_) => f.write_str("Admission::Session(<check>)"),
+        }
+    }
+}
+
+/// This connection's exporter value: the channel binding a proof signs.
+///
+/// Both ends derive it from the TLS session, so a proof captured on one
+/// connection is useless on another.
+pub fn channel_binding(conn: &quinn::Connection) -> Option<[u8; 32]> {
+    let mut out = [0u8; 32];
+    conn.export_keying_material(&mut out, ID_BINDING_LABEL, &[])
+        .ok()?;
+    Some(out)
+}
+
+/// The bytes a peer signs to prove it holds the identity it names.
+pub fn proof_message(binding: &[u8; 32], fingerprint: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + 32 + fingerprint.len());
+    out.extend_from_slice(b"GGN_MASQUE_V1");
+    out.extend_from_slice(binding);
+    out.extend_from_slice(fingerprint.as_bytes());
+    out
+}
+
+/// Apply the admission rule to a decoded CONNECT field section.
+///
+/// Returns the admitted peer's name, or `None` when the request is not from a
+/// peer this endpoint can vouch for.
+fn admit(
+    conn: &quinn::Connection,
+    admission: &Admission,
+    fields: &[(String, String)],
+) -> Option<String> {
+    let header = |name: &str| {
+        fields
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    };
+    match admission {
+        Admission::Label(token) => header(":authority")
+            .and_then(|authority| authority.split('.').next())
+            .filter(|label| *label == token.as_str())
+            .map(|_| token.clone()),
+        Admission::Session(check) => {
+            let fingerprint = header(IDENTITY_HEADER)?;
+            let proof = hex::decode(header(PROOF_HEADER)?).ok()?;
+            let binding = channel_binding(conn)?;
+            check(fingerprint, &binding, &proof).then(|| fingerprint.to_string())
+        }
+    }
+}
+
 pub async fn run_server(
     listen: SocketAddr,
     token: String,
     sni: String,
     cert_out: Option<String>,
 ) -> Result<()> {
+    run_endpoint(
+        listen,
+        Admission::Label(token.clone()),
+        sni,
+        cert_out,
+        EndpointMode::Echo,
+    )
+    .await
+}
+
+/// What an admitted CONNECT does.
+enum EndpointMode {
+    /// Echo datagrams and capsules back — the `ggn masque` demonstration.
+    Echo,
+    /// Hand the request streams to the caller, which carries GTF frames on them.
+    Tunnel(mpsc::UnboundedSender<Tunnel>),
+}
+
+/// One admitted request stream, ready for the caller to pump.
+pub struct Tunnel {
+    pub conn: quinn::Connection,
+    pub peer: SocketAddr,
+    /// The admitted peer's fingerprint (session binding) or token (label mode).
+    pub identity: String,
+    pub send: quinn::SendStream,
+    pub recv: quinn::RecvStream,
+}
+
+/// Serve an endpoint that hands every admitted CONNECT to `tunnels`.
+///
+/// Used by the daemon: the caller pumps each `Tunnel` in both directions, exactly
+/// as it pumps a REALITY front stream.
+pub async fn run_tunnel_server(
+    listen: SocketAddr,
+    admission: Admission,
+    sni: String,
+    cert_out: Option<String>,
+    tunnels: mpsc::UnboundedSender<Tunnel>,
+) -> Result<()> {
+    run_endpoint(
+        listen,
+        admission,
+        sni,
+        cert_out,
+        EndpointMode::Tunnel(tunnels),
+    )
+    .await
+}
+
+/// Pump one admitted tunnel in both directions.
+///
+/// Outbound frames from `queue` become datagram capsules on the request stream;
+/// arriving capsules become frames on `inbound`. Split out from the daemon so the
+/// HTTP/3 framing stays in this module and the caller only moves bytes.
+pub async fn pump_tunnel(
+    tunnel: Tunnel,
+    mut queue: mpsc::UnboundedReceiver<Vec<u8>>,
+    inbound: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<()> {
+    let Tunnel {
+        conn,
+        peer,
+        mut send,
+        mut recv,
+        ..
+    } = tunnel;
+
+    let writer = tokio::spawn(async move {
+        while let Some(frame) = queue.recv().await {
+            let Some(capsule) = encode_datagram_capsule(&frame) else {
+                break;
+            };
+            if send_frame(&mut send, DATA_FRAME, &capsule).await.is_err() {
+                return;
+            }
+        }
+        let _ = send.finish();
+    });
+
+    let mut pending = Vec::new();
+    while let Ok((kind, body)) = read_frame(&mut recv).await {
+        if kind != DATA_FRAME {
+            continue;
+        }
+        pending.extend_from_slice(&body);
+        while let Some(capsule) = take_capsule(&mut pending) {
+            if let Some(frame) = decode_datagram_capsule(&capsule) {
+                if inbound.send(frame.to_vec()).is_err() {
+                    writer.abort();
+                    conn.close(0u32.into(), b"tunnel closed");
+                    return Ok(());
+                }
+            }
+        }
+    }
+    writer.abort();
+    conn.close(0u32.into(), b"done");
+    println!("MASQUE tunnel to {peer} closed");
+    Ok(())
+}
+
+async fn run_endpoint(
+    listen: SocketAddr,
+    admission: Admission,
+    sni: String,
+    cert_out: Option<String>,
+    mode: EndpointMode,
+) -> Result<()> {
     let endpoint = quinn::Endpoint::server(server_config(&sni, cert_out.as_deref())?, listen)?;
     println!(
-        "MASQUE HTTP/3 endpoint listening on {} alpn=h3 sni={sni} (token label {token})",
+        "MASQUE HTTP/3 endpoint listening on {} alpn=h3 sni={sni} admission={admission:?}",
         endpoint.local_addr()?
     );
     if let Ok(ms) = std::env::var("GHOST_CHRONOS_ACK_DELAY_MS") {
@@ -549,8 +738,11 @@ pub async fn run_server(
             "Chronos QUIC: requesting peer ACK delay {ms} ms (ACK_FREQUENCY; our own ACK timing remains quinn-owned)"
         );
     }
+    let admission = Arc::new(admission);
+    let mode = Arc::new(mode);
     while let Some(incoming) = endpoint.accept().await {
-        let token = token.clone();
+        let admission = Arc::clone(&admission);
+        let mode = Arc::clone(&mode);
         tokio::spawn(async move {
             let conn = match incoming.await {
                 Ok(c) => c,
@@ -560,20 +752,11 @@ pub async fn run_server(
                 }
             };
             let (peer_sni, alpn) = handshake(&conn);
-            let admitted = peer_sni
-                .split('.')
-                .next()
-                .map(|label| label == token.as_str())
-                .unwrap_or(false);
             println!(
-                "MASQUE QUIC handshake from {} sni={peer_sni} alpn={alpn} admitted={admitted}",
+                "MASQUE QUIC handshake from {} sni={peer_sni} alpn={alpn}",
                 conn.remote_address()
             );
-            if !admitted {
-                conn.close(0u32.into(), b"unknown token");
-                return;
-            }
-            if let Err(e) = serve_connection(conn, token).await {
+            if let Err(e) = serve_connection(conn, admission, mode).await {
                 println!("MASQUE connection ended: {e}");
             }
         });
@@ -581,7 +764,11 @@ pub async fn run_server(
     Ok(())
 }
 
-async fn serve_connection(conn: quinn::Connection, token: String) -> Result<()> {
+async fn serve_connection(
+    conn: quinn::Connection,
+    admission: Arc<Admission>,
+    mode: Arc<EndpointMode>,
+) -> Result<()> {
     let mut control = conn.open_uni().await?;
     let mut head = Vec::new();
     put_varint(&mut head, CONTROL_STREAM);
@@ -607,9 +794,10 @@ async fn serve_connection(conn: quinn::Connection, token: String) -> Result<()> 
 
     while let Ok((send, recv)) = conn.accept_bi().await {
         let conn = conn.clone();
-        let token = token.clone();
+        let admission = Arc::clone(&admission);
+        let mode = Arc::clone(&mode);
         tokio::spawn(async move {
-            if let Err(e) = handle_request(conn, send, recv, token).await {
+            if let Err(e) = handle_request(conn, send, recv, admission, mode).await {
                 println!("MASQUE request ended: {e}");
             }
         });
@@ -622,7 +810,8 @@ async fn handle_request(
     conn: quinn::Connection,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
-    token: String,
+    admission: Arc<Admission>,
+    mode: Arc<EndpointMode>,
 ) -> Result<()> {
     let (kind, body) = read_frame(&mut recv).await?;
     if kind != HEADERS_FRAME {
@@ -648,14 +837,43 @@ async fn handle_request(
             let _ = send.finish();
             return Ok(());
         }
-        if get(":authority").map(|a| a.split('.').next()) != Some(Some(token.as_str())) {
+        // Admission is decided here, after the PQ identity proof (session mode) or
+        // the authority label (label mode) is available — never from the SNI alone,
+        // which any client can type.
+        let Some(identity) = admit(&conn, &admission, &fields) else {
+            println!(
+                "MASQUE CONNECT refused from {} (no PQ proof or label)",
+                conn.remote_address()
+            );
             send_frame(&mut send, HEADERS_FRAME, &[0x00, 0x00, 0xC0 | 67]).await?;
             let _ = send.finish();
             return Ok(());
-        }
+        };
         let capsule_protocol = get("capsule-protocol").unwrap_or("?0");
-        println!("MASQUE extended CONNECT established capsule-protocol={capsule_protocol}");
+        println!(
+            "MASQUE extended CONNECT established peer={identity} from {} capsule-protocol={capsule_protocol}",
+            conn.remote_address()
+        );
         send_frame(&mut send, HEADERS_FRAME, &qpack_response(None)).await?;
+
+        // A tunnel endpoint hands the streams over now that the request is
+        // admitted; the caller's pump owns both directions from here.
+        if let EndpointMode::Tunnel(tunnels) = &*mode {
+            let peer = conn.remote_address();
+            if tunnels
+                .send(Tunnel {
+                    conn,
+                    peer,
+                    identity,
+                    send,
+                    recv,
+                })
+                .is_err()
+            {
+                return Err(anyhow!("no tunnel consumer"));
+            }
+            return Ok(());
+        }
 
         let qsid = recv.id().index() / 4;
         let dgram_conn = conn.clone();
@@ -728,6 +946,102 @@ fn take_capsule(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
 }
 
 // ── HTTP/3 client (used by `ggn masque --client`) ─────────────────────────
+
+/// Dial a MASQUE endpoint as this node and carry frames over the request stream.
+///
+/// Every frame dequeued from `outbound` becomes one datagram capsule on the
+/// request stream; every capsule that arrives is handed to `inbound`. The proof is
+/// signed over this connection's exporter value, so a captured proof cannot be
+/// replayed onto another connection. Returns when either direction ends.
+pub async fn tunnel_client(
+    connect: SocketAddr,
+    sni: String,
+    fingerprint: String,
+    sign: Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>,
+    mut outbound: mpsc::UnboundedReceiver<Vec<u8>>,
+    inbound: mpsc::UnboundedSender<Vec<u8>>,
+) -> Result<()> {
+    let mut endpoint = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
+    endpoint.set_default_client_config(client_config()?);
+    let conn = endpoint
+        .connect(connect, &sni)
+        .with_context(|| format!("connect {connect}"))?
+        .await
+        .context("QUIC handshake")?;
+
+    let binding = channel_binding(&conn).ok_or_else(|| anyhow!("no channel binding"))?;
+    let proof = hex::encode(sign(&proof_message(&binding, &fingerprint)));
+
+    // The control and QPACK streams are opened before the request, as HTTP/3
+    // requires; the server drains them.
+    let mut control = conn.open_uni().await?;
+    let mut head = Vec::new();
+    put_varint(&mut head, CONTROL_STREAM);
+    control.write_all(&head).await?;
+    control.write_all(&settings_frame()).await?;
+    let mut enc = conn.open_uni().await?;
+    enc.write_all(&[QPACK_ENCODER_STREAM as u8]).await?;
+    let mut dec = conn.open_uni().await?;
+    dec.write_all(&[QPACK_DECODER_STREAM as u8]).await?;
+
+    let (mut send, mut recv) = conn.open_bi().await?;
+    let request = qpack_encode_fields(&[
+        (":method", "CONNECT"),
+        (":scheme", "https"),
+        (":authority", &sni),
+        (":path", "/"),
+        (":protocol", "connect-udp"),
+        ("capsule-protocol", "?1"),
+        (IDENTITY_HEADER, &fingerprint),
+        (PROOF_HEADER, &proof),
+    ]);
+    send_frame(&mut send, HEADERS_FRAME, &request).await?;
+    let (kind, body) = read_frame(&mut recv).await?;
+    if kind != HEADERS_FRAME {
+        return Err(anyhow!("response was not HEADERS"));
+    }
+    let fields = qpack_decode(&body).ok_or_else(|| anyhow!("response QPACK decode failed"))?;
+    let status = fields
+        .iter()
+        .find(|(n, _)| n == ":status")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("-");
+    if status != "200" {
+        return Err(anyhow!("CONNECT refused with status {status}"));
+    }
+
+    let writer = tokio::spawn(async move {
+        while let Some(frame) = outbound.recv().await {
+            let Some(capsule) = encode_datagram_capsule(&frame) else {
+                break;
+            };
+            if send_frame(&mut send, DATA_FRAME, &capsule).await.is_err() {
+                return;
+            }
+        }
+        let _ = send.finish();
+    });
+
+    let mut pending = Vec::new();
+    while let Ok((kind, body)) = read_frame(&mut recv).await {
+        if kind != DATA_FRAME {
+            continue;
+        }
+        pending.extend_from_slice(&body);
+        while let Some(capsule) = take_capsule(&mut pending) {
+            if let Some(frame) = decode_datagram_capsule(&capsule) {
+                if inbound.send(frame.to_vec()).is_err() {
+                    writer.abort();
+                    conn.close(0u32.into(), b"tunnel closed");
+                    return Ok(());
+                }
+            }
+        }
+    }
+    writer.abort();
+    conn.close(0u32.into(), b"done");
+    Ok(())
+}
 
 pub async fn run_client(connect: SocketAddr, token: String, sni: String) -> Result<()> {
     let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse()?)?;
@@ -811,6 +1125,26 @@ pub async fn run_client(connect: SocketAddr, token: String, sni: String) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A literal value of 127 bytes or more needs a continuation byte, and the
+    /// continuation starts at `len - 127`. The daemon's proof value is a 128-char
+    /// hex signature, so getting this wrong fails every CONNECT it sends.
+    #[test]
+    fn a_long_literal_value_round_trips_through_qpack() {
+        for len in [0usize, 1, 126, 127, 128, 300] {
+            let value = "a".repeat(len);
+            let encoded = qpack_encode_fields(&[("ghost-proof", &value)]);
+            let decoded = qpack_decode(&encoded).expect("the field section decodes");
+            assert_eq!(decoded.len(), 1);
+            assert_eq!(decoded[0].0, "ghost-proof");
+            assert_eq!(
+                decoded[0].1.len(),
+                len,
+                "a {len}-byte value keeps its length"
+            );
+            assert_eq!(decoded[0].1, value);
+        }
+    }
 
     #[test]
     fn http3_settings_advertise_connect_and_datagrams() {

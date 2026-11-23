@@ -1145,7 +1145,7 @@ pub(crate) async fn run_node(
                     } else {
                         None
                     };
-                    let beacon = build_beacon_packet(
+                    let mut beacon = build_beacon_packet(
                         &nc.identity.public_key_bytes(),
                         |d| nc.identity.sign(d).to_bytes(),
                         zk_proof,
@@ -1154,6 +1154,31 @@ pub(crate) async fn run_node(
                         Some(&pq_commitment),
                         Some(mesh_port),
                     );
+                    // Collective defense (`exp_collective_defense`): attach this
+                    // node's coarse observation. Only the bucketed loss figure and
+                    // a hashed /24 leave the node — no peer identity, no payload.
+                    let our_ip = nc
+                        .socket
+                        .local_addr()
+                        .ok()
+                        .map(|a| a.ip())
+                        .filter(|ip| !ip.is_unspecified());
+                    if let Some(ip) = our_ip {
+                        if let Some((section, _region, _epoch)) =
+                            super::experimental::local_observation(
+                                addrs.len(),
+                                nc.sessions.len(),
+                                super::beacon::unix_now_secs() as u64,
+                                ip,
+                            )
+                        {
+                            push_beacon_section(
+                                &mut beacon,
+                                super::experimental::BEACON_SECTION_CDEF,
+                                &section,
+                            );
+                        }
+                    }
                     if let Err(e) = beacon_sock.send_to(&beacon, mc_addr).await {
                         tracing::debug!("Beacon send error: {e}");
                     }
@@ -1464,6 +1489,17 @@ pub(crate) async fn run_node(
                                                     "ICE: no direct UDP path — dialing the peer's REALITY front"
                                                 );
                                             }
+                                            // The MASQUE endpoint is also the peer itself, so
+                                            // it is tried before the relay ladder for the
+                                            // same reason the front is.
+                                            #[cfg(feature = "quic")]
+                                            if super::masque::try_dial(&node, peer_mesh_addr) {
+                                                tracing::info!(
+                                                    peer = %fp,
+                                                    masque = %SocketAddr::new(peer_mesh_addr.ip(), super::masque::dial_port()),
+                                                    "ICE: no direct UDP path — dialing the peer's MASQUE endpoint"
+                                                );
+                                            }
                                             let chosen = fallback::choose_fallback_with_skywave(
                                                 &me,
                                                 &fp,
@@ -1584,6 +1620,53 @@ pub(crate) async fn run_node(
             tokio::spawn(async move {
                 while let Some((frame, src)) = inbound.recv().await {
                     rx_front.ingest(&frame, src).await;
+                }
+            });
+        }
+    }
+    // MASQUE (Phase 4, opt-in via `GHOST_MASQUE=1`). Admitted HTTP/3 tunnels feed
+    // `ingest`; frames for those sessions go back down the same stream (see
+    // `daemon::masque::try_send`). The sink is installed even when only dialing is
+    // enabled, because a dialed stream is not a child of the listener task.
+    #[cfg(feature = "quic")]
+    {
+        let (tx, mut inbound) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+        super::masque::install_ingress(tx.clone());
+        if super::masque::spawn(Arc::clone(&nc), tx).is_some() {
+            let rx_masque = Arc::clone(&rx);
+            tokio::spawn(async move {
+                while let Some((frame, src)) = inbound.recv().await {
+                    rx_masque.ingest(&frame, src).await;
+                }
+            });
+        }
+    }
+    // Universal shard tunnel (`exp_universal_tunnel`, opt-in via the toggle plus
+    // `GHOST_TUNNEL_PORTS`). The listeners live here; envelopes arriving over the
+    // mesh are handled in `ingest` and spliced by `daemon::tunnel`.
+    {
+        let _tunnel = super::tunnel::spawn(Arc::clone(&nc), Arc::clone(&addrs));
+    }
+    // DTN flush loop (`exp_dtn_reconcile`): when a peer that had no session comes
+    // back, its buffered bundles go out on the new session. The tick is cheap when
+    // the toggle is off — `flush_all` returns immediately.
+    {
+        let _dtn = super::dtn::spawn_flush_loop(
+            Arc::clone(&nc),
+            Arc::clone(&addrs),
+            std::time::Duration::from_secs(5),
+        );
+    }
+    // HPEB bonding (Phase 5, opt-in via `GHOST_BOND=1`). Each path's socket feeds
+    // the same `ingest` a plain datagram takes, so a carrier that arrived over a
+    // bonded interface is indistinguishable downstream from one that did not.
+    {
+        let (tx, mut inbound) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+        if super::bonding::spawn(tx).is_some() {
+            let rx_bond = Arc::clone(&rx);
+            tokio::spawn(async move {
+                while let Some((frame, src)) = inbound.recv().await {
+                    rx_bond.ingest(&frame, src).await;
                 }
             });
         }

@@ -22,10 +22,18 @@ pub(crate) enum Routed {
     /// measured path: QUIC's own loss recovery and congestion control carry the
     /// frames instead of the UDP shard path.
     Carrier,
+    /// The HPEB bond carried a carrier per physical interface (Phase 5).
+    ///
+    /// Distinct from both `Direct` and `Carrier`: the frames left from separate
+    /// sockets pinned to separate interfaces, so the redundancy is physical rather
+    /// than a property of one link's recovery.
+    Bonded,
     MeshRelay,
     Turn,
     /// The atmospheric ionospheric skywave carrier (ABOS) carried it.
     Skywave,
+    /// The peer's own HTTP/3 MASQUE endpoint carried it (Phase 4).
+    Masque,
     /// No session with the chosen relay, or no allocation: nothing carried it.
     Unroutable,
 }
@@ -152,6 +160,28 @@ pub(crate) async fn send3_adaptive(
             .map(|entry| *entry.value())
             .unwrap_or(*primary_dst)
     };
+    // HPEB (Phase 5): with two or more interfaces bound, the three carriers leave
+    // by separate paths instead of one. The carriers are the same bytes this
+    // function would otherwise send, so a peer's spool rebuilds them exactly as
+    // it does for a single-socket send.
+    if f.len() >= 3 {
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|i| net::build_gtf_v2_frame(&ctx.data_header(i as u8, false, 0), &f[i], tag))
+            .collect();
+        // The shard stamps the port the mesh socket is really bound to, so the
+        // peer's reply reaches this node even on a dynamic or port-0 bind.
+        let src_port = super::bonding::mesh_local_port(&nc.socket);
+        if let Some(carried) =
+            super::bonding::send_carriers(primary_fp, target_addr, &frames, src_port).await
+        {
+            tracing::debug!(
+                peer = %primary_fp,
+                interfaces = %carried.join(","),
+                "HPEB: carriers sent over separate interfaces"
+            );
+            return Routed::Bonded;
+        }
+    }
     let _ = plan;
     let _fitness = router.path_fitness(primary_fp);
     // A3 Phase 2: Divergent Multi-Carrier RS Sharding.
@@ -256,6 +286,9 @@ pub(crate) async fn send3_adaptive(
 /// Always `false` without the feature, so a build that has no front keeps the
 /// routing it had: a fallback route is used whenever one is recorded.
 fn carried_by_front(dst: &SocketAddr, session: &[u8; 4]) -> bool {
+    if super::masque_carries(dst, session) {
+        return true;
+    }
     #[cfg(feature = "reality-front")]
     {
         super::reality_front::carries(dst, session)
@@ -671,6 +704,13 @@ pub(crate) async fn send3_via_fallback(
                     false
                 }
             },
+            FallbackPath::Masque { peer } => {
+                // A MASQUE stream to the peer itself. If it closed between the
+                // route being chosen and this send, the shard is not carried and
+                // the caller reports the route unroutable rather than silently
+                // claiming delivery.
+                super::try_send_masque(peer, &datagram)
+            }
             FallbackPath::Skywave { nvis_freq_khz } => {
                 tracing::info!(
                     peer = %target_fp,
@@ -710,6 +750,7 @@ pub(crate) async fn send3_via_fallback(
         FallbackPath::MeshRelay { .. } => Routed::MeshRelay,
         FallbackPath::Turn { .. } => Routed::Turn,
         FallbackPath::Skywave { .. } => Routed::Skywave,
+        FallbackPath::Masque { .. } => Routed::Masque,
         FallbackPath::Direct => Routed::Unroutable,
     }
 }

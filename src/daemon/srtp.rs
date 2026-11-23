@@ -179,6 +179,10 @@ pub(crate) async fn send_v2(
     if super::reality_front::try_send(dst, &frame) {
         return Ok(());
     }
+    // A MASQUE stream carries the frame unchanged for the same reason.
+    if super::try_send_masque(dst, &frame) {
+        return Ok(());
+    }
     let wire = if enabled() {
         shape_for_send(dst, &frame)
     } else {
@@ -196,6 +200,9 @@ pub(crate) async fn send_raw(
 ) -> std::io::Result<()> {
     #[cfg(feature = "reality-front")]
     if super::reality_front::try_send(dst, frame) {
+        return Ok(());
+    }
+    if super::try_send_masque(dst, frame) {
         return Ok(());
     }
     let wire = if enabled() {

@@ -180,6 +180,33 @@ pub(crate) async fn initiate_handshake(
 ) {
     let (xs, xp) = generate_x25519_keypair();
 
+    // Flood shield (`exp_pow_shield`): pay for admission before the responder does
+    // any KEM work. The challenge is derived from the port being dialed and the
+    // current epoch, so this is one extra datagram and no round trip.
+    if vantablack::ghost::net::pow::is_enabled() {
+        let payload = super::experimental::pow_token_payload(
+            t.port(),
+            super::beacon::unix_now_secs() as u64,
+            super::experimental::pow_bits(),
+        );
+        let mut token = payload;
+        let raw = l4_rs::encode(&mut token);
+        let tag = [0u8; 16];
+        for (i, shard) in raw.iter().take(3).enumerate() {
+            let _ = send_gtf(
+                sock,
+                &t,
+                [0, 0, 0, 0],
+                0,
+                i as u8,
+                &frame_shard(shard),
+                &tag,
+                false,
+            )
+            .await;
+        }
+    }
+
     // §2 spike: opt-in uniform mode intentionally uses the existing legacy
     // ML-KEM-512 payload sizes so it can be compared on the wire without
     // changing the transport fragmentation contract. It also avoids the

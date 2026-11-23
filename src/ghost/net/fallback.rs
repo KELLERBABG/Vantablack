@@ -57,18 +57,33 @@ pub enum FallbackPath {
     Turn { peer_relayed: SocketAddr },
     /// Through atmospheric ionospheric skywave (NVIS) via ABOS SDR.
     Skywave { nvis_freq_khz: u32 },
+    /// Through the peer's own HTTP/3 MASQUE endpoint, carrying GTF frames as
+    /// datagram capsules. `peer` is the peer's mesh address — the key every send
+    /// path already holds — not the MASQUE port, which the stream itself records.
+    Masque { peer: SocketAddr },
 }
 
 impl FallbackPath {
     /// Whether traffic on this path passes a third party.
+    ///
+    /// A MASQUE endpoint is the peer itself, so it is a direct path in the sense
+    /// that matters here: relaying frames it could carry would add a third party
+    /// to a path that does not need one.
     pub fn is_relayed(&self) -> bool {
-        !matches!(self, FallbackPath::Direct | FallbackPath::Skywave { .. })
+        !matches!(
+            self,
+            FallbackPath::Direct | FallbackPath::Skywave { .. } | FallbackPath::Masque { .. }
+        )
     }
 
     /// The address datagrams for the target must be sent to.
     pub fn egress_addr(&self) -> Option<SocketAddr> {
         match self {
-            FallbackPath::Direct | FallbackPath::Skywave { .. } => None,
+            // MASQUE is a QUIC stream, not a UDP destination: there is no address
+            // a datagram could be handed to.
+            FallbackPath::Direct | FallbackPath::Skywave { .. } | FallbackPath::Masque { .. } => {
+                None
+            }
             FallbackPath::MeshRelay { relay_addr, .. } => Some(*relay_addr),
             FallbackPath::Turn { peer_relayed } => Some(*peer_relayed),
         }
@@ -81,6 +96,7 @@ impl FallbackPath {
             FallbackPath::MeshRelay { .. } => "mesh-relay",
             FallbackPath::Turn { .. } => "turn",
             FallbackPath::Skywave { .. } => "skywave-nvis",
+            FallbackPath::Masque { .. } => "masque-h3",
         }
     }
 }

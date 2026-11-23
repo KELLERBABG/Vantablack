@@ -478,6 +478,10 @@ cargo build --release --no-default-features
 cargo test --lib
 cargo test --test simulation
 
+# Full verification gate: formatting, clippy, and the lib + daemon test suites
+# both with and without the `quic` feature
+./scripts/verify.sh
+
 # Build and run the Level 2 Multi-Hop WAN binary (headless)
 cargo run --bin wan_mesh --no-default-features
 ```

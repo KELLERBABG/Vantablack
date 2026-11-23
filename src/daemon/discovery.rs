@@ -249,6 +249,9 @@ pub(crate) async fn install_peer_descriptor_v2(
     if fp == node.fingerprint() || !desc.verify(86400 * 7) {
         return;
     }
+    // Rendezvous (`exp_rendezvous`): a verified descriptor is also a contact for
+    // the routing table, which is what the node falls back to when no slot answers.
+    super::rendezvous::note_descriptor(&node.fingerprint(), &desc);
     let is_relay = (desc.capabilities & vantablack::ghost::net::discovery::CAP_RELAY) != 0;
     let is_exit = (desc.capabilities & vantablack::ghost::net::discovery::CAP_EXIT) != 0;
     // Remember (or withdraw) this peer's home-exit advertisement. Only a signed
@@ -356,6 +359,9 @@ pub(crate) fn sync_peer_topology_telemetry(
             Some(vantablack::ghost::net::fallback::FallbackPath::Skywave { .. }) => {
                 ("skywave", None)
             }
+            Some(vantablack::ghost::net::fallback::FallbackPath::Masque { .. }) => {
+                ("masque_h3", None)
+            }
             Some(vantablack::ghost::net::fallback::FallbackPath::Direct) | None => {
                 let is_lan = match addr.ip() {
                     std::net::IpAddr::V4(v4) => {
@@ -445,6 +451,40 @@ pub(crate) async fn blind_rendezvous_sync(
         vpn_hub,
         offer_text,
     );
+    // Rendezvous (`exp_rendezvous`): publish to 2 of 3 slots and query all three,
+    // instead of one shared slot per epoch. The plain path below is unchanged when
+    // the toggle is off.
+    if super::rendezvous::enabled() {
+        let descriptors = super::rendezvous::sync(
+            rendezvous_url,
+            swarm_secret.as_bytes(),
+            &nc.fingerprint(),
+            &local_desc,
+        )
+        .await;
+        let count = descriptors.len();
+        for desc in descriptors {
+            install_peer_descriptor_v2(
+                nc,
+                &nc.socket,
+                addrs,
+                pending_hs,
+                Some(nat_puncher.as_ref()),
+                Some(fallback_routes.as_ref()),
+                Some(known_relays.as_ref()),
+                Some(known_descriptors.as_ref()),
+                desc,
+            )
+            .await;
+        }
+        persist_peer_cache_v2(known_descriptors);
+        tracing::info!(
+            count,
+            contacts = super::rendezvous::contact_count(&nc.fingerprint()),
+            "Discovery Tier 3: synchronized slot rendezvous descriptors"
+        );
+        return;
+    }
     if let Err(e) = client
         .publish_descriptor(rendezvous_url, swarm_secret.as_bytes(), &local_desc)
         .await
@@ -494,6 +534,14 @@ pub(crate) async fn send_pex(
     known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
 ) {
     let Some(sess) = node.sessions.get(dest_fp) else {
+        // DTN (`exp_dtn_reconcile`): the peer is between sessions. A signed
+        // descriptor batch is additive and self-verifying, so it is worth keeping;
+        // `dtn::flush_all` delivers it when the session returns.
+        if super::dtn::enabled() {
+            if let Some(payload_v2) = pex_v2_payload(known_descriptors, dest_fp) {
+                super::dtn::store(dest_fp, &payload_v2);
+            }
+        }
         return;
     };
     let dest_addr = match peers.get(dest_fp).map(|v| *v) {
@@ -504,33 +552,11 @@ pub(crate) async fn send_pex(
     drop(sess);
 
     // PEX v2: batches of signed PeerDescriptorV2 bounded to <= 2200B per frame.
-    let v2_batch: Vec<Vec<u8>> = known_descriptors
-        .iter()
-        .filter(|e| e.key() != dest_fp)
-        .take(MAX_PEX_PEERS)
-        .map(|e| e.value().to_bytes())
-        .collect();
-    if !v2_batch.is_empty() {
-        let mut payload_v2 = GHOST_PEX_V2_MAGIC.to_vec();
-        payload_v2.push(0u8);
-        let mut count_v2: u8 = 0;
-        for raw in &v2_batch {
-            let Ok(len_u16) = u16::try_from(raw.len()) else {
-                continue;
-            };
-            if payload_v2.len() + 2 + raw.len() > 2200 && count_v2 > 0 {
-                break;
-            }
-            payload_v2.extend_from_slice(&len_u16.to_be_bytes());
-            payload_v2.extend_from_slice(raw);
-            count_v2 = count_v2.saturating_add(1);
-        }
-        if count_v2 > 0 {
-            payload_v2[GHOST_PEX_V2_MAGIC.len()] = count_v2;
-            let (f, tag) = enc_split(&ctx, &payload_v2);
-            send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
-            tracing::debug!(to = %dest_fp, peers = count_v2, "PEX v2: sent signed descriptor batch");
-        }
+    if let Some(payload_v2) = pex_v2_payload(known_descriptors, dest_fp) {
+        let count_v2 = payload_v2[GHOST_PEX_V2_MAGIC.len()];
+        let (f, tag) = enc_split(&ctx, &payload_v2);
+        send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
+        tracing::debug!(to = %dest_fp, peers = count_v2, "PEX v2: sent signed descriptor batch");
     }
 
     // Piggyback BTCr ticket wallet & Fleet revocation gossip over the same session.
@@ -574,6 +600,42 @@ pub(crate) async fn send_pex(
     let (f, tag) = enc_split(&ctx, &payload);
     send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
     tracing::debug!(to = %dest_fp, peers = peer_list.len(), "PEX: sent peer list");
+}
+
+/// Build one signed PEX v2 batch for `dest_fp`, or `None` when there is nothing
+/// to send. Extracted so the DTN producer buffers exactly what the live path sends.
+fn pex_v2_payload(
+    known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
+    dest_fp: &str,
+) -> Option<Vec<u8>> {
+    let v2_batch: Vec<Vec<u8>> = known_descriptors
+        .iter()
+        .filter(|e| e.key() != dest_fp)
+        .take(MAX_PEX_PEERS)
+        .map(|e| e.value().to_bytes())
+        .collect();
+    if v2_batch.is_empty() {
+        return None;
+    }
+    let mut payload_v2 = GHOST_PEX_V2_MAGIC.to_vec();
+    payload_v2.push(0u8);
+    let mut count_v2: u8 = 0;
+    for raw in &v2_batch {
+        let Ok(len_u16) = u16::try_from(raw.len()) else {
+            continue;
+        };
+        if payload_v2.len() + 2 + raw.len() > 2200 && count_v2 > 0 {
+            break;
+        }
+        payload_v2.extend_from_slice(&len_u16.to_be_bytes());
+        payload_v2.extend_from_slice(raw);
+        count_v2 = count_v2.saturating_add(1);
+    }
+    if count_v2 == 0 {
+        return None;
+    }
+    payload_v2[GHOST_PEX_V2_MAGIC.len()] = count_v2;
+    Some(payload_v2)
 }
 
 /// Broadcast an authenticated `GHOST_BYE_____` notification to all active peers
@@ -650,6 +712,22 @@ pub(crate) fn load_tier1_peer_cache() -> (
     (Vec::new(), Vec::new())
 }
 
+/// Last-resort bootstrap (`exp_rendezvous`): the contacts already learned through
+/// verified descriptors, closest to us first. Empty when the toggle is off.
+fn rendezvous_bootstrap(node_fp: Option<&str>) -> Vec<SocketAddr> {
+    let Some(fp) = node_fp else {
+        return Vec::new();
+    };
+    let known = super::rendezvous::closest_addrs(fp, 8);
+    if !known.is_empty() {
+        tracing::info!(
+            count = known.len(),
+            "HTTP bootstrap: nothing from the tracker — using rendezvous contacts"
+        );
+    }
+    known
+}
+
 /// Zero-Knowledge 3-Tier bootstrap: checks authenticated local disk cache (`peers.bin`)
 /// first, then falls back to legacy HTTP bootstrap when `GHOST_RENDEZVOUS_URL` is unset.
 pub(crate) async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr> {
@@ -713,7 +791,11 @@ pub(crate) async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec
                     count = peers.len(),
                     "HTTP bootstrap: registered with tracker, learned peers"
                 );
-                peers
+                if peers.is_empty() {
+                    rendezvous_bootstrap(node_fp)
+                } else {
+                    peers
+                }
             }
             Err(e) => {
                 tracing::warn!("HTTP bootstrap: JSON parse error: {e}");
@@ -722,7 +804,7 @@ pub(crate) async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec
         },
         Err(e) => {
             tracing::warn!("HTTP bootstrap: request failed: {e}");
-            Vec::new()
+            rendezvous_bootstrap(node_fp)
         }
     }
 }

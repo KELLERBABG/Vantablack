@@ -188,6 +188,14 @@ pub(crate) async fn send_tunnel_frame(
                 tracing::warn!(peer = %peer_fp, "VPN egress: skywave route with no bridge — frame dropped");
             }
         }
+        Some(FallbackPath::Masque { peer }) => {
+            // A MASQUE stream to the peer is a direct path; if it closed between
+            // the route being chosen and this send, fall back to the socket
+            // rather than dropping the frame.
+            if !super::try_send_masque(&peer, &frame) {
+                let _ = super::srtp::send_raw(&nc.socket, &endpoint, &frame).await;
+            }
+        }
         Some(FallbackPath::Direct) | None => {
             let _ = super::srtp::send_raw(&nc.socket, &endpoint, &frame).await;
         }
@@ -297,6 +305,15 @@ impl RxContext {
         // delivered it. `tests` below covers exactly that, in the default build.
         if net::parse_flags(datagram) & net::FLAG_TUNNEL != 0 {
             if let Some(sd) = unframe(net::extract_payload(datagram)) {
+                // Emergency diffusion (`exp_diffusion`): an envelope is handled
+                // before anything else reads the payload, and `handle` returns
+                // `true` only when it really was one.
+                if super::tunnel::handle(self, &sd, src).await {
+                    return;
+                }
+                if super::diffusion::handle(self, &sd, src).await {
+                    return;
+                }
                 self.deliver(ctr, v2, sd, src, None).await;
             }
             return;
@@ -380,6 +397,12 @@ impl RxContext {
             )
             .await
             {
+                if super::tunnel::handle(self, &r, src).await {
+                    return;
+                }
+                if super::diffusion::handle(self, &r, src).await {
+                    return;
+                }
                 self.deliver(ctr, v2, r, src, Some(net::parse_session_hash(datagram)))
                     .await;
             }
@@ -391,6 +414,12 @@ impl RxContext {
         if let Some(r) = assemble(&self.spool, SpoolKey::of(src, datagram, v2), si, sd).await {
             if std::env::var("GGN_DEBUG_RX").is_ok() {
                 tracing::info!("assembled frame ctr={ctr} si={si} len={}", r.len());
+            }
+            if super::tunnel::handle(self, &r, src).await {
+                return;
+            }
+            if super::diffusion::handle(self, &r, src).await {
+                return;
             }
             // The legacy path's frames were opened by `open_received_frame` at
             // the candidates loop, but the hash still names the session; keep

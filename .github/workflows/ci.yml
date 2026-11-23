@@ -68,6 +68,12 @@ jobs:
         run: |
           cargo check --features quic --all-targets --verbose
           cargo test --features quic --verbose
+          # Named separately because these are the end-to-end transport tests and
+          # they live in the `ggn` binary target, which only exists with the
+          # feature: the MASQUE endpoint/client loopback exchange and the HPEB
+          # bond over two loopback paths. A failing one must name itself.
+          cargo test --bin ggn --features quic daemon::masque --verbose
+          cargo test --bin ggn --features quic daemon::bonding --verbose
           cargo check --features "quic vpn" --all-targets --verbose
 
       - name: Verify Skywave SDR & QKD-TLS Anchors (sdr + qkd-tls)

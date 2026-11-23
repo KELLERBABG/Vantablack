@@ -620,6 +620,11 @@ pub(crate) async fn send_frame_to_peer(
                 tracing::warn!(peer = %peer_fp, "ratchet PDU: skywave route with no bridge — frame dropped");
             }
         }
+        Some(FallbackPath::Masque { peer }) => {
+            if !super::try_send_masque(&peer, &frame) {
+                let _ = super::srtp::send_raw(sock, src, &frame).await;
+            }
+        }
         Some(FallbackPath::Direct) | None => {
             let _ = super::srtp::send_raw(sock, src, &frame).await;
         }

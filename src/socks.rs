@@ -16,6 +16,39 @@ use vantablack::ghost::net::coalesce::CoalescedShard;
 use vantablack::ghost::net::reassembly::ReassemblyBuffer;
 use vantablack::ghost::net::relay::{build_encrypted_onion_route, AsnDiversityConstraint};
 
+/// Emergency diffusion (`exp_diffusion`): when the ordinary path reports that no
+/// route could carry the carriers, flood each of them as an opaque hop envelope.
+///
+/// Gated on the toggle and on `Unroutable`, so a working path never pays for this
+/// and a disabled toggle leaves the send path exactly as it was. The carriers stay
+/// sealed to their session: a hop forwarding the flood cannot read them.
+async fn diffuse_unroutable(
+    nc: &Arc<GhostNode>,
+    peers: &Arc<DashMap<String, SocketAddr>>,
+    ctx: &SealCtx,
+    carriers: &[Vec<u8>],
+    tag: &[u8; 16],
+    routed: crate::daemon::relay_fallback::Routed,
+) {
+    use crate::daemon::relay_fallback::Routed;
+    if routed != Routed::Unroutable || !vantablack::ghost::net::diffusion::is_enabled() {
+        return;
+    }
+    for (i, shard) in carriers.iter().take(3).enumerate() {
+        let datagram = vantablack::ghost::net::build_gtf_v2_frame(
+            &ctx.data_header(i as u8, false, 0),
+            shard,
+            tag,
+        );
+        let reached = crate::daemon::diffusion::flood(nc, peers, &datagram).await;
+        tracing::debug!(
+            shard = i,
+            reached,
+            "Diffusion: flooded a carrier no route could carry"
+        );
+    }
+}
+
 static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
 static PINNED_GUARD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
@@ -659,7 +692,7 @@ pub async fn handle_socks5_connection(
                 let me = nn2.fingerprint();
                 let plan = nn2.contact_plan.read().await;
                 let route = routes_out.path(&first_hop_out);
-                let _ = send3_adaptive(
+                let routed = send3_adaptive(
                     &nn2,
                     &nn2.socket,
                     &tgt_out,
@@ -676,6 +709,7 @@ pub async fn handle_socks5_connection(
                     Some(&carrier_out),
                 )
                 .await;
+                diffuse_unroutable(&nn2, &aa_proxy, &ctx_out, &f, &tag, routed).await;
             }
         }
 
@@ -715,7 +749,7 @@ pub async fn handle_socks5_connection(
             let me = nn2.fingerprint();
             let plan = nn2.contact_plan.read().await;
             let route = routes_out.path(&first_hop_out);
-            let _ = send3_adaptive(
+            let routed = send3_adaptive(
                 &nn2,
                 &nn2.socket,
                 &tgt_out,
@@ -732,6 +766,7 @@ pub async fn handle_socks5_connection(
                 Some(&carrier_out),
             )
             .await;
+            diffuse_unroutable(&nn2, &aa_proxy, &ctx_out, &f, &tag, routed).await;
         }
 
         // Send CLOSE notification to exit node
@@ -770,7 +805,7 @@ pub async fn handle_socks5_connection(
         let me = nn2.fingerprint();
         let plan = nn2.contact_plan.read().await;
         let route = routes_out.path(&first_hop_out);
-        let _ = send3_adaptive(
+        let routed = send3_adaptive(
             &nn2,
             &nn2.socket,
             &tgt_out,
@@ -787,6 +822,7 @@ pub async fn handle_socks5_connection(
             Some(&carrier_out),
         )
         .await;
+        diffuse_unroutable(&nn2, &aa_proxy, &ctx_close, &f, &tag, routed).await;
 
         chh2.remove(&(exit_sh_out, stream_id));
         ak2_out.remove(&(exit_sh_out, stream_id));
