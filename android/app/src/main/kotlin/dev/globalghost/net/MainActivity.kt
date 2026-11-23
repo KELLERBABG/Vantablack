@@ -57,6 +57,10 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        actionBar?.hide()
+        window.statusBarColor = Color.parseColor("#232428")
+        window.navigationBarColor = Color.parseColor("#0C0D0F")
 
         val currentVerName = getAppVersionName()
 
@@ -198,8 +202,16 @@ class MainActivity : Activity() {
                 text = "OFF"
                 textSize = 12f
                 letterSpacing = 0.16f
+                gravity = Gravity.CENTER
+                textAlignment = View.TEXT_ALIGNMENT_CENTER
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                }
             }
             innerCol.addView(txtCenterState)
 
@@ -256,20 +268,35 @@ class MainActivity : Activity() {
                 text = "MODE"
                 textSize = 10f
                 letterSpacing = 0.14f
+                gravity = Gravity.END
                 setTextColor(Color.parseColor("#787774"))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
             })
             txtModeValue = TextView(context).apply {
                 text = modes[currentModeIndex]
                 textSize = 19f
+                gravity = Gravity.END
                 setTypeface(Typeface.DEFAULT, Typeface.BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
                 setPadding(0, dp(2), 0, 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
             }
             addView(txtModeValue)
             txtModeSub = TextView(context).apply {
                 text = "Direct"
                 textSize = 12f
+                gravity = Gravity.END
                 setTextColor(Color.parseColor("#9E9C98"))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
             }
             addView(txtModeSub)
         }
