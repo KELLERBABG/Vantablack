@@ -398,6 +398,9 @@ jobs:
       - name: Verify Handshake, Ratchet & Replay Protection
         run: proverif formal/ghost_session.pv
 
+      - name: Verify SessionRatchet Forward Secrecy & Post-Compromise Security
+        run: proverif formal/session_ratchet.pv
+
       - name: Verify ShardSec 3-Shard Space-Time Secrecy
         run: proverif formal/shardsec_space_time.pv
 

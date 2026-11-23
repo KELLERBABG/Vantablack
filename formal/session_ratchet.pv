@@ -1,0 +1,105 @@
+(*
+   Vantablack SessionRatchet — Forward Secrecy (FS) & Post-Compromise Security (PCS)
+   (ProVerif 2.05 symbolic model)
+
+   Models `src/ghost/session/ratchet.rs` + `src/ghost/layers/l1_kem.rs`:
+
+   1. Forward Secrecy (symmetric chain `kdf_ck`):
+      - Epoch 0 seals `m0_fs` under `kdf_mk(ck0)` and immediately steps the chain
+        to `ck1 = kdf_ck_next(ck0)`, discarding `ck0` and `kdf_mk(ck0)`.
+      - The adversary is explicitly given `ck1` on the public channel `c`.
+      - Query `attacker(m0_fs)` checks that `ck1` cannot recover epoch 0's plaintext.
+
+   2. Post-Compromise Security / Break-in Recovery (hybrid DH + ML-KEM ratchet `kdf_rk_hybrid`):
+      - Both `rk1` and `ck1` are explicitly leaked to the adversary on `c`.
+      - Peers then perform an authenticated epoch-2 hybrid ratchet step using a fresh
+        classical Diffie-Hellman share (`dh(ra2, gb2)`) and a fresh ML-KEM encapsulation
+        (`encaps_pq(pkpq(skPQ2), eph2)`), deriving `rk2 = kdf_rk_hybrid(rk1, dh_ss2, pq_ss2)`
+        and `ck2 = kdf_ck_from_rk(rk2)`.
+      - Epoch 2 seals `m2_pcs` under `kdf_mk(ck2)`.
+      - Query `attacker(m2_pcs)` checks that compromising `(rk1, ck1)` does not
+        compromise epoch 2 after the authenticated hybrid ratchet completes.
+*)
+
+free c: channel.
+
+type key.
+type skey.
+type pkey.
+type pqsk.
+type pqpk.
+type sig.
+
+free g: bitstring.
+
+fun pk(skey): pkey.
+fun sign(bitstring, skey): sig.
+reduc forall m: bitstring, s: skey; verify(sign(m, s), pk(s)) = m.
+
+fun pkpq(pqsk): pqpk.
+fun dh(bitstring, bitstring): bitstring.
+equation forall x: bitstring, y: bitstring; dh(x, dh(y, g)) = dh(y, dh(x, g)).
+
+fun encaps_pq(pqpk, bitstring): bitstring.
+reduc forall sk: pqsk, r: bitstring; decaps_pq(sk, encaps_pq(pkpq(sk), r)) = r.
+
+fun kdf_mk(key): key.
+fun kdf_ck_next(key): key.
+fun kdf_rk_hybrid(key, bitstring, bitstring): key.
+fun kdf_ck_from_rk(key): key.
+
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+
+free m0_fs: bitstring [private].
+free m2_pcs: bitstring [private].
+
+query attacker(m0_fs).
+query attacker(m2_pcs).
+
+let session_pair(skA: skey, skB: skey) =
+  (* Initial shared root & chain keys at epoch 0 *)
+  new rk0: key;
+  new ck0: key;
+
+  (* Epoch 0: seal m0_fs, then advance chain and discard ck0 *)
+  let mk0 = kdf_mk(ck0) in
+  out(c, senc(m0_fs, mk0));
+  let ck1 = kdf_ck_next(ck0) in
+  let rk1 = rk0 in
+
+  (* Explicit state compromise at epoch 1: adversary receives (rk1, ck1) *)
+  out(c, (rk1, ck1));
+
+  (* Epoch 2: authenticated hybrid ratchet step (fresh X25519 + fresh ML-KEM) *)
+  new ra2: bitstring;
+  new rb2: bitstring;
+  new skPQ2: pqsk;
+  new ephPQ2: bitstring;
+  let ga2 = dh(ra2, g) in
+  let gb2 = dh(rb2, g) in
+  let pq_pk2 = pkpq(skPQ2) in
+  let ct2 = encaps_pq(pq_pk2, ephPQ2) in
+
+  (* Public handshake messages authenticated by A and B *)
+  out(c, (ga2, pq_pk2, sign((ga2, pq_pk2), skA)));
+  out(c, (gb2, ct2, sign((gb2, ct2, ga2, pq_pk2), skB)));
+
+  in(c, (m_ga2: bitstring, m_pq_pk2: pqpk, sigA: sig));
+  in(c, (m_gb2: bitstring, m_ct2: bitstring, sigB: sig));
+  if verify(sigA, pk(skA)) = (m_ga2, m_pq_pk2) then
+  if verify(sigB, pk(skB)) = (m_gb2, m_ct2, m_ga2, m_pq_pk2) then
+
+  let dh_ss2 = dh(ra2, m_gb2) in
+  let pq_ss2 = decaps_pq(skPQ2, m_ct2) in
+  let rk2 = kdf_rk_hybrid(rk1, dh_ss2, pq_ss2) in
+  let ck2 = kdf_ck_from_rk(rk2) in
+  let mk2 = kdf_mk(ck2) in
+  out(c, senc(m2_pcs, mk2)).
+
+process
+  new skA: skey;
+  new skB: skey;
+  out(c, pk(skA));
+  out(c, pk(skB));
+  (!session_pair(skA, skB))
