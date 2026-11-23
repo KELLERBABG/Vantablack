@@ -11,8 +11,8 @@ android {
         applicationId = "dev.globalghost.net"
         minSdk = 26
         targetSdk = 34
-        versionCode = 22
-        versionName = "0.8.21"
+        versionCode = 201
+        versionName = "2.0.1"
     }
 
     signingConfigs {
@@ -57,4 +57,5 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

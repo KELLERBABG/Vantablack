@@ -995,9 +995,14 @@ pub fn spawn_control_center(
                                             caps,
                                             ice_offer,
                                         );
+                                        let vb_uri = desc.to_uri();
+                                        let qr_svg =
+                                            vantablack::ghost::v2::fleet::render_qr_svg(&vb_uri)
+                                                .ok();
                                         let body = serde_json::json!({
                                             "success": true,
-                                            "vb_uri": desc.to_uri(),
+                                            "vb_uri": vb_uri,
+                                            "qr_svg": qr_svg,
                                             "fingerprint": desc.fingerprint(),
                                             "endpoint": desc.endpoint.to_string(),
                                             "mesh_port": desc.mesh_port,
@@ -2079,21 +2084,40 @@ pub async fn apply_github_update() -> Result<String, String> {
     #[cfg(windows)]
     {
         let installer_path = temp_installer.to_string_lossy().to_string();
-        std::process::Command::new("cmd")
+        let current_exe = std::env::current_exe()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let ps_script = format!(
+            "$ErrorActionPreference = 'SilentlyContinue'; \
+             Start-Sleep -Milliseconds 900; \
+             $inst = '{installer}'; \
+             $cur = '{current}'; \
+             $installed = Join-Path $env:LOCALAPPDATA 'Programs\\GlobalGhostNet\\ggn.exe'; \
+             Start-Process -FilePath $inst -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS' -Wait; \
+             if ((Test-Path -LiteralPath $installed) -and $cur -and ($cur -ne $installed)) {{ \
+                 Copy-Item -LiteralPath $installed -Destination $cur -Force; \
+             }}; \
+             $target = if ($cur -and (Test-Path -LiteralPath $cur)) {{ $cur }} elseif (Test-Path -LiteralPath $installed) {{ $installed }} else {{ $null }}; \
+             if ($target) {{ Start-Process -FilePath $target }}",
+            installer = installer_path.replace('\'', "''"),
+            current = current_exe.replace('\'', "''"),
+        );
+
+        std::process::Command::new("powershell")
             .args([
-                "/c",
-                "start",
-                "",
-                &installer_path,
-                "/VERYSILENT",
-                "/SUPPRESSMSGBOXES",
-                "/NORESTART",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &ps_script,
             ])
             .spawn()
             .map_err(|e| e.to_string())?;
 
         tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(600)).await;
+            tokio::time::sleep(Duration::from_millis(450)).await;
             std::process::exit(0);
         });
     }

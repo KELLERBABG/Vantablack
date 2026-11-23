@@ -485,11 +485,16 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
 
     let expected_ab = format!("[Chat from {}] {marker_ab}", &fp_a[..8]);
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut ticks_ab = 0u32;
     while Instant::now() < deadline {
         if b.trace().contains(&expected_ab) {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
+        ticks_ab += 1;
+        if ticks_ab % 80 == 0 {
+            a.run(&format!("CHAT {fp_b} {marker_ab}"));
+        }
     }
     if !b.trace().contains(&expected_ab) {
         fail_with_logs(
@@ -530,11 +535,16 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
     b.run(&format!("CHAT {fp_a} {marker_ba}"));
     let expected_ba = format!("[Chat from {}] {marker_ba}", &fp_b[..8]);
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut ticks_ba = 0u32;
     while Instant::now() < deadline {
         if a.trace().contains(&expected_ba) {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
+        ticks_ba += 1;
+        if ticks_ba % 80 == 0 {
+            b.run(&format!("CHAT {fp_a} {marker_ba}"));
+        }
     }
     if !a.trace().contains(&expected_ba) {
         fail_with_logs(

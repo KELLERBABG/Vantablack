@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.net.Uri
 import android.net.VpnService
 import android.os.Build
@@ -17,493 +18,153 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.widget.*
-import java.util.Locale
 
 class MainActivity : Activity() {
 
     private val VPN_REQUEST_CODE = 1001
     private val QR_SCAN_REQUEST_CODE = 1002
     private var pendingInvite: String? = null
+    private var pendingInstallApkFile: java.io.File? = null
+
+    private var currentModeIndex = 1 // 0 = Fast, 1 = Stealth, 2 = Multi-Hop
+    private val modes = arrayOf("Fast", "Stealth", "Multi-Hop")
+
     private lateinit var editRemoteAddr: EditText
     private lateinit var editDnsServer: EditText
-    private lateinit var btnConnect: Button
-    private lateinit var btnScanLan: Button
-    private lateinit var btnLeakTest: Button
-    private lateinit var btnCopyFp: Button
+    private lateinit var centerButtonFrame: FrameLayout
+    private lateinit var centerLedView: View
+    private lateinit var txtCenterState: TextView
+    private lateinit var txtLocationValue: TextView
+    private lateinit var txtLocationSub: TextView
+    private lateinit var txtModeValue: TextView
+    private lateinit var txtModeSub: TextView
     private lateinit var btnUpdateBadge: Button
-    private lateinit var txtStatus: TextView
-    private lateinit var txtMode: TextView
-    private lateinit var txtFingerprint: TextView
-
-    // Telemetry
-    private lateinit var txtDownSpeed: TextView
-    private lateinit var txtDownTotal: TextView
-    private lateinit var txtUpSpeed: TextView
-    private lateinit var txtUpTotal: TextView
-    private lateinit var txtExitNode: TextView
-    private lateinit var txtDnsServer: TextView
-    private lateinit var txtConnPath: TextView
-    private lateinit var txtRtt: TextView
-    private lateinit var txtHandovers: TextView
+    private lateinit var txtUpdateStatus: TextView
+    private lateinit var btnUpdateAction: TextView
     private lateinit var txtPeersHeader: TextView
     private lateinit var peerListContainer: LinearLayout
 
     private val handler = Handler(Looper.getMainLooper())
-    private var lastRxBytes: Long = 0
-    private var lastTxBytes: Long = 0
-    private var lastTimestamp: Long = 0
 
     private val statusUpdater = object : Runnable {
         override fun run() {
             updateStatus()
-            handler.postDelayed(this, 1000)
+            handler.postDelayed(this, 1200)
         }
     }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val currentVerName = getAppVersionName()
+
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(Color.parseColor("#090a0f"))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    Color.parseColor("#232428"),
+                    Color.parseColor("#141518"),
+                    Color.parseColor("#0C0D0F")
+                )
+            )
             isFillViewport = true
         }
 
-        val layout = LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 56, 40, 56)
+            setPadding(dp(24), dp(28), dp(24), dp(28))
         }
-        scroll.addView(layout)
+        scroll.addView(root)
 
-        // ── Header ──
+        // ── Top Bar (Monolith Coal) ──
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, 4)
+            setPadding(0, 0, 0, dp(24))
         }
 
         val title = TextView(this).apply {
-            text = "VANTABLACK"
-            textSize = 22f
-            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextColor(Color.parseColor("#f1f5f9"))
-            letterSpacing = 0.15f
+            text = "Vantablack"
+            textSize = 17f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(Color.parseColor("#F4F1EA"))
         }
         header.addView(title)
 
         val ver = TextView(this).apply {
-            val vName = try {
-                packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.20"
-            } catch (_: Throwable) {
-                "0.8.20"
-            }
-            text = "v$vName"
-            textSize = 11f
-            setTypeface(Typeface.MONOSPACE)
-            setTextColor(Color.parseColor("#64748b"))
-            val params = LinearLayout.LayoutParams(
+            text = "v$currentVerName"
+            textSize = 12f
+            setTextColor(Color.parseColor("#8E8D8A"))
+            layoutParams = LinearLayout.LayoutParams(
+                0,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(16, 0, 0, 0) }
-            layoutParams = params
-            setOnClickListener {
-                checkUpdate(userInitiated = true)
-            }
+                1f
+            ).apply { setMargins(dp(10), 0, 0, 0) }
+            setOnClickListener { checkUpdate(userInitiated = true) }
         }
         header.addView(ver)
 
         btnUpdateBadge = Button(this).apply {
             text = "⚡ Update"
-            textSize = 10f
+            textSize = 11f
+            isAllCaps = false
             setTypeface(Typeface.DEFAULT_BOLD)
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#0C0D0F"))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#059669"))
-                cornerRadius = 6f
+                setColor(Color.parseColor("#F4F1EA"))
+                cornerRadius = dp(999).toFloat()
             }
-            setPadding(16, 4, 16, 4)
+            setPadding(dp(14), dp(6), dp(14), dp(6))
             visibility = View.GONE
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(12, 0, 0, 0) }
-            layoutParams = params
-            setOnClickListener {
-                promptUpdateDialog()
-            }
+            setOnClickListener { triggerImmediateUpdate() }
         }
         header.addView(btnUpdateBadge)
-        layout.addView(header)
+        root.addView(header)
 
-        val sub = TextView(this).apply {
-            text = "Post-Quantum WAN Mesh Router"
-            textSize = 12f
-            setTextColor(Color.parseColor("#64748b"))
-            setPadding(0, 0, 0, 4)
+        // ── Center Stage: Machined Brushed-Steel Button + Location / Mode Flanks ──
+        val heroSection = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dp(16), 0, dp(24))
         }
-        layout.addView(sub)
 
-        val repoLink = TextView(this).apply {
-            text = "github.com/KELLERBABG/Vantablack ↗"
-            textSize = 11f
-            setTypeface(Typeface.MONOSPACE)
-            setTextColor(Color.parseColor("#38bdf8"))
-            setPadding(0, 0, 0, 20)
-            setOnClickListener {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/KELLERBABG/Vantablack")))
-                } catch (_: Throwable) {
-                    Toast.makeText(this@MainActivity, "https://github.com/KELLERBABG/Vantablack", Toast.LENGTH_SHORT).show()
-                }
+        centerButtonFrame = FrameLayout(this).apply {
+            val size = dp(176)
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
             }
-        }
-        layout.addView(repoLink)
-
-        // ── Status Panel ──
-        val cardStatus = createCard().apply {
-            val initialActive = GhostVpnService.isVpnActive(this@MainActivity)
-            txtStatus = TextView(context).apply {
-                text = if (initialActive) "● CONNECTED (TUNNEL ACTIVE)" else "○ DISCONNECTED"
-                textSize = 14f
-                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(if (initialActive) Color.parseColor("#10b981") else Color.parseColor("#64748b"))
-                setPadding(0, 0, 0, 4)
+            val steelRing = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    Color.parseColor("#46474C"),
+                    Color.parseColor("#707278"),
+                    Color.parseColor("#B9BAC0")
+                )
+            ).apply {
+                shape = GradientDrawable.OVAL
+                setStroke(dp(1), Color.parseColor("#99FFFFFF"))
             }
-            addView(txtStatus)
-
-            txtMode = TextView(context).apply {
-                text = if (initialActive) "Route: 0.0.0.0/0, ::/0 (Full Tunnel)" else "Standby"
-                textSize = 12f
-                setTextColor(Color.parseColor("#94a3b8"))
+            val innerCore = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(
+                    Color.parseColor("#2B2D32"),
+                    Color.parseColor("#191A1D"),
+                    Color.parseColor("#121316")
+                )
+            ).apply {
+                shape = GradientDrawable.OVAL
+                setStroke(dp(1), Color.parseColor("#24FFFFFF"))
             }
-            addView(txtMode)
-        }
-        layout.addView(cardStatus)
-
-        // ── Telemetry Grid ──
-        val cardTelemetry = createCard().apply {
-            addView(createSectionHeader("TRAFFIC & ROUTING"))
-
-            val row1 = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                weightSum = 2f
-                setPadding(0, 0, 0, 12)
+            val layers = LayerDrawable(arrayOf(steelRing, innerCore)).apply {
+                val inset = dp(13)
+                setLayerInset(1, inset, inset, inset, inset)
             }
-            val colDown = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                addView(createDimLabel("DOWNLINK"))
-                txtDownSpeed = TextView(context).apply {
-                    text = "0 B/s"
-                    textSize = 15f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    setTextColor(Color.parseColor("#f1f5f9"))
-                }
-                addView(txtDownSpeed)
-                txtDownTotal = TextView(context).apply {
-                    text = "0 B (0 pkts)"
-                    textSize = 11f
-                    setTypeface(Typeface.MONOSPACE)
-                    setTextColor(Color.parseColor("#64748b"))
-                }
-                addView(txtDownTotal)
-            }
-            val colUp = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                addView(createDimLabel("UPLINK"))
-                txtUpSpeed = TextView(context).apply {
-                    text = "0 B/s"
-                    textSize = 15f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    setTextColor(Color.parseColor("#f1f5f9"))
-                }
-                addView(txtUpSpeed)
-                txtUpTotal = TextView(context).apply {
-                    text = "0 B (0 pkts)"
-                    textSize = 11f
-                    setTypeface(Typeface.MONOSPACE)
-                    setTextColor(Color.parseColor("#64748b"))
-                }
-                addView(txtUpTotal)
-            }
-            row1.addView(colDown)
-            row1.addView(colUp)
-            addView(row1)
-
-            // Divider line
-            addView(View(context).apply {
-                setBackgroundColor(Color.parseColor("#1a1d26"))
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
-                    setMargins(0, 4, 0, 12)
-                }
-            })
-
-            val row2 = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                weightSum = 2f
-            }
-            val colExit = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                addView(createDimLabel("EXIT GATEWAY"))
-                txtExitNode = TextView(context).apply {
-                    text = "Auto"
-                    textSize = 13f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    setTextColor(Color.parseColor("#f1f5f9"))
-                }
-                addView(txtExitNode)
-            }
-            val colDns = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                addView(createDimLabel("DNS SERVERS"))
-                txtDnsServer = TextView(context).apply {
-                    text = "Auto (Hub 10.66.0.1)"
-                    textSize = 13f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    setTextColor(Color.parseColor("#f1f5f9"))
-                }
-                addView(txtDnsServer)
-            }
-            row2.addView(colExit)
-            row2.addView(colDns)
-            addView(row2)
-
-            val row3 = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 14, 0, 0)
-            }
-            val colPath = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
-                addView(createDimLabel("PATH"))
-                txtConnPath = TextView(context).apply {
-                    text = "Standby"
-                    textSize = 12f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    setTextColor(Color.parseColor("#38bdf8"))
-                }
-                addView(txtConnPath)
-            }
-            val colRtt = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f)
-                addView(createDimLabel("RTT"))
-                txtRtt = TextView(context).apply {
-                    text = "— ms"
-                    textSize = 12f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    setTextColor(Color.parseColor("#f1f5f9"))
-                }
-                addView(txtRtt)
-            }
-            val colHandover = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f)
-                addView(createDimLabel("HANDOVERS"))
-                txtHandovers = TextView(context).apply {
-                    text = "0"
-                    textSize = 12f
-                    setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                    setTextColor(Color.parseColor("#f1f5f9"))
-                }
-                addView(txtHandovers)
-            }
-            row3.addView(colPath)
-            row3.addView(colRtt)
-            row3.addView(colHandover)
-            addView(row3)
-        }
-        layout.addView(cardTelemetry)
-
-        // ── Mesh Peers Swarm ──
-        val cardPeers = createCard().apply {
-            txtPeersHeader = createSectionHeader("PEER SESSIONS (0)")
-            addView(txtPeersHeader)
-
-            peerListContainer = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-            addView(peerListContainer)
-
-            btnScanLan = Button(context).apply {
-                text = "Scan LAN for Peers"
-                textSize = 12f
-                setTypeface(Typeface.DEFAULT_BOLD)
-                setTextColor(Color.parseColor("#cbd5e1"))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#151821"))
-                    setStroke(1, Color.parseColor("#262b3a"))
-                    cornerRadius = 8f
-                }
-                setPadding(0, 18, 0, 18)
-                val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(0, 12, 0, 0) }
-                layoutParams = params
-                setOnClickListener {
-                    if (GhostVpnService.isRunning) {
-                        GhostVpnService.triggerScan { count ->
-                            handler.post {
-                                updateStatus()
-                                Toast.makeText(this@MainActivity, "Scan finished: $count peer(s)", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    } else {
-                        Toast.makeText(this@MainActivity, "Connect to mesh first", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            addView(btnScanLan)
-
-            val inviteRow = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                val params = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(0, 10, 0, 0) }
-                layoutParams = params
-            }
-            val btnScanQr = Button(context).apply {
-                text = "Scan QR Invite"
-                textSize = 12f
-                setTypeface(Typeface.DEFAULT_BOLD)
-                setTextColor(Color.parseColor("#38bdf8"))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#151821"))
-                    setStroke(1, Color.parseColor("#262b3a"))
-                    cornerRadius = 8f
-                }
-                setPadding(0, 16, 0, 16)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    setMargins(0, 0, 6, 0)
-                }
-                setOnClickListener { launchQrScanner() }
-            }
-            val btnPasteInvite = Button(context).apply {
-                text = "Paste vb:// Invite"
-                textSize = 12f
-                setTypeface(Typeface.DEFAULT_BOLD)
-                setTextColor(Color.parseColor("#cbd5e1"))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#151821"))
-                    setStroke(1, Color.parseColor("#262b3a"))
-                    cornerRadius = 8f
-                }
-                setPadding(0, 16, 0, 16)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    setMargins(6, 0, 0, 0)
-                }
-                setOnClickListener { pasteOrPromptInvite() }
-            }
-            inviteRow.addView(btnScanQr)
-            inviteRow.addView(btnPasteInvite)
-            addView(inviteRow)
-        }
-        layout.addView(cardPeers)
-
-        // ── Identity Card ──
-        val cardId = createCard().apply {
-            addView(createSectionHeader("NODE FINGERPRINT"))
-
-            val row = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-
-            txtFingerprint = TextView(context).apply {
-                text = "—"
-                textSize = 14f
-                setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-                setTextColor(Color.parseColor("#38bdf8"))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            row.addView(txtFingerprint)
-
-            btnCopyFp = Button(context).apply {
-                text = "Copy"
-                textSize = 11f
-                setTextColor(Color.parseColor("#cbd5e1"))
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#151821"))
-                    setStroke(1, Color.parseColor("#262b3a"))
-                    cornerRadius = 6f
-                }
-                setPadding(16, 6, 16, 6)
-                setOnClickListener {
-                    val fp = txtFingerprint.text.toString()
-                    if (fp.isNotEmpty() && fp != "—") {
-                        val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clip.setPrimaryClip(ClipData.newPlainText("Vantablack Fingerprint", fp))
-                        Toast.makeText(this@MainActivity, "Copied", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            row.addView(btnCopyFp)
-            addView(row)
-        }
-        layout.addView(cardId)
-
-        // ── Optional Gateway & DNS Overrides (Both Default to Auto) ──
-        val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
-        val savedHub = prefs.getString("hub_addr", null)
-        val savedDns = prefs.getString("dns_server", null)
-        editRemoteAddr = EditText(this).apply {
-            hint = "Exit Gateway: Auto-Discover (or Hub IP:Port)"
-            setText(savedHub ?: "")
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.parseColor("#475569"))
-            textSize = 12f
-            setTypeface(Typeface.MONOSPACE)
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0e1017"))
-                setStroke(1, Color.parseColor("#1e2330"))
-                cornerRadius = 8f
-            }
-            setPadding(24, 16, 24, 16)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 4, 0, 8) }
-            layoutParams = params
-        }
-        layout.addView(editRemoteAddr)
-
-        editDnsServer = EditText(this).apply {
-            hint = "DNS Server: Auto via Exit Hub (or custom IP)"
-            setText(savedDns ?: "")
-            setTextColor(Color.WHITE)
-            setHintTextColor(Color.parseColor("#475569"))
-            textSize = 12f
-            setTypeface(Typeface.MONOSPACE)
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0e1017"))
-                setStroke(1, Color.parseColor("#1e2330"))
-                cornerRadius = 8f
-            }
-            setPadding(24, 16, 24, 16)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 0, 12) }
-            layoutParams = params
-        }
-        layout.addView(editDnsServer)
-
-        // ── Primary Action Button ──
-        btnConnect = Button(this).apply {
-            val connected = GhostVpnService.isVpnActive(this@MainActivity)
-            text = if (connected) "Disconnect" else "Connect"
-            textSize = 14f
-            setTypeface(Typeface.DEFAULT_BOLD)
-            setTextColor(Color.WHITE)
-            background = GradientDrawable().apply {
-                setColor(if (connected) Color.parseColor("#7f1d1d") else Color.parseColor("#1d4ed8"))
-                cornerRadius = 8f
-            }
-            setPadding(0, 28, 0, 28)
+            background = layers
+            elevation = dp(16).toFloat()
+            isClickable = true
+            isFocusable = true
             setOnClickListener {
                 if (GhostVpnService.isVpnActive(this@MainActivity)) {
                     stopVpn()
@@ -511,90 +172,284 @@ class MainActivity : Activity() {
                     startVpn()
                 }
             }
-        }
-        layout.addView(btnConnect)
 
-        // ── DNS Leak Test Link ──
-        btnLeakTest = Button(this).apply {
-            text = "Verify on dnsleaktest.com"
-            textSize = 12f
-            setTextColor(Color.parseColor("#94a3b8"))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0e1017"))
-                setStroke(1, Color.parseColor("#1e2330"))
-                cornerRadius = 8f
+            val innerCol = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
             }
-            setPadding(0, 20, 0, 20)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 12, 0, 0) }
-            layoutParams = params
-            setOnClickListener {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.dnsleaktest.com")))
-                } catch (_: Throwable) {
-                    Toast.makeText(this@MainActivity, "Open https://www.dnsleaktest.com", Toast.LENGTH_SHORT).show()
+
+            centerLedView = View(context).apply {
+                val d = dp(11)
+                layoutParams = LinearLayout.LayoutParams(d, d).apply {
+                    setMargins(0, 0, 0, dp(10))
+                }
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor("#33FFFFFF"))
                 }
             }
-        }
-        layout.addView(btnLeakTest)
+            innerCol.addView(centerLedView)
 
-        val btnRepo = Button(this).apply {
-            text = "GitHub Repository & Source"
-            textSize = 12f
-            setTextColor(Color.parseColor("#38bdf8"))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0e1017"))
-                setStroke(1, Color.parseColor("#1e2330"))
-                cornerRadius = 8f
+            txtCenterState = TextView(context).apply {
+                text = "OFF"
+                textSize = 12f
+                letterSpacing = 0.16f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
             }
-            setPadding(0, 20, 0, 20)
-            val params = LinearLayout.LayoutParams(
+            innerCol.addView(txtCenterState)
+
+            addView(innerCol)
+        }
+        heroSection.addView(centerButtonFrame)
+
+        // Flanks Row (Location & Mode)
+        val flanksRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 2f
+            setPadding(dp(8), dp(24), dp(8), 0)
+            layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 8, 0, 0) }
-            layoutParams = params
+            )
+        }
+
+        val leftFlank = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.START
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(TextView(context).apply {
+                text = "LOCATION"
+                textSize = 10f
+                letterSpacing = 0.14f
+                setTextColor(Color.parseColor("#787774"))
+            })
+            txtLocationValue = TextView(context).apply {
+                text = "Zurich"
+                textSize = 19f
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                setPadding(0, dp(2), 0, 0)
+            }
+            addView(txtLocationValue)
+            txtLocationSub = TextView(context).apply {
+                text = "Switzerland"
+                textSize = 12f
+                setTextColor(Color.parseColor("#9E9C98"))
+            }
+            addView(txtLocationSub)
+        }
+
+        val rightFlank = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/KELLERBABG/Vantablack")))
-                } catch (_: Throwable) {
-                    Toast.makeText(this@MainActivity, "https://github.com/KELLERBABG/Vantablack", Toast.LENGTH_SHORT).show()
+                currentModeIndex = (currentModeIndex + 1) % modes.size
+                txtModeValue.text = modes[currentModeIndex]
+            }
+            addView(TextView(context).apply {
+                text = "MODE"
+                textSize = 10f
+                letterSpacing = 0.14f
+                setTextColor(Color.parseColor("#787774"))
+            })
+            txtModeValue = TextView(context).apply {
+                text = modes[currentModeIndex]
+                textSize = 19f
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                setPadding(0, dp(2), 0, 0)
+            }
+            addView(txtModeValue)
+            txtModeSub = TextView(context).apply {
+                text = "Direct"
+                textSize = 12f
+                setTextColor(Color.parseColor("#9E9C98"))
+            }
+            addView(txtModeSub)
+        }
+
+        flanksRow.addView(leftFlank)
+        flanksRow.addView(rightFlank)
+        heroSection.addView(flanksRow)
+        root.addView(heroSection)
+
+        // ── Quick Pairing Pill Dock (+ Pair Phone QR & Paste Invite) ──
+        val dockRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 2f
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0DFFFFFF"))
+                setStroke(1, Color.parseColor("#1AFFFFFF"))
+                cornerRadius = dp(999).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, dp(16)) }
+        }
+
+        val btnScanQr = Button(this).apply {
+            text = "+ Scan QR Code"
+            textSize = 12f
+            isAllCaps = false
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setTextColor(Color.parseColor("#0C0D0F"))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F4F1EA"))
+                cornerRadius = dp(999).toFloat()
+            }
+            setPadding(0, dp(10), 0, dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, dp(4), 0)
+            }
+            setOnClickListener { launchQrScanner() }
+        }
+
+        val btnPasteInvite = Button(this).apply {
+            text = "Paste Invite Link"
+            textSize = 12f
+            isAllCaps = false
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setTextColor(Color.parseColor("#F4F1EA"))
+            background = GradientDrawable().apply {
+                setColor(Color.TRANSPARENT)
+                cornerRadius = dp(999).toFloat()
+            }
+            setPadding(0, dp(10), 0, dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(4), 0, 0, 0)
+            }
+            setOnClickListener { pasteOrPromptInvite() }
+        }
+
+        dockRow.addView(btnScanQr)
+        dockRow.addView(btnPasteInvite)
+        root.addView(dockRow)
+
+        // ── Linked Devices Sheet ──
+        val cardPeers = createCoalCard().apply {
+            val topRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(10))
+            }
+            txtPeersHeader = TextView(context).apply {
+                text = "Linked Devices"
+                textSize = 13f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            topRow.addView(txtPeersHeader)
+
+            val btnFindWifi = TextView(context).apply {
+                text = "Find on Wi-Fi"
+                textSize = 11f
+                setTextColor(Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(12), dp(5), dp(12), dp(5))
+                setOnClickListener {
+                    if (GhostVpnService.isRunning) {
+                        GhostVpnService.triggerScan { count ->
+                            handler.post {
+                                updateStatus()
+                                Toast.makeText(this@MainActivity, "Found $count device(s)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } else {
+                        Toast.makeText(this@MainActivity, "Tap the center button to connect first", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
-        }
-        layout.addView(btnRepo)
+            topRow.addView(btnFindWifi)
+            addView(topRow)
 
-        val btnCheckUpdates = Button(this).apply {
-            text = "Check for App Updates"
-            textSize = 12f
-            setTextColor(Color.parseColor("#34d399"))
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0e1017"))
-                setStroke(1, Color.parseColor("#065f46"))
-                cornerRadius = 8f
+            peerListContainer = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
             }
-            setPadding(0, 20, 0, 20)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 8, 0, 0) }
-            layoutParams = params
-            setOnClickListener {
-                checkUpdate(userInitiated = true)
-            }
+            addView(peerListContainer)
         }
-        layout.addView(btnCheckUpdates)
+        root.addView(cardPeers)
+
+        // ── Hidden / Optional Endpoint & DNS state (preserved for invite import) ──
+        val prefs = getSharedPreferences("ggn_vpn", MODE_PRIVATE)
+        val savedHub = prefs.getString("hub_addr", null)
+        val savedDns = prefs.getString("dns_server", null)
+        editRemoteAddr = EditText(this).apply {
+            setText(savedHub ?: "")
+            visibility = View.GONE
+        }
+        editDnsServer = EditText(this).apply {
+            setText(savedDns ?: "")
+            visibility = View.GONE
+        }
+        root.addView(editRemoteAddr)
+        root.addView(editDnsServer)
+
+        // ── App Updates Row (One-Tap Update) ──
+        val cardUpdate = createCoalCard().apply {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val textCol = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = "App Updates"
+                    textSize = 13f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                txtUpdateStatus = TextView(context).apply {
+                    text = "Vantablack v$currentVerName is installed"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9E9C98"))
+                    setPadding(0, dp(2), 0, 0)
+                }
+                addView(txtUpdateStatus)
+            }
+            row.addView(textCol)
+
+            btnUpdateAction = TextView(context).apply {
+                text = "Check"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(14), dp(7), dp(14), dp(7))
+            }
+            row.addView(btnUpdateAction)
+            setOnClickListener { triggerImmediateUpdate() }
+            addView(row)
+        }
+        root.addView(cardUpdate)
 
         setContentView(scroll)
         updateStatus()
 
-        // Background update check on app launch
-        handler.postDelayed({ checkUpdate(userInitiated = false) }, 2500)
+        // Automatic update check shortly after launch
+        handler.postDelayed({ checkUpdate(userInitiated = false) }, 1500)
 
         if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isVpnActive(this)) {
             handler.postDelayed({ startVpn() }, 300)
         }
+        intent?.dataString?.trim()?.takeIf {
+            it.startsWith("vb://") || it.startsWith("vb-net://") || it.startsWith("vb-fleet://")
+        }?.let { handleInviteString(it) }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -602,11 +457,22 @@ class MainActivity : Activity() {
         if (intent?.getBooleanExtra("auto_connect", false) == true && !GhostVpnService.isVpnActive(this)) {
             handler.postDelayed({ startVpn() }, 300)
         }
+        intent?.dataString?.trim()?.takeIf {
+            it.startsWith("vb://") || it.startsWith("vb-net://") || it.startsWith("vb-fleet://")
+        }?.let { handleInviteString(it) }
     }
 
     override fun onResume() {
         super.onResume()
         handler.post(statusUpdater)
+        // If user just returned from granting "Install unknown apps" permission, resume APK install automatically
+        val pendingApk = pendingInstallApkFile
+        if (pendingApk != null && pendingApk.exists()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                pendingInstallApkFile = null
+                installApk(pendingApk)
+            }
+        }
     }
 
     override fun onPause() {
@@ -614,123 +480,78 @@ class MainActivity : Activity() {
         handler.removeCallbacks(statusUpdater)
     }
 
-    private fun createCard(): LinearLayout {
+    private fun getAppVersionName(): String {
+        return try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.1"
+        } catch (_: Throwable) {
+            "2.0.1"
+        }
+    }
+
+    private fun createCoalCard(): LinearLayout {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#0e1017"))
-                setStroke(1, Color.parseColor("#1e2330"))
-                cornerRadius = 10f
+                setColor(Color.parseColor("#0DFFFFFF"))
+                setStroke(1, Color.parseColor("#18FFFFFF"))
+                cornerRadius = dp(16).toFloat()
             }
-            setPadding(28, 24, 28, 24)
-            val params = LinearLayout.LayoutParams(
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 0, 0, 14) }
-            layoutParams = params
-        }
-    }
-
-    private fun createSectionHeader(title: String): TextView {
-        return TextView(this).apply {
-            text = title
-            textSize = 10f
-            setTypeface(Typeface.MONOSPACE, Typeface.BOLD)
-            setTextColor(Color.parseColor("#64748b"))
-            letterSpacing = 0.08f
-            setPadding(0, 0, 0, 8)
-        }
-    }
-
-    private fun createDimLabel(text: String): TextView {
-        return TextView(this).apply {
-            this.text = text
-            textSize = 10f
-            setTypeface(Typeface.MONOSPACE)
-            setTextColor(Color.parseColor("#64748b"))
+            ).apply { setMargins(0, 0, 0, dp(12)) }
         }
     }
 
     private fun updateStatus() {
-        val now = System.currentTimeMillis()
-        val dt = if (lastTimestamp > 0) ((now - lastTimestamp) / 1000.0).coerceAtLeast(0.1) else 1.0
-
         val isConnected = GhostVpnService.isVpnActive(this)
         if (isConnected) {
-            val fp = GhostVpnService.getFingerprint()
-            if (fp.isNotEmpty()) txtFingerprint.text = fp
-
             val peers = GhostVpnService.getPeersCount()
-            val totalNodes = if (peers > 0) peers + 1 else 1
-            val quorumText = if (totalNodes >= 5) " (Autonomous Quorum)" else ""
-            txtPeersHeader.text = "PEER SESSIONS ($peers PEERS, $totalNodes NODES$quorumText)"
+            txtPeersHeader.text = "Linked Devices ($peers)"
 
             val activeExit = GhostVpnService.getActiveExitNode()
-            txtExitNode.text = if (activeExit.isNotEmpty() && activeExit != "auto") activeExit else "Auto"
-            txtDnsServer.text = GhostVpnService.activeDnsDisplay
-
-            val stats = GhostVpnService.getStats()
-            val rxPkts = if (stats.isNotEmpty()) stats[0] else 0L
-            val txPkts = if (stats.size > 1) stats[1] else 0L
-
-            val currentRxBytes = if (stats.size > 4 && stats[4] > 0) stats[4] else rxPkts * 576L
-            val currentTxBytes = if (stats.size > 5 && stats[5] > 0) stats[5] else txPkts * 576L
-
-            val rxRate = if (lastTimestamp > 0 && lastRxBytes >= 0 && dt > 0.05) {
-                if (currentRxBytes >= lastRxBytes) (currentRxBytes - lastRxBytes) / dt else 0.0
-            } else 0.0
-            val txRate = if (lastTimestamp > 0 && lastTxBytes >= 0 && dt > 0.05) {
-                if (currentTxBytes >= lastTxBytes) (currentTxBytes - lastTxBytes) / dt else 0.0
-            } else 0.0
-
-            lastRxBytes = currentRxBytes
-            lastTxBytes = currentTxBytes
-            lastTimestamp = now
-
-            txtDownSpeed.text = formatRate(rxRate)
-            txtDownTotal.text = formatBytes(currentRxBytes) + " • " + rxPkts + " pkts"
-
-            txtUpSpeed.text = formatRate(txRate)
-            txtUpTotal.text = formatBytes(currentTxBytes) + " • " + txPkts + " pkts"
+            if (activeExit.isNotEmpty() && activeExit != "auto") {
+                txtLocationValue.text = activeExit
+                txtLocationSub.text = "Home Exit"
+            } else {
+                txtLocationValue.text = "Zurich"
+                txtLocationSub.text = "Switzerland"
+            }
 
             peerListContainer.removeAllViews()
             val discovered = GhostVpnService.getDiscoveredPeers()
             if (discovered.isEmpty() && peers > 0) {
-                peerListContainer.addView(createPeerRow(activeExit, true))
+                peerListContainer.addView(createPeerRow(activeExit.ifEmpty { "Linked Mesh Exit" }, true))
             } else if (discovered.isEmpty()) {
                 peerListContainer.addView(TextView(this).apply {
-                    text = "Listening for mesh peers..."
+                    text = "Protected — waiting for linked devices..."
                     textSize = 12f
-                    setTypeface(Typeface.MONOSPACE)
-                    setTextColor(Color.parseColor("#475569"))
-                    setPadding(0, 4, 0, 4)
+                    setTextColor(Color.parseColor("#8E8D8A"))
+                    setPadding(0, dp(4), 0, dp(4))
                 })
             } else {
                 for (peer in discovered) {
                     peerListContainer.addView(createPeerRow(peer, peer == activeExit))
                 }
             }
-
-            txtMode.text = "Route: 0.0.0.0/0 (Full Mesh Tunnel)"
-            txtConnPath.text = GhostVpnService.getConnectionPath()
-            val rtt = GhostVpnService.getRttMs()
-            txtRtt.text = if (rtt >= 0) "$rtt ms" else "— ms"
-            txtHandovers.text = GhostVpnService.getHandoverCount().toString()
             updateUiState(true)
         } else {
-            txtMode.text = "Standby"
-            txtConnPath.text = "Standby"
-            txtRtt.text = "— ms"
-            txtHandovers.text = "0"
-            txtDownSpeed.text = "0 B/s"
-            txtUpSpeed.text = "0 B/s"
+            txtPeersHeader.text = "Linked Devices (0)"
+            val configured = editRemoteAddr.text.toString().trim()
+            if (configured.isNotEmpty() && configured != "auto") {
+                txtLocationValue.text = configured
+                txtLocationSub.text = "Paired Exit"
+            } else {
+                txtLocationValue.text = "Zurich"
+                txtLocationSub.text = "Switzerland"
+            }
             peerListContainer.removeAllViews()
             peerListContainer.addView(TextView(this).apply {
-                text = "Offline"
+                text = "Scan a QR code from your computer or tap the center button"
                 textSize = 12f
-                setTypeface(Typeface.MONOSPACE)
-                setTextColor(Color.parseColor("#475569"))
-                setPadding(0, 4, 0, 4)
+                setTextColor(Color.parseColor("#8E8D8A"))
+                setPadding(0, dp(4), 0, dp(4))
             })
             updateUiState(false)
         }
@@ -740,78 +561,79 @@ class MainActivity : Activity() {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 8, 0, 8)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#0AFFFFFF"))
+                setStroke(1, Color.parseColor("#14FFFFFF"))
+                cornerRadius = dp(12).toFloat()
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, dp(4), 0, dp(4)) }
+
             setOnClickListener {
                 if (GhostVpnService.isRunning && !isExit && addr.isNotEmpty() && !addr.startsWith("Auto")) {
                     GhostVpnService.selectExitNode(addr) { ok ->
                         handler.post {
                             if (ok) {
-                                Toast.makeText(this@MainActivity, "Exit Gateway switched to $addr", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "Routing through $addr", Toast.LENGTH_SHORT).show()
                                 updateStatus()
-                            } else {
-                                Toast.makeText(this@MainActivity, "Failed to switch exit to $addr", Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
                 }
             }
 
-            addView(TextView(context).apply {
-                text = if (isExit) "● " else "○ "
-                textSize = 11f
-                setTextColor(if (isExit) Color.parseColor("#10b981") else Color.parseColor("#64748b"))
+            addView(View(context).apply {
+                val d = dp(8)
+                layoutParams = LinearLayout.LayoutParams(d, d).apply {
+                    setMargins(0, 0, dp(10), 0)
+                }
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor("#F4F1EA"))
+                }
             })
 
             addView(TextView(context).apply {
                 text = addr
                 textSize = 12f
-                setTypeface(Typeface.MONOSPACE)
-                setTextColor(Color.parseColor("#cbd5e1"))
+                setTextColor(Color.parseColor("#F4F1EA"))
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             })
 
             addView(TextView(context).apply {
-                text = if (isExit) "[Active Exit]" else "[Tap to Use as Exit]"
+                text = if (isExit) "Home Exit" else "Use as Exit"
                 textSize = 11f
-                setTypeface(Typeface.MONOSPACE)
-                setTextColor(if (isExit) Color.parseColor("#10b981") else Color.parseColor("#38bdf8"))
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(if (isExit) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(if (isExit) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(10), dp(4), dp(10), dp(4))
             })
-        }
-    }
-
-    private fun formatRate(bytesPerSec: Double): String {
-        return when {
-            bytesPerSec >= 1_048_576.0 -> String.format(Locale.US, "%.1f MB/s", bytesPerSec / 1_048_576.0)
-            bytesPerSec >= 1024.0 -> String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0)
-            else -> String.format(Locale.US, "%.0f B/s", bytesPerSec)
-        }
-    }
-
-    private fun formatBytes(bytes: Long): String {
-        return when {
-            bytes >= 1_048_576 -> String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
-            bytes >= 1024 -> String.format(Locale.US, "%.1f KB", bytes / 1024.0)
-            else -> "$bytes B"
         }
     }
 
     private fun updateUiState(connected: Boolean) {
         if (connected) {
-            btnConnect.text = "Disconnect"
-            btnConnect.background = GradientDrawable().apply {
-                setColor(Color.parseColor("#7f1d1d"))
-                cornerRadius = 8f
+            txtCenterState.text = "PROTECTED"
+            txtModeSub.text = "Encrypted"
+            centerLedView.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#F4F1EA"))
             }
-            txtStatus.text = "● CONNECTED (TUNNEL ACTIVE)"
-            txtStatus.setTextColor(Color.parseColor("#10b981"))
+            centerLedView.elevation = dp(6).toFloat()
         } else {
-            btnConnect.text = "Connect"
-            btnConnect.background = GradientDrawable().apply {
-                setColor(Color.parseColor("#1d4ed8"))
-                cornerRadius = 8f
+            txtCenterState.text = "OFF"
+            txtModeSub.text = "Direct"
+            centerLedView.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#33FFFFFF"))
             }
-            txtStatus.text = "○ DISCONNECTED"
-            txtStatus.setTextColor(Color.parseColor("#64748b"))
+            centerLedView.elevation = 0f
         }
     }
 
@@ -829,7 +651,7 @@ class MainActivity : Activity() {
         GhostVpnService.activePtr = 0L
         updateUiState(false)
         updateStatus()
-        Toast.makeText(this, "Mesh Disconnected", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Protection Off", Toast.LENGTH_SHORT).show()
     }
 
     private fun startVpn() {
@@ -877,109 +699,37 @@ class MainActivity : Activity() {
             updateUiState(true)
             updateStatus()
         } else if (requestCode == VPN_REQUEST_CODE) {
-            Toast.makeText(this, "VPN permission rejected", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "VPN permission declined", Toast.LENGTH_SHORT).show()
         }
     }
 
-    // ── In-App Software Updater ──
-    private var availableUpdateUrl: String? = null
-    private var availableUpdateVer: String? = null
-
-    private fun isNewerVersion(latest: String, current: String): Boolean {
-        val cleanLatest = latest.trimStart('v')
-        val cleanCurrent = current.trimStart('v')
-        val lParts = cleanLatest.split('.').mapNotNull { it.toIntOrNull() }
-        val cParts = cleanCurrent.split('.').mapNotNull { it.toIntOrNull() }
-        val len = maxOf(lParts.size, cParts.size)
-        for (i in 0 until len) {
-            val l = lParts.getOrElse(i) { 0 }
-            val c = cParts.getOrElse(i) { 0 }
-            if (l > c) return true
-            if (l < c) return false
-        }
-        return false
-    }
-
-    private fun checkUpdate(userInitiated: Boolean) {
-        if (userInitiated) {
-            Toast.makeText(this, "Checking GitHub for updates...", Toast.LENGTH_SHORT).show()
-        }
-        Thread {
-            try {
-                val url = java.net.URL("https://api.github.com/repos/KELLERBABG/Vantablack/releases/latest")
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 6000
-                conn.readTimeout = 6000
-                conn.setRequestProperty("User-Agent", "Vantablack-Android")
-                if (conn.responseCode in 200..299) {
-                    val body = conn.inputStream.bufferedReader().readText()
-                    val json = org.json.JSONObject(body)
-                    val tag = json.optString("tag_name", "")
-                    val assets = json.optJSONArray("assets")
-                    var apkUrl: String? = null
-                    if (assets != null) {
-                        for (i in 0 until assets.length()) {
-                            val asset = assets.getJSONObject(i)
-                            val name = asset.optString("name", "")
-                            if (name.endsWith(".apk")) {
-                                apkUrl = asset.optString("browser_download_url", "")
-                                break
-                            }
-                        }
-                    }
-
-                    val currentVer = try {
-                        packageManager.getPackageInfo(packageName, 0).versionName ?: "0.8.20"
-                    } catch (_: Throwable) {
-                        "0.8.20"
-                    }
-
-                    val hasUpdate = tag.isNotEmpty() && apkUrl != null && isNewerVersion(tag, currentVer)
-                    handler.post {
-                        if (hasUpdate) {
-                            availableUpdateUrl = apkUrl
-                            availableUpdateVer = tag
-                            btnUpdateBadge.visibility = View.VISIBLE
-                            btnUpdateBadge.text = "⚡ $tag"
-                            if (userInitiated) {
-                                promptUpdateDialog()
-                            }
-                        } else {
-                            btnUpdateBadge.visibility = View.GONE
-                            if (userInitiated) {
-                                Toast.makeText(this, "You're on the latest version ($currentVer)", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    }
-                } else if (userInitiated) {
-                    handler.post { Toast.makeText(this, "Check failed (HTTP ${conn.responseCode})", Toast.LENGTH_SHORT).show() }
-                }
-            } catch (e: Throwable) {
-                if (userInitiated) {
-                    handler.post { Toast.makeText(this, "Update check error: ${e.message}", Toast.LENGTH_SHORT).show() }
-                }
-            }
-        }.start()
-    }
-
+    // ── QR Scanner & Invite Handling ──
     private fun launchQrScanner() {
         try {
-            val intent = Intent("com.google.zxing.client.android.SCAN").apply {
-                putExtra("SCAN_MODE", "QR_CODE_MODE")
-            }
-            startActivityForResult(intent, QR_SCAN_REQUEST_CODE)
-        } catch (_: android.content.ActivityNotFoundException) {
-            Toast.makeText(this, "No QR scanner app installed — paste invite instead", Toast.LENGTH_SHORT).show()
-            promptPasteInvite()
+            com.google.zxing.integration.android.IntentIntegrator(this)
+                .setDesiredBarcodeFormats(com.google.zxing.integration.android.IntentIntegrator.QR_CODE)
+                .setPrompt("Scan Vantablack QR Code")
+                .setBeepEnabled(false)
+                .setOrientationLocked(false)
+                .setRequestCode(QR_SCAN_REQUEST_CODE)
+                .initiateScan()
         } catch (_: Throwable) {
-            promptPasteInvite()
+            try {
+                val intent = Intent("com.google.zxing.client.android.SCAN").apply {
+                    putExtra("SCAN_MODE", "QR_CODE_MODE")
+                }
+                startActivityForResult(intent, QR_SCAN_REQUEST_CODE)
+            } catch (_: Throwable) {
+                Toast.makeText(this, "Camera scanner unavailable — paste invite link", Toast.LENGTH_SHORT).show()
+                promptPasteInvite()
+            }
         }
     }
 
     private fun pasteOrPromptInvite() {
         val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clipText = clip.primaryClip?.getItemAt(0)?.text?.toString()?.trim() ?: ""
-        if (clipText.startsWith("vb-net://") || clipText.startsWith("vb://")) {
+        if (clipText.startsWith("vb-net://") || clipText.startsWith("vb://") || clipText.startsWith("vb-fleet://")) {
             handleInviteString(clipText)
         } else {
             promptPasteInvite(clipText)
@@ -993,10 +743,10 @@ class MainActivity : Activity() {
             setSingleLine(false)
         }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Import Mesh Invite")
-            .setMessage("Paste a vb-net:// network invite or vb://2. peer descriptor:")
+            .setTitle("Link Device")
+            .setMessage("Paste a Vantablack invite link from another device:")
             .setView(input)
-            .setPositiveButton("Import") { _, _ ->
+            .setPositiveButton("Link") { _, _ ->
                 val text = input.text.toString().trim()
                 if (text.isNotEmpty()) {
                     handleInviteString(text)
@@ -1008,8 +758,8 @@ class MainActivity : Activity() {
 
     private fun handleInviteString(raw: String) {
         val invite = raw.trim()
-        if (!invite.startsWith("vb-net://") && !invite.startsWith("vb://")) {
-            Toast.makeText(this, "Invalid invite (expected vb-net:// or vb://)", Toast.LENGTH_SHORT).show()
+        if (!invite.startsWith("vb-net://") && !invite.startsWith("vb://") && !invite.startsWith("vb-fleet://")) {
+            Toast.makeText(this, "Invalid invite link", Toast.LENGTH_SHORT).show()
             return
         }
         pendingInvite = invite
@@ -1021,33 +771,154 @@ class MainActivity : Activity() {
                 if (endpoint.isNotEmpty()) {
                     editRemoteAddr.setText(endpoint)
                 }
-                Toast.makeText(this, "Invite imported ($endpoint)", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Device linked ($endpoint)", Toast.LENGTH_SHORT).show()
                 updateStatus()
             } else {
                 Toast.makeText(this, "Invite error: ${res.removePrefix("err:")}", Toast.LENGTH_LONG).show()
             }
         } else {
-            Toast.makeText(this, "Invite queued — tap Connect to join", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Invite ready — tap the center button to connect", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun promptUpdateDialog() {
-        val url = availableUpdateUrl ?: return
-        val ver = availableUpdateVer ?: "latest"
-        android.app.AlertDialog.Builder(this)
-            .setTitle("Update Available")
-            .setMessage("Vantablack $ver is available.\n\nWould you like to download and install this update?")
-            .setPositiveButton("Download & Install") { _, _ ->
-                downloadAndInstallApk(url, "vantablack-$ver.apk")
+    // ── In-App Software Updater (Redirect-Safe & Instant Install) ──
+    private var availableUpdateUrl: String? = null
+    private var availableUpdateVer: String? = null
+
+    private fun isNewerVersion(latest: String, current: String): Boolean {
+        val cleanLatest = latest.trimStart('v')
+        val cleanCurrent = current.trimStart('v')
+        val lParts = cleanLatest.split('.', '-').mapNotNull { it.toIntOrNull() }
+        val cParts = cleanCurrent.split('.', '-').mapNotNull { it.toIntOrNull() }
+        val len = maxOf(lParts.size, cParts.size)
+        for (i in 0 until len) {
+            val l = lParts.getOrElse(i) { 0 }
+            val c = cParts.getOrElse(i) { 0 }
+            if (l > c) return true
+            if (l < c) return false
+        }
+        return false
+    }
+
+    private fun triggerImmediateUpdate() {
+        val url = availableUpdateUrl
+        val ver = availableUpdateVer
+        if (!url.isNullOrEmpty() && !ver.isNullOrEmpty()) {
+            downloadAndInstallApk(url, "vantablack-${ver.trimStart('v')}-android.apk")
+        } else {
+            checkUpdate(userInitiated = true)
+        }
+    }
+
+    private fun checkUpdate(userInitiated: Boolean) {
+        if (userInitiated) {
+            txtUpdateStatus.text = "Checking GitHub releases..."
+            btnUpdateAction.text = "Checking..."
+        }
+        Thread {
+            try {
+                val conn = openFollowingRedirects("https://api.github.com/repos/KELLERBABG/Vantablack/releases/latest")
+                val code = conn.responseCode
+                if (code in 200..299) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    val json = org.json.JSONObject(body)
+                    val tag = json.optString("tag_name", "")
+                    val assets = json.optJSONArray("assets")
+                    var apkUrl: String? = null
+                    if (assets != null) {
+                        for (i in 0 until assets.length()) {
+                            val asset = assets.getJSONObject(i)
+                            val name = asset.optString("name", "")
+                            if (name.endsWith(".apk")) {
+                                val candidate = asset.optString("browser_download_url", "")
+                                if (candidate.isNotEmpty()) {
+                                    apkUrl = candidate
+                                    if (name.startsWith("vantablack-")) break
+                                }
+                            }
+                        }
+                    }
+
+                    val currentVer = getAppVersionName()
+                    val hasUpdate = tag.isNotEmpty() && !apkUrl.isNullOrEmpty() && isNewerVersion(tag, currentVer)
+                    handler.post {
+                        if (hasUpdate && apkUrl != null) {
+                            availableUpdateUrl = apkUrl
+                            availableUpdateVer = tag
+                            btnUpdateBadge.visibility = View.VISIBLE
+                            btnUpdateBadge.text = "⚡ Update $tag"
+                            txtUpdateStatus.text = "Vantablack $tag is ready to install"
+                            btnUpdateAction.text = "Install $tag"
+                            btnUpdateAction.setTextColor(Color.parseColor("#0C0D0F"))
+                            btnUpdateAction.background = GradientDrawable().apply {
+                                setColor(Color.parseColor("#F4F1EA"))
+                                cornerRadius = dp(999).toFloat()
+                            }
+                            if (userInitiated) {
+                                downloadAndInstallApk(apkUrl, "vantablack-${tag.trimStart('v')}-android.apk")
+                            }
+                        } else {
+                            btnUpdateBadge.visibility = View.GONE
+                            txtUpdateStatus.text = "Vantablack v$currentVer is up to date"
+                            btnUpdateAction.text = "Check"
+                            if (userInitiated) {
+                                Toast.makeText(this, "Vantablack v$currentVer is up to date", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                } else if (userInitiated) {
+                    handler.post {
+                        txtUpdateStatus.text = "Update check failed (HTTP $code)"
+                        btnUpdateAction.text = "Retry"
+                        Toast.makeText(this, "Update check failed (HTTP $code)", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Throwable) {
+                if (userInitiated) {
+                    handler.post {
+                        txtUpdateStatus.text = "Could not reach GitHub"
+                        btnUpdateAction.text = "Retry"
+                        Toast.makeText(this, "Update check error: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
             }
-            .setNegativeButton("Later", null)
-            .show()
+        }.start()
+    }
+
+    private fun openFollowingRedirects(startUrl: String, maxHops: Int = 5): java.net.HttpURLConnection {
+        var currentUrl = startUrl
+        var hops = 0
+        while (hops < maxHops) {
+            val conn = java.net.URL(currentUrl).openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 10000
+            conn.readTimeout = 20000
+            conn.instanceFollowRedirects = false
+            conn.setRequestProperty("User-Agent", "Vantablack-Android/${getAppVersionName()}")
+            conn.connect()
+            val code = conn.responseCode
+            if (code in intArrayOf(301, 302, 303, 307, 308)) {
+                val loc = conn.getHeaderField("Location")
+                conn.disconnect()
+                if (loc.isNullOrEmpty()) break
+                currentUrl = java.net.URL(java.net.URL(currentUrl), loc).toString()
+                hops++
+            } else {
+                return conn
+            }
+        }
+        return (java.net.URL(currentUrl).openConnection() as java.net.HttpURLConnection).apply {
+            connectTimeout = 10000
+            readTimeout = 20000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "Vantablack-Android/${getAppVersionName()}")
+            connect()
+        }
     }
 
     private fun downloadAndInstallApk(downloadUrl: String, fileName: String) {
         val progressDialog = android.app.ProgressDialog(this).apply {
-            setTitle("Downloading Update")
-            setMessage("Downloading Vantablack update...")
+            setTitle("Updating Vantablack")
+            setMessage("Downloading latest Android release...")
             setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
             isIndeterminate = false
             max = 100
@@ -1061,13 +932,11 @@ class MainActivity : Activity() {
                 val targetFile = java.io.File(targetDir, fileName)
                 if (targetFile.exists()) targetFile.delete()
 
-                val url = java.net.URL(downloadUrl)
-                val conn = url.openConnection() as java.net.HttpURLConnection
-                conn.connectTimeout = 8000
-                conn.readTimeout = 15000
-                conn.instanceFollowRedirects = true
-                conn.setRequestProperty("User-Agent", "Vantablack-Android")
-                conn.connect()
+                val conn = openFollowingRedirects(downloadUrl)
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    throw IllegalStateException("HTTP $code")
+                }
 
                 val fileLength = conn.contentLength
                 val input = java.io.BufferedInputStream(conn.inputStream)
@@ -1088,6 +957,10 @@ class MainActivity : Activity() {
                 output.close()
                 input.close()
 
+                if (targetFile.length() < 50_000L) {
+                    throw IllegalStateException("Downloaded APK is incomplete (${targetFile.length()} bytes)")
+                }
+
                 handler.post {
                     progressDialog.dismiss()
                     installApk(targetFile)
@@ -1095,7 +968,10 @@ class MainActivity : Activity() {
             } catch (e: Throwable) {
                 handler.post {
                     progressDialog.dismiss()
-                    Toast.makeText(this, "Download failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Direct download fallback: ${e.message}", Toast.LENGTH_LONG).show()
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
+                    } catch (_: Throwable) {}
                 }
             }
         }.start()
@@ -1105,7 +981,12 @@ class MainActivity : Activity() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 if (!packageManager.canRequestPackageInstalls()) {
-                    Toast.makeText(this, "Please allow installing updates from Vantablack", Toast.LENGTH_LONG).show()
+                    pendingInstallApkFile = file
+                    Toast.makeText(
+                        this,
+                        "Enable 'Allow from this source' — update will install automatically when you return",
+                        Toast.LENGTH_LONG
+                    ).show()
                     val permissionIntent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
                         data = Uri.parse("package:$packageName")
                     }
@@ -1126,7 +1007,12 @@ class MainActivity : Activity() {
             }
             startActivity(installIntent)
         } catch (e: Throwable) {
-            Toast.makeText(this, "Installer launch failed: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Opening browser download for update...", Toast.LENGTH_LONG).show()
+            availableUpdateUrl?.let { url ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                } catch (_: Throwable) {}
+            }
         }
     }
 }

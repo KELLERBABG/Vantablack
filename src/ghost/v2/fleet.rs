@@ -1034,23 +1034,89 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
     Ok(grid)
 }
 
-/// Render `text` as a crisp, self-contained `<svg>` QR code with a 4-module quiet zone.
+/// Render `text` as a Vantablack "Connected Liquid Tracks" `<svg>` QR code with
+/// circular finder eyes, horizontal liquid pill tracks, and a central Vantablack
+/// Ghost medallion (sized within ECC-L recovery budget).
 pub fn render_qr_svg(text: &str) -> Result<String, String> {
+    use std::fmt::Write;
     let matrix = encode_qr_matrix(text)?;
     let size = matrix.len();
-    let quiet = 4;
+    let quiet = 4usize;
     let total = size + quiet * 2;
-    let mut path = String::new();
+
+    // Reserve a small 5x5 center medallion on Version 3+ matrices (<= 2% area,
+    // safely within ECC-L's ~7% recovery capacity).
+    let mid = size / 2;
+    let has_badge = size >= 29;
+    let in_badge = |r: usize, c: usize| -> bool {
+        has_badge
+            && r >= mid.saturating_sub(2)
+            && r <= mid + 2
+            && c >= mid.saturating_sub(2)
+            && c <= mid + 2
+    };
+    let in_finder = |r: usize, c: usize| -> bool {
+        (r < 7 && c < 7)
+            || (r < 7 && c >= size.saturating_sub(7))
+            || (r >= size.saturating_sub(7) && c < 7)
+    };
+
+    let mut tracks = String::new();
     for (r, row) in matrix.iter().enumerate() {
-        for (c, &dark) in row.iter().enumerate() {
-            if dark {
-                use std::fmt::Write;
-                let _ = write!(path, "M{},{}h1v1h-1z", c + quiet, r + quiet);
+        let mut c = 0usize;
+        while c < size {
+            if !row[c] || in_finder(r, c) || in_badge(r, c) {
+                c += 1;
+                continue;
             }
+            let mut end = c;
+            while end + 1 < size && row[end + 1] && !in_finder(r, end + 1) && !in_badge(r, end + 1)
+            {
+                end += 1;
+            }
+            let x = (c + quiet) as f32 + 0.08;
+            let y = (r + quiet) as f32 + 0.12;
+            let w = (end - c + 1) as f32 - 0.16;
+            let _ = write!(
+                tracks,
+                "<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"0.76\" rx=\"0.38\" fill=\"#0C0D0F\"/>"
+            );
+            c = end + 1;
         }
     }
+
+    let finder_eye = |ox: usize, oy: usize| -> String {
+        let cx = (ox + quiet) as f32 + 3.5;
+        let cy = (oy + quiet) as f32 + 3.5;
+        format!(
+            "<circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"3.05\" fill=\"none\" stroke=\"#0C0D0F\" stroke-width=\"0.92\"/><circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"1.52\" fill=\"#0C0D0F\"/>"
+        )
+    };
+    let eyes = format!(
+        "{}{}{}",
+        finder_eye(0, 0),
+        finder_eye(size - 7, 0),
+        finder_eye(0, size - 7)
+    );
+
+    let badge = if has_badge {
+        let bx = (mid.saturating_sub(2) + quiet) as f32 - 0.15;
+        let by = (mid.saturating_sub(2) + quiet) as f32 - 0.15;
+        format!(
+            "<g transform=\"translate({bx:.2},{by:.2}) scale(0.6092)\">\
+             <rect x=\"0\" y=\"0\" width=\"8.7\" height=\"8.7\" rx=\"2.5\" fill=\"#0C0D0F\" stroke=\"#EAE6DC\" stroke-width=\"0.45\"/>\
+             <path d=\"M2.1 4.3 C2.1 1.8, 6.6 1.8, 6.6 4.3 L6.7 6.6 C6.2 6.1, 5.7 6.65, 5.15 6.65 C4.65 6.65, 4.35 6.15, 4.35 6.15 C4.35 6.15, 4.05 6.65, 3.55 6.65 C3.0 6.65, 2.5 6.1, 2.0 6.6 Z\" fill=\"#F4F1EA\"/>\
+             <rect x=\"2.65\" y=\"3.45\" width=\"3.4\" height=\"1.25\" rx=\"0.62\" fill=\"#0C0D0F\"/>\
+             <line x1=\"3.1\" y1=\"3.85\" x2=\"4.15\" y2=\"3.85\" stroke=\"#DCFF02\" stroke-width=\"0.32\" stroke-linecap=\"round\"/>\
+             <circle cx=\"5.25\" cy=\"3.85\" r=\"0.18\" fill=\"#DCFF02\"/>\
+             </g>"
+        )
+    } else {
+        String::new()
+    };
+
     Ok(format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {total} {total}\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"Vantablack Fleet Invite QR\"><rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/><path d=\"{path}\" fill=\"#000000\"/></svg>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {total} {total}\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"Vantablack Fleet Invite QR\"><rect width=\"100%\" height=\"100%\" rx=\"3\" fill=\"#EAE6DC\"/>{eyes}{tracks}{badge}</svg>"
     ))
 }
 
