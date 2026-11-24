@@ -1640,6 +1640,8 @@ class MainActivity : Activity() {
     // ── In-App Software Updater ──
     private var availableUpdateUrl: String? = null
     private var availableUpdateVer: String? = null
+    private var readyUpdateFile: java.io.File? = null
+    private var isDownloadingUpdate = false
 
     private fun isNewerVersion(latest: String, current: String): Boolean {
         val cleanLatest = latest.trimStart('v')
@@ -1657,10 +1659,15 @@ class MainActivity : Activity() {
     }
 
     private fun triggerImmediateUpdate() {
+        val ready = readyUpdateFile
+        if (ready != null && ready.exists() && ready.length() >= 50_000L) {
+            installApk(ready)
+            return
+        }
         val url = availableUpdateUrl
         val ver = availableUpdateVer
         if (!url.isNullOrEmpty() && !ver.isNullOrEmpty()) {
-            downloadAndInstallApk(url, "vantablack-${ver.trimStart('v')}-android.apk")
+            downloadApkInBackground(url, "vantablack-${ver.trimStart('v')}-android.apk", ver)
         } else {
             checkUpdate(userInitiated = true)
         }
@@ -1703,17 +1710,26 @@ class MainActivity : Activity() {
                         if (hasApkUpdate && apkUrl != null) {
                             availableUpdateUrl = apkUrl
                             availableUpdateVer = tag
-                            btnUpdateBadge.visibility = View.VISIBLE
-                            btnUpdateBadge.text = "⚡ Update $tag"
-                            txtUpdateStatus.text = "Vantablack $tag is ready to install"
-                            btnUpdateAction.text = "Install $tag"
+                            val fileName = "vantablack-${tag.trimStart('v')}-android.apk"
+                            val targetDir = getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: cacheDir
+                            val cached = java.io.File(targetDir, fileName)
+                            if (cached.exists() && cached.length() >= 50_000L) {
+                                readyUpdateFile = cached
+                                btnUpdateBadge.visibility = View.VISIBLE
+                                btnUpdateBadge.text = "⚡ Install $tag"
+                                txtUpdateStatus.text = "Vantablack $tag downloaded — tap Install when ready"
+                                btnUpdateAction.text = "Install $tag"
+                            } else {
+                                btnUpdateBadge.visibility = View.VISIBLE
+                                btnUpdateBadge.text = "⚡ Update $tag"
+                                txtUpdateStatus.text = "New version $tag found — downloading in background..."
+                                btnUpdateAction.text = "Downloading..."
+                                downloadApkInBackground(apkUrl, fileName, tag)
+                            }
                             btnUpdateAction.setTextColor(Color.parseColor("#0C0D0F"))
                             btnUpdateAction.background = GradientDrawable().apply {
                                 setColor(Color.parseColor("#F4F1EA"))
                                 cornerRadius = dp(999).toFloat()
-                            }
-                            if (userInitiated) {
-                                downloadAndInstallApk(apkUrl, "vantablack-${tag.trimStart('v')}-android.apk")
                             }
                         } else if (newerTag) {
                             availableUpdateUrl = null
@@ -1786,16 +1802,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun downloadAndInstallApk(downloadUrl: String, fileName: String) {
-        val progressDialog = android.app.ProgressDialog(this).apply {
-            setTitle("Updating Vantablack")
-            setMessage("Downloading latest Android release...")
-            setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL)
-            isIndeterminate = false
-            max = 100
-            setCancelable(false)
-            show()
-        }
+    private fun downloadApkInBackground(downloadUrl: String, fileName: String, tag: String) {
+        if (isDownloadingUpdate) return
+        isDownloadingUpdate = true
+        txtUpdateStatus.text = "Downloading $tag in background..."
+        btnUpdateAction.text = "0%"
 
         Thread {
             try {
@@ -1816,11 +1827,18 @@ class MainActivity : Activity() {
                 val buffer = ByteArray(8192)
                 var total: Long = 0
                 var count: Int
+                var lastPct = -1
                 while (input.read(buffer).also { count = it } != -1) {
                     total += count
                     if (fileLength > 0) {
                         val progress = ((total * 100) / fileLength).toInt()
-                        handler.post { progressDialog.progress = progress }
+                        if (progress != lastPct) {
+                            lastPct = progress
+                            handler.post {
+                                txtUpdateStatus.text = "Downloading $tag... $progress%"
+                                btnUpdateAction.text = "$progress%"
+                            }
+                        }
                     }
                     output.write(buffer, 0, count)
                 }
@@ -1833,16 +1851,19 @@ class MainActivity : Activity() {
                 }
 
                 handler.post {
-                    progressDialog.dismiss()
-                    installApk(targetFile)
+                    isDownloadingUpdate = false
+                    readyUpdateFile = targetFile
+                    btnUpdateBadge.visibility = View.VISIBLE
+                    btnUpdateBadge.text = "⚡ Install $tag"
+                    txtUpdateStatus.text = "Vantablack $tag downloaded — tap Install when ready"
+                    btnUpdateAction.text = "Install $tag"
+                    Toast.makeText(this, "Vantablack $tag ready to install", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Throwable) {
                 handler.post {
-                    progressDialog.dismiss()
-                    Toast.makeText(this, "Direct download fallback: ${e.message}", Toast.LENGTH_LONG).show()
-                    try {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(downloadUrl)))
-                    } catch (_: Throwable) {}
+                    isDownloadingUpdate = false
+                    txtUpdateStatus.text = "Download failed (${e.message})"
+                    btnUpdateAction.text = "Retry"
                 }
             }
         }.start()

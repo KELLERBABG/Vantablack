@@ -1741,6 +1741,18 @@ pub fn spawn_control_center(
                                             .to_string(),
                                         };
                                         ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("POST /api/update/download") {
+                                        let (status, body) = match download_github_update().await {
+                                            Ok(msg) => (
+                                                "HTTP/1.1 200 OK",
+                                                serde_json::json!({ "success": true, "message": msg }).to_string(),
+                                            ),
+                                            Err(e) => (
+                                                "HTTP/1.1 500 Internal Server Error",
+                                                serde_json::json!({ "success": false, "error": e }).to_string(),
+                                            ),
+                                        };
+                                        (status, body, "application/json")
                                     } else if req.starts_with("POST /api/update/apply") {
                                         let (status, body) = match apply_github_update().await {
                                         Ok(msg) => (
@@ -1950,8 +1962,8 @@ pub async fn check_github_update() -> Result<serde_json::Value, String> {
     }))
 }
 
-/// Download the latest Windows release installer and execute it silently.
-pub async fn apply_github_update() -> Result<String, String> {
+/// Download the latest Windows release installer to temp without launching it yet.
+pub async fn download_github_update() -> Result<String, String> {
     let update_info = check_github_update().await?;
     let setup_url = update_info
         .get("windows_setup_url")
@@ -1977,6 +1989,19 @@ pub async fn apply_github_update() -> Result<String, String> {
     let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
     let temp_installer = std::env::temp_dir().join("vantablack-latest-setup.exe");
     std::fs::write(&temp_installer, &bytes).map_err(|e| e.to_string())?;
+    Ok("Update downloaded and ready to install".to_string())
+}
+
+/// Download (if not already staged) and execute the latest Windows release installer.
+pub async fn apply_github_update() -> Result<String, String> {
+    let temp_installer = std::env::temp_dir().join("vantablack-latest-setup.exe");
+    if !temp_installer
+        .metadata()
+        .map(|m| m.len() >= 100_000)
+        .unwrap_or(false)
+    {
+        let _ = download_github_update().await?;
+    }
 
     #[cfg(windows)]
     {

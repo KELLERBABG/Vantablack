@@ -562,6 +562,8 @@
 
       // Software updates
       updateChecking: false,
+      updateDownloading: false,
+      updateDownloaded: false,
       updateApplying: false,
       updateInfo: null,
 
@@ -989,9 +991,11 @@
       const hasUpdate = Boolean(up && up.update_available);
       let updateSub = `Vantablack v${escapeHtml(STATE.version)} is up to date`;
       let updateBtn = 'Check';
-      if (STATE.updateApplying) { updateSub = 'Downloading & installing...'; updateBtn = 'Installing...'; }
+      if (STATE.updateApplying) { updateSub = 'Installing & restarting...'; updateBtn = 'Installing...'; }
+      else if (STATE.updateDownloading) { updateSub = `Downloading v${escapeHtml(up && up.latest_version || '')} in background...`; updateBtn = 'Downloading...'; }
       else if (STATE.updateChecking) { updateSub = 'Checking GitHub...'; updateBtn = 'Checking...'; }
-      else if (hasUpdate) { updateSub = `v${escapeHtml(up.latest_version)} ready to install`; updateBtn = `Install v${escapeHtml(up.latest_version)}`; }
+      else if (hasUpdate && STATE.updateDownloaded) { updateSub = `v${escapeHtml(up.latest_version)} downloaded — click Install when ready`; updateBtn = `Install v${escapeHtml(up.latest_version)}`; }
+      else if (hasUpdate) { updateSub = `New version v${escapeHtml(up.latest_version)} found`; updateBtn = `Download v${escapeHtml(up.latest_version)}`; }
 
       let bodyHtml = '';
 
@@ -1745,9 +1749,11 @@
         STATE.updateInfo = data;
         STATE.updateChecking = false;
         render();
-        if (userInitiated) {
-          if (data.update_available) await applyUpdateNow();
-          else notify(`Vantablack v${data.current_version || STATE.version} is up to date`);
+        if (data.update_available) {
+          if (userInitiated) notify(`New version v${data.latest_version} found — downloading in background...`);
+          downloadUpdateInBackground();
+        } else if (userInitiated) {
+          notify(`Vantablack v${data.current_version || STATE.version} is up to date`);
         }
       } catch (_) {
         STATE.updateChecking = false;
@@ -1756,9 +1762,28 @@
       }
     }
 
+    async function downloadUpdateInBackground() {
+      if (STATE.updateDownloading || STATE.updateDownloaded || STATE.updateApplying) return;
+      STATE.updateDownloading = true;
+      render();
+      try {
+        const res = await fetch('/api/update/download', { method: 'POST', headers: pinHeaders() });
+        const data = await res.json();
+        STATE.updateDownloading = false;
+        if (res.ok && data.success) {
+          STATE.updateDownloaded = true;
+          notify('Update downloaded — click Install when ready');
+        }
+      } catch (_) {
+        STATE.updateDownloading = false;
+      }
+      render();
+    }
+
     async function triggerUpdateAction() {
-      if (STATE.updateApplying) return;
-      if (STATE.updateInfo && STATE.updateInfo.update_available) await applyUpdateNow();
+      if (STATE.updateApplying || STATE.updateDownloading) return;
+      if (STATE.updateInfo && STATE.updateInfo.update_available && STATE.updateDownloaded) await applyUpdateNow();
+      else if (STATE.updateInfo && STATE.updateInfo.update_available) await downloadUpdateInBackground();
       else await checkUpdateSilent(true);
     }
 
