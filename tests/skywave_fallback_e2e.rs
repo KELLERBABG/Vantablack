@@ -463,12 +463,14 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
     // ── 3. A real session, over IP (the handshake is not what is under test) ──
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let _ = http_json(
-            web_a,
-            "POST",
-            "/api/peers/add",
-            Some(&serde_json::json!({ "address": format!("127.0.0.1:{mesh_b}") })),
-        );
+        if !a.connected_to(&fp_b) {
+            let _ = http_json(
+                web_a,
+                "POST",
+                "/api/peers/add",
+                Some(&serde_json::json!({ "address": format!("127.0.0.1:{mesh_b}") })),
+            );
+        }
         for _ in 0..20 {
             if a.connected_to(&fp_b) && b.connected_to(&fp_a) {
                 break;

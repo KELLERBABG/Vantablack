@@ -805,6 +805,11 @@ pub(crate) async fn run_node(
                 )
                 .await;
             }
+            if std::env::var("GHOST_BEACON")
+                .is_ok_and(|v| v.eq_ignore_ascii_case("off") || v == "0")
+            {
+                return;
+            }
             for peer_addr in legacy_addrs {
                 initiate_handshake(&nc_boot, &nc_boot.socket, peer_addr, &pending_boot).await;
             }

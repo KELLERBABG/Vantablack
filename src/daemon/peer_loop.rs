@@ -334,7 +334,11 @@ pub(crate) async fn handle_pkt(
             let beacon_fp = hex::encode(&pk[..8]);
             if beacon_fp != node.fingerprint() {
                 tracing::info!(peer = %src, fingerprint = %beacon_fp, "Mesh beacon received on main socket");
-                if !peers.contains_key(&beacon_fp) && pending_hs.len() < MAX_PENDING_HANDSHAKES {
+                if !peers.contains_key(&beacon_fp)
+                    && pending_hs.len() < MAX_PENDING_HANDSHAKES
+                    && !std::env::var("GHOST_BEACON")
+                        .is_ok_and(|v| v.eq_ignore_ascii_case("off") || v == "0")
+                {
                     initiate_handshake(&node, sock, *src, pending_hs).await;
                 }
             }
