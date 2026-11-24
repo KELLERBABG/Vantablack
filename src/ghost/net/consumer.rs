@@ -327,6 +327,12 @@ pub struct ConsumerSettings {
     /// Experimental: emergency broadcast shard flooding (high data use).
     #[serde(default)]
     pub exp_diffusion: bool,
+    /// Threat / Malware Shield (phishing & C2 blocking, off by default).
+    #[serde(default)]
+    pub threat_shield_enabled: bool,
+    /// Local user allowlist overriding Threat Shield false positives.
+    #[serde(default)]
+    pub threat_shield_allowlist: Vec<String>,
 }
 
 impl Default for ConsumerSettings {
@@ -347,6 +353,8 @@ impl Default for ConsumerSettings {
             exp_collective_defense: false,
             exp_rendezvous: false,
             exp_diffusion: false,
+            threat_shield_enabled: false,
+            threat_shield_allowlist: Vec::new(),
         }
     }
 }
@@ -371,6 +379,18 @@ impl ConsumerSettings {
         super::collective_defense::set_enabled(self.exp_collective_defense);
         super::rendezvous::set_enabled(self.exp_rendezvous);
         super::diffusion::set_enabled(self.exp_diffusion);
+        self.sync_threat_shield();
+    }
+
+    /// Push persisted Threat Shield toggle and allowlist into `threat_shield`.
+    pub fn sync_threat_shield(&self) {
+        super::threat_shield::set_enabled(self.threat_shield_enabled);
+        super::threat_shield::with_shield(|s| {
+            s.clear_allowlist();
+            for d in &self.threat_shield_allowlist {
+                s.allow_domain(d);
+            }
+        });
     }
 
     /// Validate and set the egress mode. Returns false for unknown modes.

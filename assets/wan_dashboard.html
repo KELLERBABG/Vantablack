@@ -1003,6 +1003,13 @@
               </div>
               ${toggleSwitchHtml(st.adblock_enabled !== false)}
             </button>
+            <button type="button" class="coal-row setting-card" data-setting-tog="threat_shield_enabled">
+              <div>
+                <div class="setting-title">Threat / Malware Shield</div>
+                <div class="setting-sub">Blocks phishing &amp; C2 from signed feeds (${st.threat_shield_blocked || 0} blocked)</div>
+              </div>
+              ${toggleSwitchHtml(Boolean(st.threat_shield_enabled))}
+            </button>
             <button type="button" class="coal-row setting-card" data-setting-tog="low_latency">
               <div>
                 <div class="setting-title">Low-Latency Mode</div>

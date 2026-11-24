@@ -1657,6 +1657,49 @@ pub(crate) async fn run_node(
             std::time::Duration::from_secs(5),
         );
     }
+    // Scheduled Threat Shield feed refresh & CIDR expiry pruning.
+    {
+        tokio::spawn(async move {
+            let feed_path = std::env::var("GHOST_THREAT_FEED_PATH")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from);
+            let interval_secs = std::env::var("GHOST_THREAT_FEED_REFRESH_SECS")
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(3600)
+                .max(30);
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                ticker.tick().await;
+                let now = super::beacon::unix_now_secs() as u64;
+                let pruned = vantablack::ghost::net::threat_feed::prune_expired(now);
+                if pruned > 0 {
+                    tracing::debug!(pruned, "Threat Shield: pruned expired CIDR entries");
+                }
+                if let Some(ref path) = feed_path {
+                    match vantablack::ghost::net::threat_feed::refresh_from_path(path, now) {
+                        Ok(installed) => {
+                            tracing::info!(
+                                path = %path.display(),
+                                domains = installed.domains,
+                                cidrs = installed.cidrs,
+                                "Threat Shield: signed feed snapshot installed"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "Threat Shield: feed refresh failed (keeping prior valid rules)"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
     // HPEB bonding (Phase 5, opt-in via `GHOST_BOND=1`). Each path's socket feeds
     // the same `ingest` a plain datagram takes, so a carrier that arrived over a
     // bonded interface is indistinguishable downstream from one that did not.

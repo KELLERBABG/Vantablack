@@ -1728,6 +1728,8 @@ pub fn spawn_control_center(
                                     })
                                     .to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
+                                    } else if req.starts_with("GET /api/threat_shield") {
+                                        handle_get_threat_shield(&cs_ref)
                                     } else if req.starts_with("GET /api/update/check") {
                                         let body = match check_github_update().await {
                                             Ok(val) => val.to_string(),
@@ -2055,6 +2057,9 @@ fn handle_get_settings(
         "exp_diffusion": s.exp_diffusion,
         "adblock_enabled": vantablack::ghost::net::adblock::is_enabled(),
         "ads_blocked": vantablack::ghost::net::adblock::blocked_count(),
+        "threat_shield_enabled": s.threat_shield_enabled,
+        "threat_shield_blocked": vantablack::ghost::net::threat_shield::blocked_total(),
+        "threat_shield_allowlist": s.threat_shield_allowlist,
     })
     .to_string();
     ("HTTP/1.1 200 OK", body, "application/json")
@@ -2149,6 +2154,25 @@ fn handle_post_settings(
         s.exp_diffusion = v;
         vantablack::ghost::net::diffusion::set_enabled(v);
     }
+    if let Some(v) = val.get("threat_shield_enabled").and_then(|v| v.as_bool()) {
+        s.threat_shield_enabled = v;
+        vantablack::ghost::net::threat_shield::set_enabled(v);
+    }
+    if let Some(add) = val.get("threat_shield_allow_add").and_then(|v| v.as_str()) {
+        let clean = add.trim().trim_end_matches('.').to_ascii_lowercase();
+        if !clean.is_empty() && !s.threat_shield_allowlist.iter().any(|d| d == &clean) {
+            s.threat_shield_allowlist.push(clean);
+            s.sync_threat_shield();
+        }
+    }
+    if let Some(rem) = val
+        .get("threat_shield_allow_remove")
+        .and_then(|v| v.as_str())
+    {
+        let clean = rem.trim().trim_end_matches('.').to_ascii_lowercase();
+        s.threat_shield_allowlist.retain(|d| d != &clean);
+        s.sync_threat_shield();
+    }
     if !cp_ref.is_empty() && bypass_err.is_none() {
         save_consumer_settings(cp_ref, &s);
     }
@@ -2179,8 +2203,42 @@ fn handle_post_settings(
             "exp_collective_defense": s.exp_collective_defense,
             "exp_rendezvous": s.exp_rendezvous,
             "exp_diffusion": s.exp_diffusion,
+            "threat_shield_enabled": s.threat_shield_enabled,
+            "threat_shield_blocked": vantablack::ghost::net::threat_shield::blocked_total(),
+            "threat_shield_allowlist": s.threat_shield_allowlist,
         })
         .to_string();
         ("HTTP/1.1 200 OK", body, "application/json")
     }
+}
+
+fn handle_get_threat_shield(
+    cs_ref: &Arc<parking_lot::RwLock<ConsumerSettings>>,
+) -> (&'static str, String, &'static str) {
+    let allowlist = cs_ref.read().threat_shield_allowlist.clone();
+    let (domains, cidrs, allowlist_len) = vantablack::ghost::net::threat_shield::with_shield(|s| {
+        (s.domain_count(), s.cidr_count(), s.allowlist_len())
+    });
+    let recent: Vec<serde_json::Value> = vantablack::ghost::net::threat_shield::recent_blocks(32)
+        .into_iter()
+        .map(|ev| {
+            serde_json::json!({
+                "value": ev.value,
+                "kind": ev.kind.as_str(),
+                "at": ev.at,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "enabled": vantablack::ghost::net::threat_shield::is_enabled(),
+        "blocked_total": vantablack::ghost::net::threat_shield::blocked_total(),
+        "domains": domains,
+        "cidrs": cidrs,
+        "allowlist_len": allowlist_len,
+        "allowlist": allowlist,
+        "last_install_at": vantablack::ghost::net::threat_feed::last_install_at(),
+        "recent_blocks": recent,
+    })
+    .to_string();
+    ("HTTP/1.1 200 OK", body, "application/json")
 }

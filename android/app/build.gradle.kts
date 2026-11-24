@@ -11,8 +11,8 @@ android {
         applicationId = "dev.globalghost.net"
         minSdk = 26
         targetSdk = 34
-        versionCode = 213
-        versionName = "2.1.3"
+        versionCode = 214
+        versionName = "2.1.4"
     }
 
     signingConfigs {
