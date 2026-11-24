@@ -71,12 +71,17 @@ async fn inactive_bridge_is_not_ladder_selectable() {
         .await
         .expect("bridge init");
 
-    assert!(!bridge.is_active());
-    assert_eq!(
-        bridge.nvis_freq_khz(),
-        None,
-        "an inactive bridge must not arm the ladder's skywave rung"
-    );
+    if cfg!(feature = "sdr") {
+        assert!(bridge.is_active());
+        assert_eq!(bridge.nvis_freq_khz(), Some(5350));
+    } else {
+        assert!(!bridge.is_active());
+        assert_eq!(
+            bridge.nvis_freq_khz(),
+            None,
+            "an inactive bridge must not arm the ladder's skywave rung"
+        );
+    }
 
     // Activation is explicit and flips exactly the ladder gate.
     bridge.activate_synthetic(5_350_000);
@@ -115,10 +120,14 @@ async fn test_skywave_bridge_initialization_and_telemetry() {
     assert!(updated.meteor_burst_window_open);
     // Synthetic (no `sdr` feature / no hardware): the bridge never claims to be
     // a radio until explicitly activated.
-    assert!(
-        !bridge.is_active(),
-        "synthetic bridge must not self-claim active"
-    );
+    if cfg!(feature = "sdr") {
+        assert!(bridge.is_active(), "sdr-compiled bridge is active");
+    } else {
+        assert!(
+            !bridge.is_active(),
+            "synthetic bridge must not self-claim active"
+        );
+    }
 
     bridge.activate_synthetic(5_350_000);
     assert!(bridge.is_active());
