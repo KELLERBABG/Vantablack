@@ -1399,7 +1399,10 @@ class MainActivity : Activity() {
                 if (!isAllowed) {
                     setOnClickListener {
                         threatAllowlist.add(target)
-                        prefs.edit().putStringSet("threat_shield_allowlist", threatAllowlist.toSet()).apply()
+                        getSharedPreferences("ggn_vpn", MODE_PRIVATE)
+                            .edit()
+                            .putStringSet("threat_shield_allowlist", threatAllowlist.toSet())
+                            .apply()
                         try { GhostCore.allowThreatShieldDomain(target) } catch (_: Throwable) {}
                         Toast.makeText(this@MainActivity, "Whitelisted $target", Toast.LENGTH_SHORT).show()
                         lastThreatBlocksKey = ""
