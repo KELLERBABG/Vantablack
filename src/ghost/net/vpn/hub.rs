@@ -323,6 +323,26 @@ impl VpnHub {
 
         match proto {
             6 => {
+                if pkt.len() >= ihl + 20 {
+                    let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+                    if crate::ghost::net::adblock::is_blocked_port(dport) {
+                        crate::ghost::net::adblock::record_blocked();
+                        return;
+                    }
+                    if dport == 443 {
+                        let data_off = ((pkt[ihl + 12] >> 4) as usize) * 4;
+                        if data_off >= 20 && pkt.len() > ihl + data_off {
+                            if let Some(sni) =
+                                crate::ghost::net::adblock::extract_tls_sni(&pkt[ihl + data_off..])
+                            {
+                                if crate::ghost::net::adblock::is_blocked_target(&sni) {
+                                    crate::ghost::net::adblock::record_blocked();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 // TCP: feed the netstack (NAT front-end handles addressing).
                 let _ = self.netstack.try_feed(pkt);
             }
