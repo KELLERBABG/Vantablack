@@ -675,7 +675,11 @@ mod tests {
         }));
         let table = ladder();
         assert_eq!(table.len(), 6);
-        assert_eq!(table.iter().filter(|r| r.available).count(), 3);
+        let expected_available = if cfg!(feature = "sdr") { 4 } else { 3 };
+        assert_eq!(
+            table.iter().filter(|r| r.available).count(),
+            expected_available
+        );
     }
 
     #[test]
