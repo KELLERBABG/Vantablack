@@ -1168,9 +1168,9 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getThreatShieldJson<'l
         .into_iter()
         .map(|ev| {
             serde_json::json!({
-                "target": ev.target,
+                "target": ev.value,
                 "kind": ev.kind.as_str(),
-                "timestamp_secs": ev.timestamp_secs,
+                "timestamp_secs": ev.at,
             })
         })
         .collect();
