@@ -59,8 +59,8 @@ fun encaps_pq(pqpk, bitstring): bitstring.
 reduc forall sk: pqsk, r: bitstring; decaps_pq(sk, encaps_pq(pkpq(sk), r)) = r.
 
 (* DH commutativity: both peers must derive the same hybrid secret. *)
-equation forall x: bitstring, y: bitstring;
-  dh(x, dh(y, g)) = dh(y, dh(x, g)).
+equation forall x: bitstring, y: bitstring, z: bitstring;
+  dh(x, dh(y, z)) = dh(y, dh(x, z)).
 
 fun hcat(bitstring, bitstring): bitstring.
 fun kdf_mk(skey): skey.
