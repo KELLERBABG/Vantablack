@@ -1696,9 +1696,11 @@ class MainActivity : Activity() {
                     }
 
                     val currentVer = getAppVersionName()
-                    val hasUpdate = tag.isNotEmpty() && !apkUrl.isNullOrEmpty() && isNewerVersion(tag, currentVer)
+                    val htmlUrl = json.optString("html_url", "https://github.com/KELLERBABG/Vantablack/releases/latest")
+                    val newerTag = tag.isNotEmpty() && isNewerVersion(tag, currentVer)
+                    val hasApkUpdate = newerTag && !apkUrl.isNullOrEmpty()
                     handler.post {
-                        if (hasUpdate && apkUrl != null) {
+                        if (hasApkUpdate && apkUrl != null) {
                             availableUpdateUrl = apkUrl
                             availableUpdateVer = tag
                             btnUpdateBadge.visibility = View.VISIBLE
@@ -1712,6 +1714,19 @@ class MainActivity : Activity() {
                             }
                             if (userInitiated) {
                                 downloadAndInstallApk(apkUrl, "vantablack-${tag.trimStart('v')}-android.apk")
+                            }
+                        } else if (newerTag) {
+                            availableUpdateUrl = null
+                            availableUpdateVer = null
+                            btnUpdateBadge.visibility = View.VISIBLE
+                            btnUpdateBadge.text = "⚡ Update $tag"
+                            txtUpdateStatus.text = "Vantablack $tag released (open page)"
+                            btnUpdateAction.text = "Open"
+                            if (userInitiated) {
+                                Toast.makeText(this, "Release $tag found — opening release page", Toast.LENGTH_SHORT).show()
+                                try {
+                                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(htmlUrl)))
+                                } catch (_: Throwable) {}
                             }
                         } else {
                             btnUpdateBadge.visibility = View.GONE

@@ -569,7 +569,11 @@
     };
 
     function nativeSend(action) {
-      if (window.ipc && window.ipc.postMessage) window.ipc.postMessage(action);
+      if (window.ipc && window.ipc.postMessage) {
+        window.ipc.postMessage(action);
+      } else if (typeof action === 'string' && action.startsWith('open_url:')) {
+        window.open(action.slice(9), '_blank', 'noopener,noreferrer');
+      }
     }
 
     const dragBar = document.getElementById('drag-handle');
