@@ -1,23 +1,43 @@
 (*
-   Vantablack SessionRatchet — Forward Secrecy (FS) & Post-Compromise Security (PCS)
-   (ProVerif 2.05 symbolic model)
+   Vantablack SessionRatchet — Forward Secrecy (FS) & Post-Compromise Security
+   (PCS), two communicating peers (ProVerif 2.05)
 
-   Models `src/ghost/session/ratchet.rs` + `src/ghost/layers/l1_kem.rs`:
+   Models `src/ghost/session/ratchet.rs` + `src/ghost/layers/l1_kem.rs`.
 
-   1. Forward Secrecy (symmetric chain `kdf_ck`):
-      - Epoch 0 seals `m0_fs` under `kdf_mk(ck0)` and immediately steps the chain
-        to `ck1 = kdf_ck_next(ck0)`, discarding `ck0` and `kdf_mk(ck0)`.
-      - The adversary is explicitly given `ck1` on the public channel `c`.
-      - Query `attacker(m0_fs)` checks that `ck1` cannot recover epoch 0's plaintext.
+   The previous version put both halves of the handshake in one straight-line
+   process, so nothing was ever sent between two parties: the "ratchet" was a
+   sequence of local computations and every query was answered without an
+   attacker doing anything. This version has an initiator and a responder that
+   talk over `c`, each with its own secrets.
 
-   2. Post-Compromise Security / Break-in Recovery (hybrid DH + ML-KEM ratchet `kdf_rk_hybrid`):
-      - Both `rk1` and `ck1` are explicitly leaked to the adversary on `c`.
-      - Peers then perform an authenticated epoch-2 hybrid ratchet step using a fresh
-        classical Diffie-Hellman share and a fresh ML-KEM encapsulation, deriving
-        `rk2 = kdf_rk_hybrid(rk1, hcat(dh_ss2, pq_ss2))` and `ck2 = kdf_ck_from_rk(rk2)`.
-      - Epoch 2 seals `m2_pcs` under `kdf_mk(ck2)`.
-      - Query `attacker(m2_pcs)` checks that compromising `(rk1, ck1)` does not
-        compromise epoch 2 after the authenticated hybrid ratchet completes.
+   1. Both peers start from one pre-shared ratchet root `psk`, which is never
+      revealed. Epoch 0 seals `m0_fs` under `kdf_mk(ck0)` and immediately steps
+      the symmetric chain to `ck1 = kdf_ck_next(ck0)`, discarding `ck0`.
+   2. The adversary is explicitly handed `rk1` and `ck1` on `c`: the full
+      ratchet state at epoch 1. Query `attacker(m0_fs)` checks that this does
+      not recover epoch 0's plaintext.
+   3. Epoch 2 is an authenticated hybrid ratchet step between the two peers:
+      - the initiator sends a fresh classical share `ga2` and a signature over
+        it;
+      - the responder answers with its own fresh share `gb2`, a fresh KEM public
+        key, and a signature over `(ga2, gb2, pq_pub_b)`;
+      - the initiator encapsulates a fresh secret to `pq_pub_b` and sends the
+        ciphertext on `c`; the responder decapsulates it;
+      - both derive the same `hcat(dh_ss2, pq_ss2)` because of the DH
+        commutativity equation below, and both step
+        `rk2 = kdf_rk_hybrid(rk1, ...)`, `ck2 = kdf_ck_from_rk(rk2)`.
+   4. The responder decrypts the epoch-2 message and emits `epoch2_complete`.
+      Query `attacker(m2_pcs)` checks that knowing `(rk1, ck1)` does not
+      compromise epoch 2 once the authenticated hybrid step completes.
+
+   Positive witnesses: `query event(epoch2_complete())` and
+   `query event(epoch0_sealed())` are reachability queries. ProVerif reports a
+   reachable event as false; if either prints true, the protocol stopped
+   executing and the secrecy results are vacuous.
+
+   Not modelled: the concrete KDF construction, ratchet message headers, skipped
+   message keys, and any reduction for the signature or KEM. See
+   formal/README.md.
 *)
 
 free c: channel.
@@ -38,6 +58,10 @@ fun dh(bitstring, bitstring): bitstring.
 fun encaps_pq(pqpk, bitstring): bitstring.
 reduc forall sk: pqsk, r: bitstring; decaps_pq(sk, encaps_pq(pkpq(sk), r)) = r.
 
+(* DH commutativity: both peers must derive the same hybrid secret. *)
+equation forall x: bitstring, y: bitstring;
+  dh(x, dh(y, g)) = dh(y, dh(x, g)).
+
 fun hcat(bitstring, bitstring): bitstring.
 fun kdf_mk(skey): skey.
 fun kdf_ck_next(skey): skey.
@@ -49,51 +73,103 @@ reduc forall m: bitstring, k: skey; sdec(senc(m, k), k) = m.
 
 free g: bitstring.
 
+(* The pre-shared ratchet root both peers hold. Never revealed: what is
+   compromised is the *evolved* state, not the initial secret. *)
+free psk: skey [private].
+
 free m0_fs: bitstring [private].
 free m2_pcs: bitstring [private].
+
+event epoch0_sealed().
+event epoch2_complete().
+event state_leaked().
 
 query attacker(m0_fs).
 query attacker(m2_pcs).
 
-let ratchet_peer =
-  new skA: skey;
-  new skB: skey;
-  new rk0: skey;
-  new ck0: skey;
-  out(c, pk(skA));
-  out(c, pk(skB));
+(* Positive reachability witnesses. Expected: false (reachable). *)
+query event(epoch0_sealed()).
+query event(epoch2_complete()).
 
-  (* Epoch 0: seal m0_fs, step symmetric chain, discard ck0 *)
+let initiator =
+  new skA: skey;
+  new skPQa: pqsk;
+  new ra2: bitstring;
+  new ephPQ2: bitstring;
+
+  let rk0 = psk in
+  let ck0 = kdf_ck_from_rk(psk) in
   let mk0 = kdf_mk(ck0) in
   out(c, senc(m0_fs, mk0));
-  let ck1 = kdf_ck_next(ck0) in
-  let rk1 = rk0 in
+  event epoch0_sealed();
 
-  (* Explicit compromise of epoch-1 state on the untrusted channel *)
+  (* Epoch 0 is discarded; epoch 1 is handed to the adversary. `rk1` is one
+     one-way step from `rk0`, so leaking it does not hand back the root. *)
+  let ck1 = kdf_ck_next(ck0) in
+  let rk1 = kdf_ck_next(rk0) in
   out(c, rk1);
   out(c, ck1);
+  event state_leaked();
 
-  (* Epoch 2: authenticated hybrid ratchet step *)
-  new ra2: bitstring;
-  new rb2: bitstring;
-  new skPQ2: pqsk;
-  new ephPQ2: bitstring;
+  (* Epoch 2: authenticated hybrid ratchet step. *)
+  out(c, pk(skA));
   let ga2 = dh(ra2, g) in
-  let gb2 = dh(rb2, g) in
-  let pq_pub2 = pkpq(skPQ2) in
   out(c, ga2);
-  out(c, gb2);
-  out(c, pq_pub2);
-  out(c, sign((ga2, gb2, pq_pub2), skA));
-  in(c, sig_a: sig);
-  let checked = verify(sig_a, pk(skA)) in
-  if checked = (ga2, gb2, pq_pub2) then
+  out(c, sign((ga2, pk(skA)), skA));
+
+  in(c, pk_b: pkey);
+  in(c, gb2: bitstring);
+  in(c, pq_pub_b: pqpk);
+  in(c, commit_b: sig);
+  let commit = verify(commit_b, pk_b) in
+  if commit = (ga2, gb2, pq_pub_b) then
   let klass2 = dh(ra2, gb2) in
-  let pq_sec2 = decaps_pq(skPQ2, encaps_pq(pq_pub2, ephPQ2)) in
-  let rk2 = kdf_rk_hybrid(rk1, hcat(klass2, pq_sec2)) in
+  let ct2 = encaps_pq(pq_pub_b, ephPQ2) in
+  let pq2 = ephPQ2 in
+  let rk2 = kdf_rk_hybrid(rk1, hcat(klass2, pq2)) in
   let ck2 = kdf_ck_from_rk(rk2) in
   let mk2 = kdf_mk(ck2) in
+  out(c, ct2);
   out(c, senc(m2_pcs, mk2)).
 
+let responder =
+  new skB: skey;
+  new skPQb: pqsk;
+  new rb2: bitstring;
+
+  let rk0 = psk in
+  let ck0 = kdf_ck_from_rk(psk) in
+  (* Epoch 0 and the leak are public on `c`; the responder observes them. *)
+  in(c, sealed0: bitstring);
+  let ck1 = kdf_ck_next(ck0) in
+  let rk1 = kdf_ck_next(rk0) in
+  in(c, rk1_seen: skey);
+  in(c, ck1_seen: skey);
+  if rk1_seen = rk1 then
+  if ck1_seen = ck1 then
+
+  in(c, pk_a: pkey);
+  in(c, ga2: bitstring);
+  in(c, commit_a: sig);
+  let commit = verify(commit_a, pk_a) in
+  if commit = (ga2, pk_a) then
+  out(c, pk(skB));
+  let gb2 = dh(rb2, g) in
+  let pq_pub_b = pkpq(skPQb) in
+  out(c, gb2);
+  out(c, pq_pub_b);
+  out(c, sign((ga2, gb2, pq_pub_b), skB));
+
+  in(c, ct2: bitstring);
+  let pq2 = decaps_pq(skPQb, ct2) in
+  let klass2 = dh(rb2, ga2) in
+  let rk2 = kdf_rk_hybrid(rk1, hcat(klass2, pq2)) in
+  let ck2 = kdf_ck_from_rk(rk2) in
+  let mk2 = kdf_mk(ck2) in
+  in(c, sealed2: bitstring);
+  let opened = sdec(sealed2, mk2) in
+  if opened = m2_pcs then
+  event epoch2_complete().
+
 process
-  (!ratchet_peer)
+  ((!initiator) | (!responder))

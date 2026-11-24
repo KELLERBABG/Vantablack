@@ -7,14 +7,29 @@
 //! behaviour ledger.
 //!
 //! The construction is a Ristretto255 VOPRF with a batched Chaum–Pedersen DLEQ
-//! proof:
+//! proof, keyed by **quantized buckets** and rooted in the node's private
+//! identity secret:
 //!
 //! ```text
+//! identity.key --HKDF("VB-BTCR-V2")--> k_root   (never leaves the node)
+//! k_{day,tier} = H_scalar("VB-BTCR-BUCKET-V2" ‖ k_root ‖ day ‖ tier)
+//! K_{day,tier} = k_{day,tier} · G               (published per bucket)
+//!
 //! client:   M = H2G(input),  B = r·M             (r random, never leaves)
-//! issuer:   E = k·B,  DLEQ{ log_G K == log_B E } (k is the issuer secret)
-//! client:   N = r⁻¹·E = k·M                      (verifies the DLEQ first)
-//! relay:    accept iff N == k·M and N was never spent
+//! issuer:   E = k_{day,tier}·B, DLEQ{ log_G K == log_B E }
+//! client:   N = r⁻¹·E = k_{day,tier}·M           (verifies the DLEQ first)
+//! relay:    accept iff N == k_{day,tier}·M, unexpired, never spent
 //! ```
+//!
+//! **Why a bucket.** A per-ticket key would make `K` a fingerprint of the ticket
+//! itself. Tickets are therefore issued against a UTC-day bucket and a fixed
+//! work tier (1 MiB, 16 MiB, 256 MiB), so every ticket minted in the same bucket
+//! verifies under the *same* published key and the anonymity set is not one.
+//!
+//! **Why the root is private.** v1 derived `k` from the node fingerprint. The
+//! fingerprint is public, so anyone could recompute the scalar and mint tickets
+//! offline. The root now comes from the private `identity.key` seed through a
+//! domain-separated HKDF, and no public input reaches it.
 //!
 //! The DLEQ matters: without it an issuer can return `E = k'·B` for a key it
 //! does not publish, and the client cannot tell a valid ticket from a worthless
@@ -23,9 +38,11 @@
 //!
 //! Issuance is gated by a signed **work receipt** (`btcr-receipt:v1`): the
 //! issuer refuses to mint anything without a receipt from an allowlisted
-//! beneficiary key, so a ticket cannot be created out of nothing. Double spends
-//! are refused by nullifier, and the wallet is a plain JSON file the operator can
-//! copy between devices.
+//! beneficiary key, so a ticket cannot be created out of nothing. Each receipt
+//! is redeemable once — its nullifier is `SHA256("VB-BTCR-RCPT" ‖ worker ‖
+//! epoch ‖ beneficiary)` — and ticket double spends are refused separately by a
+//! per-ticket nullifier. The wallet is a plain JSON file the operator can copy
+//! between devices.
 //!
 //! Not built: a network-wide relay registry and ticket gossip. Tickets are
 //! issued, verified and spent locally; distributing them is the mesh's job.
@@ -44,16 +61,70 @@ use std::sync::{Mutex, OnceLock};
 
 /// Domain separator for hashing an arbitrary input to a Ristretto point.
 const H2G_DOMAIN: &[u8] = b"VB-BTCR-H2G-V1";
-/// Domain separator for the deterministic per-node issuer key.
-const ISSUER_DOMAIN: &[u8] = b"VB-BTCR-ISSUER-V1";
+/// Domain separator for the private root key derived from `identity.key`.
+const ROOT_SEED_DOMAIN: &[u8] = b"VB-BTCR-V2";
+/// Domain separator for a quantized `(day, tier)` bucket scalar.
+const BUCKET_DOMAIN: &[u8] = b"VB-BTCR-BUCKET-V2";
 /// Domain separator for the nullifier (one spend per ticket, not per input).
 const NULLIFIER_DOMAIN: &[u8] = b"VB-BTCR-NULLIFIER-V1";
+/// Domain separator for the receipt nullifier (one mint per work receipt).
+const RECEIPT_NULLIFIER_DOMAIN: &[u8] = b"VB-BTCR-RCPT";
 /// Version byte in the 81-byte ticket encoding.
-pub const TICKET_VERSION: u8 = 1;
-/// Default ticket lifetime: one day, matching one night of relay work.
+pub const TICKET_VERSION: u8 = 2;
+/// Default ticket lifetime: the rest of the current UTC-day bucket.
 pub const DEFAULT_TICKET_TTL_SECS: u64 = 24 * 3600;
 /// A ticket is 81 bytes: version, M, N, expiry, work credit.
 pub const TICKET_ENCODED_LEN: usize = 81;
+/// Fixed work tiers. `work_bytes` is always exactly one of these, so the ticket
+/// length and value distribution do not identify the issuer or the receipt.
+pub const TIER_BYTES: [u64; 3] = [1 << 20, 16 << 20, 256 << 20];
+
+/// The quantized metadata a ticket shares with every other ticket minted in the
+/// same bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Bucket {
+    /// UTC-day index, `unix_secs / 86400 + 1` at issuance.
+    pub day: u32,
+    /// Index into [`TIER_BYTES`].
+    pub tier: u8,
+}
+
+/// The UTC-day bucket a ticket issued at `now` belongs to.
+///
+/// `+1` puts the ticket in *tomorrow's* bucket, so an issuance at 23:59 UTC is
+/// still valid for a full day instead of expiring seconds later.
+pub fn bucket_day(now: u64) -> u32 {
+    (now / 86_400 + 1).min(u32::MAX as u64) as u32
+}
+
+/// The last second a ticket in `day` is valid.
+pub fn expiry_for_day(day: u32) -> u64 {
+    (day as u64 + 1) * 86_400
+}
+
+/// Recover the bucket day from the quantized expiry stored in a ticket.
+fn day_of_expiry(expires_at: u64) -> u32 {
+    (expires_at / 86_400).saturating_sub(1).min(u32::MAX as u64) as u32
+}
+
+/// The largest tier at or below `work_bytes`.
+///
+/// Floor, never ceiling: a receipt for 3 MiB earns the 1 MiB tier, so
+/// quantization can only under-issue relative to the work proved.
+pub fn tier_for(work_bytes: u64) -> u8 {
+    let mut tier = 0u8;
+    for (index, bytes) in TIER_BYTES.iter().enumerate() {
+        if work_bytes >= *bytes {
+            tier = index as u8;
+        }
+    }
+    tier
+}
+
+/// Credit carried by a tier index, clamped to the last tier.
+pub fn tier_bytes(tier: u8) -> u64 {
+    TIER_BYTES[(tier as usize).min(TIER_BYTES.len() - 1)]
+}
 
 fn random_scalar() -> Scalar {
     let mut wide = [0u8; 64];
@@ -160,66 +231,80 @@ impl Dleq {
 
 // ── Issuer ──────────────────────────────────────────────────────────────────
 
-/// The blind-signing authority. `k` never leaves this struct.
+/// The blind-signing authority. The root scalar never leaves this struct, and
+/// the bucket scalars it derives are never stored or published.
 pub struct Issuer {
-    secret: Scalar,
-    public: RistrettoPoint,
+    root: Scalar,
 }
 
 impl Issuer {
-    /// Deterministic issuer key for a node fingerprint.
+    /// Derive the private root from the node's `identity.key` secret.
     ///
-    /// A node's ticket issuer must survive restarts without a separate key file,
-    /// and it must not be the node's identity key: signing bearer tickets with
-    /// the handshake key would let a ticket compromise forge sessions.
-    pub fn for_node(fingerprint: &str) -> Self {
-        let mut h = Sha512::new();
-        h.update(ISSUER_DOMAIN);
-        h.update(fingerprint.as_bytes());
-        let wide = h.finalize();
-        let mut seed = [0u8; 64];
-        seed.copy_from_slice(&wide);
-        let secret = Scalar::from_bytes_mod_order_wide(&seed);
-        Self {
-            public: secret * RISTRETTO_BASEPOINT_POINT,
-            secret,
-        }
+    /// The identity seed is the only input. The 32-byte Ed25519 secret is
+    /// expanded through HKDF-SHA256 under [`ROOT_SEED_DOMAIN`], so the ticket
+    /// root is independent of the handshake key (a ticket compromise cannot
+    /// forge sessions, and a session compromise cannot mint tickets) while
+    /// still surviving a restart without a second key file.
+    pub fn from_identity_seed(seed: &[u8; 32]) -> Self {
+        let hk = hkdf::Hkdf::<Sha256>::new(None, seed);
+        let mut okm = [0u8; 64];
+        hk.expand(ROOT_SEED_DOMAIN, &mut okm)
+            .expect("64 bytes is a valid HKDF output length");
+        let root = Scalar::from_bytes_mod_order_wide(&okm);
+        okm.fill(0);
+        Self { root }
     }
 
+    /// Alias kept for callers that traffic in "a seed" rather than "the identity
+    /// seed". Both mean the same thing: private key material, never a public name.
     pub fn from_seed(seed: &[u8; 32]) -> Self {
-        let secret = Scalar::from_bytes_mod_order_wide(&{
-            let mut wide = [0u8; 64];
-            wide[..32].copy_from_slice(seed);
-            wide
-        });
-        Self {
-            public: secret * RISTRETTO_BASEPOINT_POINT,
-            secret,
-        }
+        Self::from_identity_seed(seed)
     }
 
-    pub fn public_hex(&self) -> String {
-        hex::encode(self.public.compress().as_bytes())
+    /// The bucket scalar `k_{day,tier}`. Never leaves this type in the clear.
+    pub fn secret_for(&self, day: u32, tier: u8) -> Scalar {
+        let mut h = Sha512::new();
+        h.update(BUCKET_DOMAIN);
+        h.update(self.root.to_bytes());
+        h.update(day.to_be_bytes());
+        h.update([tier]);
+        Scalar::from_hash(h)
     }
 
-    pub fn public(&self) -> RistrettoPoint {
-        self.public
+    /// The published bucket key `K_{day,tier} = k_{day,tier}·G`.
+    pub fn public_for(&self, day: u32, tier: u8) -> RistrettoPoint {
+        self.secret_for(day, tier) * RISTRETTO_BASEPOINT_POINT
     }
 
-    /// Blind-evaluate one request and attach a DLEQ proof.
-    pub fn evaluate(&self, blinded_hex: &str) -> Result<(String, Dleq), String> {
+    pub fn public_hex_for(&self, day: u32, tier: u8) -> String {
+        hex::encode(self.public_for(day, tier).compress().as_bytes())
+    }
+
+    /// Blind-evaluate one request inside `(day, tier)` and attach a DLEQ proof
+    /// tying the evaluation to that bucket's published key.
+    pub fn evaluate(
+        &self,
+        blinded_hex: &str,
+        day: u32,
+        tier: u8,
+    ) -> Result<(String, Dleq), String> {
         let blinded = point_from_hex(blinded_hex)?;
-        let eval = self.secret * blinded;
-        let proof = Dleq::prove(&self.secret, &self.public, &blinded, &eval);
+        let secret = self.secret_for(day, tier);
+        let public = secret * RISTRETTO_BASEPOINT_POINT;
+        let eval = secret * blinded;
+        let proof = Dleq::prove(&secret, &public, &blinded, &eval);
         Ok((hex::encode(eval.compress().as_bytes()), proof))
     }
 
-    /// The check a relay performs: `N == k·M`.
+    /// The check a relay performs: `N == k_{day,tier}·M` for the ticket's own
+    /// claimed bucket. A ticket minted in another bucket fails here, which is
+    /// what stops a relay from re-labelling its metadata.
     pub fn verify_ticket(&self, ticket: &Ticket) -> bool {
         let (Ok(m), Ok(n)) = (point_from_hex(&ticket.m), point_from_hex(&ticket.n)) else {
             return false;
         };
-        self.secret * m == n
+        let bucket = ticket.bucket();
+        self.secret_for(bucket.day, bucket.tier) * m == n
     }
 }
 
@@ -261,8 +346,8 @@ pub fn finalize(
     eval_hex: &str,
     proof: &Dleq,
     issuer_public_hex: &str,
-    expires_at: u64,
-    work_bytes: u64,
+    day: u32,
+    tier: u8,
 ) -> Result<Ticket, String> {
     let public = point_from_hex(issuer_public_hex)?;
     let eval = point_from_hex(eval_hex)?;
@@ -279,8 +364,8 @@ pub fn finalize(
     Ok(Ticket {
         m: hex::encode(m.compress().as_bytes()),
         n: hex::encode(n.compress().as_bytes()),
-        expires_at,
-        work_bytes,
+        expires_at: expiry_for_day(day),
+        work_bytes: tier_bytes(tier),
     })
 }
 
@@ -335,6 +420,14 @@ impl Ticket {
         })
     }
 
+    /// The quantized bucket this ticket was issued in.
+    pub fn bucket(&self) -> Bucket {
+        Bucket {
+            day: day_of_expiry(self.expires_at),
+            tier: tier_for(self.work_bytes),
+        }
+    }
+
     /// One spendable unit, independent of which relay sees it first.
     pub fn nullifier(&self) -> String {
         let mut h = Sha256::new();
@@ -360,6 +453,23 @@ pub struct Receipt {
     pub signature: String,
     /// Beneficiary public key that must sign the receipt, hex.
     pub beneficiary: String,
+}
+
+impl Receipt {
+    /// Deterministic one-mint-per-receipt identifier.
+    ///
+    /// It is stable for the same `(worker, epoch, beneficiary)` triple, so a
+    /// replayed receipt is recognised even when the issuer has restarted (the
+    /// spent-receipt set is rebuildable from the wallet ledger) and even if the
+    /// receipt is wrapped in a fresh blinding request.
+    pub fn nullifier(&self) -> String {
+        let mut h = Sha256::new();
+        h.update(RECEIPT_NULLIFIER_DOMAIN);
+        h.update(self.worker.as_bytes());
+        h.update(self.epoch.to_be_bytes());
+        h.update(self.beneficiary.as_bytes());
+        hex::encode(h.finalize())
+    }
 }
 
 pub fn receipt_message(worker: &str, work_bytes: u64, epoch: u64) -> Vec<u8> {
@@ -422,17 +532,40 @@ pub fn issue_for_work(
     now: u64,
 ) -> Result<(Ticket, Dleq), String> {
     verify_receipt(receipt, beneficiary)?;
-    let (eval, proof) = issuer.evaluate(&request.blinded)?;
-    let expires_at = now.saturating_add(DEFAULT_TICKET_TTL_SECS);
+    let bucket = Bucket {
+        day: bucket_day(now),
+        tier: tier_for(receipt.work_bytes),
+    };
+    // Evaluate before claiming the receipt, so a malformed blinding request
+    // does not burn a unit of work.
+    let (eval, proof) = issuer.evaluate(&request.blinded, bucket.day, bucket.tier)?;
+    redeem_receipt(receipt)?;
     let ticket = finalize(
         request,
         &eval,
         &proof,
-        &issuer.public_hex(),
-        expires_at,
-        receipt.work_bytes,
+        &issuer.public_hex_for(bucket.day, bucket.tier),
+        bucket.day,
+        bucket.tier,
     )?;
     Ok((ticket, proof))
+}
+
+/// Claim a receipt for minting. A second mint from the same receipt is refused.
+///
+/// The check is deliberately separate from [`verify_receipt`]: a signature says
+/// the receipt is authentic, not that it is unspent. Callers that mint directly
+/// (the HTTP surface) must go through this too.
+pub fn redeem_receipt(receipt: &Receipt) -> Result<(), String> {
+    let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
+    if !guard.receipts.insert(receipt.nullifier()) {
+        guard.rejected_duplicate_receipts = guard.rejected_duplicate_receipts.saturating_add(1);
+        return Err(format!(
+            "work receipt already redeemed (worker={} epoch={})",
+            receipt.worker, receipt.epoch
+        ));
+    }
+    Ok(())
 }
 
 // ── Ledger: double-spend refusal ────────────────────────────────────────────
@@ -442,8 +575,10 @@ pub struct LedgerSnapshot {
     pub issued: u64,
     pub spent: u64,
     pub rejected_receipts: u64,
+    pub rejected_duplicate_receipts: u64,
     pub rejected_replays: u64,
     pub spent_nullifiers: usize,
+    pub spent_receipts: usize,
     pub gossip_merged: u64,
 }
 
@@ -452,8 +587,10 @@ struct Ledger {
     issued: u64,
     spent: u64,
     rejected_receipts: u64,
+    rejected_duplicate_receipts: u64,
     rejected_replays: u64,
     nullifiers: HashSet<String>,
+    receipts: HashSet<String>,
     gossip_merged: u64,
 }
 
@@ -495,8 +632,10 @@ pub fn snapshot() -> LedgerSnapshot {
         issued: guard.issued,
         spent: guard.spent,
         rejected_receipts: guard.rejected_receipts,
+        rejected_duplicate_receipts: guard.rejected_duplicate_receipts,
         rejected_replays: guard.rejected_replays,
         spent_nullifiers: guard.nullifiers.len(),
+        spent_receipts: guard.receipts.len(),
         gossip_merged: guard.gossip_merged,
     }
 }
@@ -648,13 +787,22 @@ pub fn ingest_gossip_batch(bytes: &[u8]) -> usize {
 
 // ── Reporting ───────────────────────────────────────────────────────────────
 
-pub fn status_json(fingerprint: &str) -> serde_json::Value {
-    let issuer = Issuer::for_node(fingerprint);
+/// Status for `/api/v2/btcr`, parameterised by the **private** issuer.
+///
+/// The published key is per bucket, so the report names the bucket in force
+/// rather than a stable node-wide key.
+pub fn status_json(issuer: &Issuer, now: u64) -> serde_json::Value {
     let wallet = Wallet::load(&wallet_path());
     let snap = snapshot();
+    let bucket = Bucket {
+        day: bucket_day(now),
+        tier: tier_for(TIER_BYTES[0]),
+    };
     serde_json::json!({
-        "issuer": issuer.public_hex(),
-        "algorithm": "ristretto255-voprf+dleq",
+        "issuer": issuer.public_hex_for(bucket.day, bucket.tier),
+        "bucket": { "day": bucket.day, "tier": bucket.tier },
+        "tiers_bytes": TIER_BYTES,
+        "algorithm": "ristretto255-voprf+dleq+bucket-keys",
         "ticket_bytes": TICKET_ENCODED_LEN,
         "wallet": wallet_path().display().to_string(),
         "wallet_tickets": wallet.tickets.len(),
@@ -662,9 +810,12 @@ pub fn status_json(fingerprint: &str) -> serde_json::Value {
         "issued": snap.issued,
         "spent": snap.spent,
         "rejected_receipts": snap.rejected_receipts,
+        "rejected_duplicate_receipts": snap.rejected_duplicate_receipts,
         "rejected_replays": snap.rejected_replays,
+        "spent_receipts": snap.spent_receipts,
         "gossip_merged": snap.gossip_merged,
-        "issuance_requires": "beneficiary-signed btcr-receipt:v1 with work_bytes > 0",
+        "issuance_requires": "beneficiary-signed btcr-receipt:v1 with work_bytes > 0, redeemed once",
+        "root": "HKDF-SHA256(identity.key, \"VB-BTCR-V2\") — the fingerprint is never an input",
     })
 }
 
@@ -676,48 +827,59 @@ mod tests {
         SigningKey::from_bytes(&[7u8; 32])
     }
 
+    fn issuer_from_seed(seed: u8) -> Issuer {
+        Issuer::from_identity_seed(&[seed; 32])
+    }
+
+    /// A receipt with a process-unique epoch: the redeemed-receipt set is
+    /// process-global, so a shared `(worker, epoch)` would collide across tests.
+    fn unique_receipt(key: &SigningKey, worker: &str, work: u64) -> Receipt {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let epoch = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        sign_receipt(key, worker, work, epoch).unwrap()
+    }
+
     #[test]
     fn blind_issue_unblind_and_spend() {
-        let issuer = Issuer::for_node("test-node");
+        let issuer = issuer_from_seed(1);
         let key = beneficiary();
-        let receipt = sign_receipt(&key, "home-pc", 4_000_000, 12).unwrap();
+        let receipt = unique_receipt(&key, "home-pc", 4_000_000);
         let request = blind(b"phone-session-1");
         assert_ne!(
             request.blinded, request.input,
             "the issuer must not see the input"
         );
 
-        let (ticket, proof) = issue_for_work(
-            &issuer,
-            &receipt,
-            &key.verifying_key(),
-            &request,
-            super::super::now_secs(),
-        )
-        .unwrap();
+        let now = 86_400 * 1_000;
+        let (ticket, proof) =
+            issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, now).unwrap();
         assert!(issuer.verify_ticket(&ticket));
-        // `finalize` already refused the ticket unless the DLEQ verified; check
-        // the proof independently against the evaluation it was made over.
-        let (eval, proof2) = issuer.evaluate(&request.blinded).unwrap();
-        assert!(proof2.verify(
-            &issuer.public(),
-            &point_from_hex(&request.blinded).unwrap(),
-            &point_from_hex(&eval).unwrap()
-        ));
-        assert!(proof.verify(
-            &issuer.public(),
-            &point_from_hex(&request.blinded).unwrap(),
-            &point_from_hex(&eval).unwrap()
-        ));
-        assert_eq!(ticket.work_bytes, 4_000_000);
-        spend(&issuer, &ticket, super::super::now_secs()).unwrap();
+
+        // The ticket carries quantized metadata, not the receipt's raw numbers.
+        let bucket = ticket.bucket();
+        assert_eq!(bucket.day, bucket_day(now));
+        assert_eq!(bucket.tier, 0, "4 MB floors to the 1 MiB tier");
+        assert_eq!(ticket.work_bytes, TIER_BYTES[0]);
+        assert_eq!(ticket.expires_at, expiry_for_day(bucket.day));
+
+        // The DLEQ is over the bucket key, and verifies independently.
+        let public = issuer.public_for(bucket.day, bucket.tier);
+        let (eval, proof2) = issuer
+            .evaluate(&request.blinded, bucket.day, bucket.tier)
+            .unwrap();
+        let blinded = point_from_hex(&request.blinded).unwrap();
+        let eval = point_from_hex(&eval).unwrap();
+        assert!(proof2.verify(&public, &blinded, &eval));
+        assert!(proof.verify(&public, &blinded, &eval));
+
+        spend(&issuer, &ticket, now).unwrap();
     }
 
     #[test]
     fn a_replayed_ticket_is_refused() {
-        let issuer = Issuer::for_node("replay-node");
+        let issuer = issuer_from_seed(2);
         let key = beneficiary();
-        let receipt = sign_receipt(&key, "relay", 1_000_000, 3).unwrap();
+        let receipt = unique_receipt(&key, "relay", 1_000_000);
         let request = blind(b"one-shot");
         let (ticket, _) =
             issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, 100).unwrap();
@@ -728,78 +890,200 @@ mod tests {
 
     #[test]
     fn issuance_without_a_valid_receipt_is_refused() {
-        let issuer = Issuer::for_node("strict-node");
+        let issuer = issuer_from_seed(3);
         let key = beneficiary();
-        let mut receipt = sign_receipt(&key, "relay", 10_000, 1).unwrap();
-        receipt.work_bytes = 999_999_999; // tampered after signing
+        let receipt = unique_receipt(&key, "relay", 10_000);
+        let mut tampered = receipt.clone();
+        tampered.work_bytes = 999_999_999; // changed after signing
         let request = blind(b"unearned");
         let err =
-            issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, 100).unwrap_err();
+            issue_for_work(&issuer, &tampered, &key.verifying_key(), &request, 100).unwrap_err();
         assert!(err.contains("signature"), "{err}");
 
         let zero = Receipt {
             work_bytes: 0,
-            ..sign_receipt(&key, "relay", 1, 1).unwrap()
+            ..unique_receipt(&key, "relay", 1)
         };
         assert!(verify_receipt(&zero, &key.verifying_key()).is_err());
     }
 
     #[test]
-    fn a_different_issuer_key_cannot_validate_the_ticket() {
-        let issuer = Issuer::for_node("issuer-a");
-        let other = Issuer::for_node("issuer-b");
+    fn a_work_receipt_can_only_be_redeemed_once() {
+        let issuer = issuer_from_seed(4);
         let key = beneficiary();
-        let receipt = sign_receipt(&key, "relay", 500_000, 9).unwrap();
-        let request = blind(b"cross-issuer");
-        let (ticket, _) =
-            issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, 100).unwrap();
+        let receipt = unique_receipt(&key, "overnight-relay", 2 << 20);
+        let first = issue_for_work(
+            &issuer,
+            &receipt,
+            &key.verifying_key(),
+            &blind(b"first-mint"),
+            100,
+        );
+        assert!(first.is_ok());
+        let replay = issue_for_work(
+            &issuer,
+            &receipt,
+            &key.verifying_key(),
+            &blind(b"second-mint"),
+            100,
+        );
+        let err = replay.unwrap_err();
+        assert!(err.contains("already redeemed"), "{err}");
+        assert_eq!(receipt.nullifier(), receipt.nullifier(), "deterministic");
+        let mut other = receipt.clone();
+        other.epoch += 1;
+        assert_ne!(
+            other.nullifier(),
+            receipt.nullifier(),
+            "a different epoch is a different unit of work"
+        );
+    }
+
+    #[test]
+    fn a_different_issuer_key_cannot_validate_the_ticket() {
+        let issuer = issuer_from_seed(5);
+        let other = issuer_from_seed(6);
+        let key = beneficiary();
+        let receipt = unique_receipt(&key, "relay", 500_000);
+        let (ticket, _) = issue_for_work(
+            &issuer,
+            &receipt,
+            &key.verifying_key(),
+            &blind(b"cross-issuer"),
+            100,
+        )
+        .unwrap();
         assert!(!other.verify_ticket(&ticket));
     }
 
     #[test]
-    fn ticket_encoding_round_trips_in_81_bytes() {
-        let issuer = Issuer::for_node("encoding");
+    fn the_root_key_is_private_and_seed_determined() {
+        // Same private seed, same issuer — restarts keep working.
+        assert_eq!(
+            issuer_from_seed(9).public_hex_for(1, 0),
+            issuer_from_seed(9).public_hex_for(1, 0)
+        );
+        // Different identity, different key. No public string is an input, so
+        // knowing a node's fingerprint tells an attacker nothing about this.
+        assert_ne!(
+            issuer_from_seed(9).public_hex_for(1, 0),
+            issuer_from_seed(10).public_hex_for(1, 0)
+        );
+    }
+
+    #[test]
+    fn bucket_keys_are_distinct_per_day_and_tier() {
+        let issuer = issuer_from_seed(11);
+        let keys = [
+            issuer.public_hex_for(1, 0),
+            issuer.public_hex_for(2, 0),
+            issuer.public_hex_for(1, 1),
+            issuer.public_hex_for(1, 2),
+        ];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b, "each (day, tier) is its own key");
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_is_quantized_to_a_day_and_a_tier() {
+        assert_eq!(bucket_day(0), 1);
+        assert_eq!(bucket_day(86_400 - 1), 1);
+        assert_eq!(bucket_day(86_400), 2);
+        assert_eq!(expiry_for_day(2), 3 * 86_400);
+        assert_eq!(day_of_expiry(expiry_for_day(7)), 7);
+
+        assert_eq!(tier_for(0), 0);
+        assert_eq!(tier_for(TIER_BYTES[0] - 1), 0);
+        assert_eq!(tier_for(TIER_BYTES[0]), 0);
+        assert_eq!(tier_for(TIER_BYTES[1]), 1);
+        assert_eq!(tier_for(TIER_BYTES[2] + 1), 2);
+        assert_eq!(tier_bytes(0), 1 << 20);
+        assert_eq!(tier_bytes(99), 256 << 20);
+    }
+
+    #[test]
+    fn a_ticket_does_not_verify_outside_its_bucket() {
+        let issuer = issuer_from_seed(12);
         let key = beneficiary();
-        let receipt = sign_receipt(&key, "relay", 42, 1).unwrap();
-        let request = blind(b"encoding-test");
-        let (ticket, _) =
-            issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, 10).unwrap();
+        let receipt = unique_receipt(&key, "relay", 20 << 20);
+        let (ticket, _) = issue_for_work(
+            &issuer,
+            &receipt,
+            &key.verifying_key(),
+            &blind(b"bucket"),
+            100,
+        )
+        .unwrap();
+        assert!(issuer.verify_ticket(&ticket));
+        assert_eq!(ticket.bucket().tier, 1);
+
+        // Re-labelling the day moves it to a key the issuer never signed with.
+        let mut shifted = ticket.clone();
+        shifted.expires_at += 86_400;
+        assert!(!issuer.verify_ticket(&shifted));
+
+        // Re-labelling the tier does the same.
+        let mut retiered = ticket.clone();
+        retiered.work_bytes = TIER_BYTES[2];
+        assert!(!issuer.verify_ticket(&retiered));
+    }
+
+    #[test]
+    fn ticket_encoding_round_trips_in_81_bytes() {
+        let issuer = issuer_from_seed(13);
+        let key = beneficiary();
+        let receipt = unique_receipt(&key, "encoding", 42);
+        let (ticket, _) = issue_for_work(
+            &issuer,
+            &receipt,
+            &key.verifying_key(),
+            &blind(b"encoding-test"),
+            10,
+        )
+        .unwrap();
         let encoded = ticket.encode().unwrap();
         assert_eq!(encoded.len(), TICKET_ENCODED_LEN * 2);
         assert_eq!(Ticket::decode(&encoded).unwrap(), ticket);
         assert!(Ticket::decode("00").is_err());
+
+        // A v1 ticket is refused rather than reinterpreted.
+        let mut v1 = hex::decode(&encoded).unwrap();
+        v1[0] = 1;
+        assert!(Ticket::decode(&hex::encode(v1)).is_err());
     }
 
     #[test]
     fn wallet_merge_is_a_union_by_blinded_input() {
-        let issuer = Issuer::for_node("wallet");
+        let issuer = issuer_from_seed(14);
         let key = beneficiary();
         let mut a = Wallet::default();
         let mut b = Wallet::default();
         for (wallet, seed, work) in [
-            (&mut a, b"w1".as_slice(), 100u64),
-            (&mut b, b"w2".as_slice(), 250),
+            (&mut a, b"w1".as_slice(), 4 << 20),
+            (&mut b, b"w2".as_slice(), 20 << 20),
         ] {
             let request = blind(seed);
-            let receipt = sign_receipt(&key, "relay", work, 1).unwrap();
+            let receipt = unique_receipt(&key, "relay", work);
             let (ticket, _) =
                 issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, 10).unwrap();
-            assert_eq!(ticket.work_bytes, work);
             wallet.tickets.push(ticket);
         }
         assert_eq!(a.merge(&b), 1);
         assert_eq!(a.merge(&b), 0, "the union is idempotent");
         assert_eq!(a.tickets.len(), 2);
-        assert_eq!(a.total_credit(), 350);
+        assert_eq!(a.total_credit(), TIER_BYTES[0] + TIER_BYTES[1]);
     }
 
     #[test]
     fn gossip_batch_round_trips_and_filters_expired() {
-        let issuer = Issuer::for_node("gossip-node");
+        let issuer = issuer_from_seed(15);
         let key = beneficiary();
         let mut w = Wallet::default();
-        let r1 = sign_receipt(&key, "home", 1_000_000, 1).unwrap();
-        let r2 = sign_receipt(&key, "home", 2_000_000, 2).unwrap();
+        let r1 = unique_receipt(&key, "home", 1_000_000);
+        let r2 = unique_receipt(&key, "home", 2_000_000);
         let (t1, _) =
             issue_for_work(&issuer, &r1, &key.verifying_key(), &blind(b"g1"), 100).unwrap();
         let (mut t2, _) =
@@ -813,6 +1097,6 @@ mod tests {
         let decoded = decode_gossip_batch(&batch, 100);
         assert_eq!(decoded.tickets.len(), 1);
         assert_eq!(decoded.tickets[0].m, t1.m);
-        assert_eq!(decoded.tickets[0].work_bytes, 1_000_000);
+        assert_eq!(decoded.tickets[0].work_bytes, TIER_BYTES[0]);
     }
 }

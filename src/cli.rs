@@ -401,15 +401,22 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // The CLI has no node identity loaded on this path, so the status view is
+    // keyed by a fixed demonstration seed and says so.
+    let demo_seed = [0x42u8; 32];
+    let issuer = Issuer::from_identity_seed(&demo_seed);
+
     if !has_flag(args, "--demo") {
         println!(
             "{}",
-            serde_json::to_string_pretty(&btcr::status_json("cli"))?
+            serde_json::to_string_pretty(&btcr::status_json(
+                &issuer,
+                vantablack::ghost::v2::now_secs()
+            ))?
         );
         return Ok(());
     }
 
-    let issuer = Issuer::for_node("ggn-btcr-demo");
     let beneficiary = SigningKey::from_bytes(&[11u8; 32]);
     let now = vantablack::ghost::v2::now_secs();
     let to_any = |e: String| anyhow::anyhow!(e);
@@ -440,8 +447,14 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
     wallet.tickets.push(decoded.clone());
     wallet.save(&btcr::wallet_path()).map_err(to_any)?;
 
+    let demo_bucket = (btcr::bucket_day(now), btcr::tier_for(receipt.work_bytes));
     println!("BTCr / Blind-Pass demo (Ristretto255 VOPRF + Chaum–Pedersen DLEQ)");
-    println!("  issuer key        {}", issuer.public_hex());
+    println!(
+        "  issuer key        {} (day {} tier {})",
+        issuer.public_hex_for(demo_bucket.0, demo_bucket.1),
+        demo_bucket.0,
+        demo_bucket.1
+    );
     println!(
         "  beneficiary       {}",
         hex::encode(beneficiary.verifying_key().to_bytes())
@@ -459,11 +472,13 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
         }
     );
     println!("  blind request     {}", &request.blinded[..32]);
-    let (eval_hex, _) = issuer.evaluate(&request.blinded).map_err(to_any)?;
+    let (eval_hex, _) = issuer
+        .evaluate(&request.blinded, demo_bucket.0, demo_bucket.1)
+        .map_err(to_any)?;
     let dleq_ok = btcr::decode_point(&request.blinded)
         .ok()
         .zip(btcr::decode_point(&eval_hex).ok())
-        .map(|(b, e)| proof.verify(&issuer.public(), &b, &e))
+        .map(|(b, e)| proof.verify(&issuer.public_for(demo_bucket.0, demo_bucket.1), &b, &e))
         .unwrap_or(false);
     println!("  DLEQ verified     {dleq_ok}");
     println!("  ticket            {}", &encoded[..32]);
@@ -795,12 +810,14 @@ async fn run_xray(args: &[String]) -> anyhow::Result<()> {
         .unwrap_or(0) as usize;
 
     let regime = vantablack::ghost::v2::regime::active().map_err(|e| anyhow::anyhow!(e))?;
+    // `ggn xray` has a peer count and nothing else: no circuit witness, no
+    // cover counter, no domain grouping. Those stay `None` and the ledger
+    // reports them as unmeasured instead of copying the regime's wish list.
     let input = LedgerInput {
         regime: Some(regime),
         public_relays: Some(peers),
-        circuit_hops: (peers > 0).then(|| regime.hops().hops()),
+        circuit_hops: None,
         transport: (peers > 0).then(|| "udp".to_string()),
-        cover_traffic: regime.cover_traffic() && peers > 0,
         pq_hybrid: (peers > 0).then_some(true),
         ..Default::default()
     };

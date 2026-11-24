@@ -360,6 +360,17 @@ pub fn record_circuit(route: &[String], policy: &str) {
     });
 }
 
+/// Hop count of the last circuit the SOCKS5 proxy actually assembled.
+///
+/// This is a measured route, not the regime's requested hop count: `None` until
+/// a circuit exists in this process.
+pub fn last_circuit_hops() -> Option<u8> {
+    let rt = runtime().read().unwrap_or_else(|e| e.into_inner());
+    rt.last_circuit
+        .as_ref()
+        .map(|c| c.route.len().min(u8::MAX as usize) as u8)
+}
+
 fn runtime() -> &'static RwLock<Runtime> {
     static RUNTIME: OnceLock<RwLock<Runtime>> = OnceLock::new();
     RUNTIME.get_or_init(|| RwLock::new(Runtime::default()))
@@ -372,6 +383,10 @@ fn runtime() -> &'static RwLock<Runtime> {
 /// the capability. A descriptor without `CAP_HOME_EXIT` also *removes* a stale
 /// entry: an operator who turned the service off must stop being a candidate.
 pub fn note_peer(fingerprint: &str, capabilities: u8, endpoint: &str) {
+    // Every caller reaches this point only after a signed descriptor verified,
+    // so this is also the one place a peer becomes a ledger witness for
+    // CAP_RELAY and its routing-domain cluster.
+    super::xray::note_verified_peer(fingerprint, capabilities, endpoint);
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
     if capabilities & CAP_HOME_EXIT == 0 {
         rt.peers.remove(fingerprint);
@@ -392,6 +407,7 @@ pub fn note_peer(fingerprint: &str, capabilities: u8, endpoint: &str) {
 
 /// Drop a peer that disconnected or re-advertised without exit service.
 pub fn forget_peer(fingerprint: &str) {
+    super::xray::forget_verified_peer(fingerprint);
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
     rt.peers.remove(fingerprint);
     if rt.selected.as_deref() == Some(fingerprint) {

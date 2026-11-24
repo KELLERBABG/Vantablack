@@ -14,6 +14,12 @@
 //!   direct message fragments and parity. Datagram confidentiality on the wire rests
 //!   on L2 AEAD authenticated encryption (and ShardSec per-shard AEAD keys),
 //!   not on erasure coding.
+//!
+//! **These shares are not transport shards.** A `(c, r, f)` multipath bond must
+//! satisfy `m ≥ c + f + 1`; two carriers cannot give one-carrier secrecy *and*
+//! one-outage recovery at once. That bound is enforced in [`crate::ghost::v2::hpeb`]
+//! and [`crate::ghost::layers::l4_rs`], while this module stays what it is: a
+//! threshold scheme for secrets at rest, with no claim about paths.
 use gf256::shamir::shamir;
 
 /// Split a 32-byte secret into 3 shares using (2,3) Shamir SSS.

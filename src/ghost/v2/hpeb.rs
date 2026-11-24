@@ -85,8 +85,142 @@ impl PhyPath {
 pub struct BondedShard {
     pub interface: String,
     pub index: u8,
-    /// Reed-Solomon shard bytes (already AONT-protected).
+    /// One shard of the bonded encoding (never a plaintext fragment).
     pub bytes: Vec<u8>,
+}
+
+/// The trade a two-carrier bond has to make. On two paths the two goals are
+/// mutually exclusive, so the caller states which one it is buying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondMode {
+    /// 2-of-2 XOR split: each shard alone is uniformly random, so neither
+    /// carrier learns one bit. Losing either path loses the message.
+    Confidentiality,
+    /// 1-of-2 duplication: either carrier can be lost. Secrecy rests on the L2
+    /// AEAD, exactly as it does on every single-path send.
+    Availability,
+}
+
+/// The split actually applied to one payload.
+///
+/// This is the receiver's decode instruction, so it travels with the shards:
+/// a receiver that guesses wrong gets garbage, never a subtle downgrade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BondScheme {
+    /// Two paths, 2-of-2 XOR.
+    Xor2,
+    /// Two paths, full duplication.
+    Duplicate2,
+    /// Three or more paths, `(c, r, f)` ramp over GF(2^8).
+    Ramp(l4_rs::RampParams),
+}
+
+impl BondScheme {
+    /// Wire length of [`BondScheme::encode`].
+    pub const ENCODED_LEN: usize = 4;
+
+    /// `[tag, data, masks, shards]` — four bytes the receiver can trust as far
+    /// as its own authentication of the carrier goes.
+    pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
+        match self {
+            BondScheme::Xor2 => [0, 0, 0, 2],
+            BondScheme::Duplicate2 => [1, 0, 0, 2],
+            BondScheme::Ramp(p) => [2, p.data, p.masks, p.shards],
+        }
+    }
+
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::ENCODED_LEN {
+            return None;
+        }
+        match bytes[0] {
+            0 => Some(BondScheme::Xor2),
+            1 => Some(BondScheme::Duplicate2),
+            2 => {
+                let (data, masks, shards) = (bytes[1], bytes[2], bytes[3]);
+                let failures = shards.checked_sub(data)?.checked_sub(masks)?;
+                l4_rs::RampParams::new(masks, data, failures)
+                    .ok()
+                    .map(BondScheme::Ramp)
+            }
+            _ => None,
+        }
+    }
+
+    /// Shards that must arrive before a decode is attempted.
+    pub fn required(self) -> usize {
+        match self {
+            BondScheme::Xor2 => 2,
+            BondScheme::Duplicate2 => 1,
+            BondScheme::Ramp(p) => p.required(),
+        }
+    }
+
+    /// Shards the sender emitted.
+    pub fn emitted(self) -> usize {
+        match self {
+            BondScheme::Xor2 | BondScheme::Duplicate2 => 2,
+            BondScheme::Ramp(p) => p.shards as usize,
+        }
+    }
+
+    pub fn describe(self) -> String {
+        match self {
+            BondScheme::Xor2 => "2-of-2 XOR (confidentiality)".to_string(),
+            BondScheme::Duplicate2 => "1-of-2 duplicate (availability)".to_string(),
+            BondScheme::Ramp(p) => format!(
+                "ramp c={} r={} f={} m={} rate={:.2}",
+                p.masks,
+                p.data,
+                p.failures(),
+                p.shards,
+                p.rate()
+            ),
+        }
+    }
+}
+
+/// A payload split into shards plus the scheme needed to put it back together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BondedSet {
+    pub scheme: BondScheme,
+    pub shards: Vec<BondedShard>,
+}
+
+impl BondedSet {
+    /// Rebuild the payload from whichever shards arrived.
+    pub fn recover(&self, shards: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
+        recover_with(self.scheme, shards)
+    }
+}
+
+/// XOR a payload with a fresh mask: two shards, neither of which is a fragment.
+fn xor_split(payload: &[u8]) -> Vec<Vec<u8>> {
+    use rand::RngCore;
+    let mut mask = vec![0u8; payload.len()];
+    rand::thread_rng().fill_bytes(&mut mask);
+    let body: Vec<u8> = mask.iter().zip(payload).map(|(m, p)| m ^ p).collect();
+    vec![mask, body]
+}
+
+/// Rebuild a payload under a known scheme.
+pub fn recover_with(scheme: BondScheme, shards: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
+    match scheme {
+        BondScheme::Xor2 => {
+            let a = shards.iter().find(|(i, _)| *i == 0)?;
+            let b = shards.iter().find(|(i, _)| *i == 1)?;
+            if a.1.len() != b.1.len() {
+                return None;
+            }
+            Some(a.1.iter().zip(&b.1).map(|(x, y)| x ^ y).collect())
+        }
+        BondScheme::Duplicate2 => shards
+            .iter()
+            .find(|(i, _)| *i == 0)
+            .or_else(|| shards.first())
+            .map(|(_, bytes)| bytes.clone()),
+        BondScheme::Ramp(params) => l4_rs::decode_ramp(shards, &params),
+    }
 }
 
 /// Chooses paths and produces bonded shard sets.
@@ -129,23 +263,51 @@ impl HpebScheduler {
                 >= 2
     }
 
-    /// Split `payload` across the live paths: AONT first, then RS(2,1), then one
-    /// shard per path. Returns one entry per shard, in shard order.
+    /// Split `payload` across the live paths.
+    ///
+    /// The scheme follows the path count, because the number of carriers *is*
+    /// the constraint:
+    ///
+    /// * **two** paths — a 2-of-2 XOR split. Round-robin over three RS(2,1)
+    ///   shards put two of them on one carrier, which broke both the "no single
+    ///   carrier holds a message" claim and the recovery claim. XOR is 0 %
+    ///   overhead and leaks nothing per carrier, but tolerates no outage.
+    /// * **three or more** — `(c=1, r=m−2, f=1)` ramp bonding: one carrier learns
+    ///   nothing, any one path may drop, rate `1 − 2/m`.
     ///
     /// Errors when fewer than two paths are live, because a "bonded" send over
     /// one path is a lie about redundancy.
-    pub fn bond(&self, payload: &[u8]) -> Result<Vec<BondedShard>, BondError> {
+    pub fn bond(&self, payload: &[u8]) -> Result<BondedSet, BondError> {
+        self.bond_with(payload, BondMode::Confidentiality)
+    }
+
+    /// Same, with the two-path trade chosen explicitly.
+    pub fn bond_with(&self, payload: &[u8], mode: BondMode) -> Result<BondedSet, BondError> {
         let live = self.available();
         if live.len() < 2 {
             return Err(BondError::NotEnoughPaths { live: live.len() });
         }
-        let shards = l4_rs::encode_aont_rs21(payload);
-        let mut out = Vec::with_capacity(shards.len());
-        for (i, shard) in shards.into_iter().enumerate() {
-            // Round-robin over the *sorted* live paths: the cheapest path carries
-            // shard 0, the next shard 1, and the parity shard continues the
-            // rotation. With exactly two paths the parity shares with shard 0,
-            // which is still recoverable from shards 1 + 2.
+        let (scheme, pieces) = match live.len() {
+            2 => match mode {
+                BondMode::Confidentiality => (BondScheme::Xor2, xor_split(payload)),
+                BondMode::Availability => (
+                    BondScheme::Duplicate2,
+                    vec![payload.to_vec(), payload.to_vec()],
+                ),
+            },
+            n => {
+                if n > 255 {
+                    return Err(BondError::UnsupportedPathCount { paths: n });
+                }
+                let shards = n as u8;
+                let params = l4_rs::RampParams::new(1, shards - 2, 1)
+                    .map_err(|_| BondError::UnsupportedPathCount { paths: n })?;
+                let pieces = l4_rs::encode_ramp(payload, &params).map_err(BondError::Encode)?;
+                (BondScheme::Ramp(params), pieces)
+            }
+        };
+        let mut out = Vec::with_capacity(pieces.len());
+        for (i, shard) in pieces.into_iter().enumerate() {
             let path = &live[i % live.len()];
             out.push(BondedShard {
                 interface: path.interface.clone(),
@@ -153,21 +315,10 @@ impl HpebScheduler {
                 bytes: shard,
             });
         }
-        Ok(out)
-    }
-
-    /// Rebuild a payload from whichever shards arrived, by shard index.
-    /// `None` when fewer than two distinct shards are present or the AONT tag
-    /// fails.
-    pub fn recover(shards: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
-        let mut slots: [Option<Vec<u8>>; 3] = [None, None, None];
-        for (index, bytes) in shards {
-            let slot = slots.get_mut(*index as usize)?;
-            if slot.is_none() {
-                *slot = Some(bytes.clone());
-            }
-        }
-        l4_rs::decode_aont_rs21(&mut slots)
+        Ok(BondedSet {
+            scheme,
+            shards: out,
+        })
     }
 
     /// Mark a path down (or up) as the OS reports interface changes.
@@ -191,9 +342,11 @@ impl HpebScheduler {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BondError {
     NotEnoughPaths { live: usize },
+    UnsupportedPathCount { paths: usize },
+    Encode(String),
 }
 
 impl std::fmt::Display for BondError {
@@ -202,6 +355,10 @@ impl std::fmt::Display for BondError {
             BondError::NotEnoughPaths { live } => {
                 write!(f, "bonding needs 2 live interfaces, {live} available")
             }
+            BondError::UnsupportedPathCount { paths } => {
+                write!(f, "{paths} paths is outside the ramp code's 3..=255 range")
+            }
+            BondError::Encode(reason) => write!(f, "bond encoding failed: {reason}"),
         }
     }
 }
@@ -315,12 +472,13 @@ pub fn run_multipath_client(
     if !scheduler.is_bonded() {
         return Err("need two pinned paths on distinct addresses".into());
     }
-    let shards = scheduler.bond(&payload).map_err(|e| e.to_string())?;
+    let bonded = scheduler.bond(&payload).map_err(|e| e.to_string())?;
     println!(
-        "HPEB client payload={} sha256={} shards={} paths={}",
+        "HPEB client payload={} sha256={} shards={} scheme={} paths={}",
         payload.len(),
         checksum,
-        shards.len(),
+        bonded.shards.len(),
+        bonded.scheme.describe(),
         paths.join(",")
     );
 
@@ -335,9 +493,8 @@ pub fn run_multipath_client(
         sockets.push((&p.interface, sock, local));
     }
 
-    let mut frame = Vec::new();
-    frame.extend_from_slice(&7u64.to_be_bytes());
-    for shard in &shards {
+    let scheme = bonded.scheme.encode();
+    for shard in &bonded.shards {
         // `--single-source` deliberately sends every shard over one binding so
         // the server's refusal path can be exercised; it is not a normal send.
         let (_, sock, local) = if single_source {
@@ -348,7 +505,9 @@ pub fn run_multipath_client(
                 .find(|(iface, _, _)| *iface == shard.interface)
                 .ok_or_else(|| format!("no socket for {}", shard.interface))?
         };
-        let mut datagram = frame.clone();
+        let mut datagram = Vec::with_capacity(13 + shard.bytes.len());
+        datagram.extend_from_slice(&7u64.to_be_bytes());
+        datagram.extend_from_slice(&scheme);
         datagram.push(shard.index);
         datagram.extend_from_slice(&shard.bytes);
         sock.send_to(&datagram, target)
@@ -376,15 +535,25 @@ pub fn run_multipath_server(listen: &str, out: &Path) -> Result<(), String> {
     let mut buf = vec![0u8; 65_535];
     let mut shards: Vec<(u8, Vec<u8>)> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
-    while shards.len() < 3 {
+    let mut scheme: Option<BondScheme> = None;
+    const HEADER: usize = 8 + BondScheme::ENCODED_LEN + 1;
+    loop {
         let (n, from) = match sock.recv_from(&mut buf) {
             Ok(v) => v,
             Err(e) => return Err(format!("recv: {e}")),
         };
-        if n < 9 {
+        if n < HEADER {
             continue;
         }
-        let index = buf[8];
+        let parsed = match BondScheme::decode(&buf[8..8 + BondScheme::ENCODED_LEN]) {
+            Some(s) => s,
+            None => continue,
+        };
+        if scheme.map(|s| s != parsed).unwrap_or(false) {
+            return Err("shards arrived under two different bond schemes".into());
+        }
+        scheme = Some(parsed);
+        let index = buf[8 + BondScheme::ENCODED_LEN];
         if shards.iter().any(|(i, _)| *i == index) {
             continue;
         }
@@ -393,12 +562,16 @@ pub fn run_multipath_server(listen: &str, out: &Path) -> Result<(), String> {
             "HPEB server shard {} from {} bytes={}",
             index,
             source,
-            n - 9
+            n - HEADER
         );
         sources.push(source);
-        shards.push((index, buf[9..n].to_vec()));
+        shards.push((index, buf[HEADER..n].to_vec()));
+        if shards.len() >= parsed.required() {
+            break;
+        }
     }
-    let recovered = HpebScheduler::recover(&shards).ok_or("AONT/RS recovery failed")?;
+    let scheme = scheme.ok_or("no bonded shard arrived")?;
+    let recovered = recover_with(scheme, &shards).ok_or("bonded recovery failed")?;
     std::fs::write(out, &recovered).map_err(|e| format!("write {}: {e}", out.display()))?;
     sources.sort();
     sources.dedup();
@@ -437,6 +610,13 @@ mod tests {
         ]
     }
 
+    fn two_paths() -> Vec<PhyPath> {
+        vec![
+            PhyPath::new("wlan0").pinned("192.168.1.42:0").with_cost(10),
+            PhyPath::new("rmnet0").pinned("10.64.7.9:0").with_cost(50),
+        ]
+    }
+
     #[test]
     fn each_shard_leaves_by_its_own_interface() {
         let sched = HpebScheduler::new(three_paths());
@@ -444,9 +624,10 @@ mod tests {
         let bonded = sched
             .bond(b"the whole message, split across three radios")
             .unwrap();
-        assert_eq!(bonded.len(), 3);
+        assert_eq!(bonded.shards.len(), 3);
+        assert!(matches!(bonded.scheme, BondScheme::Ramp(_)));
         let ifaces: std::collections::HashSet<&str> =
-            bonded.iter().map(|s| s.interface.as_str()).collect();
+            bonded.shards.iter().map(|s| s.interface.as_str()).collect();
         assert_eq!(ifaces.len(), 3);
     }
 
@@ -457,13 +638,14 @@ mod tests {
         let bonded = sched.bond(payload).unwrap();
 
         // Keep any two of the three and rebuild.
-        for drop in 0..3 {
+        for drop in 0..3u8 {
             let kept: Vec<(u8, Vec<u8>)> = bonded
+                .shards
                 .iter()
-                .filter(|s| s.index as usize != drop)
+                .filter(|s| s.index != drop)
                 .map(|s| (s.index, s.bytes.clone()))
                 .collect();
-            let recovered = HpebScheduler::recover(&kept).expect("two shards must rebuild");
+            let recovered = bonded.recover(&kept).expect("two shards must rebuild");
             assert_eq!(recovered, payload, "dropped shard {drop}");
         }
     }
@@ -473,7 +655,7 @@ mod tests {
         let payload = b"TOP_SECRET_PAYLOAD_MARKER_0123456789";
         let sched = HpebScheduler::new(three_paths());
         let bonded = sched.bond(payload).unwrap();
-        for shard in &bonded {
+        for shard in &bonded.shards {
             assert!(
                 !shard
                     .bytes
@@ -483,9 +665,76 @@ mod tests {
                 shard.index
             );
         }
-        // And recovery from a single shard is refused.
-        let one = vec![(bonded[0].index, bonded[0].bytes.clone())];
-        assert!(HpebScheduler::recover(&one).is_none());
+        let one = vec![(bonded.shards[0].index, bonded.shards[0].bytes.clone())];
+        assert!(bonded.recover(&one).is_none());
+    }
+
+    #[test]
+    fn two_paths_are_split_in_two_not_three() {
+        let payload = b"two carriers cannot hold three shards honestly";
+        let sched = HpebScheduler::new(two_paths());
+        let bonded = sched.bond(payload).unwrap();
+
+        assert_eq!(bonded.scheme, BondScheme::Xor2);
+        assert_eq!(
+            bonded.shards.len(),
+            2,
+            "one shard per carrier, never a third"
+        );
+        let ifaces: std::collections::HashSet<&str> =
+            bonded.shards.iter().map(|s| s.interface.as_str()).collect();
+        assert_eq!(ifaces.len(), 2);
+        for shard in &bonded.shards {
+            assert_ne!(shard.bytes, payload, "neither half may be the plaintext");
+            assert!(
+                !shard
+                    .bytes
+                    .windows(8)
+                    .any(|w| payload.windows(8).any(|p| p == w)),
+                "XOR half {} leaked plaintext",
+                shard.index
+            );
+        }
+
+        let both: Vec<(u8, Vec<u8>)> = bonded
+            .shards
+            .iter()
+            .map(|s| (s.index, s.bytes.clone()))
+            .collect();
+        assert_eq!(bonded.recover(&both).unwrap(), payload);
+
+        // Zero outage tolerance is the price of zero single-carrier leakage,
+        // and it is a refusal, not a corrupt payload.
+        assert!(bonded.recover(&both[..1]).is_none());
+    }
+
+    #[test]
+    fn two_path_availability_mode_survives_either_drop() {
+        let payload = b"either radio may vanish";
+        let sched = HpebScheduler::new(two_paths());
+        let bonded = sched.bond_with(payload, BondMode::Availability).unwrap();
+        assert_eq!(bonded.scheme, BondScheme::Duplicate2);
+        for shard in &bonded.shards {
+            let one = vec![(shard.index, shard.bytes.clone())];
+            assert_eq!(bonded.recover(&one).unwrap(), payload);
+        }
+    }
+
+    #[test]
+    fn the_scheme_survives_the_wire() {
+        for scheme in [
+            BondScheme::Xor2,
+            BondScheme::Duplicate2,
+            BondScheme::Ramp(l4_rs::RampParams::new(1, 2, 1).unwrap()),
+        ] {
+            let bytes = scheme.encode();
+            assert_eq!(BondScheme::decode(&bytes), Some(scheme));
+        }
+        assert!(BondScheme::decode(&[9, 0, 0, 0]).is_none());
+        assert!(
+            BondScheme::decode(&[2, 3, 2, 1]).is_none(),
+            "shards < data + masks"
+        );
     }
 
     #[test]

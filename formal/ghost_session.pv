@@ -1,27 +1,40 @@
 (*
-   Vantablack session agreement, adversarial model (ProVerif)
+   Vantablack session agreement, adversarial model (ProVerif 2.05)
 
    What this file models, and only this:
 
    1. Two roles, A (initiator) and B (responder), each replicated. Each has a
-      long-term signing key and a post-quantum keypair, and each generates a
-      classical ephemeral secret and a post-quantum ephemeral secret.
+      long-term signing key, a post-quantum KEM keypair, a classical ephemeral
+      secret and a post-quantum ephemeral secret.
    2. The public keys travel on the untrusted channel, so the adversary chooses
       what each role believes the peer's keys are.
    3. The message key is the combination of one classical Diffie-Hellman result
-      and one KEM encapsulation result, the hybrid construction: a break of one
-      family alone is not modelled as sufficient.
-   4. B accepts a message only after A's signature over the transcript
-      verifies. A substituted transcript fails that check, which is the
-      downgrade guard the Rust implementation enforces by requiring both halves
-      of the hybrid signature to verify and refusing either half alone.
-   5. The message counter is public on the wire and bound into the signature
-      over the transcript.
-   6. An active Dolev-Yao attacker. Everything on `c` belongs to the adversary.
-      Nothing else does.
+      and one KEM encapsulation result (hybrid construction). Breaking one
+      family alone is not modelled as sufficient: `kdf` is applied to the pair
+      and neither component is published.
+   4. The KEM ciphertext is actually transmitted. The initiator encapsulates to
+      the responder's public key and sends the ciphertext on `c`; the responder
+      decapsulates it with its own `skPQb`. The shared secret is the
+      encapsulation randomness, which the initiator knows by construction and
+      the responder recovers only by decapsulation. That was the mismatch in the
+      previous model, where each side "decapsulated" a ciphertext it had just
+      encapsulated to the *other* side's key and the two secrets never met.
+   5. The classical halves commute: the equation below makes
+      dh(ra, dh(rb, g)) and dh(rb, dh(ra, g)) the same term, so a faithful run
+      derives one key on both sides. Without it the two roles computed
+      different keys and every secrecy query passed vacuously.
+   6. B accepts only after A's signature over the transcript verifies, and A
+      accepts only after B's signature over the same transcript verifies.
+   7. An active Dolev-Yao attacker. Everything on `c` belongs to the adversary.
 
-   What this file does NOT model is listed in formal/README.md. Keep the two in
-   step: a claim that is not a query here was not checked by the prover.
+   Positive witness: `query event(agreement(a, b))` is a reachability query.
+   ProVerif reports a reachable event as "false" (the negation of reachability
+   fails, with a trace). False here therefore means the protocol completes; if
+   it ever prints true, the model stopped executing and every other result in
+   this file became vacuous. Keep that query in the file for exactly that
+   reason.
+
+   What this file does NOT model is listed in formal/README.md.
 *)
 
 free c: channel.
@@ -40,8 +53,9 @@ fun pkpq(pqsk): pqpk.
 
 fun dh(bitstring, bitstring): bitstring.
 
-(* The KEM: the sender encapsulates under the receiver's public key, and
-   knowing the ciphertext and the public key is not enough for the secret. *)
+(* The KEM: the sender encapsulates under the receiver's public key and keeps
+   the randomness as the shared secret; the receiver recovers it only with the
+   matching secret key. *)
 fun encaps_pq(pqpk, bitstring): bitstring.
 reduc forall sk: pqsk, r: bitstring; decaps_pq(sk, encaps_pq(pkpq(sk), r)) = r.
 
@@ -54,34 +68,34 @@ reduc forall m: bitstring, k: skey; sdec(senc(m, k), k) = m.
 (* The base point of the classical group. *)
 free g: bitstring.
 
-(* What the adversary tries to learn. Both start private, so every derivation
+(* Diffie-Hellman commutativity. This is the equation whose absence made the
+   two roles derive different keys in v2.1.7. *)
+equation forall x: bitstring, y: bitstring;
+  dh(x, dh(y, g)) = dh(y, dh(x, g)).
+
+(* What the adversary tries to learn. It starts private, so every derivation
    has to pass through a message on `c`. *)
 free payload: bitstring [private].
-free session_key: skey [private].
 
 event init_started(pkey).
 event sent_counter(pkey, bitstring).
 event recv_counter(pkey, bitstring).
 event agreement(pkey, pkey).
-(* The responder's start now carries the material it authenticated, so the
-   agreement query below is not vacuous: a responder that started with an
-   attacker's key is a different event from one that started with the key the
-   initiator signed. *)
 event resp_started(pkey, pkey).
 
 query attacker(payload).
-query attacker(session_key).
 
 (* Agreement: the initiator accepts only for a session a responder started with
    the very key the initiator signed. *)
 query a: pkey, b: pkey;
   inj-event(agreement(a, b)) ==> inj-event(resp_started(a, b)).
 
-(* Replay: every counter the responder accepts was emitted by the initiator.
-   The counter is peer-controlled input, so this is what the sliding window
-   defends. *)
+(* Replay: every counter the responder accepts was emitted by the initiator. *)
 query a: pkey, cnt: bitstring;
   inj-event(recv_counter(a, cnt)) ==> inj-event(sent_counter(a, cnt)).
+
+(* Positive reachability witness. Expected result: false (reachable). *)
+query a: pkey, b: pkey; event(agreement(a, b)).
 
 let initiator =
   new skA: skey;
@@ -98,9 +112,15 @@ let initiator =
   in(c, pk_b: pkey);
   in(c, gb: bitstring);
   in(c, pq_pub_b: pqpk);
+  in(c, commit_b: sig);
+  let commit = verify(commit_b, pk_b) in
+  if commit = (pk_b, pk(skA), ga, gb, pq_pub_b) then
   let klass_a = dh(ra, gb) in
-  let pq_secret_a = decaps_pq(skPQa, encaps_pq(pq_pub_b, pq_eph_a)) in
+  (* Encapsulate to B and send the ciphertext; the randomness is the secret. *)
+  let ct_a = encaps_pq(pq_pub_b, pq_eph_a) in
+  let pq_secret_a = pq_eph_a in
   let k_a = kdf(hcat(klass_a, pq_secret_a)) in
+  out(c, ct_a);
   new cnt_a: bitstring;
   event sent_counter(pk(skA), cnt_a);
   out(c, senc((cnt_a, payload), k_a));
@@ -113,11 +133,6 @@ let responder =
   new skB: skey;
   new skPQb: pqsk;
   new rb: bitstring;
-  new pq_eph_b: bitstring;
-  let gb = dh(rb, g) in
-  out(c, pk(skB));
-  out(c, gb);
-  out(c, encaps_pq(pkpq(skPQb), pq_eph_b));
   in(c, pk_a: pkey);
   in(c, ga: bitstring);
   in(c, pq_pub_a: pqpk);
@@ -125,8 +140,15 @@ let responder =
   let commit = verify(commit_a, pk_a) in
   if commit = (pk_a, ga, pq_pub_a) then
   event resp_started(pk_a, pk(skB));
+  let gb = dh(rb, g) in
+  let pq_pub_b = pkpq(skPQb) in
+  out(c, pk(skB));
+  out(c, gb);
+  out(c, pq_pub_b);
+  out(c, sign((pk(skB), pk_a, ga, gb, pq_pub_b), skB));
+  in(c, ct_a: bitstring);
+  let pq_secret_b = decaps_pq(skPQb, ct_a) in
   let klass_b = dh(rb, ga) in
-  let pq_secret_b = decaps_pq(skPQb, encaps_pq(pq_pub_a, pq_eph_b)) in
   let k_b = kdf(hcat(klass_b, pq_secret_b)) in
   in(c, msg_a: bitstring);
   let (cnt_b: bitstring, pt_b: bitstring) = sdec(msg_a, k_b) in

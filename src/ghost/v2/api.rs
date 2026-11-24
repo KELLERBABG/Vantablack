@@ -9,9 +9,54 @@
 
 use serde_json::{json, Value};
 
-use super::btcr::{self, Issuer, Receipt, Ticket};
+use super::btcr::{self, Bucket, Issuer, Receipt, Ticket};
 use super::regime::{self, effective_policy, Regime};
 use super::xray::{self, LedgerInput};
+use std::fmt;
+
+/// A private identity seed held by the running node, with a redacting `Debug`
+/// so `{:?}` on [`ApiState`] can never print it into a log line.
+#[derive(Clone)]
+pub struct NodeSecret([u8; 32]);
+
+impl NodeSecret {
+    pub fn new(seed: [u8; 32]) -> Self {
+        Self(seed)
+    }
+
+    pub fn expose(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for NodeSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("NodeSecret(<hidden>)")
+    }
+}
+
+/// Measurements the daemon actually took. Every field is `Option`: the ledger
+/// turns a missing measurement into `Unknown`, so this struct must not carry a
+/// default that reads like a pass.
+#[derive(Debug, Clone, Default)]
+pub struct Witnesses {
+    /// Hops in the circuit currently in use, if one is established.
+    pub circuit_hops: Option<u8>,
+    /// Distinct ASNs among those hops.
+    pub circuit_asns: Option<usize>,
+    /// Peers whose CAP_RELAY bit verified against a signed descriptor.
+    pub cap_relay_verified: Option<usize>,
+    /// Hop count of the last signed nonce echo that came back.
+    pub nonce_echo_hops: Option<u8>,
+    /// Cover frames emitted by this process.
+    pub cover_tx: Option<u64>,
+    /// Verified peers advertising CAP_RELAY — the raw population.
+    pub relay_population: Option<usize>,
+    /// That population grouped by routing-domain cluster.
+    pub relay_domains: Option<Vec<usize>>,
+    pub dns_leak: Option<bool>,
+    pub outer_sni: Option<String>,
+}
 
 /// What the HTTP layer knows about the running node.
 #[derive(Debug, Clone)]
@@ -27,6 +72,12 @@ pub struct ApiState {
     pub exit_ip: Option<String>,
     /// This node's fingerprint, for the home-exit view.
     pub node_fingerprint: String,
+    /// Live measurements. Configured regime booleans are not witnesses.
+    pub witnesses: Witnesses,
+    /// The private seed the ticket issuer derives from. `None` in a view that
+    /// has no node identity, which makes `/api/v2/btcr` report unavailability
+    /// rather than minting from a guess.
+    pub identity_seed: Option<NodeSecret>,
 }
 
 impl Default for ApiState {
@@ -38,6 +89,8 @@ impl Default for ApiState {
             transport: None,
             exit_ip: None,
             node_fingerprint: String::new(),
+            witnesses: Witnesses::default(),
+            identity_seed: None,
         }
     }
 }
@@ -46,18 +99,26 @@ fn ledger_input(state: &ApiState) -> LedgerInput {
     let connected = state.peers > 0;
     LedgerInput {
         regime: Some(state.regime),
-        public_relays: Some(state.peers),
-        circuit_hops: connected.then(|| state.regime.hops().hops()),
-        circuit_asns: None,
+        // Prefer the verified relay population; a live session count is a
+        // fallback that the ledger still has to treat as domain-ungrouped.
+        public_relays: state
+            .witnesses
+            .relay_population
+            .or(connected.then_some(state.peers)),
+        circuit_hops: state.witnesses.circuit_hops,
+        circuit_asns: state.witnesses.circuit_asns,
         transport: state.transport.clone(),
-        outer_sni: None,
+        outer_sni: state.witnesses.outer_sni.clone(),
         exit_ip: state.exit_ip.clone(),
-        cover_traffic: state.regime.cover_traffic() && connected,
-        dns_leak: None,
+        cover_tx: state.witnesses.cover_tx,
+        dns_leak: state.witnesses.dns_leak,
         // The hybrid handshake is mandatory in this build: a session cannot be
         // established without it, so a live session is direct evidence.
         pq_hybrid: connected.then_some(true),
         clock_consistent: super::chronos::clock_consistent(),
+        cap_relay_verified: state.witnesses.cap_relay_verified,
+        nonce_echo_hops: state.witnesses.nonce_echo_hops,
+        relay_domains: state.witnesses.relay_domains.clone(),
     }
 }
 
@@ -143,7 +204,17 @@ pub fn handle(state: &ApiState, req: &str) -> Option<Value> {
         "/api/v2/regime" => Some(regime(state)),
         "/api/v2/capabilities" => Some(capabilities()),
         "/api/v2/home-exit" => Some(super::boomerang::view(&state.node_fingerprint)),
-        "/api/v2/btcr" => Some(btcr::status_json(&state.node_fingerprint)),
+        "/api/v2/btcr" => Some(match state.identity_seed.as_ref() {
+            Some(seed) => {
+                let issuer = Issuer::from_identity_seed(seed.expose());
+                btcr::status_json(&issuer, super::now_secs())
+            }
+            None => json!({
+                "issuer": null,
+                "available": false,
+                "note": "this view has no node identity seed, so no ticket issuer exists here",
+            }),
+        }),
         "/api/v2/fleet" => Some(super::fleet::status_json()),
         "/api/v2/ladder" => Some(super::continuum::status_json()),
         "/api/v2/racs" => Some(super::racs::status_json()),
@@ -186,7 +257,7 @@ pub fn apply_regime(body: &Value) -> Result<Value, String> {
 /// The node returns `E = k·B` plus the DLEQ proof; it never sees the ticket
 /// input, so it cannot link issuance to a later spend. Without a configured
 /// beneficiary key the endpoint refuses rather than minting unearned tickets.
-pub fn btcr_issue(body: &Value, fingerprint: &str) -> Result<Value, String> {
+pub fn btcr_issue(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, String> {
     let beneficiary_hex = std::env::var("GHOST_BTCR_BENEFICIARY").map_err(|_| {
         "GHOST_BTCR_BENEFICIARY is not set; refusing to mint tickets without a trusted work signer"
             .to_string()
@@ -216,31 +287,42 @@ pub fn btcr_issue(body: &Value, fingerprint: &str) -> Result<Value, String> {
         btcr::record_rejected_receipt();
         return Err(e);
     }
-    let issuer = Issuer::for_node(fingerprint);
+    // The issuer lives in the node's private identity; the caller's fingerprint
+    // is not an input anywhere in this derivation.
+    let issuer = Issuer::from_identity_seed(identity_seed);
+    let now = super::now_secs();
+    let bucket = Bucket {
+        day: btcr::bucket_day(now),
+        tier: btcr::tier_for(receipt.work_bytes),
+    };
     let (eval, dleq) = issuer
-        .evaluate(blinded)
+        .evaluate(blinded, bucket.day, bucket.tier)
         .inspect_err(|_| btcr::record_rejected_receipt())?;
+    // Only claim the receipt once the request is known to be well-formed; a
+    // malformed body must not burn a unit of work.
+    btcr::redeem_receipt(&receipt)?;
     btcr::record_issue();
     Ok(json!({
         "success": true,
-        "issuer": issuer.public_hex(),
+        "issuer": issuer.public_hex_for(bucket.day, bucket.tier),
         "eval": eval,
         "dleq": dleq,
-        "work_bytes": receipt.work_bytes,
-        "expires_at": super::now_secs() + btcr::DEFAULT_TICKET_TTL_SECS,
-        "algorithm": "ristretto255-voprf+dleq",
+        "bucket": { "day": bucket.day, "tier": bucket.tier },
+        "work_bytes": btcr::tier_bytes(bucket.tier),
+        "expires_at": btcr::expiry_for_day(bucket.day),
+        "algorithm": "ristretto255-voprf+dleq+bucket-keys",
         "note": "unblind E with your blinding factor; the node never saw the input",
     }))
 }
 
 /// `POST /api/v2/btcr/spend` — verify and spend a bearer ticket once.
-pub fn btcr_spend(body: &Value, fingerprint: &str) -> Result<Value, String> {
+pub fn btcr_spend(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, String> {
     let encoded = body
         .get("ticket")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "body must contain an encoded \"ticket\"".to_string())?;
     let ticket = Ticket::decode(encoded)?;
-    let issuer = Issuer::for_node(fingerprint);
+    let issuer = Issuer::from_identity_seed(identity_seed);
     btcr::spend(&issuer, &ticket, super::now_secs())?;
     Ok(json!({
         "success": true,
@@ -340,11 +422,28 @@ mod tests {
             transport: Some("quic".into()),
             exit_ip: None,
             node_fingerprint: "self".into(),
+            ..Default::default()
         };
         let value = xray(&state);
+        // Four peers with no circuit, no cover count and no domain grouping is
+        // not evidence of anonymity: every witness is Unknown, never Verified.
         assert!(value["claim"].as_str().unwrap().contains("withheld"));
-        assert!(value["headline"].as_str().unwrap().contains("failing"));
+        assert!(value["headline"].as_str().unwrap().contains("unmeasured"));
         assert!(value["observations"].as_array().unwrap().len() >= 3);
+    }
+
+    #[test]
+    fn the_identity_seed_is_never_printed() {
+        let seed = NodeSecret::new([0xAB; 32]);
+        assert_eq!(format!("{seed:?}"), "NodeSecret(<hidden>)");
+        assert!(format!(
+            "{:?}",
+            ApiState {
+                identity_seed: Some(seed),
+                ..Default::default()
+            }
+        )
+        .contains("NodeSecret(<hidden>)"));
     }
 
     #[test]

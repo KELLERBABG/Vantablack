@@ -104,7 +104,9 @@ pub(crate) fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
 pub(crate) async fn send_cover(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx) {
     // RACS accounting: this is the point where a cover frame really leaves, so
     // the shaper and the scavenger see the same event the wire does.
-    let _ = vantablack::ghost::v2::racs::observe_cover(false);
+    let _ = vantablack::ghost::v2::racs::observe_cover(
+        vantablack::ghost::v2::racs::take_real_pending(),
+    );
     let (shards, tag) = enc_split(ctx, net::DUMMY_MAGIC);
     let mut batch = MixBatch::new(3, Duration::ZERO);
     let mut ready = None;

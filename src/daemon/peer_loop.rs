@@ -1106,6 +1106,53 @@ pub(crate) async fn handle_pkt(
                 tracing::info!(peer = %peer_fp, "Chat message delivered");
                 return;
             }
+            if let Some(rest) = payload.strip_prefix(b"NECHO") {
+                if rest.len() >= 17 {
+                    let mut nonce = [0u8; 16];
+                    nonce.copy_from_slice(&rest[..16]);
+                    let hops = rest[16].max(1);
+                    let input = vantablack::ghost::v2::xray::nonce_echo_signing_input(&nonce, hops);
+                    let sig = node.identity.sign(&input).to_bytes();
+                    let mut reply = Vec::with_capacity(5 + 16 + 1 + 64);
+                    reply.extend_from_slice(b"NECH2");
+                    reply.extend_from_slice(&nonce);
+                    reply.push(hops);
+                    reply.extend_from_slice(&sig);
+                    if let Some(sess) = node.sessions.get(&peer_fp) {
+                        let rctx = SealCtx::from_session(&sess);
+                        drop(sess);
+                        let frame = seal_single(&rctx, &reply);
+                        let _ = super::srtp::send_v2(
+                            sock,
+                            src,
+                            &rctx.data_header(0, false, 0),
+                            &frame,
+                            &[0u8; 16],
+                        )
+                        .await;
+                    }
+                }
+                return;
+            }
+            if let Some(rest) = payload.strip_prefix(b"NECH2") {
+                if rest.len() >= 16 + 1 + 64 {
+                    let mut nonce = [0u8; 16];
+                    nonce.copy_from_slice(&rest[..16]);
+                    let hops = rest[16];
+                    let mut sig = [0u8; 64];
+                    sig.copy_from_slice(&rest[17..81]);
+                    if let Some(pk) = node
+                        .sessions
+                        .get(&peer_fp)
+                        .and_then(|s| s.peer_identity_pk())
+                    {
+                        if vantablack::ghost::v2::xray::verify_nonce_echo(&nonce, &pk, &sig, hops) {
+                            tracing::debug!(peer = %peer_fp, hops, "X-Ray: verified signed nonce-echo witness");
+                        }
+                    }
+                }
+                return;
+            }
         }
 
         // Blind relay (B22): a decrypted payload may carry a

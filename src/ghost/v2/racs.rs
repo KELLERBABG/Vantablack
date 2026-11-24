@@ -15,21 +15,25 @@
 //!   minimum window so a scavenger flow still makes progress.
 //!
 //! The live daemon gates its existing cover task on [`cover_allowed`] when
-//! `GHOST_RACS=1`: SOCKS traffic calls [`note_real_traffic`], and cover pauses
-//! for [`YIELD_WINDOW_MS`] so the phone can finish its transfer and sleep. When
-//! the variable is unset the gate is a no-op, preserving v1 behaviour.
+//! `GHOST_RACS=1`. Frames leave only on an **input-independent** ON/OFF renewal
+//! schedule ([`slot_is_on`]): a fixed 250 ms slot grid, a cycle whose ON length
+//! is redrawn every twelve slots, and 576-byte frames. Real traffic never moves
+//! an edge — it only fills a slot that was already ON. The previous design
+//! suppressed cover for 25 ms after real traffic, which handed an observer a
+//! deterministic burst-end marker; that window is gone.
 //!
-//! **What this does not claim.** The burst templates are seeded heuristics, not
-//! trained on a website-fingerprinting corpus; [`status_json`] says so. The
-//! bench measures the decision path, not a kernel qdisc.
+//! **What this does not claim.** The schedule is a fixed heuristic, not fitted
+//! to a website-fingerprinting corpus; [`status_json`] says so. Substitution of
+//! a queued *real* frame into an ON slot is reported by [`observe_cover`]'s
+//! `real` flag, but the daemon's current cover emitter only produces dummy
+//! frames, so that field stays `false` on this path. The bench measures the
+//! decision path, not a kernel qdisc.
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-/// How long cover stays quiet after real traffic, in milliseconds.
-pub const YIELD_WINDOW_MS: u64 = 25;
 /// LEDBAT++ queueing-delay target.
 pub const LEDBAT_TARGET_MS: f64 = 60.0;
 
@@ -60,142 +64,50 @@ impl SplitMix {
     }
 }
 
-// ── Burst-shaping PFSM ──────────────────────────────────────────────────────
+// ── Input-independent slot schedule ─────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Template {
-    /// Low-rate steady padding for an always-on desktop link.
-    Steady,
-    /// Short bursts after real traffic, then silence.
-    Bursty,
-    /// Heavy-tailed gaps: many short sleeps, a few long ones.
-    Pareto,
-}
-
-impl Template {
-    pub const ALL: [Template; 3] = [Template::Steady, Template::Bursty, Template::Pareto];
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum State {
-    Idle,
-    Burst,
-    Pad,
-    Drain,
-}
+/// Slot length. Every slot is the same length whether or not a frame leaves.
+pub const SLOT_MS: u64 = 250;
+/// Wire size of one scheduled frame.
+pub const FRAME_BYTES: usize = 576;
+/// Slots per renewal cycle. ON lengths are drawn per cycle; OFF is the rest.
+const CYCLE_SLOTS: u64 = 12;
+/// ON lengths a cycle may draw.
+const ON_CHOICES: [u64; 3] = [1, 2, 3];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
-    /// Emit `bytes` of cover, then wait `after_ms`.
-    EmitCover { bytes: usize, after_ms: u64 },
-    /// Nothing to send; wait.
+    /// This slot may carry one frame. `real` says a queued real frame took the
+    /// slot; `false` means the 576 bytes are dummy.
+    EmitFrame {
+        bytes: usize,
+        real: bool,
+        after_ms: u64,
+    },
+    /// OFF slot: nothing leaves, whatever the queue holds.
     Sleep { ms: u64 },
-    /// Real traffic is queued: abandon the background slot.
-    YieldToReal,
 }
 
-/// Four-state burst shaper. Transitions are driven by two events: a timer tick
-/// and the presence of real traffic.
-#[derive(Debug, Clone)]
-pub struct Pfsm {
-    template: Template,
-    state: State,
-    rng: SplitMix,
-    burst_left: u32,
-    emissions: u64,
-    cover_bytes: u64,
-}
-
-impl Pfsm {
-    pub fn new(template: Template, seed: u64) -> Self {
-        Self {
-            template,
-            state: State::Idle,
-            rng: SplitMix::new(seed),
-            burst_left: 0,
-            emissions: 0,
-            cover_bytes: 0,
-        }
-    }
-
-    pub fn state(&self) -> State {
-        self.state
-    }
-
-    pub fn emissions(&self) -> u64 {
-        self.emissions
-    }
-
-    pub fn cover_bytes(&self) -> u64 {
-        self.cover_bytes
-    }
-
-    /// Advance one tick. `real_pending` is the scavenger's queue signal.
-    pub fn tick(&mut self, real_pending: bool) -> Action {
-        if real_pending {
-            self.state = State::Idle;
-            self.burst_left = 0;
-            return Action::YieldToReal;
-        }
-        match self.state {
-            State::Idle => {
-                // After an idle period, decide whether to open a cover burst.
-                match self.template {
-                    Template::Steady => {
-                        self.state = State::Pad;
-                        let after = 80 + self.rng.below(40);
-                        self.emit(64, after)
-                    }
-                    Template::Bursty => {
-                        self.state = State::Burst;
-                        self.burst_left = 3 + self.rng.below(4) as u32;
-                        let after = 30 + self.rng.below(40);
-                        self.emit(96, after)
-                    }
-                    Template::Pareto => {
-                        self.state = State::Pad;
-                        let gap = 40 + (self.rng.below(1_000) as f64).powf(2.0) as u64;
-                        self.emit(48, gap)
-                    }
-                }
-            }
-            State::Burst => {
-                if self.burst_left == 0 {
-                    self.state = State::Drain;
-                    return Action::Sleep {
-                        ms: 200 + self.rng.below(300),
-                    };
-                }
-                self.burst_left -= 1;
-                let after = 20 + self.rng.below(30);
-                self.emit(96, after)
-            }
-            State::Pad => {
-                self.state = State::Idle;
-                Action::Sleep {
-                    ms: 100 + self.rng.below(150),
-                }
-            }
-            State::Drain => {
-                self.state = State::Idle;
-                Action::Sleep {
-                    ms: 400 + self.rng.below(600),
-                }
-            }
-        }
-    }
-
-    fn emit(&mut self, base_bytes: u64, after_ms: u64) -> Action {
-        let bytes = base_bytes + self.rng.below(base_bytes / 2 + 1);
-        self.emissions += 1;
-        self.cover_bytes += bytes;
-        Action::EmitCover {
-            bytes: bytes as usize,
-            after_ms,
-        }
+/// Whether slot `slot` of `seed`'s schedule is ON.
+///
+/// This is a pure function of `(seed, slot_index)`. It reads no queue and no
+/// clock, so traffic cannot move an edge — the failure that made the old 25 ms
+/// yield window a deterministic burst-end marker. Each cycle redraws its ON
+/// start and length, which is the renewal part: bursts vary, the duty cycle
+/// stays bounded.
+pub fn slot_is_on(seed: u64, slot: u64) -> bool {
+    let cycle = slot / CYCLE_SLOTS;
+    let pos = slot % CYCLE_SLOTS;
+    let mut rng = SplitMix::new(seed ^ cycle.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let start = rng.below(CYCLE_SLOTS);
+    let len = ON_CHOICES[rng.below(ON_CHOICES.len() as u64) as usize];
+    let end = start + len;
+    if end <= CYCLE_SLOTS {
+        pos >= start && pos < end
+    } else {
+        // A cycle that wraps: ON runs past the boundary into the next cycle.
+        pos >= start || pos < end - CYCLE_SLOTS
     }
 }
 
@@ -379,10 +291,14 @@ impl Ledbat {
 
 struct Runtime {
     enabled: bool,
+    /// Monotonic-enough epoch the slot grid is counted from.
+    epoch_ms: u64,
+    /// Per-process schedule seed. Independent of traffic.
+    seed: u64,
     last_real_ms: AtomicU64,
     real_packets: AtomicU64,
+    /// Frames emitted on the schedule, dummy or real.
     cover_packets: AtomicU64,
-    machine: Mutex<Pfsm>,
     scavenger: Mutex<Scavenger>,
 }
 
@@ -399,21 +315,14 @@ fn runtime() -> &'static Runtime {
         let enabled = std::env::var("GHOST_RACS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let template = std::env::var("GHOST_RACS_TEMPLATE")
-            .ok()
-            .and_then(|v| match v.as_str() {
-                "steady" => Some(Template::Steady),
-                "bursty" => Some(Template::Bursty),
-                "pareto" => Some(Template::Pareto),
-                _ => None,
-            })
-            .unwrap_or(Template::Bursty);
+        let started = now_ms();
         Runtime {
             enabled,
+            epoch_ms: started,
+            seed: started ^ 0xA5A5_5A5A_5A5A_A5A5,
             last_real_ms: AtomicU64::new(0),
             real_packets: AtomicU64::new(0),
             cover_packets: AtomicU64::new(0),
-            machine: Mutex::new(Pfsm::new(template, now_ms() ^ 0xA5A5_5A5A)),
             scavenger: Mutex::new(Scavenger::default()),
         }
     })
@@ -423,43 +332,84 @@ pub fn enabled() -> bool {
     runtime().enabled
 }
 
-/// Real traffic was seen; cover yields for [`YIELD_WINDOW_MS`].
+/// Current slot on this process's schedule.
+fn current_slot(rt: &Runtime) -> u64 {
+    now_ms().saturating_sub(rt.epoch_ms) / SLOT_MS
+}
+
+/// Real traffic was seen. This records *what* is queued for the next ON slot; it
+/// never delays or gates an emission.
 pub fn note_real_traffic() {
     let rt = runtime();
     rt.last_real_ms.store(now_ms(), Ordering::Relaxed);
     rt.real_packets.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Whether the cover task may emit right now.
+/// Whether a real frame is queued for the current slot.
 ///
-/// Disabled RACS returns `true` (v1 behaviour). For a disabled node this is a
-/// single atomic load and a branch.
-pub fn cover_allowed() -> bool {
+/// This is a one-slot lookback for classification only. Nothing in the schedule
+/// reads it.
+pub fn real_traffic_pending() -> bool {
     let rt = runtime();
     if !rt.enabled {
-        return true;
+        return false;
     }
     let last = rt.last_real_ms.load(Ordering::Relaxed);
-    if last == 0 {
-        return true;
-    }
-    now_ms().saturating_sub(last) > YIELD_WINDOW_MS
+    last != 0 && now_ms().saturating_sub(last) <= SLOT_MS
 }
 
-/// Record that the cover task emitted, and advance the shaper once.
+/// Whether the cover task may emit in this slot.
+///
+/// Disabled RACS returns `true` (v1 behaviour). Enabled RACS returns the
+/// schedule's decision for the current slot, and nothing else: no queue length,
+/// no recent-traffic timer, no rate estimate.
+pub fn cover_allowed() -> bool {
+    let rt = runtime();
+    !rt.enabled || slot_is_on(rt.seed, current_slot(rt))
+}
+
+/// Account for one emission attempt and return the slot's decision.
+///
+/// A slot that is ON emits one [`FRAME_BYTES`] frame; a queued real frame is
+/// offered the slot first (`real: true`), otherwise the frame is dummy. An OFF
+/// slot emits nothing even when real traffic is queued — that is the cost of an
+/// input-independent schedule, and it is why the covered link must have enough
+/// duty cycle for the flows it carries.
 pub fn observe_cover(real_pending: bool) -> Action {
     let rt = runtime();
-    let action = {
-        let mut machine = rt.machine.lock().unwrap_or_else(|e| e.into_inner());
-        machine.tick(real_pending)
-    };
-    if matches!(action, Action::EmitCover { .. }) {
+    let on = !rt.enabled || slot_is_on(rt.seed, current_slot(rt));
+    let real = on && real_pending;
+    let action = if on {
         rt.cover_packets.fetch_add(1, Ordering::Relaxed);
-    }
+        Action::EmitFrame {
+            bytes: FRAME_BYTES,
+            real,
+            after_ms: SLOT_MS,
+        }
+    } else {
+        Action::Sleep { ms: SLOT_MS }
+    };
     let mut scav = rt.scavenger.lock().unwrap_or_else(|e| e.into_inner());
-    let has_background = matches!(action, Action::EmitCover { .. });
-    let _ = scav.decide(!cover_allowed(), has_background);
+    let _ = scav.decide(real, on);
     action
+}
+
+/// Frames emitted on the schedule since process start. This is the counter the
+/// truth ledger reads, so it must be a wire event and not a configuration bit.
+pub fn cover_packets_emitted() -> u64 {
+    runtime().cover_packets.load(Ordering::Relaxed)
+}
+
+static REAL_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Mark that a real application frame was queued/sent for the current RACS slot.
+pub fn note_real_sent() {
+    REAL_PENDING.store(true, Ordering::Release);
+}
+
+/// Consume the real-frame flag for the current RACS cover emission slot.
+pub fn take_real_pending() -> bool {
+    REAL_PENDING.swap(false, Ordering::AcqRel)
 }
 
 pub fn bench(iterations: usize) -> YieldStats {
@@ -469,27 +419,29 @@ pub fn bench(iterations: usize) -> YieldStats {
 
 pub fn status_json() -> serde_json::Value {
     let rt = runtime();
-    let machine = rt.machine.lock().unwrap_or_else(|e| e.into_inner());
     let scav = rt.scavenger.lock().unwrap_or_else(|e| e.into_inner());
     let stats = scav.stats();
     let last = rt.last_real_ms.load(Ordering::Relaxed);
     serde_json::json!({
         "enabled": rt.enabled,
         "gate": "GHOST_RACS=1",
-        "yield_window_ms": YIELD_WINDOW_MS,
+        "schedule": {
+            "slot_ms": SLOT_MS,
+            "frame_bytes": FRAME_BYTES,
+            "cycle_slots": CYCLE_SLOTS,
+            "on_choices": ON_CHOICES,
+            "slot": current_slot(rt),
+            "current_slot_on": cover_allowed(),
+            "input_independent": true,
+            "renewal": "ON start and length redrawn every cycle; traffic fills a slot but never moves one",
+        },
         "cover_allowed": cover_allowed(),
         "last_real_ms_ago": if last == 0 { serde_json::Value::Null } else { serde_json::json!(now_ms().saturating_sub(last)) },
         "real_packets": rt.real_packets.load(Ordering::Relaxed),
         "cover_packets": rt.cover_packets.load(Ordering::Relaxed),
-        "machine": {
-            "state": machine.state(),
-            "emissions": machine.emissions(),
-            "cover_bytes": machine.cover_bytes(),
-            "templates": Template::ALL,
-        },
         "yield": stats,
         "ledbat": Ledbat::default(),
-        "tuning": "seeded burst heuristics; not fitted to a website-fingerprinting corpus",
+        "tuning": "fixed ON/OFF renewal schedule; not fitted to a website-fingerprinting corpus",
     })
 }
 
@@ -515,35 +467,76 @@ mod tests {
     }
 
     #[test]
-    fn the_shaper_yields_and_shapes() {
-        let mut machine = Pfsm::new(Template::Bursty, 42);
-        assert_eq!(machine.tick(true), Action::YieldToReal);
-        assert_eq!(machine.state(), State::Idle);
-        let first = machine.tick(false);
-        assert!(matches!(first, Action::EmitCover { .. }));
-        assert_eq!(machine.state(), State::Burst);
-        let mut emitted = 1;
-        for _ in 0..40 {
-            if matches!(machine.tick(false), Action::EmitCover { .. }) {
-                emitted += 1;
-            }
-        }
-        assert!(emitted >= 3, "a burst must emit more than one cover packet");
-        assert_eq!(machine.emissions(), emitted);
+    fn the_schedule_reads_no_traffic_state() {
+        // `slot_is_on` takes only `(seed, slot)`, so the strongest test is that
+        // the same slot sequence is reproduced after a burst of real packets.
+        let seed = 0x1234_5678_9ABC_DEF0;
+        let baseline: Vec<bool> = (0..CYCLE_SLOTS * 8).map(|s| slot_is_on(seed, s)).collect();
+
+        let rt = runtime();
+        rt.real_packets.fetch_add(100_000, Ordering::Relaxed);
+        rt.last_real_ms.store(now_ms(), Ordering::Relaxed);
+
+        let after: Vec<bool> = (0..CYCLE_SLOTS * 8).map(|s| slot_is_on(seed, s)).collect();
+        assert_eq!(baseline, after, "traffic must not move a schedule edge");
     }
 
     #[test]
-    fn steady_and_pareto_templates_emit_with_bounded_sizes() {
-        for template in [Template::Steady, Template::Pareto, Template::Bursty] {
-            let mut machine = Pfsm::new(template, 7);
-            let mut total = 0;
-            for _ in 0..30 {
-                if let Action::EmitCover { bytes, .. } = machine.tick(false) {
-                    assert!((48..=144).contains(&bytes), "{template:?} emitted {bytes}");
-                    total += bytes;
+    fn on_slots_are_bounded_bursts_inside_each_cycle() {
+        let seed = 99;
+        let cap = *ON_CHOICES.iter().max().unwrap();
+        let mut saw_on = false;
+        let mut saw_off = false;
+        let mut total_on = 0u64;
+        let cycles = 40u64;
+        for cycle in 0..cycles {
+            let mut on_in_cycle = 0u64;
+            for pos in 0..CYCLE_SLOTS {
+                if slot_is_on(seed, cycle * CYCLE_SLOTS + pos) {
+                    on_in_cycle += 1;
+                    total_on += 1;
+                    saw_on = true;
+                } else {
+                    saw_off = true;
                 }
             }
-            assert!(total > 0, "{template:?} emitted no cover");
+            // A wrapping ON run contributes to two cycles, so the worst case
+            // for one cycle is two burst lengths at the boundary.
+            assert!(
+                on_in_cycle <= 2 * cap,
+                "cycle {cycle} had {on_in_cycle} ON slots, cap {cap}"
+            );
+        }
+        let duty = total_on as f64 / (cycles * CYCLE_SLOTS) as f64;
+        assert!(duty <= 0.35, "duty cycle {duty} must stay low");
+        assert!(
+            saw_on && saw_off,
+            "the schedule must renew between ON and OFF"
+        );
+    }
+
+    #[test]
+    fn frames_are_fixed_at_576_bytes() {
+        assert_eq!(FRAME_BYTES, 576);
+        assert_eq!(SLOT_MS, 250, "a slot shorter than the link RTT is noise");
+    }
+
+    #[test]
+    fn an_off_slot_emits_nothing_and_an_on_slot_emits_one_frame() {
+        // The live slot is clock-driven, so the assertion is the invariant the
+        // two branches share rather than a forced state.
+        match observe_cover(true) {
+            Action::EmitFrame {
+                bytes, after_ms, ..
+            } => {
+                assert_eq!(bytes, FRAME_BYTES);
+                assert_eq!(after_ms, SLOT_MS);
+                assert!(cover_allowed(), "an emitting slot must be ON");
+            }
+            Action::Sleep { ms } => {
+                assert_eq!(ms, SLOT_MS);
+                assert!(!cover_allowed(), "a sleeping slot must be OFF");
+            }
         }
     }
 

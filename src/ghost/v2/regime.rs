@@ -31,6 +31,32 @@ pub const REGIME_ENV: &str = "GHOST_V2_REGIME";
 /// The persisted regime file inside [`crate::ghost::paths::data_dir`].
 pub const REGIME_FILE: &str = "ghost-regime.json";
 
+/// Rényi-2 collision-entropy effective population of a relay set grouped by
+/// administrative or routing domain (ASN, subnet cluster, operator).
+///
+/// `N_eff = (Σ wᵢ²)⁻¹` with `wᵢ = nᵢ / N`. A single VPS hosting two hundred
+/// addresses is one domain, so `N_eff = 1`, not 200: counting addresses is how a
+/// Sybil set buys an anonymity claim it does not have. Independent operators
+/// give `N_eff = N`.
+pub fn effective_population(groups: &[usize]) -> f64 {
+    let total: usize = groups.iter().copied().sum();
+    if total == 0 {
+        return 0.0;
+    }
+    let sum_sq: f64 = groups
+        .iter()
+        .map(|n| {
+            let w = *n as f64 / total as f64;
+            w * w
+        })
+        .sum();
+    if sum_sq <= 0.0 {
+        0.0
+    } else {
+        1.0 / sum_sq
+    }
+}
+
 /// Number of active public relays below which no anonymity claim is honest.
 ///
 /// Forty is the smallest population in which a three-hop circuit has any chance
@@ -355,6 +381,21 @@ mod tests {
                 .claim
                 .starts_with("anonymous"));
         }
+    }
+
+    #[test]
+    fn effective_population_rejects_sybil_inflation() {
+        // 200 addresses on one host are one anonymity bucket.
+        assert!((effective_population(&[200]) - 1.0).abs() < 1e-9);
+        // 200 independent operators are 200.
+        let independent: Vec<usize> = std::iter::repeat_n(1, 200).collect();
+        assert!((effective_population(&independent) - 200.0).abs() < 1e-6);
+        // Four equally weighted domains are an effective population of four,
+        // however many addresses each one holds.
+        assert!((effective_population(&[50, 50, 50, 50]) - 4.0).abs() < 1e-9);
+        // Nothing measured is zero, never a flattering default.
+        assert_eq!(effective_population(&[]), 0.0);
+        assert_eq!(effective_population(&[0, 0]), 0.0);
     }
 
     #[test]

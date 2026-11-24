@@ -395,15 +395,38 @@ jobs:
           (cd proverif2.05 && ./build -nointeract)
           sudo cp proverif2.05/proverif /usr/local/bin/
 
-      - name: Verify Handshake, Ratchet & Replay Protection
-        run: proverif formal/ghost_session.pv
+      # Each model below ends with a positive reachability witness. ProVerif
+      # reports a *reachable* event as `... is false` (it failed to prove
+      # unreachability). If the summary instead says `not event(...) is true`,
+      # the branch never executed and every secrecy query in that file is
+      # vacuous — a green build that proves nothing. Fail on that summary.
+      - name: Verify Handshake Agreement, Secrecy & Replay Protection
+        run: |
+          set -o pipefail
+          proverif formal/ghost_session.pv | tee ghost_session.out
+          if grep -q "not event(agreement" ghost_session.out; then
+            echo "::error::the agreement witness is unreachable; the session model is vacuous"
+            exit 1
+          fi
 
       - name: Verify SessionRatchet Forward Secrecy & Post-Compromise Security
-        run: proverif formal/session_ratchet.pv
+        run: |
+          set -o pipefail
+          proverif formal/session_ratchet.pv | tee session_ratchet.out
+          if grep -q "not event(epoch2_complete" session_ratchet.out; then
+            echo "::error::the epoch-2 witness is unreachable; the ratchet model is vacuous"
+            exit 1
+          fi
 
       - name: Verify ShardSec 3-Shard Space-Time Secrecy
         run: proverif formal/shardsec_space_time.pv
 
-      - name: Verify Multi-Hop Circuit Unlinkability
-        run: proverif formal/ghost_circuit_unlinkability.pv
+      - name: Verify Multi-Hop Circuit Unlinkability & Origin Blindness
+        run: |
+          set -o pipefail
+          proverif formal/ghost_circuit_unlinkability.pv | tee ghost_circuit_unlinkability.out
+          if grep -q "not event(exit_matched_origin" ghost_circuit_unlinkability.out; then
+            echo "::error::the exit witness is unreachable; the circuit model is vacuous"
+            exit 1
+          fi
 

@@ -1,33 +1,45 @@
 (*
    Vantablack Multi-Hop Onion Circuit — Unlinkability & Relay Blindness
-   (ProVerif 2.05 symbolic model)
+   (ProVerif 2.05)
 
-   Models `src/socks.rs` (`wrap_onion` / 3-hop telescoping circuit) +
-   `src/ghost/layers/`:
+   Models `src/socks.rs` (`wrap_onion` / 3-hop telescoping circuit) plus the
+   layer AEADs in `src/ghost/layers/`.
 
-   An active Dolev-Yao attacker controls:
-   - the public network channel `c`,
-   - Relay 1's layer key `k_r1` (compromised/malicious entry relay), and
-   - Relay 2's layer key `k_r2` (compromised/malicious middle relay).
+   Three separate scenarios run in parallel, because they make different
+   assumptions and the previous single-scenario file conflated them:
 
-   1. Payload secrecy (`inner_msg`):
-      - The exit-bound plaintext `inner_msg` is sealed inside the innermost layer
-        under `k_exit` (shared between initiator and exit node), then wrapped in
-        `k_r2`, then wrapped in `k_r1`.
-      - Query `attacker(inner_msg)` checks that compromised relays `R1` and `R2`
-        cannot recover the application payload.
+   A. `honest_circuit` — the **entry** relay is compromised (`k_r1` is published
+      on `c`), the middle relay and the exit are honest.
+        * `attacker(inner_msg)` — the compromised entry relay cannot open the
+          payload.
+        * `attacker(dest_exit)` — it cannot learn the final destination either:
+          that is two layers down, under `k_r2` and `k_exit`.
+        * `attacker(origin_id)` — the origin identity is not in the onion at
+          all. It is used only to derive an opaque reply tag
+          `h(origin_id, k_exit)`; the exit routes replies by tag and never sees
+          the identity.
 
-   2. Exit-destination blindness at entry relay (`dest_exit`):
-      - `R1` only receives `(k_r1`-encrypted `(next_r2, inner_onion))` and never
-        learns `dest_exit` (which is only inside `k_r2` / `k_exit`).
-      - Query `attacker(dest_exit)` checks that `R1` (when `k_r2` is honest)
-        cannot learn the final destination.
+   B. `middle_compromised` — **both** `k_r1` and `k_r2` are published. This is
+      the explicit middle-relay compromise, kept separate from A so that A's
+      destination-secrecy query is not weakened by B's assumption.
+        * The honest loss is stated, not hidden: the middle relay learns the
+          next hop (`middle_linked_exit(hop_exit)` is reachable).
+        * `inner_msg`, `dest_exit` and `origin_id` are still secret: the exit
+          layer remains under `k_exit`, which neither compromised relay holds.
 
-   3. Origin blindness at exit (`origin_id`):
-      - The innermost exit layer carries `(dest_exit, inner_msg)` without
-        embedding `origin_id`.
-      - Query `attacker(origin_id)` checks that neither relay `R2` nor the exit
-        learns the initiator's identity from the onion payload.
+   C. `wire_shape` — observational equivalence. Two circuits that differ only in
+      the origin identity produce ciphertexts the adversary cannot tell apart:
+      `diff(wire_a, wire_b)`. That is the unlinkability claim in its weakest,
+      checkable form: the first-hop bytes do not depend on who is speaking.
+
+   Positive witnesses. `query event(exit_matched_origin())`,
+   `query event(reply_tag_ready(...))` and `query event(middle_linked_exit(...))`
+   are reachability queries; ProVerif reports a reachable event as false. If any
+   of them prints true, that branch never executed and its secrecy results are
+   vacuous.
+
+   Not modelled: circuit construction, cell sizes and padding, timing, the
+   `RLY!` wire format, or a reduction for the AEAD. See formal/README.md.
 *)
 
 free c: channel.
@@ -37,46 +49,125 @@ type key.
 fun senc(bitstring, key): bitstring.
 reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
 
+(* A one-way commitment; no inverse equation on purpose. *)
+fun h(bitstring, key): bitstring.
+
 free inner_msg: bitstring [private].
 free dest_exit: bitstring [private].
 free origin_id: bitstring [private].
+free origin_alt: bitstring [private].
 
 free hop_r1: bitstring.
 free hop_r2: bitstring.
 free hop_exit: bitstring.
 
+event entry_peeled().
+event middle_peeled().
+event exit_opened(bitstring).
+event exit_matched_origin().
+event reply_tag_ready(bitstring).
+event middle_linked_exit(bitstring).
+
 query attacker(inner_msg).
 query attacker(dest_exit).
 query attacker(origin_id).
+query attacker(origin_alt).
 
-let circuit_run =
+(* Positive reachability witnesses. Expected: false (reachable). *)
+query event(exit_opened(dest_exit)).
+query event(exit_matched_origin()).
+query t: bitstring; event(reply_tag_ready(t)).
+query x: bitstring; event(middle_linked_exit(x)).
+
+(* ── A. Compromised entry relay, honest middle and exit ───────────────────── *)
+
+let honest_circuit =
   new k_r1: key;
   new k_r2: key;
   new k_exit: key;
+  new reply: bitstring;
 
-  (* Adversary / malicious entry relay R1 learns k_r1 only *)
+  (* The entry relay is malicious: the adversary holds its layer key. *)
   out(c, k_r1);
 
-  (* Initiator builds 3-hop onion: R1 -> R2 -> Exit *)
-  let layer_exit = senc((dest_exit, inner_msg), k_exit) in
+  (* origin_id never travels; only this tag derived from it does. *)
+  let tag = h(origin_id, k_exit) in
+  let layer_exit = senc((dest_exit, inner_msg, tag, reply), k_exit) in
   let layer_r2 = senc((hop_exit, layer_exit), k_r2) in
   let layer_r1 = senc((hop_r2, layer_r2), k_r1) in
   out(c, layer_r1);
 
-  (* Honest R1 peels outer layer and forwards to R2 *)
+  (* Honest R1 peels the outer layer and forwards. *)
+  in(c, pkt1: bitstring);
+  let (=hop_r2, fwd2: bitstring) = sdec(pkt1, k_r1) in
+  event entry_peeled();
+  out(c, fwd2);
+
+  (* Honest R2 peels the middle layer and forwards. *)
+  in(c, pkt2: bitstring);
+  let (=hop_exit, fwd3: bitstring) = sdec(pkt2, k_r2) in
+  event middle_peeled();
+  out(c, fwd3);
+
+  (* Honest exit: learns the destination and the opaque reply tag, not origin. *)
+  in(c, pkt3: bitstring);
+  let (d: bitstring, payload: bitstring, tag_e: bitstring, r: bitstring) =
+    sdec(pkt3, k_exit) in
+  event exit_opened(d);
+  event reply_tag_ready(tag_e);
+  if tag_e = h(origin_id, k_exit) then
+  event exit_matched_origin().
+
+(* ── B. Both entry and middle compromised, exit still honest ──────────────── *)
+
+let middle_compromised =
+  new k_r1: key;
+  new k_r2: key;
+  new k_exit: key;
+  new reply: bitstring;
+
+  (* The explicit middle-relay compromise, and the entry relay as well. *)
+  out(c, k_r1);
+  out(c, k_r2);
+
+  let tag = h(origin_id, k_exit) in
+  let layer_exit = senc((dest_exit, inner_msg, tag, reply), k_exit) in
+  let layer_r2 = senc((hop_exit, layer_exit), k_r2) in
+  let layer_r1 = senc((hop_r2, layer_r2), k_r1) in
+  out(c, layer_r1);
+
   in(c, pkt1: bitstring);
   let (=hop_r2, fwd2: bitstring) = sdec(pkt1, k_r1) in
   out(c, fwd2);
 
-  (* Honest R2 peels middle layer and forwards to Exit *)
+  (* R2 is the adversary here: it sees the next hop and links itself to it.
+     That is a real, acknowledged loss — and it is the only one. *)
   in(c, pkt2: bitstring);
-  let (=hop_exit, fwd_exit: bitstring) = sdec(pkt2, k_r2) in
-  out(c, fwd_exit);
+  let (=hop_exit_next, fwd3: bitstring) = sdec(pkt2, k_r2) in
+  event middle_linked_exit(hop_exit_next).
 
-  (* Honest Exit peels innermost layer (never sees origin_id) *)
-  in(c, pkt3: bitstring);
-  let (d: bitstring, payload: bitstring) = sdec(pkt3, k_exit) in
-  0.
+(* ── C. Observational equivalence: origin does not shape the wire ──────────── *)
+
+let wire_shape =
+  new k_r1: key;
+  new k_r2: key;
+  new k_exit: key;
+
+  let tag_a = h(origin_id, k_exit) in
+  let tag_b = h(origin_alt, k_exit) in
+  let wire_a =
+    senc(
+      (hop_r2, senc((hop_exit, senc((dest_exit, inner_msg, tag_a), k_exit)), k_r2)),
+      k_r1
+    )
+  in
+  let wire_b =
+    senc(
+      (hop_r2, senc((hop_exit, senc((dest_exit, inner_msg, tag_b), k_exit)), k_r2)),
+      k_r1
+    )
+  in
+  out(c, diff(wire_a, wire_b)).
 
 process
-  (!circuit_run)
+  ((!honest_circuit) | (!middle_compromised) | (!wire_shape))

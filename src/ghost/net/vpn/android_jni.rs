@@ -1238,14 +1238,15 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getXrayJson<'local>(
     _class: JClass<'local>,
     ptr: jlong,
 ) -> jstring {
-    let (peers, connected, fp) = match unsafe { (ptr as *const AndroidCore).as_ref() } {
+    let (peers, connected, fp, seed) = match unsafe { (ptr as *const AndroidCore).as_ref() } {
         Some(core) => {
             let peers = core.known_peers.lock().len();
             let connected = core.hub_addr.is_some() && core.session_key.lock().is_some();
             let fp = core.identity.fingerprint();
-            (peers, connected, fp)
+            let seed = core.identity.long_term_signing.to_bytes();
+            (peers, connected, fp, Some(seed))
         }
-        None => (0, false, String::new()),
+        None => (0, false, String::new(), None),
     };
     let regime = std::env::var(crate::ghost::v2::regime::REGIME_ENV)
         .ok()
@@ -1258,6 +1259,8 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getXrayJson<'local>(
         transport: connected.then(|| "gtf_v2".to_string()),
         exit_ip: None,
         node_fingerprint: fp,
+        identity_seed: seed.map(crate::ghost::v2::api::NodeSecret::new),
+        ..Default::default()
     };
     let json = crate::ghost::v2::api::xray(&state).to_string();
     env.new_string(json)

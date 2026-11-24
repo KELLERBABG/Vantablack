@@ -14,9 +14,15 @@
 //!
 //! Two constraints keep this honest:
 //!
-//! * **Bounded.** The delay is capped (250 ms by default). A circuit whose inner
-//!   RTT exceeds that cannot be masked, and this module says so instead of
-//!   pretending: [`ChronosSplice::residual`] reports what is left over.
+//! * **Bounded.** The delay is capped (250 ms by default) and the whole session
+//!   is held to a stationary latency horizon `H ∈ {80, 160, 280} ms`, chosen
+//!   once per session and never re-chosen mid-flow. A circuit whose inner RTT
+//!   exceeds `H` cannot be masked, and this module says so instead of
+//!   pretending: [`SplicePlan::residual`] reports what is left over.
+//! * **One delay, not two.** An ACK is delayed once, so the observer's measured
+//!   RTT grows by exactly that delay. The correct compensation is therefore
+//!   `delay = inner − outer` and `paced = outer + delay`; halving the deficit
+//!   and counting it twice left the loop 2× short.
 //! * **Never negative, never ahead of real data.** ACKs are only ever *delayed*,
 //!   never sent early, so the mechanism cannot manufacture an RTT shorter than
 //!   the link's own. That is also why it cannot be used to hide an *inner* RTT
@@ -29,6 +35,19 @@ use std::time::{Duration, Instant};
 
 /// Default ceiling on artificial ACK delay.
 pub const DEFAULT_MAX_SPLICE: Duration = Duration::from_millis(250);
+
+/// The stationary latency horizons a session may be pinned to, in ms.
+///
+/// A per-session horizon that never moves is the point: if `H` drifted with the
+/// measured inner RTT, the pacing would track the circuit and become visible as
+/// a correlation instead of hiding one.
+pub const HORIZONS_MS: [u64; 3] = [80, 160, 280];
+
+/// Pick this session's horizon from a seed. Deterministic for a seed, fixed for
+/// the life of the session.
+pub fn stationary_horizon(seed: u64) -> Duration {
+    Duration::from_millis(HORIZONS_MS[(seed % HORIZONS_MS.len() as u64) as usize])
+}
 
 /// How closely the two clocks have to agree before the flow is uninteresting to
 /// an `ARTT − TRTT` classifier. Five percent or 2 ms, whichever is larger, is
@@ -47,13 +66,25 @@ pub struct SplicePlan {
     pub paced_outer_rtt: Duration,
     /// What the classifier can still see after pacing.
     pub residual: Duration,
+    /// This session's stationary horizon.
+    pub horizon: Duration,
 }
 
 impl SplicePlan {
     /// True when the paced outer RTT is inside the classifier's tolerance of the
-    /// inner one.
+    /// inner one **and** the inner flow is inside the session's horizon.
+    ///
+    /// A circuit slower than `H` is not masked, however well the two clocks
+    /// happen to line up: pacing a 400 ms circuit to look like a 400 ms local
+    /// flow is still a 400 ms flow, and `H` is the boundary this session
+    /// promised to stay inside.
     pub fn is_indistinguishable(&self) -> bool {
-        self.residual <= tolerance_for(self.inner_rtt)
+        self.inner_rtt <= self.horizon && self.residual <= tolerance_for(self.inner_rtt)
+    }
+
+    /// True when the inner circuit is outside the stationary horizon.
+    pub fn exceeds_horizon(&self) -> bool {
+        self.inner_rtt > self.horizon
     }
 }
 
@@ -69,6 +100,7 @@ pub struct ChronosSplice {
     inner_rtt: Duration,
     outer_rtt: Duration,
     max_delay: Duration,
+    horizon: Duration,
 }
 
 impl ChronosSplice {
@@ -77,11 +109,18 @@ impl ChronosSplice {
             inner_rtt,
             outer_rtt,
             max_delay: DEFAULT_MAX_SPLICE,
+            horizon: Duration::from_millis(*HORIZONS_MS.last().unwrap_or(&280)),
         }
     }
 
     pub fn with_max_delay(mut self, max_delay: Duration) -> Self {
         self.max_delay = max_delay;
+        self
+    }
+
+    /// Pin this session to a stationary horizon.
+    pub fn with_horizon(mut self, horizon: Duration) -> Self {
+        self.horizon = horizon;
         self
     }
 
@@ -97,16 +136,14 @@ impl ChronosSplice {
     }
 
     pub fn plan(&self) -> SplicePlan {
-        let delay = if self.outer_rtt >= self.inner_rtt {
-            Duration::ZERO
-        } else {
-            // Half the deficit per direction: the observer sees RTT, which is two
-            // one-way legs, while a delay is applied to each ACK.
-            (self.inner_rtt - self.outer_rtt) / 2
-        }
-        .min(self.max_delay);
-
-        let paced = self.outer_rtt.saturating_add(delay * 2);
+        // One delayed ACK adds its delay to the measured RTT exactly once.
+        // The v2.1.7 code applied half the deficit and then multiplied by two
+        // on the way back out, which closed only half the gap.
+        let delay = self
+            .inner_rtt
+            .saturating_sub(self.outer_rtt)
+            .min(self.max_delay);
+        let paced = self.outer_rtt.saturating_add(delay);
         let residual = self.inner_rtt.abs_diff(paced);
         SplicePlan {
             inner_rtt: self.inner_rtt,
@@ -114,6 +151,7 @@ impl ChronosSplice {
             delay_per_ack: delay,
             paced_outer_rtt: paced,
             residual,
+            horizon: self.horizon,
         }
     }
 }
@@ -207,7 +245,11 @@ pub enum ClockVerdict {
 }
 
 pub fn classify(plan: &SplicePlan) -> ClockVerdict {
-    if plan.residual <= tolerance_for(plan.inner_rtt) {
+    if plan.exceeds_horizon() {
+        // A circuit slower than the session's stationary horizon is visible no
+        // matter how well the clock arithmetic lines up.
+        ClockVerdict::Divergent
+    } else if plan.residual <= tolerance_for(plan.inner_rtt) {
         ClockVerdict::Consistent
     } else if plan.delay_per_ack >= DEFAULT_MAX_SPLICE {
         ClockVerdict::Divergent
@@ -221,6 +263,15 @@ struct ChronosRuntime {
     inner_rtt: Option<Duration>,
     pacer: AckPacer,
     observations: u64,
+    /// Locked once at startup and never re-chosen.
+    horizon: Duration,
+}
+
+fn session_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 impl ChronosRuntime {
@@ -230,12 +281,17 @@ impl ChronosRuntime {
             inner_rtt: None,
             pacer: AckPacer::new(Duration::ZERO, 1024),
             observations: 0,
+            horizon: stationary_horizon(session_seed()),
         }
     }
 
     fn plan(&self) -> Option<SplicePlan> {
         let (inner, outer) = (self.inner_rtt?, self.outer_rtt?);
-        Some(ChronosSplice::new(inner, outer).plan())
+        Some(
+            ChronosSplice::new(inner, outer)
+                .with_horizon(self.horizon)
+                .plan(),
+        )
     }
 
     fn sync_pacer(&mut self) {
@@ -273,9 +329,23 @@ pub fn current_plan() -> Option<SplicePlan> {
     rt.plan()
 }
 
-/// Whether the outer and inner clocks currently agree, or `None` if unmeasured.
+/// Whether the outer and inner clocks currently agree and the circuit is inside
+/// the session horizon, or `None` if unmeasured.
 pub fn clock_consistent() -> Option<bool> {
     current_plan().map(|p| p.is_indistinguishable())
+}
+
+/// This session's stationary horizon.
+pub fn horizon() -> Duration {
+    runtime().lock().unwrap_or_else(|e| e.into_inner()).horizon
+}
+
+/// Pin the horizon explicitly. Intended for tests and for a caller that picks
+/// the horizon before the first measurement; normally it is chosen at startup.
+pub fn set_horizon(horizon: Duration) {
+    let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    rt.horizon = horizon;
+    rt.sync_pacer();
 }
 
 /// Current per-ACK splice delay, if both outer and inner RTTs have been observed.
@@ -310,6 +380,12 @@ pub fn status_json() -> serde_json::Value {
         "max_splice_ms": DEFAULT_MAX_SPLICE.as_millis() as u64,
         "outer_rtt_ms": rt.outer_rtt.map(|d| d.as_secs_f64() * 1000.0),
         "inner_rtt_ms": rt.inner_rtt.map(|d| d.as_secs_f64() * 1000.0),
+        "horizon_ms": rt.horizon.as_secs_f64() * 1000.0,
+        "horizons_ms": HORIZONS_MS,
+        "inner_exceeds_horizon": rt
+            .inner_rtt
+            .map(|d| d > rt.horizon)
+            .unwrap_or(false),
         "delay_per_ack_ms": plan.as_ref().map(|p| p.delay_per_ack.as_secs_f64() * 1000.0),
         "paced_outer_rtt_ms": plan.as_ref().map(|p| p.paced_outer_rtt.as_secs_f64() * 1000.0),
         "residual_ms": plan.as_ref().map(|p| p.residual.as_secs_f64() * 1000.0),
@@ -329,13 +405,36 @@ mod tests {
 
     #[test]
     fn splice_closes_the_gap_between_the_two_clocks() {
-        // 30 ms link carrying a 150 ms three-hop circuit.
-        let plan = ChronosSplice::new(ms(150), ms(30)).plan();
-        assert_eq!(plan.delay_per_ack, ms(60));
+        // 30 ms link carrying a 150 ms three-hop circuit. One delayed ACK adds
+        // its delay once, so the deficit is compensated in full, not halved.
+        let plan = ChronosSplice::new(ms(150), ms(30))
+            .with_horizon(ms(160))
+            .plan();
+        assert_eq!(plan.delay_per_ack, ms(120));
         assert_eq!(plan.paced_outer_rtt, ms(150));
         assert_eq!(plan.residual, Duration::ZERO);
         assert!(plan.is_indistinguishable());
         assert_eq!(classify(&plan), ClockVerdict::Consistent);
+    }
+
+    #[test]
+    fn a_circuit_slower_than_the_horizon_is_divergent_even_when_paced() {
+        let plan = ChronosSplice::new(ms(150), ms(30))
+            .with_horizon(ms(80))
+            .plan();
+        assert_eq!(plan.paced_outer_rtt, plan.inner_rtt, "pacing still works");
+        assert!(plan.exceeds_horizon());
+        assert!(!plan.is_indistinguishable());
+        assert_eq!(classify(&plan), ClockVerdict::Divergent);
+    }
+
+    #[test]
+    fn horizons_are_the_three_stationary_values() {
+        assert_eq!(HORIZONS_MS, [80, 160, 280]);
+        assert_eq!(stationary_horizon(0), ms(80));
+        assert_eq!(stationary_horizon(1), ms(160));
+        assert_eq!(stationary_horizon(2), ms(280));
+        assert_eq!(stationary_horizon(5), ms(280), "deterministic per seed");
     }
 
     #[test]
@@ -388,13 +487,16 @@ mod tests {
 
     #[test]
     fn runtime_reports_plan_and_status_after_both_clocks_observed() {
+        set_horizon(ms(280));
         observe_outer_rtt(ms(30));
         observe_inner_rtt(ms(150));
         let plan = current_plan().expect("plan available after both observations");
-        assert_eq!(plan.delay_per_ack, ms(60));
+        assert_eq!(plan.delay_per_ack, ms(120));
         assert_eq!(clock_consistent(), Some(true));
         let json = status_json();
         assert_eq!(json["observed"], true);
         assert_eq!(json["verdict"], "consistent");
+        assert_eq!(json["horizon_ms"], 280.0);
+        assert_eq!(json["inner_exceeds_horizon"], false);
     }
 }

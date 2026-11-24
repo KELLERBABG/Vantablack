@@ -2419,8 +2419,35 @@ pub(crate) async fn run_node(
     #[cfg(feature = "vpn")]
     let vpn_cleanup: Option<VpnMode> = vpn_mode.as_ref().cloned();
     tokio::spawn(async move {
+        let mut echo_tick: u32 = 0;
         loop {
             sleep(Duration::from_secs(15)).await;
+            echo_tick = echo_tick.wrapping_add(1);
+            if echo_tick % 2 == 1 {
+                if let Some(entry) = nm.sessions.iter().next() {
+                    let fp = entry.key().clone();
+                    let ctx = SealCtx::from_session(&entry);
+                    drop(entry);
+                    if let Some(dst) = addrs_cleanup.get(&fp).map(|v| *v.value()) {
+                        let nonce = vantablack::ghost::v2::xray::issue_nonce_challenge();
+                        let hops =
+                            vantablack::ghost::v2::boomerang::last_circuit_hops().unwrap_or(1);
+                        let mut req = Vec::with_capacity(22);
+                        req.extend_from_slice(b"NECHO");
+                        req.extend_from_slice(&nonce);
+                        req.push(hops);
+                        let frame = seal_single(&ctx, &req);
+                        let _ = super::srtp::send_v2(
+                            &nm.socket,
+                            &dst,
+                            &ctx.data_header(0, false, 0),
+                            &frame,
+                            &[0u8; 16],
+                        )
+                        .await;
+                    }
+                }
+            }
             let mut expired_fps = Vec::new();
             nm.sessions.retain(|fp, s| {
                 let valid = s.is_valid();

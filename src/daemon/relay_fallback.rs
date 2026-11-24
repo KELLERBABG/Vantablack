@@ -120,6 +120,7 @@ pub(crate) async fn send3_adaptive(
     // The optional transport, when this build and this run have one.
     carrier: Option<&Arc<net::carrier::Carrier>>,
 ) -> Routed {
+    vantablack::ghost::v2::racs::note_real_sent();
     if ctx.ratchet_due {
         // Due, not broken: the epoch is full and the *next* step is
         // owed, but traffic keeps flowing on the current key until the step

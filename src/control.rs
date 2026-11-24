@@ -737,7 +737,10 @@ pub fn spawn_control_center(
                                         ("HTTP/1.1 401 Unauthorized", body, "application/json")
                                     } else if req.starts_with("POST /api/v2/btcr/issue") {
                                         let body = json_body(&req);
-                                        match v2api::btcr_issue(&body, &nc_ref.fingerprint()) {
+                                        match v2api::btcr_issue(
+                                            &body,
+                                            &nc_ref.identity.long_term_signing.to_bytes(),
+                                        ) {
                                             Ok(value) => (
                                                 "HTTP/1.1 200 OK",
                                                 value.to_string(),
@@ -752,7 +755,10 @@ pub fn spawn_control_center(
                                         }
                                     } else if req.starts_with("POST /api/v2/btcr/spend") {
                                         let body = json_body(&req);
-                                        match v2api::btcr_spend(&body, &nc_ref.fingerprint()) {
+                                        match v2api::btcr_spend(
+                                            &body,
+                                            &nc_ref.identity.long_term_signing.to_bytes(),
+                                        ) {
                                             Ok(value) => (
                                                 "HTTP/1.1 200 OK",
                                                 value.to_string(),
@@ -878,6 +884,8 @@ pub fn spawn_control_center(
                                         } else {
                                             socks_port
                                         };
+                                        let (relay_population, relay_domains) =
+                                            v2::xray::relay_population();
                                         let state = v2api::ApiState {
                                             peers,
                                             regime: regime_active
@@ -886,6 +894,21 @@ pub fn spawn_control_center(
                                             transport: (peers > 0).then(|| "udp".to_string()),
                                             exit_ip: None,
                                             node_fingerprint: nc_ref.fingerprint(),
+                                            witnesses: v2api::Witnesses {
+                                                // A relay count is only evidence once
+                                                // the descriptor signature checked out;
+                                                // `accept_descriptor` records those.
+                                                relay_population: Some(relay_population),
+                                                relay_domains: Some(relay_domains),
+                                                cap_relay_verified: Some(relay_population),
+                                                circuit_hops: v2::boomerang::last_circuit_hops(),
+                                                cover_tx: Some(v2::racs::cover_packets_emitted()),
+                                                nonce_echo_hops: v2::xray::last_nonce_echo_hops(),
+                                                ..Default::default()
+                                            },
+                                            identity_seed: Some(v2api::NodeSecret::new(
+                                                nc_ref.identity.long_term_signing.to_bytes(),
+                                            )),
                                         };
                                         match v2api::handle(&state, &req) {
                                             Some(value) => (

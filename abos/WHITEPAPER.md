@@ -58,10 +58,33 @@ QPSK soft LLR → LDPC decode (50 iters) → deinterleave → descramble →
 bundle deserialize → dedup check → store → buffer-bounce → forward decision
 ```
 
-### 3.3 DSSS & Stealth
-- **Processing gain ≥ 20–30 dB** required to hide below the noise floor (1 kbps symbol / 1 Mcps chip → 30 dB).
+### 3.3 DSSS & Stealth (narrowband NVIS profile)
+
+The NVIS channel is 3–24 kHz wide available bandwidth inside a 2–10 MHz carrier
+band, with a coherence time measured in seconds and Doppler spreading of a few
+hertz. A 1 Mcps chip rate is a ~2 MHz-class signal: it does not fit an NVIS
+channel, and a sub-millisecond burst does not carry a 180-byte cell at any
+processing gain. The earlier spec conflated an SDR sample rate with an on-air
+occupancy and is withdrawn.
+
+**GhostCell-Nano on-air profile:**
+
+| Parameter | Value |
+|---|---|
+| Carrier | 2–10 MHz, selected below f₀F2 |
+| Occupied bandwidth | 3–24 kHz |
+| Information rate | 24–48 bps (slow-symbol DSSS) |
+| One 180-byte cell | **30–60 s on air** |
+| Total processing gain | ≈ 30 dB (21–27 dB spreading + 3–9 dB LDPC/repetition) |
+| Burst length | 30–60 s by construction; there is no sub-millisecond mode |
+
+At the slow end (3 kHz, 24 bps) one cell takes ~60 s; at the wide end (24 kHz,
+48 bps) it takes ~30 s. Both sit at ≈30 dB total processing gain, so the cell
+stays below the noise floor for a narrowband receiver while remaining inside a
+channel the ionosphere can actually support.
+
 - **CDMA-over-DSSS** as primary multiple access (different PN codes = simultaneous TX); FHSS for anti-jam.
-- **Stealth masking:** cyclostationary signature masking via variable symbol-rate dithering, artificial phase-noise injection, pseudo-natural amplitude fluctuations modeled on ionospheric scintillation, and randomized sub-millisecond burst timing.
+- **Stealth masking:** cyclostationary signature masking via variable symbol-rate dithering, artificial phase-noise injection, pseudo-natural amplitude fluctuations modeled on ionospheric scintillation, and randomized symbol-clock jitter. The mask shapes a 30–60 s transmission; it cannot hide an edge that a millisecond burst would create.
 
 ## 4. Ionospheric Sounding & NVIS
 
