@@ -407,8 +407,12 @@ jobs:
         run: |
           set -o pipefail
           proverif formal/ghost_session.pv | tee ghost_session.out
-          if grep -q "not event(agreement" ghost_session.out; then
+          if grep -qE "RESULT not event\(agreement.*is true" ghost_session.out; then
             echo "::error::the agreement witness is unreachable; the session model is vacuous"
+            exit 1
+          fi
+          if grep -qE "RESULT (not attacker|inj-event).*is false" ghost_session.out; then
+            echo "::error::a secrecy or agreement property in ghost_session.pv failed"
             exit 1
           fi
 
@@ -416,8 +420,12 @@ jobs:
         run: |
           set -o pipefail
           proverif formal/session_ratchet.pv | tee session_ratchet.out
-          if grep -q "not event(epoch2_complete" session_ratchet.out; then
+          if grep -qE "RESULT not event\(epoch2_complete.*is true" session_ratchet.out; then
             echo "::error::the epoch-2 witness is unreachable; the ratchet model is vacuous"
+            exit 1
+          fi
+          if grep -qE "RESULT not attacker.*is false" session_ratchet.out; then
+            echo "::error::a secrecy property in session_ratchet.pv failed"
             exit 1
           fi
 
@@ -428,8 +436,12 @@ jobs:
         run: |
           set -o pipefail
           proverif formal/ghost_circuit_unlinkability.pv | tee ghost_circuit_unlinkability.out
-          if grep -q "not event(exit_matched_origin" ghost_circuit_unlinkability.out; then
+          if grep -qE "RESULT not event\(exit_matched_origin.*is true" ghost_circuit_unlinkability.out; then
             echo "::error::the exit witness is unreachable; the circuit model is vacuous"
+            exit 1
+          fi
+          if grep -qE "RESULT not attacker.*is false" ghost_circuit_unlinkability.out; then
+            echo "::error::a secrecy property in ghost_circuit_unlinkability.pv failed"
             exit 1
           fi
 

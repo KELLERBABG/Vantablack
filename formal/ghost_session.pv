@@ -97,8 +97,7 @@ query a: pkey, cnt: bitstring;
 (* Positive reachability witness. Expected result: false (reachable). *)
 query a: pkey, b: pkey; event(agreement(a, b)).
 
-let initiator =
-  new skA: skey;
+let initiator(skA: skey, expected_pkB: pkey) =
   new skPQa: pqsk;
   new ra: bitstring;
   new pq_eph_a: bitstring;
@@ -113,6 +112,7 @@ let initiator =
   in(c, gb: bitstring);
   in(c, pq_pub_b: pqpk);
   in(c, commit_b: sig);
+  if pk_b = expected_pkB then
   let commit = verify(commit_b, pk_b) in
   if commit = (pk_b, pk(skA), ga, gb, pq_pub_b) then
   let klass_a = dh(ra, gb) in
@@ -129,14 +129,14 @@ let initiator =
   if ack = (pk(skA), pk_b, ga, gb, cnt_a) then
   event agreement(pk(skA), pk_b).
 
-let responder =
-  new skB: skey;
+let responder(skB: skey, expected_pkA: pkey) =
   new skPQb: pqsk;
   new rb: bitstring;
   in(c, pk_a: pkey);
   in(c, ga: bitstring);
   in(c, pq_pub_a: pqpk);
   in(c, commit_a: sig);
+  if pk_a = expected_pkA then
   let commit = verify(commit_a, pk_a) in
   if commit = (pk_a, ga, pq_pub_a) then
   event resp_started(pk_a, pk(skB));
@@ -156,4 +156,8 @@ let responder =
   out(c, sign((pk_a, pk(skB), ga, gb, cnt_b), skB)).
 
 process
-  ((!initiator) | (!responder))
+  new skA: skey;
+  new skB: skey;
+  out(c, pk(skA));
+  out(c, pk(skB));
+  ((!initiator(skA, pk(skB))) | (!responder(skB, pk(skA))))
