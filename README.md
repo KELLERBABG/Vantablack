@@ -4,8 +4,6 @@
 
 **Autonomous Post-Quantum WAN Mesh Routing & Serverless Traffic Sharding**
 
-**Evidence build:** `target/debug/ggn.exe` SHA-256 `78e9dffdd7c0d6b9c61be6e4c7ebf177d527a4da0fb803b872823a3446f52c84`, built with `--features quic,reality-front,pq-tls` from HEAD `a94f2bddb5eea8e6c70ef3c6125710e621aa032a` plus the uncommitted worktree. Runtime evidence is in [`DEV/V2_BUILD_STATUS.md`](DEV/V2_BUILD_STATUS.md).
-
 <br>
 
 [![Release](https://img.shields.io/github/v/release/KELLERBABG/Vantablack?color=22d3ee&style=flat-square)](https://github.com/KELLERBABG/Vantablack/releases)
