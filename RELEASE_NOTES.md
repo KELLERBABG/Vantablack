@@ -1,21 +1,16 @@
-# Vantablack 2.1.7 — Threat Shield, Background Updater & Signed Android Releases
+# Vantablack 2.1.8 — Signed Threat Feeds & VpnHub CIDR Blocking
 
-Vantablack **v2.1.7** brings **Threat / Malware Shield** to both Desktop and Android, adds non-blocking background updates, and ships Android APKs signed with the official release keystore.
-
----
-
-### 🛡️ Threat / Malware Shield & Pullback Whitelist (Desktop & Android)
-* **Local DNS, SNI & SOCKS5 Enforcement:** Inspects DNS queries (`NXDOMAIN`), DoT/DoQ (`853`), and TLS `ClientHello` SNI directly on the Desktop TUN (`src/daemon/node.rs`), Android VPN (`android_jni.rs`), SOCKS5 proxy, and exit hubs.
-* **Android UI & Pullback Controls:** Added the **Threat / Malware Shield** toggle and **Threat Shield Pullback & Whitelist** card to Android (`MainActivity.kt`) alongside the Desktop dashboard (`Settings → General`).
-* **Ed25519-Signed Feed Loader & Egress Policy:** Supports signed threat feed snapshots with automatic CIDR expiry pruning, exit egress policy enforcement, and `qel.kellersystems.dev` seeded as a built-in test indicator.
+Vantablack **v2.1.8** completes the Threat Shield & Anti-Abuse pipeline across Desktop and Android, removes the `v2.1.7` test seed, and ships signed Android release builds.
 
 ---
 
-### ⬇️ Non-Blocking Background Updater
-* **Download on the Side, Install When Ready:** Checking for updates now downloads the new installer/APK in the background on both Desktop and Android instead of forcing an immediate pull and restart.
+### 🛡️ Threat Shield & Signed Feed Distribution
+* **Automatic HTTPS Feed Download & Caching:** Nodes configured with `GHOST_THREAT_FEED_URL` periodically download Ed25519-signed snapshots over HTTPS, verify against `GHOST_THREAT_FEED_KEY` before installing, and optionally cache verified snapshots to `GHOST_THREAT_FEED_PATH`.
+* **VpnHub & Desktop TUN CIDR Blocking:** Enforces Threat Shield IP/CIDR blocks across `VpnHub` outbound TCP/UDP traffic as well as local Desktop TUN and SOCKS5 paths.
+* **Clean Production Seed:** Removed the `qel.kellersystems.dev` test indicator from the built-in default shield.
 
 ---
 
-### 🔐 Signed Android Release APKs
-* **Official Release Signing:** Android release builds now run `assembleRelease` signed with the Vantablack release keystore so future updates upgrade cleanly in place.
-* *(Note: If upgrading from `v2.1.6` or earlier debug-signed APKs, uninstall the old APK once before installing `v2.1.7`.)*
+### 🔐 Signed Android & Desktop Releases
+* **Signed Android Release APK:** Built with `assembleRelease` using the official Vantablack release keystore.
+* **Non-Blocking Background Updater:** Downloads updates in the background and installs when ready.
