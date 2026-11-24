@@ -19,10 +19,10 @@ android {
         create("release") {
             val envStore = System.getenv("ANDROID_KEYSTORE_PATH")
             if (!envStore.isNullOrBlank()) {
-                storeFile = file(envStore)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+                storeFile = file(envStore.trim())
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")?.trim('\r', '\n')
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")?.trim()
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")?.trim('\r', '\n')
             } else {
                 storeFile = file("vantablack.keystore")
                 storePassword = "vantablack_mesh_key"
