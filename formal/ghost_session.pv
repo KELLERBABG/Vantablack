@@ -66,12 +66,12 @@ fun senc(bitstring, skey): bitstring.
 reduc forall m: bitstring, k: skey; sdec(senc(m, k), k) = m.
 
 (* The base point of the classical group. *)
-free g: bitstring.
+const g: bitstring.
 
 (* Diffie-Hellman commutativity. This is the equation whose absence made the
    two roles derive different keys in v2.1.7. *)
-equation forall x: bitstring, y: bitstring, z: bitstring;
-  dh(x, dh(y, z)) = dh(y, dh(x, z)).
+equation forall x: bitstring, y: bitstring;
+  dh(x, dh(y, g)) = dh(y, dh(x, g)).
 
 (* What the adversary tries to learn. It starts private, so every derivation
    has to pass through a message on `c`. *)

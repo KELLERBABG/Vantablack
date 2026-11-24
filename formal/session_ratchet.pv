@@ -58,9 +58,11 @@ fun dh(bitstring, bitstring): bitstring.
 fun encaps_pq(pqpk, bitstring): bitstring.
 reduc forall sk: pqsk, r: bitstring; decaps_pq(sk, encaps_pq(pkpq(sk), r)) = r.
 
+const g: bitstring.
+
 (* DH commutativity: both peers must derive the same hybrid secret. *)
-equation forall x: bitstring, y: bitstring, z: bitstring;
-  dh(x, dh(y, z)) = dh(y, dh(x, z)).
+equation forall x: bitstring, y: bitstring;
+  dh(x, dh(y, g)) = dh(y, dh(x, g)).
 
 fun hcat(bitstring, bitstring): bitstring.
 fun kdf_mk(skey): skey.
@@ -70,8 +72,6 @@ fun kdf_ck_from_rk(skey): skey.
 
 fun senc(bitstring, skey): bitstring.
 reduc forall m: bitstring, k: skey; sdec(senc(m, k), k) = m.
-
-free g: bitstring.
 
 (* The pre-shared ratchet root both peers hold. Never revealed: what is
    compromised is the *evolved* state, not the initial secret. *)
