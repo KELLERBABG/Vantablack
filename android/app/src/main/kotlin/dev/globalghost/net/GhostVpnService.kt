@@ -136,6 +136,11 @@ class GhostVpnService : VpnService() {
                     builder.addAddress("fd00:66::1", 128)
                     builder.addRoute("::", 0)
                 } catch (_: Throwable) {}
+            } else {
+                // Also intercept hardcoded Google DNS (8.8.8.8 / 8.8.4.4) in Local Ad-Shield mode;
+                // allowed queries are forwarded to 1.1.1.1 / 9.9.9.9 so this cannot loop.
+                builder.addRoute("8.8.8.8", 32)
+                builder.addRoute("8.8.4.4", 32)
             }
 
             val customDns = dnsServer.trim()
