@@ -589,13 +589,9 @@ mod tests {
     use super::*;
     use crate::ghost::net::threat_shield::Indicator;
     use ed25519_dalek::{Signer, SigningKey};
-    use std::sync::Mutex;
-
-    /// The shield is process-global; these tests must not interleave.
-    static LOCK: Mutex<()> = Mutex::new(());
 
     fn guard() -> std::sync::MutexGuard<'static, ()> {
-        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = threat_shield::test_guard();
         threat_shield::reset();
         threat_shield::set_enabled(true);
         guard

@@ -490,7 +490,7 @@ fn shield() -> &'static RwLock<Shield> {
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
-fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
