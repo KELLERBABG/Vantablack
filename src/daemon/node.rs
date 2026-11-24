@@ -1556,6 +1556,11 @@ pub(crate) async fn run_node(
                     }
 
                     if !peers.contains_key(&beacon_fp) {
+                        if std::env::var("GHOST_BEACON")
+                            .is_ok_and(|v| v.eq_ignore_ascii_case("off") || v == "0")
+                        {
+                            continue;
+                        }
                         if pending.len() >= MAX_PENDING_HANDSHAKES {
                             tracing::warn!("Pending-handshake table full — auto-handshake skipped");
                             continue;

@@ -192,6 +192,7 @@ fn spawn_daemon(
     cmd.env("GHOST_NO_GUI", "1")
         .env("GHOST_MODE", "public")
         .env("GHOST_STUN", "off")
+        .env("GHOST_BEACON", "off")
         .env("GHOST_WEB_PORT", web.to_string())
         .env("GHOST_BIND", format!("127.0.0.1:{mesh}"))
         .env("GHOST_DATA_DIR", dir)

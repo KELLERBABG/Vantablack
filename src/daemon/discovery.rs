@@ -907,6 +907,9 @@ pub(crate) async fn sweep_lan_subnet(
     }
 
     // 2. Active subnet probes: Send handshake probe to hosts in all detected subnets
+    if std::env::var("GHOST_BEACON").is_ok_and(|v| v.eq_ignore_ascii_case("off") || v == "0") {
+        return;
+    }
     for s in &subnets_to_sweep {
         tracing::info!(
             subnet = %format!("{}.{}.{}.0/24", s[0], s[1], s[2]),
