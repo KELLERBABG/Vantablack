@@ -293,7 +293,7 @@ pub async fn handle_socks5_connection(
     let port = u16::from_be_bytes(pb);
 
     // ── Ad & tracker blocking (works immediately even with 0 mesh peers) ──
-    if vantablack::ghost::net::adblock::is_blocked_target(&addr)
+    if vantablack::ghost::net::adblock::is_shielded_target(&addr)
         || vantablack::ghost::net::adblock::is_blocked_port(port)
     {
         vantablack::ghost::net::adblock::record_blocked();
@@ -632,7 +632,7 @@ pub async fn handle_socks5_connection(
                             if let Some(sni) =
                                 vantablack::ghost::net::adblock::extract_tls_sni(&rbuf[..n])
                             {
-                                if vantablack::ghost::net::adblock::is_blocked_target(&sni) {
+                                if vantablack::ghost::net::adblock::is_shielded_target(&sni) {
                                     vantablack::ghost::net::adblock::record_blocked();
                                     tracing::debug!(
                                         sni = %sni,

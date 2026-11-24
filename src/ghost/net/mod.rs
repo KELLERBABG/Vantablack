@@ -21,6 +21,7 @@ pub mod diffusion;
 pub mod discovery;
 pub mod dispatcher;
 pub mod dtn_reconcile;
+pub mod egress;
 #[cfg(feature = "research")]
 pub mod energy_currency;
 #[cfg(feature = "research")]
@@ -47,6 +48,8 @@ pub mod shardsec;
 pub mod sovereign_cloud;
 #[cfg(feature = "research")]
 pub mod stego_physics;
+pub mod threat_feed;
+pub mod threat_shield;
 pub mod universal_tunnel;
 
 /// Which framing an optional transport used for a frame.

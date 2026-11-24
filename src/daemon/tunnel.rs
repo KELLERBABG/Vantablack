@@ -45,6 +45,15 @@
 //! receiver looks the stream up under the complementary role, which makes the pair
 //! `(role, stream id)` unique without a second negotiation and without relying on the
 //! two fingerprints differing.
+//!
+//! ## What the exit will dial
+//!
+//! `GHOST_TUNNEL_ALLOW` is the operator's list of trusted targets, and beneath it the
+//! egress policy in [`vantablack::ghost::net::egress`] refuses what an exit must never
+//! reach even when listed: TCP/25, loopback, RFC1918/ULA, CGNAT, and link-local
+//! (including `169.254.169.254`). Home exits opt back into loopback and private space
+//! with `GHOST_EXIT_EGRESS_LAN=1`. A refusal is a `FAIL` frame, exactly like an
+//! allowlist refusal, and the target is never dialled.
 
 use crate::*;
 use std::net::SocketAddr;
@@ -55,6 +64,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
+use vantablack::ghost::net::egress;
 use vantablack::ghost::net::universal_tunnel::{
     UniversalTunnelChunker, UniversalTunnelReassembler,
 };
@@ -71,6 +81,13 @@ const ROLE_LOCAL: u8 = 0;
 const ROLE_REMOTE: u8 = 1;
 /// How long the exit may take to connect to a target before the stream is refused.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The egress policy as this exit applies it: the operator's environment, plus the
+/// exact targets named in `GHOST_TUNNEL_ALLOW` — the list that already decides what
+/// this node may dial at all.
+fn exit_policy() -> egress::Policy {
+    egress::policy().with_allow_entries(allowed_targets())
+}
 
 /// Whether the toggle is on.
 pub(crate) fn enabled() -> bool {
@@ -472,6 +489,27 @@ pub(crate) async fn handle_frame(
                 .await;
                 return true;
             }
+            // The allowlist says what the operator trusts; the egress policy says what
+            // an exit may reach. A target named in the allowlist is honoured as-is, so
+            // existing home forwards to loopback and the LAN keep working; everything
+            // unnamed is held to the strict default.
+            if let Err(denied) = exit_policy().check(&target) {
+                tracing::warn!(
+                    peer = %peer_fp,
+                    target = %target,
+                    reason = %denied.reason,
+                    "Tunnel: exit refused — egress policy"
+                );
+                let reason = format!("egress blocked: {}", denied.reason);
+                send_payload(
+                    node,
+                    peers,
+                    &peer_fp,
+                    &encode(KIND_FAIL, StreamRole::Remote, stream, reason.as_bytes()),
+                )
+                .await;
+                return true;
+            }
             // The stream's queue and reassembler are installed *now*, before the
             // exit dials: a client that writes immediately sends DATA before the
             // target connection exists, and those frames would otherwise be dropped
@@ -539,7 +577,27 @@ async fn serve_exit(
     target: String,
     mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
 ) {
-    let connect = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&target)).await;
+    // Resolve through the policy so the address we dial is the one that passed: a
+    // name the peer controls cannot resolve into a blocked range between check and
+    // connect.
+    let resolved = match exit_policy().resolve(&target).await {
+        Ok(addr) => addr,
+        Err(denied) => {
+            tracing::warn!(target = %target, reason = %denied.reason, "Tunnel: exit refused — egress policy");
+            let reason = format!("egress blocked: {}", denied.reason);
+            send_payload(
+                &nc,
+                &peers,
+                &peer_fp,
+                &encode(KIND_FAIL, StreamRole::Remote, stream, reason.as_bytes()),
+            )
+            .await;
+            streams().remove(&(StreamRole::Remote, peer_fp.clone(), stream));
+            reassemblers().remove(&(StreamRole::Remote, peer_fp, stream));
+            return;
+        }
+    };
+    let connect = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(resolved)).await;
     let socket = match connect {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
@@ -917,9 +975,12 @@ mod tests {
             n
         });
 
-        // The allowlists an operator would set, and the toggle.
+        // The allowlists an operator would set, and the toggle. The loopback target is
+        // named exactly in `GHOST_TUNNEL_ALLOW`, which is what keeps an existing home
+        // forward working without `GHOST_EXIT_EGRESS_LAN`.
         std::env::set_var("GHOST_TUNNEL_ALLOW", target_addr.to_string());
         std::env::set_var("GHOST_TUNNEL_PEERS", harness.initiator.fingerprint());
+        std::env::remove_var("GHOST_EXIT_EGRESS_LAN");
         vantablack::ghost::net::universal_tunnel::set_enabled(true);
 
         let (local_addr, forwarder) = harness.forwarder(&target_addr.to_string()).await;
@@ -986,6 +1047,40 @@ mod tests {
                 .await
                 .is_err(),
             "an unlisted peer must not reach the target"
+        );
+
+        forwarder.abort();
+        std::env::remove_var("GHOST_TUNNEL_ALLOW");
+        std::env::remove_var("GHOST_TUNNEL_PEERS");
+        vantablack::ghost::net::universal_tunnel::set_enabled(false);
+    }
+
+    /// A target the allowlist permits and the egress policy still refuses: SMTP. The
+    /// `FAIL` names the rule, and nothing is dialled — naming a target lifts the
+    /// range rules, never the anti-spam floor.
+    #[tokio::test]
+    async fn an_explicitly_allowed_smtp_target_is_still_refused_by_the_egress_floor() {
+        let _guard = env_lock().await;
+        let mut harness = Harness::new().await;
+        let _target = harness.take_target();
+
+        std::env::set_var("GHOST_TUNNEL_ALLOW", "127.0.0.1:25");
+        std::env::set_var("GHOST_TUNNEL_PEERS", harness.initiator.fingerprint());
+        std::env::remove_var("GHOST_EXIT_EGRESS_SMTP");
+        std::env::remove_var("GHOST_EXIT_EGRESS_LAN");
+        vantablack::ghost::net::universal_tunnel::set_enabled(true);
+
+        let (local_addr, forwarder) = harness.forwarder("127.0.0.1:25").await;
+        let mut client = TcpStream::connect(local_addr)
+            .await
+            .expect("connect the forwarder");
+        client.write_all(b"should not arrive").await.expect("write");
+
+        let body = harness.next_kind(KIND_FAIL).await;
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            "egress blocked: smtp port 25 is blocked on exits",
+            "the refusal names the egress rule that refused"
         );
 
         forwarder.abort();

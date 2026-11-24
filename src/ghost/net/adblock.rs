@@ -392,6 +392,22 @@ pub fn is_blocked_target(domain: &str) -> bool {
     is_blocked_domain(domain) || is_doh_blocked_domain(domain)
 }
 
+/// The predicate every DNS, `ClientHello` SNI and SOCKS5 `CONNECT` filter should ask:
+/// ad/tracker blocking **or** the local Threat Shield.
+///
+/// The two toggles stay independent — the shield has its own switch and its own
+/// lists — but they share this one pipeline, so a hostname is checked once and a
+/// literal address is matched against the shield's netblock table.
+pub fn is_shielded_target(host: &str) -> bool {
+    if is_blocked_target(host) {
+        return true;
+    }
+    if let Ok(ip) = host.trim().parse::<std::net::IpAddr>() {
+        return crate::ghost::net::threat_shield::blocks_ip(ip);
+    }
+    crate::ghost::net::threat_shield::blocks_domain(host)
+}
+
 /// Check if `port` (e.g. TCP/UDP 853 for DoT/DoQ) should be blocked to prevent DNS bypass.
 pub fn is_blocked_port(port: u16) -> bool {
     port == 853 && is_enabled() && is_doh_guard_enabled()
@@ -658,7 +674,7 @@ pub fn filter_dns_response(response: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let cnames = extract_dns_cnames(response);
-    if !cnames.iter().any(|c| is_blocked_target(c)) {
+    if !cnames.iter().any(|c| is_shielded_target(c)) {
         return None;
     }
     record_blocked();

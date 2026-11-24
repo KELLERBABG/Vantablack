@@ -712,7 +712,7 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
     if is_udp_dns {
         let dns_payload = &buf[ihl + 8..n];
         if let Some(qname) = crate::ghost::net::adblock::extract_dns_qname(dns_payload) {
-            if crate::ghost::net::adblock::is_blocked_target(&qname) {
+            if crate::ghost::net::adblock::is_shielded_target(&qname) {
                 crate::ghost::net::adblock::record_blocked();
                 if let Some(nx) =
                     crate::ghost::net::adblock::build_dns_nxdomain_response(dns_payload)

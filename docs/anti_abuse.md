@@ -1,5 +1,29 @@
 # Anti-Abuse & Threat-Shield Architecture
 
+> **Implementation status.**
+>
+> * §2 *default exit egress policy* — implemented in `src/ghost/net/egress.rs` and
+>   enforced by the universal tunnel exit before it dials. Exact `GHOST_TUNNEL_ALLOW`
+>   entries are honoured as-is (so existing home forwards to loopback/LAN keep
+>   working); unnamed targets are held to the strict default; TCP/25 is refused even
+>   when named unless `GHOST_EXIT_EGRESS_SMTP=1`.
+> * §3 *Threat Shield* — the local data structures are implemented in
+>   `src/ghost/net/threat_shield.rs`: label-boundary host index, sorted CIDR index,
+>   separate toggle (off by default), local allowlist, and a bounded in-memory
+>   recent-blocks ring buffer. Hostname blocks are enforced at the existing DNS, CNAME,
+>   SNI and SOCKS5 `CONNECT` sites through `adblock::is_shielded_target`; literal
+>   addresses are matched against the netblock table there too.
+> * §3/§4 *feed loading* — `src/ghost/net/threat_feed.rs` parses a local snapshot
+>   (domains + CIDRs with a kind per entry), verifies it with an **Ed25519** signature
+>   against a pinned key (`GHOST_THREAT_FEED_KEY`) and fails closed: unsigned,
+>   unpinned, forged-then-tampered or expired snapshots install nothing. A refresh
+>   replaces the previous rules wholesale, and `cidr` entries expire with the
+>   snapshot, so a refresh that stops happening stops blocking rotating C2 addresses
+>   while domain rules stay in force. Nothing fetches a feed over the network.
+> * **Not built yet:** automatic feed *download* (this loader reads a file the
+>   operator puts on disk), automatic CIDR blocking inside `VpnHub`'s TCP path, and
+>   the rest of §2 (trust-scoped exit groups, flood/Sybil gating, reputation scoring).
+
 Strong privacy and censorship-resistant transport software is inherently dual-use. Rather than weakening encryption or adding surveillance hooks, Vantablack can reduce abuse and protect users through **exit-trust boundaries**, **default egress guardrails**, **local peer reputation**, and a **local Threat / Malware Shield**.
 
 ---
