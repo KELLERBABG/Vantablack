@@ -933,7 +933,7 @@ class MainActivity : Activity() {
             lateinit var txtXrayClaim: TextView
             fun refreshXrayCard() {
                 try {
-                    val raw = GhostCore.getXrayJson(GhostVpnService.corePtr)
+                    val raw = GhostCore.getXrayJson(GhostVpnService.activePtr)
                     val obj = org.json.JSONObject(raw)
                     txtXrayHeadline.text = obj.optString("headline", "X-Ray ready")
                     txtXrayClaim.text = obj.optString("claim", "Tap to inspect visibility")

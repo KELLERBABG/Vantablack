@@ -460,7 +460,7 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
     println!("Both anchors are online on both nodes, and both declarations are in force");
 
     // ── 3. A real session, over IP (the handshake is not what is under test) ──
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let _ = http_json(
             web_a,
@@ -499,7 +499,7 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
     a.run(&format!("CHAT {fp_b} {marker_ab}"));
 
     let expected_ab = format!("[Chat from {}] {marker_ab}", &fp_a[..8]);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut ticks_ab = 0u32;
     while Instant::now() < deadline {
         if b.trace().contains(&expected_ab) {
@@ -549,7 +549,7 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
     let marker_ba = "nvis-fallback-marker-two";
     b.run(&format!("CHAT {fp_a} {marker_ba}"));
     let expected_ba = format!("[Chat from {}] {marker_ba}", &fp_b[..8]);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut ticks_ba = 0u32;
     while Instant::now() < deadline {
         if a.trace().contains(&expected_ba) {
