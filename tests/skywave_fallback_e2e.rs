@@ -494,8 +494,24 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
     // Let the session settle before the baseline is taken: the QEL anchor mixes a
     // key on connect (over the radio, since that is this peer's only route), and a
     // baseline drawn before that would let its shards be mistaken for the frame
-    // under test.
-    std::thread::sleep(Duration::from_secs(6));
+    // under test or race with epoch rotation.
+    std::thread::sleep(Duration::from_secs(4));
+    let settle_deadline = Instant::now() + Duration::from_secs(16);
+    let mut prev_counts = (a.skywave().0, a.skywave().1, b.skywave().0, b.skywave().1);
+    let mut stable_ticks = 0u8;
+    while Instant::now() < settle_deadline {
+        std::thread::sleep(Duration::from_millis(500));
+        let cur_counts = (a.skywave().0, a.skywave().1, b.skywave().0, b.skywave().1);
+        if cur_counts == prev_counts {
+            stable_ticks += 1;
+            if stable_ticks >= 4 {
+                break;
+            }
+        } else {
+            prev_counts = cur_counts;
+            stable_ticks = 0;
+        }
+    }
 
     // ── 4. A -> B over the radio ──
     let (tx_a0, _, bytes_a0) = a.skywave();
