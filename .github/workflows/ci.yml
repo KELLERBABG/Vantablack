@@ -445,3 +445,12 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Multi-Hop Circuit Wire-Shape Observational Equivalence
+        run: |
+          set -o pipefail
+          proverif formal/ghost_circuit_equiv.pv | tee ghost_circuit_equiv.out
+          if ! grep -qE "RESULT Observational equivalence is true" ghost_circuit_equiv.out; then
+            echo "::error::observational equivalence in ghost_circuit_equiv.pv failed"
+            exit 1
+          fi
+

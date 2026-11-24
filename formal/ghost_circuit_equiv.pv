@@ -1,0 +1,52 @@
+(*
+   Vantablack Multi-Hop Onion Circuit — Wire-Shape Observational Equivalence
+   (ProVerif 2.05 biprocess)
+
+   Separated from `ghost_circuit_unlinkability.pv` because ProVerif 2.05
+   runs biprocess equivalence (`diff[...]`) in a distinct mode from
+   reachability/secrecy queries.
+
+   Two circuits that differ only in the origin identity produce first-hop
+   ciphertexts the adversary cannot tell apart: `diff[wire_a, wire_b]`.
+*)
+
+free c: channel.
+
+type key.
+
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+
+fun h(bitstring, key): bitstring.
+
+free inner_msg: bitstring [private].
+free dest_exit: bitstring [private].
+free origin_id: bitstring [private].
+free origin_alt: bitstring [private].
+
+free hop_r2: bitstring.
+free hop_exit: bitstring.
+
+let wire_shape =
+  new k_r1: key;
+  new k_r2: key;
+  new k_exit: key;
+
+  let tag_a = h(origin_id, k_exit) in
+  let tag_b = h(origin_alt, k_exit) in
+  let wire_a =
+    senc(
+      (hop_r2, senc((hop_exit, senc((dest_exit, inner_msg, tag_a), k_exit)), k_r2)),
+      k_r1
+    )
+  in
+  let wire_b =
+    senc(
+      (hop_r2, senc((hop_exit, senc((dest_exit, inner_msg, tag_b), k_exit)), k_r2)),
+      k_r1
+    )
+  in
+  out(c, diff[wire_a, wire_b]).
+
+process
+  (!wire_shape)

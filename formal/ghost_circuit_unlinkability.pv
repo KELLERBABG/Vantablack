@@ -27,10 +27,9 @@
         * `inner_msg`, `dest_exit` and `origin_id` are still secret: the exit
           layer remains under `k_exit`, which neither compromised relay holds.
 
-   C. `wire_shape` — observational equivalence. Two circuits that differ only in
-      the origin identity produce ciphertexts the adversary cannot tell apart:
-      `diff(wire_a, wire_b)`. That is the unlinkability claim in its weakest,
-      checkable form: the first-hop bytes do not depend on who is speaking.
+   C. Wire-shape observational equivalence (`diff[wire_a, wire_b]`) lives in
+      `formal/ghost_circuit_equiv.pv`, because ProVerif 2.05 separates
+      biprocess equivalence from reachability/secrecy queries.
 
    Positive witnesses. `query event(exit_matched_origin())`,
    `query event(reply_tag_ready(...))` and `query event(middle_linked_exit(...))`
@@ -143,31 +142,8 @@ let middle_compromised =
   (* R2 is the adversary here: it sees the next hop and links itself to it.
      That is a real, acknowledged loss — and it is the only one. *)
   in(c, pkt2: bitstring);
-  let (=hop_exit_next, fwd3: bitstring) = sdec(pkt2, k_r2) in
-  event middle_linked_exit(hop_exit_next).
-
-(* ── C. Observational equivalence: origin does not shape the wire ──────────── *)
-
-let wire_shape =
-  new k_r1: key;
-  new k_r2: key;
-  new k_exit: key;
-
-  let tag_a = h(origin_id, k_exit) in
-  let tag_b = h(origin_alt, k_exit) in
-  let wire_a =
-    senc(
-      (hop_r2, senc((hop_exit, senc((dest_exit, inner_msg, tag_a), k_exit)), k_r2)),
-      k_r1
-    )
-  in
-  let wire_b =
-    senc(
-      (hop_r2, senc((hop_exit, senc((dest_exit, inner_msg, tag_b), k_exit)), k_r2)),
-      k_r1
-    )
-  in
-  out(c, diff(wire_a, wire_b)).
+  let (=hop_exit, fwd3: bitstring) = sdec(pkt2, k_r2) in
+  event middle_linked_exit(hop_exit).
 
 process
-  ((!honest_circuit) | (!middle_compromised) | (!wire_shape))
+  ((!honest_circuit) | (!middle_compromised))
