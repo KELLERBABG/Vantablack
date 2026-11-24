@@ -565,6 +565,9 @@
       updateApplying: false,
       updateInfo: null,
 
+      // Threat Shield recent blocks & allowlist
+      threatShield: null,
+
       peers: []
     };
 
@@ -1073,6 +1076,39 @@
               </select>
             </div>
           </div>
+          ${(() => {
+            const ts = STATE.threatShield || {};
+            const recent = Array.isArray(ts.recent_blocks) ? ts.recent_blocks : [];
+            const allow = Array.isArray(st.threat_shield_allowlist) ? st.threat_shield_allowlist : [];
+            if (!st.threat_shield_enabled && recent.length === 0 && allow.length === 0) return '';
+            const latest = recent[0];
+            return `
+              <div class="coal-card" style="margin-top:10px; padding:12px 14px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+                  <span class="setting-title">Threat Shield Pullback &amp; Whitelist</span>
+                  <span class="tag-pill">${ts.domains || 0} domains · ${ts.cidrs || 0} CIDRs</span>
+                </div>
+                ${latest ? `
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border-radius:10px; background:rgba(255,95,86,0.08); border:1px solid rgba(255,95,86,0.25); margin-bottom:10px;">
+                    <div style="font-size:12px;">
+                      <div style="font-weight:600; color:#F4F1EA;">Blocked: ${escapeHtml(latest.value)} <span style="opacity:0.7;">(${escapeHtml(latest.kind)})</span></div>
+                      <div style="font-size:11px; color:rgba(244,241,234,0.68);">Wrongfully flagged? Whitelist it here.</div>
+                    </div>
+                    <button type="button" class="subtle-pill" data-ts-allow="${escapeHtml(latest.value)}">Whitelist</button>
+                  </div>
+                ` : `<div style="font-size:11px; color:rgba(244,241,234,0.62); margin-bottom:8px;">No sites blocked in this session yet.</div>`}
+                <div style="display:flex; gap:8px;">
+                  <input id="ts-allow-input" type="text" placeholder="Enter domain to whitelist (e.g. example.com)" style="flex:1; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.12); border-radius:8px; padding:6px 10px; color:#F4F1EA; font-size:12px;" />
+                  <button type="button" class="subtle-pill" data-act="ts-allow-add">Whitelist</button>
+                </div>
+                ${allow.length > 0 ? `
+                  <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+                    ${allow.map(d => `<button type="button" class="subtle-pill" data-ts-unallow="${escapeHtml(d)}" title="Remove from whitelist">${escapeHtml(d)} &times;</button>`).join('')}
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          })()}
           <details class="coal-card" style="margin-top:10px; padding:12px 14px;">
             <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; list-style:none; font-weight:600; font-size:13px;">
               <span>Experimental</span>
@@ -1433,6 +1469,22 @@
       document.querySelectorAll('[data-act="refresh-v2"]').forEach(b => b.addEventListener('click', () => { refreshContinuum(); refreshXray(); }));
       document.querySelectorAll('[data-act="run-bench"]').forEach(b => b.addEventListener('click', runPipelineBenchmark));
       document.querySelectorAll('[data-act="update-btn"]').forEach(b => b.addEventListener('click', triggerUpdateAction));
+      document.querySelectorAll('[data-ts-allow]').forEach(b => b.addEventListener('click', async () => {
+        await saveSettingPatch({ threat_shield_allow_add: b.dataset.tsAllow }, `Whitelisted ${b.dataset.tsAllow}`);
+        loadThreatShield();
+      }));
+      document.querySelectorAll('[data-ts-unallow]').forEach(b => b.addEventListener('click', async () => {
+        await saveSettingPatch({ threat_shield_allow_remove: b.dataset.tsUnallow }, `Removed ${b.dataset.tsUnallow}`);
+        loadThreatShield();
+      }));
+      document.querySelectorAll('[data-act="ts-allow-add"]').forEach(b => b.addEventListener('click', async () => {
+        const inp = document.getElementById('ts-allow-input');
+        const val = inp ? inp.value.trim() : '';
+        if (!val) return;
+        await saveSettingPatch({ threat_shield_allow_add: val }, `Whitelisted ${val}`);
+        if (inp) inp.value = '';
+        loadThreatShield();
+      }));
 
       const scanSel = document.getElementById('scan-interval-sel');
       if (scanSel) scanSel.addEventListener('change', (e) => saveSettingPatch({ private_mesh_scan_interval_secs: parseInt(e.target.value, 10) }, 'Scan interval updated'));
@@ -1791,6 +1843,15 @@
       } catch (_) {}
     }
 
+    async function loadThreatShield() {
+      try {
+        const res = await fetch('/api/threat_shield', { headers: pinHeaders() });
+        if (!res.ok) return;
+        STATE.threatShield = await res.json();
+        render();
+      } catch (_) {}
+    }
+
     async function loadSettings() {
       try {
         const res = await fetch('/api/settings', { headers: pinHeaders() });
@@ -1798,6 +1859,7 @@
         STATE.settings = await res.json();
         render();
       } catch (_) {}
+      loadThreatShield();
     }
 
     async function refreshAnchors() {
