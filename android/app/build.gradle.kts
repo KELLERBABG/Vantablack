@@ -17,10 +17,18 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("vantablack.keystore")
-            storePassword = "vantablack_mesh_key"
-            keyAlias = "vantablack"
-            keyPassword = "vantablack_mesh_key"
+            val envStore = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (!envStore.isNullOrBlank()) {
+                storeFile = file(envStore)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            } else {
+                storeFile = file("vantablack.keystore")
+                storePassword = "vantablack_mesh_key"
+                keyAlias = "vantablack"
+                keyPassword = "vantablack_mesh_key"
+            }
         }
     }
 

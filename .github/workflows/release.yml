@@ -225,14 +225,24 @@ jobs:
 
       - name: Build Android APK
         working-directory: android
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          gradle assembleDebug --no-daemon --stacktrace
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            KEYSTORE_FILE="${RUNNER_TEMP}/vantablack-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_B64" | tr -d '\r\n ' | base64 --decode > "$KEYSTORE_FILE"
+            export ANDROID_KEYSTORE_PATH="$KEYSTORE_FILE"
+          fi
+          gradle assembleRelease --no-daemon --stacktrace
 
       - name: Package Android APK
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "vantablack-${VERSION}-android.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "vantablack-${VERSION}-android.apk"
 
       - name: Upload Android APK to GitHub Release
         uses: softprops/action-gh-release@v2
