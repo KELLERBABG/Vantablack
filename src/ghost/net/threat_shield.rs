@@ -482,13 +482,7 @@ impl Shield {
 
 fn shield() -> &'static RwLock<Shield> {
     static SHIELD: OnceLock<RwLock<Shield>> = OnceLock::new();
-    SHIELD.get_or_init(|| {
-        let mut s = Shield::default();
-        // Built-in test indicator so operators can verify Threat Shield + Pullback/Whitelist
-        // end-to-end when the toggle is turned on (off by default).
-        s.load_domains(["qel.kellersystems.dev"], ThreatKind::Malware);
-        RwLock::new(s)
-    })
+    SHIELD.get_or_init(|| RwLock::new(Shield::default()))
 }
 
 /// Serialises the tests that touch the process-global shield.

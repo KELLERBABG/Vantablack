@@ -13,16 +13,18 @@
 >   recent-blocks ring buffer. Hostname blocks are enforced at the existing DNS, CNAME,
 >   SNI and SOCKS5 `CONNECT` sites through `adblock::is_shielded_target`; literal
 >   addresses are matched against the netblock table there too.
-> * §3/§4 *feed loading* — `src/ghost/net/threat_feed.rs` parses a local snapshot
->   (domains + CIDRs with a kind per entry), verifies it with an **Ed25519** signature
->   against a pinned key (`GHOST_THREAT_FEED_KEY`) and fails closed: unsigned,
->   unpinned, forged-then-tampered or expired snapshots install nothing. A refresh
->   replaces the previous rules wholesale, and `cidr` entries expire with the
->   snapshot, so a refresh that stops happening stops blocking rotating C2 addresses
->   while domain rules stay in force. Nothing fetches a feed over the network.
-> * **Not built yet:** automatic feed *download* (this loader reads a file the
->   operator puts on disk), automatic CIDR blocking inside `VpnHub`'s TCP path, and
->   the rest of §2 (trust-scoped exit groups, flood/Sybil gating, reputation scoring).
+> * §3/§4 *feed loading & download* — `src/ghost/net/threat_feed.rs` parses a
+>   snapshot (domains + CIDRs with a kind per entry), verifies it with an **Ed25519**
+>   signature against a pinned key (`GHOST_THREAT_FEED_KEY`) and fails closed:
+>   unsigned, unpinned, forged-then-tampered or expired snapshots install nothing.
+>   When `GHOST_THREAT_FEED_URL` is configured, the daemon downloads snapshots over
+>   HTTPS on the refresh schedule (optionally caching verified snapshots to
+>   `GHOST_THREAT_FEED_PATH`). A refresh replaces the previous rules wholesale, and
+>   `cidr` entries expire with the snapshot, so a refresh that stops happening stops
+>   blocking rotating C2 addresses while domain rules stay in force. CIDR/IP blocks
+>   are enforced across SOCKS5, `VpnHub` TCP/UDP, and local Desktop TUN IPv4 paths.
+> * **Not built yet:** the rest of §2 (trust-scoped exit groups, flood/Sybil gating,
+>   reputation scoring).
 
 Strong privacy and censorship-resistant transport software is inherently dual-use. Rather than weakening encryption or adding surveillance hooks, Vantablack can reduce abuse and protect users through **exit-trust boundaries**, **default egress guardrails**, **local peer reputation**, and a **local Threat / Malware Shield**.
 

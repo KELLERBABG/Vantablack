@@ -65,6 +65,10 @@ const FEED_VERSION: &str = "1";
 
 /// The pinned key's environment variable: hex-encoded 32-byte Ed25519 public key.
 pub const PINNED_KEY_ENV: &str = "GHOST_THREAT_FEED_KEY";
+/// Optional HTTPS URL for automatic signed feed refresh.
+pub const FEED_URL_ENV: &str = "GHOST_THREAT_FEED_URL";
+/// Maximum accepted signed feed snapshot size (16 MiB).
+const MAX_FEED_BYTES: usize = 16 * 1024 * 1024;
 
 /// Most recent unix second a snapshot was installed at, for observability.
 static LAST_INSTALL: AtomicU64 = AtomicU64::new(0);
@@ -395,6 +399,92 @@ pub fn refresh_from_path_with_key(
 ) -> Result<Installed, FeedError> {
     let text = std::fs::read_to_string(path).map_err(|e| FeedError::Io(e.to_string()))?;
     load_and_install_with_key(&text, key, now)
+}
+
+fn validate_feed_url(url: &str) -> Result<(), FeedError> {
+    let trimmed = url.trim();
+    if trimmed.starts_with("https://") {
+        return Ok(());
+    }
+    if trimmed.starts_with("http://127.0.0.1")
+        || trimmed.starts_with("http://localhost")
+        || trimmed.starts_with("http://[::1]")
+    {
+        return Ok(());
+    }
+    Err(FeedError::Io(
+        "threat feed URL must use https:// (or loopback http:// for local tests)".into(),
+    ))
+}
+
+async fn fetch_feed_text(url: &str) -> Result<String, FeedError> {
+    validate_feed_url(url)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| FeedError::Io(e.to_string()))?;
+    let resp = client
+        .get(url.trim())
+        .send()
+        .await
+        .map_err(|e| FeedError::Io(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(FeedError::Io(format!("HTTP {}", resp.status())));
+    }
+    if let Some(len) = resp.content_length() {
+        if len as usize > MAX_FEED_BYTES {
+            return Err(FeedError::Io(format!(
+                "feed exceeds {MAX_FEED_BYTES} byte limit"
+            )));
+        }
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| FeedError::Io(e.to_string()))?;
+    if bytes.len() > MAX_FEED_BYTES {
+        return Err(FeedError::Io(format!(
+            "feed exceeds {MAX_FEED_BYTES} byte limit"
+        )));
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|e| FeedError::Io(e.to_string()))
+}
+
+/// Download, verify against the pinned key from [`PINNED_KEY_ENV`], and install.
+pub async fn refresh_from_url(url: &str, now: u64) -> Result<Installed, FeedError> {
+    let key = pinned_key_from_env()?;
+    refresh_from_url_with_key(url, &key, now).await
+}
+
+/// Download, verify against `key`, and install. Fails closed on any error.
+pub async fn refresh_from_url_with_key(
+    url: &str,
+    key: &VerifyingKey,
+    now: u64,
+) -> Result<Installed, FeedError> {
+    let text = fetch_feed_text(url).await?;
+    load_and_install_with_key(&text, key, now)
+}
+
+/// Download, verify against [`PINNED_KEY_ENV`], install, and optionally cache
+/// the verified snapshot to `cache_path` (only written after verification succeeds).
+pub async fn refresh_from_url_to_cache(
+    url: &str,
+    cache_path: Option<&Path>,
+    now: u64,
+) -> Result<Installed, FeedError> {
+    let key = pinned_key_from_env()?;
+    let text = fetch_feed_text(url).await?;
+    let installed = load_and_install_with_key(&text, &key, now)?;
+    if let Some(path) = cache_path {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(path, text.as_bytes()) {
+            tracing::warn!(path = %path.display(), error = %e, "Threat shield: failed to write verified feed cache");
+        }
+    }
+    Ok(installed)
 }
 
 /// Drop netblock rules whose expiry has passed. Called by the refresh path, and
@@ -776,5 +866,54 @@ mod tests {
         assert!(classify_host_port("203.0.113.9:443", 2000).is_some());
         assert!(classify_host_port("login.evil.example:443", 2000).is_some());
         assert!(classify_host_port("93.184.216.34:443", 2000).is_none());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn refresh_from_url_verifies_signature_and_rejects_remote_http() {
+        let vk = key(7).verifying_key();
+        assert!(
+            refresh_from_url_with_key("http://example.com/feed.txt", &vk, 2000)
+                .await
+                .is_err(),
+            "remote plain http must be refused"
+        );
+
+        let valid_body = sign(BODY, 7);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let serve = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            for payload in [valid_body, BODY.to_string()] {
+                let (mut sock, _) = listener.accept().await.expect("accept");
+                let mut req = [0u8; 1024];
+                let _ = sock.read(&mut req).await;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    payload.len(),
+                    payload
+                );
+                sock.write_all(resp.as_bytes()).await.expect("write");
+            }
+        });
+
+        let url = format!("http://127.0.0.1:{}/feed.txt", addr.port());
+        let _guard = guard();
+        let installed = refresh_from_url_with_key(&url, &vk, 2000)
+            .await
+            .expect("valid signed remote snapshot installs");
+        assert_eq!(installed.domains, 2);
+        assert_eq!(installed.cidrs, 2);
+
+        // Second request serves unsigned BODY; must fail closed and keep prior rules.
+        let err = refresh_from_url_with_key(&url, &vk, 2000)
+            .await
+            .expect_err("unsigned snapshot must be rejected");
+        assert_eq!(err, FeedError::Unsigned);
+        assert!(classify("login.evil.example", 2000).is_some());
+
+        serve.await.expect("server finishes");
     }
 }

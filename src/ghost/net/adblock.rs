@@ -419,6 +419,11 @@ pub fn inspect_outbound_ipv4_packet(pkt: &[u8]) -> PacketShieldVerdict {
     if pkt.len() < 20 || (pkt[0] >> 4) != 4 {
         return PacketShieldVerdict::Allow;
     }
+    let dst = std::net::Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
+    if crate::ghost::net::threat_shield::blocks_ip(std::net::IpAddr::V4(dst)) {
+        record_blocked();
+        return PacketShieldVerdict::Block(None);
+    }
     let ihl = ((pkt[0] & 0x0f) as usize) * 4;
     if ihl < 20 || pkt.len() < ihl {
         return PacketShieldVerdict::Allow;

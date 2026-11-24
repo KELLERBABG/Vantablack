@@ -1665,11 +1665,30 @@ pub(crate) async fn run_node(
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .map(std::path::PathBuf::from);
+            let feed_url = std::env::var(vantablack::ghost::net::threat_feed::FEED_URL_ENV)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
             let interval_secs = std::env::var("GHOST_THREAT_FEED_REFRESH_SECS")
                 .ok()
                 .and_then(|s| s.trim().parse::<u64>().ok())
                 .unwrap_or(3600)
                 .max(30);
+            if let Some(ref path) = feed_path {
+                if path.exists() {
+                    let now = super::beacon::unix_now_secs() as u64;
+                    if let Ok(installed) =
+                        vantablack::ghost::net::threat_feed::refresh_from_path(path, now)
+                    {
+                        tracing::info!(
+                            path = %path.display(),
+                            domains = installed.domains,
+                            cidrs = installed.cidrs,
+                            "Threat Shield: loaded cached signed feed snapshot"
+                        );
+                    }
+                }
+            }
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             loop {
                 ticker.tick().await;
@@ -1678,7 +1697,31 @@ pub(crate) async fn run_node(
                 if pruned > 0 {
                     tracing::debug!(pruned, "Threat Shield: pruned expired CIDR entries");
                 }
-                if let Some(ref path) = feed_path {
+                if let Some(ref url) = feed_url {
+                    match vantablack::ghost::net::threat_feed::refresh_from_url_to_cache(
+                        url,
+                        feed_path.as_deref(),
+                        now,
+                    )
+                    .await
+                    {
+                        Ok(installed) => {
+                            tracing::info!(
+                                url = %url,
+                                domains = installed.domains,
+                                cidrs = installed.cidrs,
+                                "Threat Shield: downloaded & installed signed feed snapshot"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                url = %url,
+                                error = %e,
+                                "Threat Shield: remote feed refresh failed (keeping prior valid rules)"
+                            );
+                        }
+                    }
+                } else if let Some(ref path) = feed_path {
                     match vantablack::ghost::net::threat_feed::refresh_from_path(path, now) {
                         Ok(installed) => {
                             tracing::info!(

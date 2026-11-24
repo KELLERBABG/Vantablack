@@ -321,6 +321,13 @@ impl VpnHub {
         // overlay IP as the lease hint for all protocols (auto-assign only on clash).
         let (overlay, _) = self.leases.lease_for_hint(fp, Some(src_ip));
 
+        // Threat Shield CIDR / IP blocking across all outbound IPv4 traffic (TCP, UDP, etc.).
+        if crate::ghost::net::threat_shield::blocks_ip(IpAddr::V4(dst)) {
+            crate::ghost::net::adblock::record_blocked();
+            self.stats_dropped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
         match proto {
             6 => {
                 if pkt.len() >= ihl + 20 {
