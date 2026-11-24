@@ -390,10 +390,13 @@ jobs:
       - name: Install ProVerif
         run: |
           sudo apt-get update
-          sudo apt-get install -y ocaml
-          curl -sSL https://proverif.inria.fr/proverif2.05.tar.gz | tar -xz
-          (cd proverif2.05 && ./build -nointeract)
-          sudo cp proverif2.05/proverif /usr/local/bin/
+          if curl -fsSL --retry 3 https://proverif.inria.fr/proverif2.05.tar.gz -o /tmp/proverif.tar.gz && tar -xzf /tmp/proverif.tar.gz; then
+            sudo apt-get install -y ocaml
+            (cd proverif2.05 && ./build -nointeract)
+            sudo cp proverif2.05/proverif /usr/local/bin/
+          else
+            sudo apt-get install -y proverif
+          fi
 
       # Each model below ends with a positive reachability witness. ProVerif
       # reports a *reachable* event as `... is false` (it failed to prove

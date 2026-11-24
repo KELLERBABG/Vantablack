@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn signed_nonce_echo_verifies_and_rejects_forgeries() {
         let id = crate::ghost::layers::l0_identity::GhostIdentity::generate_fresh();
-        let pk = id.long_term_verifying.to_bytes();
+        let pk = id.long_term_signing.verifying_key().to_bytes();
         let nonce = issue_nonce_challenge();
         let msg = nonce_echo_signing_input(&nonce, 3);
         let mut bad_sig = id.sign(&msg).to_bytes();
