@@ -44,6 +44,13 @@ class MainActivity : Activity() {
     private lateinit var txtAdblockStatus: TextView
     private lateinit var btnAdblockToggle: TextView
     private var adblockEnabled = true
+    private lateinit var txtThreatShieldStatus: TextView
+    private lateinit var btnThreatShieldToggle: TextView
+    private var threatShieldEnabled = false
+    private lateinit var cardThreatPullback: LinearLayout
+    private lateinit var threatRecentContainer: LinearLayout
+    private val threatAllowlist = mutableSetOf<String>()
+    private var lastThreatBlocksKey = ""
 
     // Real live telemetry views
     private lateinit var txtDownSpeed: TextView
@@ -762,6 +769,93 @@ class MainActivity : Activity() {
         }
         root.addView(cardAdblock)
 
+        // ── Threat / Malware Shield Card ──
+        threatShieldEnabled = prefs.getBoolean("threat_shield_enabled", false)
+        threatAllowlist.clear()
+        prefs.getStringSet("threat_shield_allowlist", emptySet())?.let { saved ->
+            threatAllowlist.addAll(saved)
+        }
+        try {
+            GhostCore.setThreatShieldEnabled(threatShieldEnabled)
+            for (d in threatAllowlist) {
+                GhostCore.allowThreatShieldDomain(d)
+            }
+        } catch (_: Throwable) {}
+
+        val cardThreatShield = createCoalCard().apply {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val textCol = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(context).apply {
+                    text = "Threat / Malware Shield"
+                    textSize = 13f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                txtThreatShieldStatus = TextView(context).apply {
+                    text = if (threatShieldEnabled) "Active • 0 threats blocked" else "Paused"
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#9E9C98"))
+                    setPadding(0, dp(2), 0, 0)
+                }
+                addView(txtThreatShieldStatus)
+            }
+            row.addView(textCol)
+
+            btnThreatShieldToggle = TextView(context).apply {
+                text = if (threatShieldEnabled) "On" else "Off"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(if (threatShieldEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                background = GradientDrawable().apply {
+                    setColor(if (threatShieldEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(14), dp(7), dp(14), dp(7))
+            }
+            row.addView(btnThreatShieldToggle)
+            setOnClickListener {
+                threatShieldEnabled = !threatShieldEnabled
+                prefs.edit().putBoolean("threat_shield_enabled", threatShieldEnabled).apply()
+                try { GhostCore.setThreatShieldEnabled(threatShieldEnabled) } catch (_: Throwable) {}
+                btnThreatShieldToggle.text = if (threatShieldEnabled) "On" else "Off"
+                btnThreatShieldToggle.setTextColor(if (threatShieldEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
+                btnThreatShieldToggle.background = GradientDrawable().apply {
+                    setColor(if (threatShieldEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                updateStatus()
+            }
+            addView(row)
+        }
+        root.addView(cardThreatShield)
+
+        // ── Threat Shield Pullback & Whitelist Card ──
+        cardThreatPullback = createCoalCard().apply {
+            visibility = View.GONE
+            addView(TextView(context).apply {
+                text = "Threat Shield Pullback & Whitelist"
+                textSize = 13f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#E05A47"))
+            })
+            addView(TextView(context).apply {
+                text = "Blocked malicious destinations — tap Whitelist if flagged by mistake"
+                textSize = 11f
+                setTextColor(Color.parseColor("#9E9C98"))
+                setPadding(0, dp(2), 0, dp(8))
+            })
+            threatRecentContainer = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            addView(threatRecentContainer)
+        }
+        root.addView(cardThreatPullback)
+
         // ── Operating Regime & QEL Parity Card ──
         val regimes = arrayOf("fast", "shielded", "ghost", "vantablack")
         var activeRegime = prefs.getString("regime", "ghost") ?: "ghost"
@@ -1235,12 +1329,99 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateThreatPullbackUi() {
+        val raw = try { GhostCore.getThreatShieldJson() } catch (_: Throwable) { "" }
+        if (raw.isEmpty()) {
+            cardThreatPullback.visibility = View.GONE
+            return
+        }
+        val arr = try {
+            org.json.JSONObject(raw).optJSONArray("recent")
+        } catch (_: Throwable) {
+            null
+        }
+        if (arr == null || arr.length() == 0) {
+            cardThreatPullback.visibility = View.GONE
+            lastThreatBlocksKey = ""
+            return
+        }
+        cardThreatPullback.visibility = View.VISIBLE
+
+        val items = mutableListOf<Pair<String, String>>()
+        val seen = HashSet<String>()
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val target = obj.optString("target", "").trim()
+            val kind = obj.optString("kind", "threat").trim()
+            if (target.isNotEmpty() && seen.add(target)) {
+                items.add(target to kind)
+            }
+        }
+        val key = items.joinToString("|") { (t, k) -> "$t:$k:${threatAllowlist.contains(t)}" }
+        if (key == lastThreatBlocksKey) return
+        lastThreatBlocksKey = key
+
+        threatRecentContainer.removeAllViews()
+        for ((target, kind) in items) {
+            val isAllowed = threatAllowlist.contains(target)
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(6), 0, dp(6))
+            }
+            val infoCol = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(TextView(this@MainActivity).apply {
+                    text = target
+                    textSize = 12f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.parseColor("#F4F1EA"))
+                })
+                addView(TextView(this@MainActivity).apply {
+                    text = "Blocked ($kind)"
+                    textSize = 10f
+                    setTextColor(Color.parseColor("#9E9C98"))
+                })
+            }
+            row.addView(infoCol)
+
+            val btnWhitelist = TextView(this).apply {
+                text = if (isAllowed) "Allowed" else "Whitelist"
+                textSize = 11f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(if (isAllowed) Color.parseColor("#9E9C98") else Color.parseColor("#0C0D0F"))
+                background = GradientDrawable().apply {
+                    setColor(if (isAllowed) Color.parseColor("#18FFFFFF") else Color.parseColor("#F4F1EA"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                setPadding(dp(12), dp(6), dp(12), dp(6))
+                if (!isAllowed) {
+                    setOnClickListener {
+                        threatAllowlist.add(target)
+                        prefs.edit().putStringSet("threat_shield_allowlist", threatAllowlist.toSet()).apply()
+                        try { GhostCore.allowThreatShieldDomain(target) } catch (_: Throwable) {}
+                        Toast.makeText(this@MainActivity, "Whitelisted $target", Toast.LENGTH_SHORT).show()
+                        lastThreatBlocksKey = ""
+                        updateThreatPullbackUi()
+                    }
+                }
+            }
+            row.addView(btnWhitelist)
+            threatRecentContainer.addView(row)
+        }
+    }
+
     private fun updateStatus() {
         val now = System.currentTimeMillis()
         val dt = if (lastTimestamp > 0) ((now - lastTimestamp) / 1000.0).coerceAtLeast(0.1) else 1.0
 
         val adsBlocked = try { GhostCore.getAdsBlocked() } catch (_: Throwable) { 0L }
         txtAdblockStatus.text = if (adblockEnabled) "Active • $adsBlocked ads blocked" else "Paused"
+
+        val threatsBlocked = try { GhostCore.getThreatShieldBlocked() } catch (_: Throwable) { 0L }
+        txtThreatShieldStatus.text = if (threatShieldEnabled) "Active • $threatsBlocked threats blocked" else "Paused"
+        updateThreatPullbackUi()
 
         val isConnected = GhostVpnService.isVpnActive(this)
         if (isConnected) {

@@ -408,6 +408,61 @@ pub fn is_shielded_target(host: &str) -> bool {
     crate::ghost::net::threat_shield::blocks_domain(host)
 }
 
+/// Verdict for an outbound IPv4 packet inspected by local adblock + Threat Shield.
+pub enum PacketShieldVerdict {
+    Allow,
+    Block(Option<Vec<u8>>),
+}
+
+/// Inspect an outbound raw IPv4 packet from a local TUN interface (DNS qname + TLS ClientHello SNI).
+pub fn inspect_outbound_ipv4_packet(pkt: &[u8]) -> PacketShieldVerdict {
+    if pkt.len() < 20 || (pkt[0] >> 4) != 4 {
+        return PacketShieldVerdict::Allow;
+    }
+    let ihl = ((pkt[0] & 0x0f) as usize) * 4;
+    if ihl < 20 || pkt.len() < ihl {
+        return PacketShieldVerdict::Allow;
+    }
+    match pkt[9] {
+        17 if pkt.len() >= ihl + 8 => {
+            let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+            if is_blocked_port(dport) {
+                record_blocked();
+                return PacketShieldVerdict::Block(None);
+            }
+            if dport == 53 {
+                let dns_payload = &pkt[ihl + 8..];
+                if let Some(qname) = extract_dns_qname(dns_payload) {
+                    if is_shielded_target(&qname) {
+                        record_blocked();
+                        let reply = build_dns_nxdomain_response(dns_payload)
+                            .and_then(|nx| synthesize_ipv4_udp_reply(pkt, &nx));
+                        return PacketShieldVerdict::Block(reply);
+                    }
+                }
+            }
+        }
+        6 if pkt.len() >= ihl + 20 => {
+            let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
+            if is_blocked_port(dport) {
+                record_blocked();
+                return PacketShieldVerdict::Block(None);
+            }
+            let data_off = (((pkt[ihl + 12] >> 4) as usize) * 4).max(20);
+            if pkt.len() > ihl + data_off {
+                if let Some(sni) = extract_tls_sni(&pkt[ihl + data_off..]) {
+                    if is_shielded_target(&sni) {
+                        record_blocked();
+                        return PacketShieldVerdict::Block(None);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    PacketShieldVerdict::Allow
+}
+
 /// Check if `port` (e.g. TCP/UDP 853 for DoT/DoQ) should be blocked to prevent DNS bypass.
 pub fn is_blocked_port(port: u16) -> bool {
     port == 853 && is_enabled() && is_doh_guard_enabled()

@@ -1,22 +1,21 @@
-# Vantablack 2.0.1 — Monolith Coal & Connected Liquid Tracks QR Release
+# Vantablack 2.1.7 — Threat Shield, Background Updater & Signed Android Releases
 
-Vantablack **v2.0.1** introduces the redesigned **Monolith Coal** experience across Desktop (`.exe` / Linux / macOS) and Android (`.apk`), paired with Vantablack's signature **Connected Liquid Tracks QR** onboarding and a hardened one-tap software updater.
-
----
-
-### 🌑 Monolith Coal Interface (Desktop & Android)
-* **Spotlight Coal Architecture:** Clean, effortless spotlight coal surface (`#232428 -> #141518 -> #0C0D0F`) with warm ivory (`#F4F1EA`) typography and zero technical clutter.
-* **Machined Brushed-Steel Center Button:** Tactile circular protection button with warm ivory status indicator light, flanked by **Location** and **Mode** (`Fast`, `Stealth`, `Multi-Hop`).
-* **Floating Bottom Pill Dock:** Instant one-click access to location selection, **+ Pair Phone (QR)**, **Devices**, and **Settings**.
+Vantablack **v2.1.7** brings **Threat / Malware Shield** to both Desktop and Android, adds non-blocking background updates, and ships Android APKs signed with the official release keystore.
 
 ---
 
-### 👻 Connected Liquid Tracks QR & Stealth Visor Ghost
-* **Custom Vantablack QR Geometry:** Circular finder eyes and fused horizontal liquid pill tracks on a warm ivory card (`#EAE6DC`) with the **Stealth Visor Ghost** center emblem (`#DCFF02` visor glint).
-* **Built-In Android Camera Scanner & Deep Links:** Bundles an embedded ZXing camera QR scanner directly inside the Android app (no external scanner app required) plus native system camera deep-link support for `vb://`, `vb-net://`, and `vb-fleet://` URIs.
+### 🛡️ Threat / Malware Shield & Pullback Whitelist (Desktop & Android)
+* **Local DNS, SNI & SOCKS5 Enforcement:** Inspects DNS queries (`NXDOMAIN`), DoT/DoQ (`853`), and TLS `ClientHello` SNI directly on the Desktop TUN (`src/daemon/node.rs`), Android VPN (`android_jni.rs`), SOCKS5 proxy, and exit hubs.
+* **Android UI & Pullback Controls:** Added the **Threat / Malware Shield** toggle and **Threat Shield Pullback & Whitelist** card to Android (`MainActivity.kt`) alongside the Desktop dashboard (`Settings → General`).
+* **Ed25519-Signed Feed Loader & Egress Policy:** Supports signed threat feed snapshots with automatic CIDR expiry pruning, exit egress policy enforcement, and `qel.kellersystems.dev` seeded as a built-in test indicator.
 
 ---
 
-### ⚡ Reliable One-Tap Self-Updater
-* **Windows Self-Updater (`ggn.exe`):** Detached background updater waits for the running process to release file locks, runs the Inno Setup upgrade silently, updates portable binaries in place if launched outside `%LOCALAPPDATA%`, and automatically relaunches Vantablack.
-* **Android In-App Updater (`v2.0.1`, `versionCode 201`):** Follows cross-host GitHub Release redirects reliably, prefers `vantablack-*-android.apk`, and automatically resumes APK installation upon returning from Android's unknown-sources permission screen.
+### ⬇️ Non-Blocking Background Updater
+* **Download on the Side, Install When Ready:** Checking for updates now downloads the new installer/APK in the background on both Desktop and Android instead of forcing an immediate pull and restart.
+
+---
+
+### 🔐 Signed Android Release APKs
+* **Official Release Signing:** Android release builds now run `assembleRelease` signed with the Vantablack release keystore so future updates upgrade cleanly in place.
+* *(Note: If upgrading from `v2.1.6` or earlier debug-signed APKs, uninstall the old APK once before installing `v2.1.7`.)*

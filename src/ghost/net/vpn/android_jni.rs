@@ -1127,6 +1127,65 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getAdsBlocked(
 }
 
 #[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_setThreatShieldEnabled(
+    _env: JNIEnv,
+    _class: JClass,
+    enabled: jboolean,
+) {
+    crate::ghost::net::threat_shield::set_enabled(enabled != 0);
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getThreatShieldBlocked(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    crate::ghost::net::threat_shield::blocked_total() as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_allowThreatShieldDomain(
+    mut env: JNIEnv,
+    _class: JClass,
+    domain: JString,
+) {
+    let raw: String = match env.get_string(&domain) {
+        Ok(s) => s.into(),
+        Err(_) => return,
+    };
+    let clean = raw.trim().trim_end_matches('.').to_ascii_lowercase();
+    if !clean.is_empty() {
+        crate::ghost::net::threat_shield::allow_domain(&clean);
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_getThreatShieldJson<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    let recent: Vec<serde_json::Value> = crate::ghost::net::threat_shield::recent_blocks(16)
+        .into_iter()
+        .map(|ev| {
+            serde_json::json!({
+                "target": ev.target,
+                "kind": ev.kind.as_str(),
+                "timestamp_secs": ev.timestamp_secs,
+            })
+        })
+        .collect();
+    let json = serde_json::json!({
+        "enabled": crate::ghost::net::threat_shield::is_enabled(),
+        "blocked_total": crate::ghost::net::threat_shield::blocked_total(),
+        "recent": recent,
+    })
+    .to_string();
+    env.new_string(json)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_setExperimentalFlag(
     mut env: JNIEnv,
     _class: JClass,

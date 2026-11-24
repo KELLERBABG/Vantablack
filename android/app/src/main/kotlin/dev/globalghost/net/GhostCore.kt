@@ -90,6 +90,18 @@ object GhostCore {
     /** Return total number of ad/tracker DNS queries blocked in this session. */
     external fun getAdsBlocked(): Long
 
+    /** Enable or disable Threat / Malware Shield blocking. */
+    external fun setThreatShieldEnabled(enabled: Boolean)
+
+    /** Return total number of Threat Shield blocks in this session. */
+    external fun getThreatShieldBlocked(): Long
+
+    /** Add a domain/host to the local Threat Shield allowlist. */
+    external fun allowThreatShieldDomain(domain: String)
+
+    /** Return JSON snapshot of Threat Shield state and recent blocks. */
+    external fun getThreatShieldJson(): String
+
     /** Enable or disable an experimental mesh capability by key. */
     external fun setExperimentalFlag(key: String, enabled: Boolean)
 

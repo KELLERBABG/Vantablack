@@ -2144,6 +2144,21 @@ pub(crate) async fn run_node(
                     });
                     match read {
                         Some(n) => {
+                            match vantablack::ghost::net::adblock::inspect_outbound_ipv4_packet(
+                                &buf[..n],
+                            ) {
+                                vantablack::ghost::net::adblock::PacketShieldVerdict::Allow => {}
+                                vantablack::ghost::net::adblock::PacketShieldVerdict::Block(
+                                    reply,
+                                ) => {
+                                    if let Some(ref nx_pkt) = reply {
+                                        if let Ok(g) = tun.try_lock() {
+                                            let _ = TunDevice::write_packet(&*g, nx_pkt);
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
                             let Some(wire) = vpn::client::seal_from_tun(&client, &buf[..n]) else {
                                 sleep(Duration::from_millis(2)).await;
                                 continue;
