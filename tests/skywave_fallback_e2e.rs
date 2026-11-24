@@ -478,10 +478,15 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
             break;
         }
         if Instant::now() >= deadline {
-            if a.sessions() >= 1 && b.sessions() >= 1 {
-                break;
-            }
-            fail_with_logs(&a, &b, "no session formed between the two daemons".into());
+            fail_with_logs(
+                &a,
+                &b,
+                format!(
+                    "no session formed between A ({fp_a}) and B ({fp_b}); sessions A={}, B={}",
+                    a.sessions(),
+                    b.sessions()
+                ),
+            );
         }
     }
     println!("Session established on both nodes");
@@ -507,7 +512,7 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
         }
         std::thread::sleep(Duration::from_millis(100));
         ticks_ab += 1;
-        if ticks_ab.is_multiple_of(80) {
+        if ticks_ab.is_multiple_of(20) {
             a.run(&format!("CHAT {fp_b} {marker_ab}"));
         }
     }
@@ -557,7 +562,7 @@ fn a_frame_crosses_the_skywave_rung_when_every_ip_rung_is_unusable() {
         }
         std::thread::sleep(Duration::from_millis(100));
         ticks_ba += 1;
-        if ticks_ba.is_multiple_of(80) {
+        if ticks_ba.is_multiple_of(20) {
             b.run(&format!("CHAT {fp_a} {marker_ba}"));
         }
     }
