@@ -91,8 +91,7 @@ query attacker(m2_pcs).
 query event(epoch0_sealed()).
 query event(epoch2_complete()).
 
-let initiator =
-  new skA: skey;
+let initiator(skA: skey, expected_pkB: pkey) =
   new skPQa: pqsk;
   new ra2: bitstring;
   new ephPQ2: bitstring;
@@ -121,6 +120,7 @@ let initiator =
   in(c, gb2: bitstring);
   in(c, pq_pub_b: pqpk);
   in(c, commit_b: sig);
+  if pk_b = expected_pkB then
   let commit = verify(commit_b, pk_b) in
   if commit = (ga2, gb2, pq_pub_b) then
   let klass2 = dh(ra2, gb2) in
@@ -132,8 +132,7 @@ let initiator =
   out(c, ct2);
   out(c, senc(m2_pcs, mk2)).
 
-let responder =
-  new skB: skey;
+let responder(skB: skey, expected_pkA: pkey) =
   new skPQb: pqsk;
   new rb2: bitstring;
 
@@ -151,6 +150,7 @@ let responder =
   in(c, pk_a: pkey);
   in(c, ga2: bitstring);
   in(c, commit_a: sig);
+  if pk_a = expected_pkA then
   let commit = verify(commit_a, pk_a) in
   if commit = (ga2, pk_a) then
   out(c, pk(skB));
@@ -172,4 +172,8 @@ let responder =
   event epoch2_complete().
 
 process
-  ((!initiator) | (!responder))
+  new skA: skey;
+  new skB: skey;
+  out(c, pk(skA));
+  out(c, pk(skB));
+  ((!initiator(skA, pk(skB))) | (!responder(skB, pk(skA))))
