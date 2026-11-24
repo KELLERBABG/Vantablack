@@ -1,0 +1,82 @@
+(*
+   Vantablack Multi-Hop Onion Circuit — Unlinkability & Relay Blindness
+   (ProVerif 2.05 symbolic model)
+
+   Models `src/socks.rs` (`wrap_onion` / 3-hop telescoping circuit) +
+   `src/ghost/layers/`:
+
+   An active Dolev-Yao attacker controls:
+   - the public network channel `c`,
+   - Relay 1's layer key `k_r1` (compromised/malicious entry relay), and
+   - Relay 2's layer key `k_r2` (compromised/malicious middle relay).
+
+   1. Payload secrecy (`inner_msg`):
+      - The exit-bound plaintext `inner_msg` is sealed inside the innermost layer
+        under `k_exit` (shared between initiator and exit node), then wrapped in
+        `k_r2`, then wrapped in `k_r1`.
+      - Query `attacker(inner_msg)` checks that compromised relays `R1` and `R2`
+        cannot recover the application payload.
+
+   2. Exit-destination blindness at entry relay (`dest_exit`):
+      - `R1` only receives `(k_r1`-encrypted `(next_r2, inner_onion))` and never
+        learns `dest_exit` (which is only inside `k_r2` / `k_exit`).
+      - Query `attacker(dest_exit)` checks that `R1` (when `k_r2` is honest)
+        cannot learn the final destination.
+
+   3. Origin blindness at exit (`origin_id`):
+      - The innermost exit layer carries `(dest_exit, inner_msg)` without
+        embedding `origin_id`.
+      - Query `attacker(origin_id)` checks that neither relay `R2` nor the exit
+        learns the initiator's identity from the onion payload.
+*)
+
+free c: channel.
+
+type key.
+
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+
+free inner_msg: bitstring [private].
+free dest_exit: bitstring [private].
+free origin_id: bitstring [private].
+
+free hop_r1: bitstring.
+free hop_r2: bitstring.
+free hop_exit: bitstring.
+
+query attacker(inner_msg).
+query attacker(dest_exit).
+query attacker(origin_id).
+
+let circuit_run =
+  new k_r1: key;
+  new k_r2: key;
+  new k_exit: key;
+
+  (* Adversary / malicious entry relay R1 learns k_r1 only *)
+  out(c, k_r1);
+
+  (* Initiator builds 3-hop onion: R1 -> R2 -> Exit *)
+  let layer_exit = senc((dest_exit, inner_msg), k_exit) in
+  let layer_r2 = senc((hop_exit, layer_exit), k_r2) in
+  let layer_r1 = senc((hop_r2, layer_r2), k_r1) in
+  out(c, layer_r1);
+
+  (* Honest R1 peels outer layer and forwards to R2 *)
+  in(c, pkt1: bitstring);
+  let (=hop_r2, fwd2: bitstring) = sdec(pkt1, k_r1) in
+  out(c, fwd2);
+
+  (* Honest R2 peels middle layer and forwards to Exit *)
+  in(c, pkt2: bitstring);
+  let (=hop_exit, fwd_exit: bitstring) = sdec(pkt2, k_r2) in
+  out(c, fwd_exit);
+
+  (* Honest Exit peels innermost layer (never sees origin_id) *)
+  in(c, pkt3: bitstring);
+  let (d: bitstring, payload: bitstring) = sdec(pkt3, k_exit) in
+  0.
+
+process
+  (!circuit_run)

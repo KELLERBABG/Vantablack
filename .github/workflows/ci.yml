@@ -404,3 +404,6 @@ jobs:
       - name: Verify ShardSec 3-Shard Space-Time Secrecy
         run: proverif formal/shardsec_space_time.pv
 
+      - name: Verify Multi-Hop Circuit Unlinkability
+        run: proverif formal/ghost_circuit_unlinkability.pv
+

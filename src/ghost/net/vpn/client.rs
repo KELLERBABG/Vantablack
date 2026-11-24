@@ -293,6 +293,14 @@ pub mod resilience {
     /// Give up dialing after this many consecutive dead-tunnel re-handshakes
     /// (stay probing; the next inbound datagram still heals).
     pub const MAX_ATTEMPTS: u32 = 6;
+    /// Recycle the OS TUN adapter on this consecutive dead-tunnel re-handshake attempt.
+    pub const RECYCLE_TUN_AFTER_ATTEMPT: u32 = 3;
+
+    /// Returns `true` when the watchdog should recycle the OS TUN interface
+    /// before issuing the next re-handshake.
+    pub fn should_recycle_tun(attempt: u32) -> bool {
+        attempt == RECYCLE_TUN_AFTER_ATTEMPT
+    }
 
     /// What the caller should do now.
     #[derive(Debug, PartialEq, Eq)]
@@ -572,6 +580,14 @@ pub mod resilience {
             assert_eq!(&pkt[12..16], &[10, 66, 0, 10], "src = client overlay");
             assert_eq!(pkt[20], 8, "echo request");
             assert_eq!(internet_checksum(&pkt[..20]), 0, "IP checksum valid");
+        }
+
+        #[test]
+        fn watchdog_flags_tun_recycle_at_attempt_three() {
+            assert!(!should_recycle_tun(1));
+            assert!(!should_recycle_tun(2));
+            assert!(should_recycle_tun(RECYCLE_TUN_AFTER_ATTEMPT));
+            assert!(!should_recycle_tun(4));
         }
     }
 }

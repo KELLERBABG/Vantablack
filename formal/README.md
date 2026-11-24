@@ -10,11 +10,12 @@ claim that is not a query in these files has not been checked by a prover.
 proverif formal/ghost_session.pv
 proverif formal/session_ratchet.pv
 proverif formal/shardsec_space_time.pv
+proverif formal/ghost_circuit_unlinkability.pv
 ```
 
 `ghost_session.pv` and `shardsec_space_time.pv` were run against ProVerif 2.05. `ghost_session.pv` reports all four queries
-true; `shardsec_space_time.pv` reports `not attacker(secret_payload[]) is true`; `session_ratchet.pv` models `SessionRatchet` forward secrecy (`m0_fs` after `ck1` leak) and post-compromise recovery (`m2_pcs` after `(rk1, ck1)` leak + authenticated hybrid DH+ML-KEM ratchet).
-The CI `formal-model` job builds ProVerif from source and runs the same three
+true; `shardsec_space_time.pv` reports `not attacker(secret_payload[]) is true`; `session_ratchet.pv` models `SessionRatchet` forward secrecy (`m0_fs` after `ck1` leak) and post-compromise recovery (`m2_pcs` after `(rk1, ck1)` leak + authenticated hybrid DH+ML-KEM ratchet); `ghost_circuit_unlinkability.pv` models 3-hop onion relay blindness and payload/origin/destination secrecy.
+The CI `formal-model` job builds ProVerif from source and runs the same four
 commands.
 
 ## ghost_session.pv: what it establishes

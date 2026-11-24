@@ -2142,6 +2142,7 @@ pub(crate) async fn run_node(
                 let keep_tx = tx.clone();
                 let w_nc = Arc::clone(&nc);
                 let w_client = Arc::clone(&client2);
+                let w_tun = Arc::clone(&tun);
                 let w_addrs = Arc::clone(&addrs);
                 let w_phs = Arc::clone(&pending_hs);
                 tokio::spawn(async move {
@@ -2169,6 +2170,36 @@ pub(crate) async fn run_node(
                                 }
                             }
                             vpn::client::Action::Rehandshake { attempt } => {
+                                if vpn::client::resilience::should_recycle_tun(attempt) {
+                                    if let Ok(mut g) = w_tun.lock() {
+                                        if g.name() != "fake" {
+                                            let iface = g.name().to_string();
+                                            g.shutdown();
+                                            match vpn::tun::open_tun(
+                                                &iface,
+                                                client_ip,
+                                                std::net::Ipv4Addr::new(255, 255, 255, 0),
+                                            ) {
+                                                Ok(new_tun) => {
+                                                    *g = new_tun;
+                                                    tracing::info!(
+                                                        attempt,
+                                                        iface = %iface,
+                                                        "VPN tunnel interface recycled after stall"
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        attempt,
+                                                        iface = %iface,
+                                                        error = %e,
+                                                        "VPN tunnel interface recycle failed"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 match w_addrs.get(&w_client.fingerprint).map(|v| *v.value()) {
                                     Some(tgt) => {
                                         tracing::warn!(
