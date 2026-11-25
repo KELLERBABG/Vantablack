@@ -12,6 +12,8 @@ pub mod cc;
 
 #[cfg(feature = "research")]
 pub mod bandwidth_voucher;
+#[cfg(feature = "research")]
+pub mod braid_identity;
 pub mod coalesce;
 pub mod collective_defense;
 pub mod consumer;
@@ -28,12 +30,18 @@ pub mod energy_currency;
 pub mod entropy_beacon;
 pub mod fallback;
 pub mod ice;
+#[cfg(feature = "research")]
+pub mod landauer;
 pub mod mesh;
 #[cfg(feature = "research")]
 pub mod mesh_archive;
 #[cfg(feature = "research")]
+pub mod metabolic;
+#[cfg(feature = "research")]
 pub mod model_gossip;
 pub mod orbit;
+#[cfg(feature = "research")]
+pub mod photonic_orbit;
 #[cfg(feature = "research")]
 pub mod polysemy;
 pub mod pow;

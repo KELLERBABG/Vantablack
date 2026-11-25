@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+Implements the four primitives `DEV/UNPRECEDENTED_PRIMITIVES.md` lists as
+"not yet implemented". They are `research`-gated like every other dormant
+module, add no node state, and are not promoted until benchmarked against the
+production path.
+
+- **Braid-Locked Identity (`src/ghost/net/braid_identity.rs`):** each ratchet
+  step rotates the Ed25519 identity key and signs
+  `(height, next_pk, braid)` with the retiring key, where
+  `braid = H(prev_braid || next_pk || transcript)`; the transition is a
+  200-byte certificate. One key may have exactly one child, so a cloned node's
+  second signed child is a self-authenticating `CloneProof` under the fork key
+  — no ledger, no witness vote. Also implements the epidemic bound
+  `R <= (ln N + ln ln(1/delta)) / (2 ln f)`. Tests:
+  `a_linear_braid_extends_without_a_fork`,
+  `two_transitions_from_one_key_are_a_self_authenticating_proof`,
+  `a_fork_at_a_later_height_still_proves_the_clone`,
+  `a_tampered_transition_is_refused`, `a_replayed_transition_is_stale`,
+  `a_transition_is_two_hundred_bytes_and_round_trips`,
+  `the_collision_bound_is_the_theorem_bound`.
+- **Metabolic Cryptography (`src/ghost/net/metabolic.rs`):** authority is the
+  sum over physically distinct domains of the saturated max-potential
+  `2^{-(t - t_p)/half_life}` in `[0, 1]`, so a Sybil flood inside one domain is
+  worth one pulse. A seized node fed unbounded Sybils across `k < theta`
+  domains still falls below threshold by
+  `t0 + half_life * log2(m_honest / (theta - k))`, with no revocation packet.
+  Tests: `a_domain_contributes_at_most_one_however_many_sybils_pulse`,
+  `mass_halves_every_half_life`,
+  `an_infinitely_fed_adversary_still_dies_at_the_theorem_deadline`,
+  `a_mass_already_below_the_threshold_dies_now`,
+  `collusion_at_the_threshold_has_no_finite_bound`,
+  `a_fresh_pulse_restores_capability`, `a_clock_needs_a_real_half_life`.
+- **Photonic Secret Orbit (`src/ghost/net/photonic_orbit.rs`):** a 256-bit key
+  is split into three XOR shares whose phases around a fiber loop are
+  validated to leave no two inside silicon at once. Reports the duty cycle
+  (`n * dwell / T`, 0.015 % for the 40,000 km / 10 µs plan), the collision
+  schedule, one-share seizure, and one-orbit evaporation after a fiber cut.
+  Tests: `the_planetary_orbit_is_two_hundred_milliseconds`,
+  `no_two_shares_are_ever_in_silicon_at_the_same_instant`,
+  `the_matter_duty_cycle_is_the_silicon_fraction`,
+  `overlapping_phases_are_refused`,
+  `one_share_reveals_nothing_and_all_three_rebuild_the_key`,
+  `a_planetary_seizure_captures_one_share_and_one_orbit_erases_the_key`.
+- **Thermodynamic Exhaust (`src/ghost/net/landauer.rs`):** exact
+  `H(S_{t-1} | S_t, X_t)` for a deterministic finite-state update map, the
+  reflecting saturating-walk statistic (which erases `2/levels` bits per
+  symbol at fair input — only the two clamped boundaries merge histories —
+  and less for a predictable stream), and the `k_B T ln 2` power floor. Tests:
+  `a_bounded_walk_erases_two_bits_per_level_at_fair_input`,
+  `more_memory_means_less_irreversible_erasure`,
+  `a_predictable_stream_leaves_less_history_to_erase`,
+  `a_shift_register_erases_exactly_the_bit_that_falls_off`,
+  `an_injective_update_erases_nothing`,
+  `the_landauer_power_is_the_erasure_rate_times_kt_ln2`,
+  `a_room_temperature_wiretap_is_a_physical_bound_not_a_denial_mechanism`,
+  `a_walk_round_trips_its_levels`.
+
 ## [3.0.0] - 2026-11-25 - Full Epistemic Mesh Release (V3 Stage 7)
 
 Completes [`DEV/V3_PIPELINE.md`](DEV/V3_PIPELINE.md). Stage 7 closes the pipeline
