@@ -102,11 +102,17 @@ pub(crate) fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
 /// would leak the very routing topology the shards exist to hide, so uniform
 /// treatment per peer is the conservative choice.
 pub(crate) async fn send_cover(sock: &UdpSocket, dst: &SocketAddr, ctx: &SealCtx) {
-    // RACS accounting: this is the point where a cover frame really leaves, so
-    // the shaper and the scavenger see the same event the wire does.
-    let _ = vantablack::ghost::v2::racs::observe_cover(
+    // RACS accounting: this is the point where a cover frame would really
+    // leave, so the shaper and the scavenger see the same event the wire does.
+    // An OFF decision is authoritative: the caller's gate can race with the
+    // slot boundary, and emitting anyway would put a frame off-schedule and
+    // invalidate the shaping evidence the ledger reads.
+    match vantablack::ghost::v2::racs::observe_cover(
         vantablack::ghost::v2::racs::take_real_pending(),
-    );
+    ) {
+        vantablack::ghost::v2::racs::Action::EmitFrame { .. } => {}
+        vantablack::ghost::v2::racs::Action::Sleep { .. } => return,
+    }
     let (shards, tag) = enc_split(ctx, net::DUMMY_MAGIC);
     let mut batch = MixBatch::new(3, Duration::ZERO);
     let mut ready = None;
@@ -313,10 +319,10 @@ mod p3_1_cover_tests {
 
     #[test]
     pub(crate) fn cover_traffic_is_recognised_by_its_marker_not_by_its_header_bit() {
-        use vantablack::ghost::net::{is_dummy_payload, tail_for, DUMMY_MAGIC};
+        use vantablack::ghost::net::{is_dummy_payload, random_tail, DUMMY_MAGIC};
 
         let ctx = ctx(0x33);
-        let tail = tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
+        let tail = random_tail();
 
         // Seal exactly what `enc_split` seals, then take the receiver's own two
         // steps over it: open, then classify. `open_received_frame` strips the tag,

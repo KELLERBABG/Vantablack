@@ -15,7 +15,7 @@ use vantablack::ghost::layers::l2_aead::{
 use vantablack::ghost::layers::l4_rs;
 use vantablack::ghost::net::{
     build_gtf_v2_frame, extract_auth_tag, extract_payload, frame_shard, is_dummy_payload,
-    parse_gtf_v2_header, tail_for, unframe, GtfV2Header, DUMMY_MAGIC, FLAG_DUMMY, GTF_BASE_SIZE,
+    parse_gtf_v2_header, random_tail, unframe, GtfV2Header, DUMMY_MAGIC, FLAG_DUMMY, GTF_BASE_SIZE,
     JITTER_MAX,
 };
 
@@ -44,7 +44,7 @@ fn cover_gap(uniform: f64, frames_per_sec: f64) -> Duration {
 /// `SealCtx::header` (src/main.rs:311) and the per-shard seal at src/main.rs:486-516.
 /// Those live in the binary crate, so this test cannot call them and a change to
 /// that wiring will not fail this file. The primitives it does call (`l4_rs::encode`,
-/// `xchacha_seal_in_place_with_aad`, `tail_for`, `build_gtf_v2_frame`) are the
+/// `xchacha_seal_in_place_with_aad`, `random_tail`, `build_gtf_v2_frame`) are the
 /// library's production ones. The daemon's default branch is ShardSec
 /// (src/main.rs:456-484), which this copy does not measure at all.
 fn produce_wire_frame(
@@ -65,7 +65,7 @@ fn produce_wire_frame(
 
     for (i, shard) in shards.iter().enumerate() {
         let nonce = random_xnonce();
-        let tail = tail_for(key, &nonce, epoch, NonceDirection::InitiatorToResponder);
+        let tail = random_tail();
 
         let mut enc_shard = shard.clone();
         xchacha_seal_in_place_with_aad(

@@ -1005,6 +1005,18 @@ pub(crate) async fn handle_pkt(
                 }
                 return;
             }
+            if let Some(body) = payload.strip_prefix(GHOST_CENSUS_MAGIC) {
+                let endpoint = peers.get(&peer_fp).map(|v| *v);
+                let cells = super::discovery::ingest_census_gossip(body, &peer_fp, endpoint);
+                if cells > 0 {
+                    tracing::debug!(
+                        peer = %peer_fp,
+                        cells,
+                        "Census: recorded a live epoch announcement"
+                    );
+                }
+                return;
+            }
             if let Some(body) = payload.strip_prefix(GHOST_PEX_V2_MAGIC) {
                 if !body.is_empty() {
                     let count = body[0] as usize;
@@ -1298,6 +1310,7 @@ pub(crate) async fn handle_pkt(
                             direction: dir_for(role),
                             session_hash: sh,
                             ratchet_due: false,
+                            tail: vantablack::ghost::net::random_tail(),
                         });
                     let (f, tag) = enc_split(&hop_ctx, &rewrap);
                     send3(sock, &tgt, &hop_ctx, &f, &tag).await;
@@ -1779,6 +1792,7 @@ pub(crate) async fn handle_exit_connect(
             direction: NonceDirection::ResponderToInitiator,
             session_hash: *sh,
             ratchet_due: false,
+            tail: vantablack::ghost::net::random_tail(),
         });
     let ok_payload = if stream_id > 0 {
         format!("OK!{stream_id}!").into_bytes()
@@ -1825,6 +1839,7 @@ pub(crate) async fn handle_exit_connect(
                     direction: NonceDirection::ResponderToInitiator,
                     session_hash: *sh,
                     ratchet_due: false,
+                    tail: vantablack::ghost::net::random_tail(),
                 });
             let (f, tag) = enc_split(&relay_ctx, &relay_envelope);
             send3(sock, &relay_tgt, &relay_ctx, &f, &tag).await;
@@ -1942,6 +1957,7 @@ pub(crate) async fn handle_exit_connect(
                                             direction: NonceDirection::ResponderToInitiator,
                                             session_hash: sh2,
                                             ratchet_due: false,
+                                            tail: vantablack::ghost::net::random_tail(),
                                         });
                                     let (rf, rtag) = enc_split(&relay_ctx, &relay_envelope);
                                     send3_mixed(
@@ -2004,6 +2020,7 @@ pub(crate) async fn handle_exit_connect(
                                         direction: NonceDirection::ResponderToInitiator,
                                         session_hash: sh2,
                                         ratchet_due: false,
+                                        tail: vantablack::ghost::net::random_tail(),
                                     });
                                 let (rf, rtag) = enc_split(&relay_ctx, &relay_envelope);
                                 send3_mixed(
@@ -2027,6 +2044,7 @@ pub(crate) async fn handle_exit_connect(
                                     direction: NonceDirection::ResponderToInitiator,
                                     session_hash: sh2,
                                     ratchet_due: false,
+                                    tail: vantablack::ghost::net::random_tail(),
                                 });
                             let (f, tag) = enc_split(&ctx2, &payload_to_seal);
                             match route2.as_ref() {

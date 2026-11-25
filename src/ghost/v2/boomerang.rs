@@ -365,10 +365,16 @@ pub fn record_circuit(route: &[String], policy: &str) {
 /// This is a measured route, not the regime's requested hop count: `None` until
 /// a circuit exists in this process.
 pub fn last_circuit_hops() -> Option<u8> {
+    last_circuit_measurement().map(|(hops, _)| hops)
+}
+
+/// `(hops, recorded_unix)` of the last assembled circuit. The ledger wraps this
+/// in a decaying witness, so a route from hours ago cannot satisfy a live check.
+pub fn last_circuit_measurement() -> Option<(u8, u64)> {
     let rt = runtime().read().unwrap_or_else(|e| e.into_inner());
     rt.last_circuit
         .as_ref()
-        .map(|c| c.route.len().min(u8::MAX as usize) as u8)
+        .map(|c| (c.route.len().min(u8::MAX as usize) as u8, c.recorded_unix))
 }
 
 fn runtime() -> &'static RwLock<Runtime> {

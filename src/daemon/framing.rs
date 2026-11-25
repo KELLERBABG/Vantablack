@@ -182,6 +182,13 @@ pub(crate) struct SealCtx {
     pub(crate) nonce: [u8; 12],
     pub(crate) direction: NonceDirection,
     pub(crate) session_hash: [u8; 4],
+    /// The 64-byte jitter tail for this message, drawn once.
+    ///
+    /// It has to be one value for the whole message: every shard's frame carries
+    /// it and the single AEAD tag authenticates it as associated data. Drawing it
+    /// here (rather than recomputing it from the key) is what makes the tail
+    /// unrecomputable to an auditor who is later handed the decoy key.
+    pub(crate) tail: [u8; net::JITTER_MAX],
     /// This message filled its epoch: the caller should start a ratchet step.
     pub(crate) ratchet_due: bool,
 }
@@ -196,6 +203,7 @@ impl SealCtx {
             nonce: m.nonce,
             direction: m.direction,
             session_hash: s.session_hash,
+            tail: net::random_tail(),
             ratchet_due: m.ratchet_due,
         }
     }
@@ -203,10 +211,9 @@ impl SealCtx {
     /// The v2 header for one shard of this message. All shards of a message share
     /// counter, epoch and nonce — they are pieces of one AEAD ciphertext.
     ///
-    /// This is also the single place the jitter tail is attached. It is
-    /// derived here rather than passed in, so every privacy frame gets the same
-    /// tail the sealer authenticated as associated data, and no call site had to
-    /// learn a new argument.
+    /// This is also the single place the jitter tail is attached. It comes from
+    /// [`SealCtx::tail`], drawn once when the context was built, so every shard
+    /// of the message carries the same bytes the sealer authenticated.
     pub(crate) fn header(&self, shard_index: u8, bulk: bool, flags: u8) -> net::GtfV2Header {
         net::GtfV2Header {
             session_hash: self.session_hash,
@@ -216,7 +223,7 @@ impl SealCtx {
             shard_index,
             flags,
             bulk,
-            tail: net::tail_for(&self.key, &self.nonce, self.epoch, self.direction),
+            tail: self.tail,
         }
     }
 
@@ -361,7 +368,7 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
             framed.push(0);
         }
         let plaintext_shards = l4_rs::encode(&mut framed);
-        let tail = net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
+        let tail = ctx.tail;
         let frames = plaintext_shards
             .into_iter()
             .enumerate()
@@ -393,16 +400,15 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
     }
     // The privacy frame's jitter tail is authenticated as AEAD
     // associated data, so the sealer covers the exact bytes the frame will carry.
-    // `tail_for` is a keyed PRF of the seal metadata, which is why the frame
-    // builder can recompute the same value instead of it being threaded through
-    // every `enc_split`/`send3` call site.
+    // The tail was drawn once on the context, so the frame builder and the sealer
+    // agree without either recomputing it from the (coercible) session key.
     xchacha_seal_in_place_with_aad(
         &ctx.key,
         &ctx.nonce,
         ctx.epoch,
         ctx.direction,
         &mut framed,
-        &net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction),
+        &ctx.tail,
     )
     .expect("sealing an owned buffer cannot fail");
     let t = if framed.len() >= 16 {
@@ -615,6 +621,7 @@ mod shardsec_default_tests {
             direction: NonceDirection::InitiatorToResponder,
             session_hash: [0xAB, 0xCD, 0x12, 0x34],
             ratchet_due: false,
+            tail: vantablack::ghost::net::random_tail(),
         }
     }
 
@@ -713,7 +720,7 @@ mod shardsec_default_tests {
                 tag: sd[sd.len() - 16..].try_into().unwrap(),
                 is_honey: false,
             };
-            let tail = net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
+            let tail = ctx.tail;
             let plain = vantablack::ghost::net::shardsec::open_shard(
                 &ctx.key,
                 ctx.epoch,
@@ -752,7 +759,7 @@ mod shardsec_default_tests {
             tag: corrupted[corrupted.len() - 16..].try_into().unwrap(),
             is_honey: false,
         };
-        let tail = net::tail_for(&ctx.key, &ctx.nonce, ctx.epoch, ctx.direction);
+        let tail = ctx.tail;
         assert!(
             vantablack::ghost::net::shardsec::open_shard(
                 &ctx.key,

@@ -1,6 +1,6 @@
 [package]
 name = "vantablack"
-version = "2.1.8"
+version = "3.0.0"
 edition = "2021"
 description = "Post-quantum, cryptographically layered WAN mesh routing node."
 homepage = "https://vantablack.kellersystems.dev/"
@@ -72,6 +72,10 @@ research = []
 # returns early on non-Windows targets.
 [build-dependencies]
 embed-resource = "2.5"
+# Verify the committed ProVerif attestation against the model bytes. A changed
+# formal/*.pv without a regenerated attestation must fail the build.
+sha2 = "0.10"
+serde_json = "1"
 
 # ── Lint policy ───────────────────────────────────────────────────────────────
 #

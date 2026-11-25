@@ -575,6 +575,23 @@ pub(crate) async fn send_pex(
         send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
     }
 
+    // Census epoch announcement. The receiver does not trust the claimed cell:
+    // it counts the routing domain it observed the frame arrive from, so a live
+    // swarm produces a real population estimate without anyone disclosing an
+    // address on the wire.
+    let epoch = vantablack::ghost::v2::xray::census::current_epoch();
+    let census = vantablack::ghost::v2::xray::census::announcement(
+        &node.identity.long_term_signing,
+        &node.fingerprint(),
+        epoch,
+    );
+    let mut msg = GHOST_CENSUS_MAGIC.to_vec();
+    msg.extend_from_slice(&vantablack::ghost::v2::xray::census::encode_gossip(
+        std::slice::from_ref(&census),
+    ));
+    let (f, tag) = enc_split(&ctx, &msg);
+    send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
+
     // Build legacy PEX v1 payload for backward compatibility: [GHOST_PEX_____][count u8][fp_hex 16B + addr_str + NUL ...]
     let mut payload = GHOST_PEX_MAGIC.to_vec();
     let peer_list: Vec<(String, SocketAddr)> = peers
@@ -600,6 +617,42 @@ pub(crate) async fn send_pex(
     let (f, tag) = enc_split(&ctx, &payload);
     send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
     tracing::debug!(to = %dest_fp, peers = peer_list.len(), "PEX: sent peer list");
+}
+
+/// Announcements in a PEX census frame that belong to the peer the frame came
+/// from. A relayed entry is dropped: without its observed endpoint there is no
+/// cell to count, and accepting the claim would let anyone name a cell.
+pub(crate) fn census_entries_for_peer(
+    body: &[u8],
+    peer_fp: &str,
+) -> Vec<vantablack::ghost::v2::xray::census::CensusBroadcast> {
+    vantablack::ghost::v2::xray::census::decode_gossip(body)
+        .into_iter()
+        .filter(|entry| entry.fingerprint == peer_fp)
+        .collect()
+}
+
+/// Ingest a PEX census frame received over `peer_fp`'s session.
+///
+/// `peer_endpoint` is the address the encrypted frame actually arrived from; the
+/// cell is derived from it, never from the announcement. Returns how many cells
+/// the sketch accepted.
+pub(crate) fn ingest_census_gossip(
+    body: &[u8],
+    peer_fp: &str,
+    peer_endpoint: Option<SocketAddr>,
+) -> usize {
+    let Some(endpoint) = peer_endpoint else {
+        return 0;
+    };
+    let endpoint = endpoint.to_string();
+    let mut merged = 0usize;
+    for entry in census_entries_for_peer(body, peer_fp) {
+        if vantablack::ghost::v2::xray::census::note_announcement(&entry, &endpoint) {
+            merged += 1;
+        }
+    }
+    merged
 }
 
 /// Build one signed PEX v2 batch for `dest_fp`, or `None` when there is nothing
@@ -960,5 +1013,41 @@ mod tests {
             CAP_REALITY_FRONT | CAP_REALITY_FRONT_KNOCK,
             "a knock-only front is still a front, just not a dialable one"
         );
+    }
+}
+
+#[cfg(test)]
+mod census_gossip_tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use vantablack::ghost::v2::xray::census;
+
+    #[test]
+    fn only_the_senders_own_announcement_is_accepted() {
+        let key = SigningKey::from_bytes(&[0x66u8; 32]);
+        let fingerprint = hex::encode(&key.verifying_key().to_bytes()[..8]);
+        let own = census::announcement(&key, &fingerprint, 19_100);
+
+        let relayed_key = SigningKey::from_bytes(&[0x67u8; 32]);
+        let relayed_fp = hex::encode(&relayed_key.verifying_key().to_bytes()[..8]);
+        let relayed = census::announcement(&relayed_key, &relayed_fp, 19_100);
+
+        let body = census::encode_gossip(&[own.clone(), relayed]);
+        let entries = census_entries_for_peer(&body, &fingerprint);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].fingerprint, fingerprint);
+        assert_eq!(entries[0].ticket, own.ticket);
+    }
+
+    #[test]
+    fn a_frame_without_an_observed_endpoint_counts_nothing() {
+        let key = SigningKey::from_bytes(&[0x68u8; 32]);
+        let fingerprint = hex::encode(&key.verifying_key().to_bytes()[..8]);
+        let body = census::encode_gossip(&[census::announcement(
+            &key,
+            &fingerprint,
+            census::current_epoch(),
+        )]);
+        assert_eq!(ingest_census_gossip(&body, &fingerprint, None), 0);
     }
 }

@@ -315,7 +315,7 @@ mod tests {
         let dir = NonceDirection::InitiatorToResponder;
         let epoch = 0u64;
         let nonce = l2_aead::random_xnonce();
-        let tail = net::tail_for(key, &nonce, epoch, dir);
+        let tail = net::random_tail();
         // The sealer's own shape: length-prefixed body, XChaCha with the jitter
         // tail as associated data, and the tag appended to the ciphertext.
         let mut sealed = net::frame_shard(body);

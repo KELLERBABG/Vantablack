@@ -658,6 +658,356 @@ impl SimulatedQel {
     }
 }
 
+// ── RF reciprocity key extraction (RF-CRKG, Invention 9) ────────────────────
+//
+// `GHOST_QEL_BACKEND=rf_reciprocity` names a **physical-layer** key source that
+// needs no appliance: two peers chirp-sound the same ionospheric channel inside
+// its coherence time, quantize the reciprocal fading excursions, reconcile the
+// disagreed bits with a syndrome, and privacy-amplify what is left.
+//
+// This module implements the interactive half that a key-delivery backend cannot
+// express — syndrome exchange, correction and amplification — plus the monotone
+// combiner that lets the result sit beside X25519 and ML-KEM without weakening
+// either. It is deliberately **not** a `QelBackend`: that trait is "a label names
+// a key", while reciprocity needs a round trip between the peers, so selecting it
+// through the label API is refused rather than faked.
+//
+// Honest boundary: the capture is data. The tests drive the code with synthetic
+// samples because this host has no HF sounder; the physics (`h_AB ≈ h_BA` by
+// Helmholtz reciprocity, decorrelation beyond λ/2) is what a real deployment
+// relies on, and nothing here can manufacture it.
+
+/// Label prefix for a key derived from a reciprocity capture.
+pub const RF_RECIPROCITY_LABEL_PREFIX: &str = "rf-reciprocity/1";
+
+/// Minimum secret bits this module will amplify a key from.
+pub const RF_MIN_SECRET_BITS: usize = 256;
+
+/// Hamming(7,4) block: 7 raw bits carry 4 data bits and 3 syndrome bits.
+const RF_BLOCK_BITS: usize = 7;
+const RF_SYNDROME_BITS: usize = 3;
+
+/// One pair (plus optional eavesdropper) of channel soundings, in linear units.
+///
+/// `alice` and `bob` are the two ends' measurements of the same reciprocal
+/// channel; `eve` is a third receiver's view, used only to estimate how much of
+/// the agreement is secret. A real deployment fills this from the ABOS sounder.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReciprocityCapture {
+    pub alice: Vec<f64>,
+    pub bob: Vec<f64>,
+    #[serde(default)]
+    pub eve: Vec<f64>,
+}
+
+/// A key derived from a reconciled reciprocity capture.
+pub struct RfKey {
+    key: [u8; 32],
+    label: String,
+    raw_bits: usize,
+    leaked_bits: usize,
+    secret_bits: usize,
+    confirmation: [u8; 8],
+}
+
+impl RfKey {
+    /// The session key. Callers mix it; it is never logged or serialised.
+    pub fn key(&self) -> [u8; 32] {
+        self.key
+    }
+
+    /// A non-secret label naming the derivation parameters (no key material).
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn raw_bits(&self) -> usize {
+        self.raw_bits
+    }
+
+    pub fn leaked_bits(&self) -> usize {
+        self.leaked_bits
+    }
+
+    pub fn secret_bits(&self) -> usize {
+        self.secret_bits
+    }
+
+    /// Short tag both ends can compare over an authenticated channel to confirm
+    /// they amplified the *same* bits before using the key.
+    pub fn confirmation(&self) -> [u8; 8] {
+        self.confirmation
+    }
+}
+
+impl std::fmt::Debug for RfKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RfKey")
+            .field("label", &self.label)
+            .field("raw_bits", &self.raw_bits)
+            .field("leaked_bits", &self.leaked_bits)
+            .field("secret_bits", &self.secret_bits)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `true` when the sample stream is long enough to attempt a key at all.
+const RF_MIN_SAMPLES: usize = 512;
+
+fn reciprocity_bits(samples: &[f64]) -> Vec<u8> {
+    samples.windows(2).map(|w| u8::from(w[1] >= w[0])).collect()
+}
+
+fn binary_entropy(p: f64) -> f64 {
+    if p <= 0.0 || p >= 1.0 {
+        0.0
+    } else {
+        -p * p.log2() - (1.0 - p) * (1.0 - p).log2()
+    }
+}
+
+fn bit_error_rate(a: &[u8], b: &[u8]) -> f64 {
+    let n = a.len().min(b.len());
+    if n == 0 {
+        return 0.5;
+    }
+    let errors = (0..n).filter(|&i| a[i] != b[i]).count();
+    errors as f64 / n as f64
+}
+
+/// Shannon capacity of a binary symmetric channel with crossover `ber`.
+fn bsc_information(ber: f64) -> f64 {
+    (1.0 - binary_entropy(ber)).clamp(0.0, 1.0)
+}
+
+/// Hamming(7,4) syndrome of one 7-bit block (0 = no error).
+fn hamming_syndrome(block: &[u8]) -> u8 {
+    let s1 = block[0] ^ block[2] ^ block[4] ^ block[6];
+    let s2 = block[1] ^ block[2] ^ block[5] ^ block[6];
+    let s3 = block[3] ^ block[4] ^ block[5] ^ block[6];
+    (s1 & 1) | ((s2 & 1) << 1) | ((s3 & 1) << 2)
+}
+
+/// The interactive reconciliation state for one capture.
+pub struct ReciprocityExchange {
+    alice: Vec<u8>,
+    bob: Vec<u8>,
+    eve: Vec<u8>,
+}
+
+impl ReciprocityExchange {
+    /// Quantize a capture: a bit is 1 when the channel moved upward.
+    pub fn from_capture(capture: &ReciprocityCapture) -> Result<Self, String> {
+        if capture.alice.len() < RF_MIN_SAMPLES || capture.bob.len() < RF_MIN_SAMPLES {
+            return Err(format!(
+                "reciprocity capture has {} / {} soundings; at least {RF_MIN_SAMPLES} are needed ",
+                capture.alice.len(),
+                capture.bob.len()
+            ));
+        }
+        let alice = reciprocity_bits(&capture.alice);
+        let bob = reciprocity_bits(&capture.bob);
+        let eve = reciprocity_bits(&capture.eve);
+        Self::from_bits(alice, bob, eve)
+    }
+
+    /// Build from already-quantized bits (used by the capture path and tests).
+    pub fn from_bits(alice: Vec<u8>, bob: Vec<u8>, eve: Vec<u8>) -> Result<Self, String> {
+        let usable = alice.len().min(bob.len());
+        if usable < RF_BLOCK_BITS {
+            return Err(format!(
+                "only {usable} quantized bits; no block to reconcile"
+            ));
+        }
+        let usable = usable - (usable % RF_BLOCK_BITS);
+        if alice[..usable].iter().chain(&bob[..usable]).any(|b| *b > 1) {
+            return Err("quantized bits must be 0 or 1".to_string());
+        }
+        Ok(Self {
+            alice: alice[..usable].to_vec(),
+            bob: bob[..usable].to_vec(),
+            eve: eve[..eve.len().min(usable)].to_vec(),
+        })
+    }
+
+    pub fn raw_bits(&self) -> usize {
+        self.alice.len()
+    }
+
+    /// Maurer's secret-key capacity per bit: mutual information Alice–Bob minus
+    /// what the better eavesdropper can learn. Positive means a secret is
+    /// possible; zero or negative means the honest answer is "no key".
+    pub fn capacity_bits_per_sample(&self) -> f64 {
+        let i_ab = bsc_information(bit_error_rate(&self.alice, &self.bob));
+        let eve_view = if self.eve.is_empty() {
+            0.0
+        } else {
+            bsc_information(bit_error_rate(&self.alice, &self.eve))
+                .min(bsc_information(bit_error_rate(&self.bob, &self.eve)))
+        };
+        i_ab - eve_view
+    }
+
+    /// The parity bits Alice sends: one 3-bit value per 7-bit block. Bob XORs
+    /// his own parity into this to obtain the error position.
+    pub fn alice_syndrome(&self) -> Vec<u8> {
+        self.alice
+            .as_chunks::<RF_BLOCK_BITS>()
+            .0
+            .iter()
+            .map(|block| hamming_syndrome(block))
+            .collect()
+    }
+
+    /// Bob corrects his bits with Alice's syndrome.
+    ///
+    /// Hamming(7,4) corrects any single-bit error per block. A block with two
+    /// errors is *detected only when the syndrome is non-zero but wrong* — the
+    /// confirmation tag after amplification is what refuses a silently divergent
+    /// key, and it is checked below rather than assumed away.
+    pub fn bob_reconciled(&self, syndrome: &[u8]) -> Result<Vec<u8>, String> {
+        let blocks = self.bob.len() / RF_BLOCK_BITS;
+        if syndrome.len() != blocks {
+            return Err(format!(
+                "syndrome has {} blocks, expected {blocks}",
+                syndrome.len()
+            ));
+        }
+        let mut out = self.bob.clone();
+        for (index, alice_parity) in syndrome.iter().copied().enumerate() {
+            if alice_parity > 7 {
+                return Err(format!("block {index} has invalid syndrome {alice_parity}"));
+            }
+            // The syndrome is the XOR of the two ends' parity checks for the
+            // block. It is zero when they agree and names the position when one
+            // bit differs — the 7 positions have distinct 3-bit columns, which
+            // is what makes Hamming(7,4) correct a single error per block even
+            // when the bits were never encoded as a codeword.
+            let block = &self.bob[index * RF_BLOCK_BITS..(index + 1) * RF_BLOCK_BITS];
+            let s = hamming_syndrome(block) ^ alice_parity;
+            match s {
+                0 => {}
+                1..=7 => out[index * RF_BLOCK_BITS + (s as usize - 1)] ^= 1,
+                _ => unreachable!("3-bit XOR cannot exceed 7"),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Reconcile, check agreement, then privacy-amplify.
+    ///
+    /// `transcript` binds the key to the handshake it was derived for; both ends
+    /// must pass the same bytes. `None`/`Err` is the honest answer when the
+    /// channel cannot support a secret of the required size.
+    pub fn derive_key(&self, transcript: &[u8]) -> Result<RfKey, String> {
+        let capacity = self.capacity_bits_per_sample();
+        if capacity <= 0.0 {
+            return Err(format!(
+                "reciprocity channel has no secret capacity ({capacity:.3} bits/bit), so no key is derived"
+            ));
+        }
+        let syndrome = self.alice_syndrome();
+        let bob = self.bob_reconciled(&syndrome)?;
+        if bob != self.alice {
+            return Err(
+                "reconciliation did not converge: too many errors for a single-error block code"
+                    .to_string(),
+            );
+        }
+        let blocks = self.alice.len() / RF_BLOCK_BITS;
+        let leaked = blocks * RF_SYNDROME_BITS;
+        let secret_bits = self.alice.len().saturating_sub(leaked);
+        if secret_bits < RF_MIN_SECRET_BITS + 128 {
+            return Err(format!(
+                "{secret_bits} bits survive reconciliation and amplification, below the {}+128 floor",
+                RF_MIN_SECRET_BITS
+            ));
+        }
+
+        // Pack the reconciled bits, then extract with HKDF. The salt is public but
+        // transcript-bound; the Leftover Hash Lemma is what makes the output
+        // uniform given H_inf >= secret_bits.
+        let mut ikm = Vec::with_capacity(self.alice.len() / 8);
+        for chunk in self.alice.chunks(8) {
+            let mut byte = 0u8;
+            for (i, bit) in chunk.iter().enumerate() {
+                byte |= bit << i;
+            }
+            ikm.push(byte);
+        }
+        use sha2::{Digest, Sha256};
+        let mut salt_hasher = Sha256::new();
+        salt_hasher.update(b"VB-RF-CRKG-SALT-V1");
+        salt_hasher.update(transcript);
+        let salt = salt_hasher.finalize();
+        let hk = hkdf::Hkdf::<Sha256>::new(Some(&salt), &ikm);
+        let mut key = [0u8; 32];
+        hk.expand(b"VB-RF-CRKG-SESSION-V1", &mut key)
+            .map_err(|e| format!("HKDF refused a 32-byte output: {e}"))?;
+
+        use hmac::{Hmac, Mac};
+        let mut confirmation = Hmac::<Sha256>::new_from_slice(&key)
+            .map_err(|e| format!("HMAC rejected the derived key: {e}"))?;
+        confirmation.update(b"VB-RF-CRKG-CONFIRM-V1");
+        confirmation.update(transcript);
+        let tag = confirmation.finalize().into_bytes();
+        let mut confirmation = [0u8; 8];
+        confirmation.copy_from_slice(&tag[..8]);
+
+        Ok(RfKey {
+            key,
+            label: format!(
+                "{RF_RECIPROCITY_LABEL_PREFIX}/b={}/l={}/c={:016x}",
+                self.alice.len(),
+                leaked,
+                capacity.to_bits()
+            ),
+            raw_bits: self.alice.len(),
+            leaked_bits: leaked,
+            secret_bits,
+            confirmation,
+        })
+    }
+}
+
+/// Domain separator for the monotone nested dual-PRF combiner.
+pub const MONOTONE_COMBINER_DOMAIN: &[u8] = b"VB-L10-MONOTONE-COMBINER-V1";
+
+/// `HMAC(K_ML-KEM, HMAC(K_X25519, K_L10 ‖ transcript))`.
+///
+/// The nesting is the point: HMAC is a dual-PRF, so uniformity in *any one* key
+/// survives the other two being known or chosen. A simple concatenation would
+/// not — an adversary who broke the classical DH and the KEM would still see the
+/// L10 key sitting in the clear beside them.
+pub fn combine_monotone(
+    k_x25519: &[u8; 32],
+    k_mlkem: &[u8; 32],
+    k_l10: &[u8; 32],
+    transcript: &[u8],
+) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let mut inner =
+        Hmac::<Sha256>::new_from_slice(k_l10).expect("HMAC-SHA256 accepts a 32-byte key");
+    inner.update(MONOTONE_COMBINER_DOMAIN);
+    inner.update(transcript);
+    let inner = inner.finalize().into_bytes();
+
+    let mut middle =
+        Hmac::<Sha256>::new_from_slice(k_x25519).expect("HMAC-SHA256 accepts a 32-byte key");
+    middle.update(&inner);
+    let middle = middle.finalize().into_bytes();
+
+    let mut outer =
+        Hmac::<Sha256>::new_from_slice(k_mlkem).expect("HMAC-SHA256 accepts a 32-byte key");
+    outer.update(&middle);
+    let out = outer.finalize().into_bytes();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&out);
+    key
+}
+
 // ── The controller ──────────────────────────────────────────────────────────
 
 /// Which key-delivery backend the anchor runs on.
@@ -701,10 +1051,21 @@ impl QuantumAnchorController {
                     reason: e.to_string(),
                 },
             },
+            // RF reciprocity is real key material, but it is interactive: the
+            // peers must exchange a syndrome before either can derive the same
+            // bits. The label API cannot carry that round trip, so pretending it
+            // could would produce two different keys and a broken session. The
+            // exchange is exposed directly (`ReciprocityExchange`) for the
+            // caller that can perform the round trip.
+            "rf_reciprocity" | "rf-reciprocity" | "rf" => QelBackend::Misconfigured {
+                reason: "rf_reciprocity needs an interactive syndrome exchange and cannot be a \
+                         label-based key backend; use l10_qel::ReciprocityExchange in-band"
+                    .to_string(),
+            },
             other => QelBackend::Misconfigured {
                 reason: format!(
                     "{ENV_BACKEND}={other:?} is not a backend this build knows \
-                     (expected \"sim\" or \"etsi014\")"
+                     (expected \"sim\", \"etsi014\" or \"rf_reciprocity\")"
                 ),
             },
         };
@@ -1363,5 +1724,149 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&topo);
+    }
+}
+
+#[cfg(test)]
+mod rf_tests {
+    use super::*;
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0
+        }
+
+        fn bit(&mut self) -> u8 {
+            (self.next() >> 33) as u8 & 1
+        }
+
+        fn bits(&mut self, n: usize) -> Vec<u8> {
+            (0..n).map(|_| self.bit()).collect()
+        }
+    }
+
+    fn correlated_pair(blocks: usize, error_every: usize) -> (Vec<u8>, Vec<u8>) {
+        let mut rng = Rng::new(0x51EE);
+        let alice = rng.bits(blocks * RF_BLOCK_BITS);
+        let mut bob = alice.clone();
+        for block in (0..blocks).step_by(error_every.max(1)) {
+            let offset = (rng.next() as usize) % RF_BLOCK_BITS;
+            bob[block * RF_BLOCK_BITS + offset] ^= 1;
+        }
+        (alice, bob)
+    }
+
+    #[test]
+    fn reciprocity_derives_the_same_secret_on_both_ends() {
+        let (alice, bob) = correlated_pair(200, 10);
+        let mut rng = Rng::new(7);
+        let eve = rng.bits(alice.len());
+        let exchange =
+            ReciprocityExchange::from_bits(alice, bob, eve).expect("sample stream is usable");
+        assert!(
+            exchange.capacity_bits_per_sample() > 0.5,
+            "a mostly-agreeing channel with an independent eavesdropper has capacity"
+        );
+
+        let first = exchange.derive_key(b"handshake-1").expect("alice derives");
+        let second = exchange
+            .derive_key(b"handshake-1")
+            .expect("same inputs, same key");
+        assert_eq!(first.key(), second.key());
+        assert_eq!(first.confirmation(), second.confirmation());
+        assert!(first.label().starts_with(RF_RECIPROCITY_LABEL_PREFIX));
+        assert_eq!(first.raw_bits(), 200 * RF_BLOCK_BITS);
+        assert_eq!(first.leaked_bits(), 200 * RF_SYNDROME_BITS);
+        assert_eq!(
+            first.secret_bits(),
+            200 * (RF_BLOCK_BITS - RF_SYNDROME_BITS),
+            "what survives is the data bits, after the syndrome leak"
+        );
+
+        // The key is transcript-bound: the same bits for another handshake must
+        // not yield the same key.
+        let other = exchange.derive_key(b"handshake-2").expect("derive");
+        assert_ne!(first.key(), other.key());
+    }
+
+    #[test]
+    fn reciprocity_refuses_a_channel_an_eavesdropper_can_follow() {
+        let (alice, _) = correlated_pair(200, 10);
+        let mut rng = Rng::new(99);
+        let bob = rng.bits(alice.len());
+        let exchange = ReciprocityExchange::from_bits(alice.clone(), bob.clone(), bob)
+            .expect("bits are well formed");
+        assert!(
+            exchange.capacity_bits_per_sample() <= 0.0,
+            "if Eve sees what Bob sees, there is no secret"
+        );
+        assert!(exchange.derive_key(b"t").is_err());
+    }
+
+    #[test]
+    fn reciprocity_refuses_a_capture_too_short_to_amplify() {
+        let (alice, bob) = correlated_pair(20, 5);
+        let exchange = ReciprocityExchange::from_bits(alice, bob, Vec::new()).expect("usable");
+        let err = exchange.derive_key(b"t").expect_err("too few bits");
+        assert!(err.contains("below the"), "unexpected refusal: {err}");
+    }
+
+    #[test]
+    fn a_real_sounding_capture_flows_through_quantization_and_agrees() {
+        // 1024 soundings of one slowly fading channel: both ends see the same
+        // excursions, so quantized bits agree exactly and Eve is absent.
+        let alice: Vec<f64> = (0..1024)
+            .map(|i| (i as f64 * 0.05).sin() + (i as f64 * 0.31).cos() * 0.2)
+            .collect();
+        let capture = ReciprocityCapture {
+            alice: alice.clone(),
+            bob: alice,
+            eve: Vec::new(),
+        };
+        let exchange = ReciprocityExchange::from_capture(&capture).expect("capture is long enough");
+        assert_eq!(exchange.capacity_bits_per_sample(), 1.0);
+        let key = exchange.derive_key(b"capture").expect("derive");
+        assert_ne!(key.key(), [0u8; 32]);
+        assert!(key.secret_bits() >= RF_MIN_SECRET_BITS);
+    }
+
+    #[test]
+    fn the_monotone_combiner_binds_every_input() {
+        let x = [0x11u8; 32];
+        let m = [0x22u8; 32];
+        let l = [0x33u8; 32];
+        let base = combine_monotone(&x, &m, &l, b"transcript");
+        assert_eq!(base, combine_monotone(&x, &m, &l, b"transcript"));
+        assert_ne!(base, combine_monotone(&[0x12u8; 32], &m, &l, b"transcript"));
+        assert_ne!(base, combine_monotone(&x, &[0x23u8; 32], &l, b"transcript"));
+        assert_ne!(base, combine_monotone(&x, &m, &[0x34u8; 32], b"transcript"));
+        assert_ne!(base, combine_monotone(&x, &m, &l, b"other"));
+
+        // The construction is the one the theorem is about, not merely a hash of
+        // the concatenation.
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut inner = Hmac::<Sha256>::new_from_slice(&l).unwrap();
+        inner.update(MONOTONE_COMBINER_DOMAIN);
+        inner.update(b"transcript");
+        let inner = inner.finalize().into_bytes();
+        let mut middle = Hmac::<Sha256>::new_from_slice(&x).unwrap();
+        middle.update(&inner);
+        let middle = middle.finalize().into_bytes();
+        let mut outer = Hmac::<Sha256>::new_from_slice(&m).unwrap();
+        outer.update(&middle);
+        let mut expected = [0u8; 32];
+        expected.copy_from_slice(&outer.finalize().into_bytes());
+        assert_eq!(base, expected);
     }
 }

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use super::btcr::{self, Bucket, Issuer, Receipt, Ticket};
 use super::regime::{self, effective_policy, Regime};
-use super::xray::{self, LedgerInput};
+use super::xray::{self, CircuitHops, CoverTx, LedgerInput, NonceEchoHops, WireWitness};
 use std::fmt;
 
 /// A private identity seed held by the running node, with a redacting `Debug`
@@ -40,16 +40,19 @@ impl fmt::Debug for NodeSecret {
 /// default that reads like a pass.
 #[derive(Debug, Clone, Default)]
 pub struct Witnesses {
-    /// Hops in the circuit currently in use, if one is established.
-    pub circuit_hops: Option<u8>,
+    /// Hops in the circuit currently in use, if one is established. This is a
+    /// [`WireWitness`]: the HTTP layer can pass the measurement through but
+    /// cannot construct one, so a config value or a peer's claim cannot become
+    /// a verified circuit length here.
+    pub circuit_hops: Option<WireWitness<CircuitHops>>,
     /// Distinct ASNs among those hops.
     pub circuit_asns: Option<usize>,
     /// Peers whose CAP_RELAY bit verified against a signed descriptor.
     pub cap_relay_verified: Option<usize>,
     /// Hop count of the last signed nonce echo that came back.
-    pub nonce_echo_hops: Option<u8>,
+    pub nonce_echo_hops: Option<WireWitness<NonceEchoHops>>,
     /// Cover frames emitted by this process.
-    pub cover_tx: Option<u64>,
+    pub cover_tx: Option<WireWitness<CoverTx>>,
     /// Verified peers advertising CAP_RELAY — the raw population.
     pub relay_population: Option<usize>,
     /// That population grouped by routing-domain cluster.
@@ -105,20 +108,23 @@ fn ledger_input(state: &ApiState) -> LedgerInput {
             .witnesses
             .relay_population
             .or(connected.then_some(state.peers)),
-        circuit_hops: state.witnesses.circuit_hops,
+        circuit_hops: state.witnesses.circuit_hops.clone(),
         circuit_asns: state.witnesses.circuit_asns,
         transport: state.transport.clone(),
         outer_sni: state.witnesses.outer_sni.clone(),
         exit_ip: state.exit_ip.clone(),
-        cover_tx: state.witnesses.cover_tx,
+        cover_tx: state.witnesses.cover_tx.clone(),
         dns_leak: state.witnesses.dns_leak,
         // The hybrid handshake is mandatory in this build: a session cannot be
         // established without it, so a live session is direct evidence.
         pq_hybrid: connected.then_some(true),
-        clock_consistent: super::chronos::clock_consistent(),
+        chronos: super::chronos::evidence(),
+        shaping: super::racs::shaping_evidence(),
+        nvis: super::nvis::last_profile(),
         cap_relay_verified: state.witnesses.cap_relay_verified,
-        nonce_echo_hops: state.witnesses.nonce_echo_hops,
+        nonce_echo_hops: state.witnesses.nonce_echo_hops.clone(),
         relay_domains: state.witnesses.relay_domains.clone(),
+        census: super::xray::census::current_estimate(),
     }
 }
 
@@ -132,6 +138,7 @@ pub fn xray(state: &ApiState) -> Value {
         "plane": ledger.plane,
         "observations": ledger.observations,
         "invariants": ledger.invariants,
+        "formal": ledger.formal,
         "generated_at": ledger.generated_at,
     })
 }
@@ -219,6 +226,7 @@ pub fn handle(state: &ApiState, req: &str) -> Option<Value> {
         "/api/v2/ladder" => Some(super::continuum::status_json()),
         "/api/v2/racs" => Some(super::racs::status_json()),
         "/api/v2/chronos" => Some(super::chronos::status_json()),
+        "/api/v2/nvis" => Some(super::nvis::status_json()),
         _ => None,
     }
 }
@@ -412,6 +420,41 @@ pub fn fleet_revoke(body: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nvis_endpoint_reports_unmeasured_without_a_radio_measurement() {
+        let value = handle(&ApiState::default(), "GET /api/v2/nvis").unwrap();
+        assert_eq!(value["claim"], "unmeasured");
+        assert!(value["profile"].is_null());
+        assert_eq!(value["bounds"]["cell_bytes"], 180);
+    }
+
+    #[test]
+    fn xray_endpoint_uses_neff_domain_clustering() {
+        // 400 addresses on one host are one anonymity bucket. The API must
+        // report the failed population check, not the raw count.
+        let state = ApiState {
+            peers: 400,
+            regime: Regime::Vantablack,
+            witnesses: Witnesses {
+                relay_population: Some(400),
+                relay_domains: Some(vec![400]),
+                cap_relay_verified: Some(400),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let value = xray(&state);
+        let population = value["invariants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == "relay_population")
+            .expect("relay_population invariant is always reported");
+        assert_eq!(population["state"], "failed");
+        assert!(population["detail"].as_str().unwrap().contains("N_eff"));
+        assert!(value["claim"].as_str().unwrap().contains("withheld"));
+    }
 
     #[test]
     fn xray_endpoint_reflects_the_live_population() {

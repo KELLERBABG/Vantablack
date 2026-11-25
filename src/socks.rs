@@ -516,6 +516,7 @@ pub async fn handle_socks5_connection(
             direction: dir_for(role),
             session_hash: sh,
             ratchet_due: false,
+            tail: vantablack::ghost::net::random_tail(),
         });
 
     let connect_payload = match onion_route.as_ref() {
@@ -692,6 +693,7 @@ pub async fn handle_socks5_connection(
                         direction: dir_for(role_out),
                         session_hash: sh_out,
                         ratchet_due: false,
+                        tail: vantablack::ghost::net::random_tail(),
                     });
 
                 let wire_payload = match onion_route_out.as_ref() {
@@ -751,6 +753,7 @@ pub async fn handle_socks5_connection(
                     direction: dir_for(role_out),
                     session_hash: sh_out,
                     ratchet_due: false,
+                    tail: vantablack::ghost::net::random_tail(),
                 });
             let wire_payload = match onion_route_out.as_ref() {
                 Some(route) => wrap_onion_e2e(
@@ -819,6 +822,7 @@ pub async fn handle_socks5_connection(
                 direction: dir_for(role_out),
                 session_hash: sh_out,
                 ratchet_due: false,
+                tail: vantablack::ghost::net::random_tail(),
             });
         let (f, tag) = enc_split(&ctx_close, &close_payload);
         let me = nn2.fingerprint();

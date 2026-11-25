@@ -25,11 +25,14 @@
 //! gate anywhere in this product, so a capability is either implemented or it is
 //! absent, never merely switched off.
 
+pub mod adopt;
 pub mod api;
 pub mod boomerang;
 pub mod btcr;
 pub mod chronos;
 pub mod continuum;
+#[cfg(feature = "research")]
+pub mod erosion;
 pub mod expose;
 pub mod fleet;
 #[cfg(feature = "reality-front")]
@@ -37,6 +40,7 @@ pub mod front;
 pub mod hpeb;
 #[cfg(feature = "quic")]
 pub mod masque;
+pub mod nvis;
 pub mod party;
 pub mod portal;
 pub mod racs;

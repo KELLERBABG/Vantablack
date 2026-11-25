@@ -477,6 +477,13 @@
   </style>
 </head>
 <body>
+  <div id="adopt-quick" style="position:fixed;right:14px;bottom:72px;z-index:55;display:flex;gap:6px;flex-wrap:wrap;max-width:270px;justify-content:flex-end;">
+    <button type="button" class="action-pill" onclick="adoptQuick('tun')">TUN</button>
+    <button type="button" class="action-pill" onclick="adoptQuick('dns')">DNS</button>
+    <button type="button" class="action-pill" onclick="adoptQuick('drop')">Drop</button>
+    <button type="button" class="action-pill" onclick="adoptQuick('expose')">Expose</button>
+    <button type="button" class="action-pill" onclick="adoptQuick('party')">Party</button>
+  </div>
   <div class="app-shell" id="tab-mesh" data-multicast="239.255.0.1:2270">
     <!-- Frameless Titlebar -->
     <div class="titlebar" id="drag-handle">
@@ -1169,6 +1176,20 @@
                   </div>
                   ${toggleSwitchHtml(Boolean(st.exp_diffusion))}
                 </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="blind_relay_enabled">
+                  <div>
+                    <div class="setting-title">Blind Relay</div>
+                    <div class="setting-sub">Forwards encrypted BLND envelopes; applies after restart</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.blind_relay_enabled))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="blind_relay_ac_only">
+                  <div>
+                    <div class="setting-title">Relay on AC Only</div>
+                    <div class="setting-sub">Withholds relaying unless a fresh measurement says mains power; turn off only for an explicit battery-cost choice</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.blind_relay_ac_only))}
+                </button>
               </div>
             </div>
           </details>
@@ -1676,6 +1697,40 @@
       } catch (_) {}
     }
 
+    async function adoptQuick(kind) {
+      const body = {};
+      if (kind === 'drop') {
+        const path = prompt('Path of the file to share');
+        if (!path) return;
+        body.path = path;
+      } else if (kind === 'expose') {
+        const target = prompt('Local host:port to expose', '127.0.0.1:3000');
+        if (!target) return;
+        body.target = target;
+      }
+      try {
+        const res = await fetch('/api/v2/adopt/' + kind, {
+          method: 'POST',
+          headers: pinHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(body)
+        });
+        if (res.status === 401) { openPinModal('PIN required for one-click actions.'); return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { notify((data && data.error) || 'Action unavailable'); return; }
+        if (data.room) {
+          try { await navigator.clipboard.writeText(data.room); } catch (_) {}
+          notify('Room code copied to clipboard');
+        } else if (data.dns_server) {
+          notify('DNS stub listening on ' + data.dns_server);
+        } else if (data.interface) {
+          notify((data.already_running ? 'TUN already open: ' : 'TUN started: ') + data.interface);
+        } else {
+          notify(data.detail || 'Started');
+        }
+      } catch (_) { notify('Action failed'); }
+    }
+    window.adoptQuick = adoptQuick;
+
     async function toggleSettingKey(key) {
       const cur = key === 'adblock_enabled' ? (STATE.settings[key] !== false) : Boolean(STATE.settings[key]);
       const next = !cur;
@@ -1697,6 +1752,9 @@
           STATE.settings = Object.assign({}, STATE.settings, patch, data);
           render();
           if (msg) notify(msg);
+        } else {
+          const data = await res.json().catch(() => ({}));
+          if (data && data.error) notify(data.error);
         }
       } catch (_) {}
     }

@@ -1,0 +1,54 @@
+{
+  "generated_at": "2026-11-24",
+  "proverif": "2.05",
+  "models": [
+    {
+      "file": "formal/ghost_circuit_equiv.pv",
+      "sha256": "ef4651c0219a40e41d546628e119cbee96addd66657cc0453c33c3a3c4ae1fa3",
+      "results": [
+        "RESULT Observational equivalence is true."
+      ]
+    },
+    {
+      "file": "formal/ghost_circuit_unlinkability.pv",
+      "sha256": "69adb9a9749e74ec4260462c9189a71e4b03054b81c4d522a0b60ed147910562",
+      "results": [
+        "RESULT not attacker(inner_msg[]) is true.",
+        "RESULT not attacker(dest_exit[]) is true.",
+        "RESULT not attacker(origin_id[]) is true.",
+        "RESULT not attacker(origin_alt[]) is true.",
+        "RESULT not event(exit_opened(dest_exit[])) is false.",
+        "RESULT not event(exit_matched_origin) is false.",
+        "RESULT not event(reply_tag_ready(t)) is false.",
+        "RESULT not event(middle_linked_exit(x)) is false."
+      ]
+    },
+    {
+      "file": "formal/ghost_session.pv",
+      "sha256": "f869d8c5b560c96c5e5f4accb57a77ffa232d9c28f155609fdb273a81f5ed5e4",
+      "results": [
+        "RESULT not attacker(payload[]) is true.",
+        "RESULT inj-event(agreement(a,b)) ==> inj-event(resp_started(a,b)) is true.",
+        "RESULT inj-event(recv_counter(a,cnt)) ==> inj-event(sent_counter(a,cnt)) is true.",
+        "RESULT not event(agreement(a,b)) is false."
+      ]
+    },
+    {
+      "file": "formal/session_ratchet.pv",
+      "sha256": "ae7c5aeca2e5b851e8a25e99333e67d1f6c551409b568f0d79723cc82defff4d",
+      "results": [
+        "RESULT not attacker(m0_fs[]) is true.",
+        "RESULT not attacker(m2_pcs[]) is true.",
+        "RESULT not event(epoch0_sealed) is false.",
+        "RESULT not event(epoch2_complete) is false."
+      ]
+    },
+    {
+      "file": "formal/shardsec_space_time.pv",
+      "sha256": "8b5a8fbbe9c9440e3fbe92c8694121373fd7ff60ebba4dc90c48d94a3bdcab39",
+      "results": [
+        "RESULT not attacker(secret_payload[]) is true."
+      ]
+    }
+  ]
+}

@@ -303,6 +303,12 @@ pub struct ConsumerSettings {
     pub stego_carrier_mode: bool,
     /// Energy currency / tit-for-tat QoS ledger enabled.
     pub energy_ledger_enabled: bool,
+    /// Opt-in to blind relaying (`BLND!`) from this node.
+    #[serde(default)]
+    pub blind_relay_enabled: bool,
+    /// Only relay while a fresh measurement says the machine is on AC power.
+    #[serde(default = "default_true")]
+    pub blind_relay_ac_only: bool,
     /// Sovereign jurisdiction restriction ("any", "eu", "ch", "is").
     pub jurisdiction_tag: String,
     /// Airborne Opportunistic Skywave (HF/NVIS) fallback enabled.
@@ -335,6 +341,10 @@ pub struct ConsumerSettings {
     pub threat_shield_allowlist: Vec<String>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for ConsumerSettings {
     fn default() -> Self {
         Self {
@@ -344,6 +354,8 @@ impl Default for ConsumerSettings {
             device_os: HashMap::new(),
             stego_carrier_mode: false,
             energy_ledger_enabled: false,
+            blind_relay_enabled: false,
+            blind_relay_ac_only: true,
             jurisdiction_tag: "any".to_string(),
             abos_skywave_enabled: false,
             qel_enabled: true,

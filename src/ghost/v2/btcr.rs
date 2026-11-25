@@ -41,7 +41,9 @@
 //! beneficiary key, so a ticket cannot be created out of nothing. Each receipt
 //! is redeemable once — its nullifier is `SHA256("VB-BTCR-RCPT" ‖ worker ‖
 //! epoch ‖ beneficiary)` — and ticket double spends are refused separately by a
-//! per-ticket nullifier. The wallet is a plain JSON file the operator can copy
+//! per-ticket nullifier. Both sets are written to `v2/btcr_spend_journal.json`
+//! beside the wallet, so a restart cannot re-mint from a redeemed receipt or
+//! spend a ticket twice. The wallet is a plain JSON file the operator can copy
 //! between devices.
 //!
 //! Not built: a network-wide relay registry and ticket gossip. Tickets are
@@ -460,8 +462,8 @@ impl Receipt {
     ///
     /// It is stable for the same `(worker, epoch, beneficiary)` triple, so a
     /// replayed receipt is recognised even when the issuer has restarted (the
-    /// spent-receipt set is rebuildable from the wallet ledger) and even if the
-    /// receipt is wrapped in a fresh blinding request.
+    /// set is reloaded from the spend journal) and even if the receipt is
+    /// wrapped in a fresh blinding request.
     pub fn nullifier(&self) -> String {
         let mut h = Sha256::new();
         h.update(RECEIPT_NULLIFIER_DOMAIN);
@@ -558,14 +560,7 @@ pub fn issue_for_work(
 /// (the HTTP surface) must go through this too.
 pub fn redeem_receipt(receipt: &Receipt) -> Result<(), String> {
     let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
-    if !guard.receipts.insert(receipt.nullifier()) {
-        guard.rejected_duplicate_receipts = guard.rejected_duplicate_receipts.saturating_add(1);
-        return Err(format!(
-            "work receipt already redeemed (worker={} epoch={})",
-            receipt.worker, receipt.epoch
-        ));
-    }
-    Ok(())
+    guard.redeem_local(receipt)
 }
 
 // ── Ledger: double-spend refusal ────────────────────────────────────────────
@@ -592,11 +587,161 @@ struct Ledger {
     nullifiers: HashSet<String>,
     receipts: HashSet<String>,
     gossip_merged: u64,
+    /// Where the double-spend sets are persisted. `None` keeps them in memory
+    /// only (unit tests, so a test run cannot mutate an operator's history).
+    journal_path: Option<PathBuf>,
+    /// Set when the journal exists but cannot be read. Spends and mints then
+    /// fail closed: forgetting a nullifier is worse than refusing the request.
+    journal_error: Option<String>,
+}
+
+/// On-disk form of the double-spend sets.
+///
+/// Deliberately separate from [`Wallet`]: the wallet holds *unspent* bearer
+/// tickets, while this file is the issuer/relay memory of what has already been
+/// used. Losing it would let a restarted process redeem one receipt for a fresh
+/// ticket, which is exactly the unbounded-replay break this set exists to stop.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SpendJournal {
+    #[serde(default)]
+    spent_tickets: Vec<String>,
+    #[serde(default)]
+    redeemed_receipts: Vec<String>,
+}
+
+fn load_journal(path: &Path) -> Result<SpendJournal, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("spend journal {} is corrupt: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpendJournal::default()),
+        Err(e) => Err(format!("cannot read spend journal {}: {e}", path.display())),
+    }
+}
+
+fn save_journal(
+    path: &Path,
+    spent: &HashSet<String>,
+    receipts: &HashSet<String>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let mut spent_tickets: Vec<String> = spent.iter().cloned().collect();
+    spent_tickets.sort();
+    let mut redeemed_receipts: Vec<String> = receipts.iter().cloned().collect();
+    redeemed_receipts.sort();
+    let journal = SpendJournal {
+        spent_tickets,
+        redeemed_receipts,
+    };
+    let tmp = path.with_extension("json.tmp");
+    let body =
+        serde_json::to_vec_pretty(&journal).map_err(|e| format!("serialize journal: {e}"))?;
+    std::fs::write(&tmp, body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename into {}: {e}", path.display()))
+}
+
+/// One journal per wallet, both governed by the same `GHOST_DATA_DIR`.
+fn journal_path() -> PathBuf {
+    wallet_path().with_file_name("btcr_spend_journal.json")
+}
+
+/// The global ledger persists in production. The library test build uses a
+/// memory-only ledger because its tests deliberately spend the same fixtures
+/// repeatedly; the journal round-trip is exercised directly in the tests below.
+fn global_journal_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        None
+    } else {
+        Some(journal_path())
+    }
+}
+
+impl Ledger {
+    fn load(path: Option<PathBuf>) -> Self {
+        let mut ledger = Self {
+            journal_path: path,
+            ..Self::default()
+        };
+        if let Some(path) = ledger.journal_path.clone() {
+            match load_journal(&path) {
+                Ok(journal) => {
+                    ledger.nullifiers = journal.spent_tickets.into_iter().collect();
+                    ledger.receipts = journal.redeemed_receipts.into_iter().collect();
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "BTCr spend journal is unreadable");
+                    ledger.journal_error = Some(e);
+                }
+            }
+        }
+        ledger
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        match &self.journal_path {
+            Some(path) => save_journal(path, &self.nullifiers, &self.receipts),
+            None => Ok(()),
+        }
+    }
+
+    /// Check a receipt for replay and persist its nullifier before returning.
+    /// A failed write removes the in-memory entry again, so a disk error cannot
+    /// look like a successful redemption.
+    fn redeem_local(&mut self, receipt: &Receipt) -> Result<(), String> {
+        if let Some(err) = &self.journal_error {
+            return Err(format!(
+                "spend journal unavailable ({err}); refusing to mint"
+            ));
+        }
+        let nullifier = receipt.nullifier();
+        if self.receipts.contains(&nullifier) {
+            self.rejected_duplicate_receipts = self.rejected_duplicate_receipts.saturating_add(1);
+            return Err(format!(
+                "work receipt already redeemed (worker={} epoch={})",
+                receipt.worker, receipt.epoch
+            ));
+        }
+        self.receipts.insert(nullifier.clone());
+        if let Err(e) = self.persist() {
+            self.receipts.remove(&nullifier);
+            return Err(format!("cannot persist receipt nullifier: {e}"));
+        }
+        Ok(())
+    }
+
+    /// Verify, then persist the ticket nullifier before counting the spend.
+    fn spend_local(&mut self, issuer: &Issuer, ticket: &Ticket, now: u64) -> Result<(), String> {
+        if ticket.is_expired(now) {
+            return Err(format!("ticket expired at {}", ticket.expires_at));
+        }
+        if !issuer.verify_ticket(ticket) {
+            return Err("ticket does not verify against this issuer".into());
+        }
+        if let Some(err) = &self.journal_error {
+            return Err(format!(
+                "spend journal unavailable ({err}); refusing to spend"
+            ));
+        }
+        let nullifier = ticket.nullifier();
+        if self.nullifiers.contains(&nullifier) {
+            self.rejected_replays = self.rejected_replays.saturating_add(1);
+            return Err("ticket already spent (nullifier replay refused)".into());
+        }
+        self.nullifiers.insert(nullifier.clone());
+        if let Err(e) = self.persist() {
+            self.nullifiers.remove(&nullifier);
+            return Err(format!("cannot persist ticket nullifier: {e}"));
+        }
+        self.spent = self.spent.saturating_add(1);
+        Ok(())
+    }
 }
 
 fn ledger() -> &'static Mutex<Ledger> {
     static LEDGER: OnceLock<Mutex<Ledger>> = OnceLock::new();
-    LEDGER.get_or_init(|| Mutex::new(Ledger::default()))
+    LEDGER.get_or_init(|| Mutex::new(Ledger::load(global_journal_path())))
 }
 
 pub fn record_issue() {
@@ -611,19 +756,8 @@ pub fn record_rejected_receipt() {
 
 /// Spend a ticket. A second spend of the same ticket is refused.
 pub fn spend(issuer: &Issuer, ticket: &Ticket, now: u64) -> Result<(), String> {
-    if ticket.is_expired(now) {
-        return Err(format!("ticket expired at {}", ticket.expires_at));
-    }
-    if !issuer.verify_ticket(ticket) {
-        return Err("ticket does not verify against this issuer".into());
-    }
     let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
-    if !guard.nullifiers.insert(ticket.nullifier()) {
-        guard.rejected_replays = guard.rejected_replays.saturating_add(1);
-        return Err("ticket already spent (nullifier replay refused)".into());
-    }
-    guard.spent = guard.spent.saturating_add(1);
-    Ok(())
+    guard.spend_local(issuer, ticket, now)
 }
 
 pub fn snapshot() -> LedgerSnapshot {
@@ -1098,5 +1232,68 @@ mod tests {
         assert_eq!(decoded.tickets.len(), 1);
         assert_eq!(decoded.tickets[0].m, t1.m);
         assert_eq!(decoded.tickets[0].work_bytes, TIER_BYTES[0]);
+    }
+
+    fn scratch_journal(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "vb-btcr-journal-{}-{}-{name}",
+            std::process::id(),
+            crate::ghost::v2::now_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("btcr_spend_journal.json")
+    }
+
+    /// The audit fix is only real across restarts: a process that forgets its
+    /// nullifier set can re-mint from one receipt and re-spend one ticket.
+    #[test]
+    fn spend_history_survives_a_restart() {
+        let path = scratch_journal("restart");
+        let issuer = issuer_from_seed(21);
+        let key = beneficiary();
+        let now = 86_400 * 3_000;
+        let receipt = unique_receipt(&key, "restart-home-pc", 3_000_000);
+        let (ticket, _) = issue_for_work(
+            &issuer,
+            &receipt,
+            &key.verifying_key(),
+            &blind(b"restart-ticket"),
+            now,
+        )
+        .unwrap();
+
+        let mut first = Ledger::load(Some(path.clone()));
+        first.redeem_local(&receipt).unwrap();
+        first.spend_local(&issuer, &ticket, now).unwrap();
+        assert!(path.exists(), "the journal must be written, not only held");
+        drop(first);
+
+        let mut restarted = Ledger::load(Some(path.clone()));
+        assert!(restarted.receipts.contains(&receipt.nullifier()));
+        assert!(restarted.nullifiers.contains(&ticket.nullifier()));
+
+        let receipt_err = restarted.redeem_local(&receipt).unwrap_err();
+        assert!(receipt_err.contains("already redeemed"), "{receipt_err}");
+        let ticket_err = restarted.spend_local(&issuer, &ticket, now).unwrap_err();
+        assert!(ticket_err.contains("already spent"), "{ticket_err}");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Forgetting a nullifier is a security regression; an unreadable journal
+    /// must refuse the operation instead of silently starting empty.
+    #[test]
+    fn a_corrupt_journal_refuses_instead_of_forgetting() {
+        let path = scratch_journal("corrupt");
+        std::fs::write(&path, b"not a spend journal").unwrap();
+        let mut ledger = Ledger::load(Some(path.clone()));
+        assert!(ledger.journal_error.is_some());
+
+        let receipt = sign_receipt(&beneficiary(), "corrupt-pc", 1 << 20, 7).unwrap();
+        let err = ledger.redeem_local(&receipt).unwrap_err();
+        assert!(err.contains("refusing to mint"), "{err}");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

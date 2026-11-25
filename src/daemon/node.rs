@@ -467,9 +467,33 @@ pub(crate) async fn run_node(
     // someone else's traffic costs transit bandwidth, and that should be a
     // deliberate operational choice rather than a surprise. The quota is the
     // same `FlowController` that bounds our own transit traffic.
-    let relay_enabled = std::env::var("GHOST_RELAY")
+    let relay_env = std::env::var("GHOST_RELAY")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    // The dashboard's opt-in is persisted, but the relay role is built here at
+    // boot. Honor that setting only when its AC-only promise is measurable now;
+    // a battery-powered or unmeasured machine does not relay just because the
+    // checkbox was ticked earlier.
+    let persisted_relay = std::fs::read_to_string(crate::control::consumer_config_path())
+        .ok()
+        .and_then(|raw| {
+            serde_json::from_str::<vantablack::ghost::net::consumer::ConsumerSettings>(&raw).ok()
+        })
+        .map(|s| {
+            let policy = vantablack::ghost::v2::adopt::RelayPolicy {
+                enabled: s.blind_relay_enabled,
+                ac_only: s.blind_relay_ac_only,
+            };
+            let power = vantablack::ghost::v2::adopt::read_power_evidence();
+            vantablack::ghost::v2::adopt::relay_decision(
+                policy,
+                Some(power),
+                vantablack::ghost::v2::now_secs(),
+            )
+            .0 == vantablack::ghost::v2::adopt::RelayDecision::Serving
+        })
+        .unwrap_or(false);
+    let relay_enabled = relay_env || persisted_relay;
     // The skywave (ABOS) anchor: bridge + virtual carrier always come up (cheap,
     // loopback-only), but the fallback ladder only arms its fourth rung when the
     // operator opted in via `--skywave` / `GHOST_SKYWAVE=1`.
@@ -2429,9 +2453,14 @@ pub(crate) async fn run_node(
                     let ctx = SealCtx::from_session(&entry);
                     drop(entry);
                     if let Some(dst) = addrs_cleanup.get(&fp).map(|v| *v.value()) {
+                        // Only challenge for a circuit the proxy actually built;
+                        // `unwrap_or(1)` would turn "no circuit" into a signed
+                        // one-hop hop claim and pollute the echo witness.
+                        let Some(hops) = vantablack::ghost::v2::boomerang::last_circuit_hops()
+                        else {
+                            continue;
+                        };
                         let nonce = vantablack::ghost::v2::xray::issue_nonce_challenge();
-                        let hops =
-                            vantablack::ghost::v2::boomerang::last_circuit_hops().unwrap_or(1);
                         let mut req = Vec::with_capacity(22);
                         req.extend_from_slice(b"NECHO");
                         req.extend_from_slice(&nonce);
@@ -2772,6 +2801,7 @@ pub(crate) async fn run_node(
                         direction: dir_for(rrole),
                         session_hash: rsh,
                         ratchet_due: false,
+                        tail: vantablack::ghost::net::random_tail(),
                     });
                 let (f, tag) = enc_split(&relay_ctx, &relay_pkt);
                 let tgt = addrs
@@ -2826,6 +2856,7 @@ pub(crate) async fn run_node(
                         direction: dir_for(role),
                         session_hash: sh,
                         ratchet_due: false,
+                        tail: vantablack::ghost::net::random_tail(),
                     });
                 let (f, tag) = enc_split(&chat_ctx, &payload);
                 let tgt = addrs

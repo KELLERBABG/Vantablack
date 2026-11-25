@@ -179,6 +179,24 @@ impl Regime {
         matches!(self, Regime::Ghost | Regime::Vantablack)
     }
 
+    /// Whether this regime pays for timing/burst shaping. Strictly the two
+    /// anonymity planes: `fast` and `shielded` promise latency, not an
+    /// unlinkability property that shaping would support, so they must not be
+    /// slowed down for it.
+    pub fn timing_hardened(self) -> bool {
+        matches!(self, Regime::Ghost | Regime::Vantablack)
+    }
+
+    /// Shaped-RACS applies only where the regime promises cover.
+    pub fn shaping_required(self) -> bool {
+        self.timing_hardened()
+    }
+
+    /// Horizon-Chronos pacing applies only where the regime claims unlinkability.
+    pub fn chronos_required(self) -> bool {
+        self.timing_hardened()
+    }
+
     /// Whether a circuit must be built across distinct administrative domains.
     pub fn requires_asn_diversity(self) -> bool {
         matches!(self, Regime::Vantablack)
@@ -429,5 +447,33 @@ mod tests {
         std::fs::write(&path, b"{not json").unwrap();
         assert!(load_persisted(&path).is_err());
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn timing_hardening_is_strictly_the_umbra_planes() {
+        // Fast and Shielded promise latency; they must not inherit the burst or
+        // clock machinery that exists for an unlinkability claim.
+        for r in [Regime::Fast, Regime::Shielded] {
+            assert!(!r.timing_hardened(), "{r:?}");
+            assert!(!r.shaping_required(), "{r:?}");
+            assert!(!r.chronos_required(), "{r:?}");
+            assert!(!r.cover_traffic(), "{r:?}");
+        }
+        for r in [Regime::Ghost, Regime::Vantablack] {
+            assert!(r.timing_hardened(), "{r:?}");
+            assert!(r.shaping_required(), "{r:?}");
+            assert!(r.chronos_required(), "{r:?}");
+            assert!(r.cover_traffic(), "{r:?}");
+        }
+    }
+
+    #[test]
+    fn effective_fast_policy_is_unchanged_by_timing_hardening() {
+        let fast = effective_policy(Regime::Fast, 10, 1080);
+        assert_eq!(fast.socks_port, 1081);
+        assert!(!fast.cover_traffic);
+        assert!(!fast.asn_diversity);
+        assert!(!fast.regime.timing_hardened());
+        assert_eq!(fast.hops, HopClass::Direct);
     }
 }

@@ -11,6 +11,8 @@
 //!   workers and compares cryptographic hash commitments to detect and localize
 //!   Byzantine lying workers without expensive zkML circuits.
 
+pub mod lagrange;
+
 use crate::ghost::layers::l4_rs;
 use sha2::{Digest, Sha256};
 

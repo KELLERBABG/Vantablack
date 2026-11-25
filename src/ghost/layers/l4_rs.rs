@@ -259,6 +259,23 @@ impl RampParams {
         })
     }
 
+    /// The honest multi-path bond: `c = 1`, `r = m − 2`, `f = 1`.
+    ///
+    /// Refuses `m < 3`. On two paths the bound `m ≥ c + f + 1` leaves no room
+    /// for both one-carrier secrecy and one-outage recovery, so the caller must
+    /// choose an explicit two-path mode instead (`hpeb::BondMode`).
+    pub fn for_paths(paths: usize) -> Result<Self, String> {
+        if paths < 3 {
+            return Err(format!(
+                "a ramp bond needs at least 3 distinct paths, got {paths}"
+            ));
+        }
+        if paths > 255 {
+            return Err(format!("GF(2^8) supports at most 255 shards, got {paths}"));
+        }
+        Self::new(1, (paths - 2) as u8, 1)
+    }
+
     pub fn failures(&self) -> u8 {
         self.shards
             .saturating_sub(self.data)
@@ -547,6 +564,108 @@ mod ramp_tests {
             .map(|(i, s)| (i as u8, s))
             .collect();
         assert_ne!(decode_ramp(&full, &p), Some(payload));
+    }
+
+    /// Every `(c, r, f)` with `m = 3..=8`, and every subset of its shards:
+    /// exactly the subsets of size `r + c` or larger reconstruct, and every
+    /// smaller subset returns `None`. This is the MDS property the pipeline's
+    /// `m ≥ 3` gate asks for, checked exhaustively rather than sampled.
+    #[test]
+    fn every_path_count_from_three_to_eight_reconstructs_from_every_threshold_subset() {
+        for m in 3usize..=8 {
+            for c in 0u8..m as u8 {
+                for f in 0u8..(m as u8 - c) {
+                    let r = m as u8 - c - f;
+                    if r == 0 {
+                        continue;
+                    }
+                    let p = RampParams::new(c, r, f).unwrap();
+                    assert_eq!(p.shards as usize, m);
+                    assert!(
+                        p.shards as usize > p.masks as usize + p.failures() as usize,
+                        "Theorem 1 violated for c={c} r={r} f={f} m={m}"
+                    );
+
+                    let payload = vec![0x5Au8 ^ m as u8; 3];
+                    let shards = encode_ramp(&payload, &p).unwrap();
+                    assert_eq!(shards.len(), m);
+                    let k = p.required();
+
+                    for bits in 0u16..(1u16 << m) {
+                        let subset: Vec<(u8, Vec<u8>)> = (0..m)
+                            .filter(|i| bits & (1u16 << i) != 0)
+                            .map(|i| (i as u8, shards[i].clone()))
+                            .collect();
+                        let decoded = decode_ramp(&subset, &p);
+                        if subset.len() >= k {
+                            assert_eq!(
+                                decoded,
+                                Some(payload.clone()),
+                                "m={m} c={c} r={r} f={f} subset={bits:#b}"
+                            );
+                        } else {
+                            assert!(
+                                decoded.is_none(),
+                                "m={m} c={c} r={r} f={f} subset={bits:#b} decoded below threshold"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_and_boundary_ramp_parameters_are_refused_or_handled() {
+        assert!(RampParams::new(0, 0, 0).is_err(), "no data symbol");
+        assert!(
+            RampParams::new(255, 1, 0).is_err(),
+            "256 shards exceeds GF(2^8)"
+        );
+        assert!(
+            RampParams::new(254, 1, 0).is_ok(),
+            "255 shards is the field limit"
+        );
+
+        // The multi-path policy is explicit and refuses the two-path case.
+        assert!(RampParams::for_paths(2).is_err());
+        assert!(RampParams::for_paths(256).is_err());
+        for m in 3usize..=8 {
+            let p = RampParams::for_paths(m).unwrap();
+            assert_eq!(p.masks, 1);
+            assert_eq!(p.failures(), 1);
+            assert_eq!(p.data as usize, m - 2);
+            assert_eq!(p.shards as usize, m);
+        }
+
+        // 255 shards: index 254 must still be a distinct nonzero alpha.
+        let p = RampParams::new(1, 2, 252).unwrap();
+        let shards = encode_ramp(b"edge", &p).unwrap();
+        assert_eq!(shards.len(), 255);
+        let set: Vec<(u8, Vec<u8>)> = vec![
+            (0, shards[0].clone()),
+            (127, shards[127].clone()),
+            (254, shards[254].clone()),
+        ];
+        assert_eq!(decode_ramp(&set, &p), Some(b"edge".to_vec()));
+
+        // c = 0 is availability-only: one shard suffices and no secrecy is claimed.
+        let p = RampParams::new(0, 1, 2).unwrap();
+        let shards = encode_ramp(b"abc", &p).unwrap();
+        assert_eq!(
+            decode_ramp(&[(0, shards[0].clone())], &p),
+            Some(b"abc".to_vec())
+        );
+
+        // Duplicate indices, out-of-range indices and mismatched lengths never
+        // count towards the threshold.
+        let p = RampParams::new(1, 1, 1).unwrap();
+        let shards = encode_ramp(b"dup", &p).unwrap();
+        assert!(decode_ramp(&[(0, shards[0].clone()), (0, shards[0].clone())], &p).is_none());
+        assert!(decode_ramp(&[(0, shards[0].clone()), (3, shards[0].clone())], &p).is_none());
+        let mut short = shards[1].clone();
+        short.pop();
+        assert!(decode_ramp(&[(0, shards[0].clone()), (1, short)], &p).is_none());
     }
 
     #[test]

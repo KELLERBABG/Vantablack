@@ -89,12 +89,7 @@ fn sota_comprehensive_benchmark() {
     println!("\n--- [2] GTF v2 FRAMING MICROBENCHMARK ---");
     let key = [0x5Au8; 32];
     let nonce = [0x01u8; 12];
-    let tail = net::tail_for(
-        &key,
-        &nonce,
-        1,
-        l2_aead::NonceDirection::InitiatorToResponder,
-    );
+    let tail = net::random_tail();
     let header = GtfV2Header {
         session_hash: [1, 2, 3, 4],
         counter: 42,
@@ -138,12 +133,7 @@ fn sota_comprehensive_benchmark() {
             framed.push(0);
         }
         let nonce_arr = [0x05u8; 12];
-        let tail_bytes = net::tail_for(
-            &key,
-            &nonce_arr,
-            0,
-            l2_aead::NonceDirection::InitiatorToResponder,
-        );
+        let tail_bytes = net::random_tail();
         l2_aead::xchacha_seal_in_place_with_aad(
             &key,
             &nonce_arr,
@@ -282,12 +272,7 @@ fn sota_comprehensive_benchmark() {
         let random_payload_len = 50 + (i % 380);
         let p: Vec<u8> = (0..random_payload_len).map(|b| (b * 7 + i) as u8).collect();
         let nonce_i = [(i & 0xFF) as u8; 12];
-        let tail_i = net::tail_for(
-            &key,
-            &nonce_i,
-            0,
-            l2_aead::NonceDirection::InitiatorToResponder,
-        );
+        let tail_i = net::random_tail();
         let mut framed = Vec::with_capacity(p.len() + 2 + 16);
         framed.extend_from_slice(&(p.len() as u16).to_be_bytes());
         framed.extend_from_slice(&p);
@@ -347,12 +332,7 @@ fn sota_comprehensive_benchmark() {
     let mut tamper_success_count = 0;
     for i in 0..100 {
         let nonce_t = [i as u8; 12];
-        let tail_t = net::tail_for(
-            &key,
-            &nonce_t,
-            0,
-            l2_aead::NonceDirection::InitiatorToResponder,
-        );
+        let tail_t = net::random_tail();
         let mut framed = vec![0x99u8; 100];
         l2_aead::xchacha_seal_in_place_with_aad(
             &key,

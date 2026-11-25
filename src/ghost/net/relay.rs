@@ -1156,12 +1156,7 @@ pub async fn try_forward_relay(
     let tail = if use_bulk {
         [0u8; crate::ghost::net::JITTER_MAX]
     } else {
-        crate::ghost::net::tail_for(
-            &material.key,
-            &material.nonce,
-            material.epoch,
-            material.direction,
-        )
+        crate::ghost::net::random_tail()
     };
     let aad: &[u8] = if use_bulk { &[] } else { &tail[..] };
 

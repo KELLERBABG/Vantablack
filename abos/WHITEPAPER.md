@@ -83,6 +83,15 @@ At the slow end (3 kHz, 24 bps) one cell takes ~60 s; at the wide end (24 kHz,
 stays below the noise floor for a narrowband receiver while remaining inside a
 channel the ionosphere can actually support.
 
+These bounds are executable, not aspirational. `src/ghost/v2/nvis.rs` accepts a
+measured profile only inside 2,000–10,000 kHz, 3,000–24,000 Hz occupied
+bandwidth, 24–48 bps information rate, 30–60 s per 180-byte cell and 20.9–27 dB
+spreading gain; a measurement outside them is refused, never clamped. With no
+measurement the API endpoint reports `unmeasured` and the truth ledger makes no
+NVIS claim. This build has no on-air SDR measurement path yet, so the profile
+stays unmeasured until the radio layer supplies one — which is the honest state,
+not a default.
+
 - **CDMA-over-DSSS** as primary multiple access (different PN codes = simultaneous TX); FHSS for anti-jam.
 - **Stealth masking:** cyclostationary signature masking via variable symbol-rate dithering, artificial phase-noise injection, pseudo-natural amplitude fluctuations modeled on ionospheric scintillation, and randomized symbol-clock jitter. The mask shapes a 30–60 s transmission; it cannot hide an edge that a millisecond burst would create.
 

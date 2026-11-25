@@ -74,6 +74,47 @@ pub const FRAME_BYTES: usize = 576;
 const CYCLE_SLOTS: u64 = 12;
 /// ON lengths a cycle may draw.
 const ON_CHOICES: [u64; 3] = [1, 2, 3];
+/// Hard bound on a consecutive ON run. A renewal schedule whose bursts can
+/// merge across a cycle boundary is a longer burst-end marker than the one it
+/// replaced, so a cycle never wraps and this is measurable.
+pub const MAX_ON_RUN_SLOTS: u64 = 3;
+/// Maximum fraction of slots that may be ON in the measured window.
+pub const MAX_DUTY: f64 = 0.35;
+/// How many slots of schedule are required before shaping is evidence at all.
+pub const MIN_SHAPING_SLOTS: u64 = 48;
+/// How long a shaping observation remains evidence.
+pub const SHAPING_TTL_SECS: u64 = 120;
+/// Slots summarized by one evidence sample (60 s at [`SLOT_MS`]).
+const EVIDENCE_WINDOW_SLOTS: u64 = 240;
+
+/// What the live schedule actually did, as opposed to what it was configured to
+/// do. `slots` is the measured window length, `duty` and `max_on_run` are
+/// computed from the same pure schedule the emitter obeys.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ShapingEvidence {
+    pub slots: u64,
+    pub emissions: u64,
+    pub max_on_run: u64,
+    pub duty: f64,
+    pub last_emission_unix: u64,
+}
+
+impl ShapingEvidence {
+    /// Enough schedule and at least one real emission to talk about shaping.
+    pub fn measured_enough(&self) -> bool {
+        self.slots >= MIN_SHAPING_SLOTS && self.emissions > 0
+    }
+
+    /// The burst and duty bounds. A violation is a failure, not a footnote.
+    pub fn within_contract(&self) -> bool {
+        self.max_on_run <= MAX_ON_RUN_SLOTS && self.duty <= MAX_DUTY
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.last_emission_unix != 0
+            && super::now_secs().saturating_sub(self.last_emission_unix) <= SHAPING_TTL_SECS
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -96,18 +137,53 @@ pub enum Action {
 /// yield window a deterministic burst-end marker. Each cycle redraws its ON
 /// start and length, which is the renewal part: bursts vary, the duty cycle
 /// stays bounded.
+///
+/// The ON run is placed wholly inside its cycle, after a guard OFF slot at
+/// position 0. Without the guard, a cycle ending ON could touch the next cycle
+/// starting ON, producing a run of up to `2 * MAX_ON_RUN_SLOTS` and a
+/// correspondingly longer silence — exactly the burst-end edge this shaper
+/// exists to bound. The guard slot is never ON, so consecutive cycles always
+/// have at least one OFF slot between their bursts.
 pub fn slot_is_on(seed: u64, slot: u64) -> bool {
     let cycle = slot / CYCLE_SLOTS;
     let pos = slot % CYCLE_SLOTS;
     let mut rng = SplitMix::new(seed ^ cycle.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    let start = rng.below(CYCLE_SLOTS);
     let len = ON_CHOICES[rng.below(ON_CHOICES.len() as u64) as usize];
-    let end = start + len;
-    if end <= CYCLE_SLOTS {
-        pos >= start && pos < end
-    } else {
-        // A cycle that wraps: ON runs past the boundary into the next cycle.
-        pos >= start || pos < end - CYCLE_SLOTS
+    // start >= 1 is the guard: slot 0 of every cycle is OFF.
+    let start = 1 + rng.below(CYCLE_SLOTS - len);
+    pos >= start && pos < start + len
+}
+
+/// Summarize `slots` slots of `seed`'s schedule plus the emitter's counters.
+/// Pure: tests can pin a window without touching the process clock.
+pub fn shaping_evidence_for(
+    seed: u64,
+    slots: u64,
+    emissions: u64,
+    last_emission_unix: u64,
+) -> ShapingEvidence {
+    let mut max_on_run = 0u64;
+    let mut run = 0u64;
+    let mut on = 0u64;
+    for slot in 0..slots {
+        if slot_is_on(seed, slot) {
+            run = run.saturating_add(1);
+            on = on.saturating_add(1);
+            max_on_run = max_on_run.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    ShapingEvidence {
+        slots,
+        emissions,
+        max_on_run,
+        duty: if slots == 0 {
+            0.0
+        } else {
+            on as f64 / slots as f64
+        },
+        last_emission_unix,
     }
 }
 
@@ -299,6 +375,9 @@ struct Runtime {
     real_packets: AtomicU64,
     /// Frames emitted on the schedule, dummy or real.
     cover_packets: AtomicU64,
+    /// When the last frame actually left, so the truth ledger can expire the
+    /// witness instead of treating a counter from hours ago as live cover.
+    last_cover_emission: AtomicU64,
     scavenger: Mutex<Scavenger>,
 }
 
@@ -323,6 +402,7 @@ fn runtime() -> &'static Runtime {
             last_real_ms: AtomicU64::new(0),
             real_packets: AtomicU64::new(0),
             cover_packets: AtomicU64::new(0),
+            last_cover_emission: AtomicU64::new(0),
             scavenger: Mutex::new(Scavenger::default()),
         }
     })
@@ -381,6 +461,8 @@ pub fn observe_cover(real_pending: bool) -> Action {
     let real = on && real_pending;
     let action = if on {
         rt.cover_packets.fetch_add(1, Ordering::Relaxed);
+        rt.last_cover_emission
+            .store(super::now_secs(), Ordering::Relaxed);
         Action::EmitFrame {
             bytes: FRAME_BYTES,
             real,
@@ -398,6 +480,30 @@ pub fn observe_cover(real_pending: bool) -> Action {
 /// truth ledger reads, so it must be a wire event and not a configuration bit.
 pub fn cover_packets_emitted() -> u64 {
     runtime().cover_packets.load(Ordering::Relaxed)
+}
+
+/// `(frames emitted, unix time of the last emission)`. A zero timestamp means
+/// nothing has been emitted, which is unmeasured rather than a zero count.
+pub fn cover_measurement() -> (u64, u64) {
+    let rt = runtime();
+    (
+        rt.cover_packets.load(Ordering::Relaxed),
+        rt.last_cover_emission.load(Ordering::Relaxed),
+    )
+}
+
+/// Measured shaping evidence, or `None` before the emitter has put a frame on
+/// the wire. A `None` is not "shaped": it is unmeasured, and the ledger says so.
+pub fn shaping_evidence() -> Option<ShapingEvidence> {
+    let rt = runtime();
+    let (emissions, last) = cover_measurement();
+    if emissions == 0 || last == 0 {
+        return None;
+    }
+    let slots = current_slot(rt)
+        .saturating_add(1)
+        .min(EVIDENCE_WINDOW_SLOTS);
+    Some(shaping_evidence_for(rt.seed, slots, emissions, last))
 }
 
 static REAL_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -439,6 +545,7 @@ pub fn status_json() -> serde_json::Value {
         "last_real_ms_ago": if last == 0 { serde_json::Value::Null } else { serde_json::json!(now_ms().saturating_sub(last)) },
         "real_packets": rt.real_packets.load(Ordering::Relaxed),
         "cover_packets": rt.cover_packets.load(Ordering::Relaxed),
+        "shaping": shaping_evidence(),
         "yield": stats,
         "ledbat": Ledbat::default(),
         "tuning": "fixed ON/OFF renewal schedule; not fitted to a website-fingerprinting corpus",
@@ -500,10 +607,9 @@ mod tests {
                     saw_off = true;
                 }
             }
-            // A wrapping ON run contributes to two cycles, so the worst case
-            // for one cycle is two burst lengths at the boundary.
+            // ON runs never wrap, so a single cycle cannot exceed one burst.
             assert!(
-                on_in_cycle <= 2 * cap,
+                on_in_cycle <= cap,
                 "cycle {cycle} had {on_in_cycle} ON slots, cap {cap}"
             );
         }
@@ -557,5 +663,49 @@ mod tests {
         assert!(cc.queueing_ms() > 0.0);
         cc.on_loss();
         assert!(cc.cwnd() <= grown);
+    }
+
+    #[test]
+    fn measured_windows_never_exceed_the_burst_or_duty_contract() {
+        let last = super::super::now_secs();
+        for seed in [0u64, 1, 99, 0x1234_5678_9ABC_DEF0, u64::MAX] {
+            for slots in [MIN_SHAPING_SLOTS, 240, 1_000] {
+                let evidence = shaping_evidence_for(seed, slots, slots, last);
+                assert!(
+                    evidence.max_on_run <= MAX_ON_RUN_SLOTS,
+                    "seed {seed}, {slots} slots: max run {}",
+                    evidence.max_on_run
+                );
+                assert!(
+                    evidence.duty <= MAX_DUTY,
+                    "seed {seed}, {slots} slots: duty {}",
+                    evidence.duty
+                );
+                assert!(evidence.measured_enough());
+                assert!(evidence.within_contract());
+            }
+        }
+    }
+
+    #[test]
+    fn the_contract_rejects_a_long_burst_or_a_high_duty_cycle() {
+        let base = shaping_evidence_for(7, 240, 240, super::super::now_secs());
+        assert!(base.within_contract());
+        assert!(!ShapingEvidence {
+            max_on_run: MAX_ON_RUN_SLOTS + 1,
+            ..base
+        }
+        .within_contract());
+        assert!(!ShapingEvidence {
+            duty: MAX_DUTY + 0.01,
+            ..base
+        }
+        .within_contract());
+    }
+
+    #[test]
+    fn too_short_a_window_is_not_shaping_evidence_yet() {
+        let evidence = shaping_evidence_for(7, MIN_SHAPING_SLOTS - 1, 10, 1);
+        assert!(!evidence.measured_enough());
     }
 }

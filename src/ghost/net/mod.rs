@@ -34,6 +34,8 @@ pub mod mesh_archive;
 #[cfg(feature = "research")]
 pub mod model_gossip;
 pub mod orbit;
+#[cfg(feature = "research")]
+pub mod polysemy;
 pub mod pow;
 #[cfg(feature = "quic")]
 pub mod quic;
@@ -44,6 +46,8 @@ pub mod sdr_bridge;
 #[cfg(feature = "research")]
 pub mod sharded_compute;
 pub mod shardsec;
+#[cfg(feature = "research")]
+pub mod sheaf;
 #[cfg(feature = "research")]
 pub mod sovereign_cloud;
 #[cfg(feature = "research")]
@@ -764,44 +768,25 @@ pub struct GtfV2Header {
     pub tail: [u8; JITTER_MAX],
 }
 
-/// The jitter tail for one sealed message.
+/// The jitter tail for one sealed message: 64 **uniform random** bytes.
 ///
-/// **Derived, not drawn.** It is a keyed PRF of the session key and the message's
-/// own seal metadata, for two reasons that force each other:
+/// It used to be a keyed PRF of the session key and seal metadata. That was
+/// deterministic on purpose (all shards of one message share one AEAD tag, and
+/// the seal and frame-build are separate functions), but it made the tail
+/// recomputable by anyone holding the decoy key. Under coercion that is fatal:
+/// an auditor with `K_decoy` could recompute the expected value, see that a
+/// dual-plane tail replaced it, and learn that a hidden channel exists.
 ///
-/// * the three shards of one message share **one** AEAD tag, so they must share
-///   one tail — a per-shard random tail could not be authenticated by a single
-///   tag;
-/// * the seal and the frame-build are separate functions that never see each
-///   other's tail, so the value has to be *recomputable* rather than passed.
-///
-/// The receiver does **not** recompute it to check: it feeds the tail it actually
-/// read off the wire (`frame_tail`) to `xchacha_open_with_aad`, so a rewritten
-/// tail no longer matches what the sender sealed and the tag check fails. This
-/// function exists to give the *sender* its value; the authentication itself is
-/// Poly1305's.
-pub fn tail_for(
-    key: &[u8; 32],
-    nonce: &[u8; 12],
-    epoch: u64,
-    direction: crate::ghost::layers::l2_aead::NonceDirection,
-) -> [u8; JITTER_MAX] {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    let dir = match direction {
-        crate::ghost::layers::l2_aead::NonceDirection::InitiatorToResponder => 0u8,
-        crate::ghost::layers::l2_aead::NonceDirection::ResponderToInitiator => 1u8,
-    };
+/// The tail is drawn once per message and then carried on the header
+/// ([`GtfV2Header::tail`]) so that the sealer, every shard's frame builder and
+/// the receiver all handle the *same* bytes. It is authenticated as associated
+/// data, so it still cannot be rewritten in transit. An unused random tail is
+/// indistinguishable from a 64-byte XChaCha20-Poly1305 hidden-plane ciphertext —
+/// that is the property [`crate::ghost::layers::l2_aead::subliminal_tail_seal`]
+/// relies on.
+pub fn random_tail() -> [u8; JITTER_MAX] {
     let mut out = [0u8; JITTER_MAX];
-    for (block, chunk) in out.chunks_mut(32).enumerate() {
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(key).expect("HMAC-SHA256 accepts a key of any length");
-        mac.update(b"GTF_P3_1_JITTER_TAIL");
-        mac.update(nonce);
-        mac.update(&epoch.to_be_bytes());
-        mac.update(&[dir, block as u8]);
-        chunk.copy_from_slice(&mac.finalize().into_bytes()[..chunk.len()]);
-    }
+    rand::thread_rng().fill(&mut out[..]);
     out
 }
 
@@ -1796,40 +1781,18 @@ mod wire_v2_tests {
             "every privacy frame must be exactly one length on the wire"
         );
 
-        // The tail is now *derived* rather than drawn, so the old
-        // "two frames of the same message differ in the tail" assertion no longer
-        // describes it — and keeping it would now be wrong, not merely stale:
-        // the three shards of one message share a single AEAD tag, so they must
-        // share a single tail. What still matters is that the tail is a *keyed*
-        // PRF of the seal metadata, so it is neither a run of zeros an observer
-        // can strip nor a value an attacker can recompute after tampering.
-        let key = [0x5Au8; 32];
-        let nonce = [0x11u8; 12];
-        let dir = crate::ghost::layers::l2_aead::NonceDirection::InitiatorToResponder;
-        let t1 = tail_for(&key, &nonce, 0, dir);
+        // Deniability: the tail is drawn, not derived. Two messages with the
+        // same key, nonce and epoch must not share a tail — if they did, an
+        // auditor holding the coerced key could recompute it and detect that a
+        // dual-plane tail had been substituted.
+        let t1 = random_tail();
+        let t2 = random_tail();
         assert_ne!(t1, [0u8; JITTER_MAX], "not a strippable run of zeros");
-        assert_eq!(
-            t1,
-            tail_for(&key, &nonce, 0, dir),
-            "deterministic per message"
-        );
-        assert_ne!(t1, tail_for(&key, &[0x12u8; 12], 0, dir), "different nonce");
-        assert_ne!(t1, tail_for(&key, &nonce, 1, dir), "different epoch");
-        assert_ne!(
-            t1,
-            tail_for(
-                &key,
-                &nonce,
-                0,
-                crate::ghost::layers::l2_aead::NonceDirection::ResponderToInitiator
-            ),
-            "different direction"
-        );
-        assert_ne!(
-            t1,
-            tail_for(&[0x5Bu8; 32], &nonce, 0, dir),
-            "a different session key must give an unrelated tail"
-        );
+        assert_ne!(t1, t2, "two messages must not share a recomputable tail");
+        assert_eq!(t1.len(), crate::ghost::layers::l2_aead::SUBLIMINAL_TAIL_LEN);
+        // …and it is not obviously structured: every byte position is live.
+        let zeros = t1.iter().filter(|b| **b == 0).count();
+        assert!(zeros < 8, "random tail must not look like zero padding");
     }
 
     #[test]

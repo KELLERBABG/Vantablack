@@ -322,6 +322,97 @@ pub fn xchacha_open_with_aad<'a>(
     Ok(data as &[u8])
 }
 
+// ── Vanta-Subliminal Tail (dual-plane hidden channel) ────────────────────────
+//
+// The GTF privacy frame ends in a 64-byte tail that the decoy AEAD authenticates
+// as opaque associated data. Because the tail is authenticated but not
+// *interpreted* by the decoy key, those 64 bytes are a second plane: a node that
+// shares `K_true` out of band can read 48 bytes per frame from them while the
+// outer frame keeps decrypting to perfectly ordinary traffic under `K_decoy`.
+//
+// Deniability rests on the tail being **uniform random** when unused. If the
+// sender derived it from `K_decoy` (a keyed PRF), an auditor holding the coerced
+// key could recompute the expected tail, notice it was replaced, and learn that a
+// second plane exists. A random tail and an XChaCha20-Poly1305 ciphertext are the
+// same 64 bytes to anyone without `K_true`.
+
+/// Bytes a frame's jitter tail occupies.
+pub const SUBLIMINAL_TAIL_LEN: usize = 64;
+/// Secret payload bytes one tail can carry (64 − 16-byte Poly1305 tag).
+pub const SUBLIMINAL_PAYLOAD_LEN: usize = SUBLIMINAL_TAIL_LEN - 16;
+
+/// Nonce for the hidden plane, domain-separated from the outer frame nonce so the
+/// two planes never share a (key, nonce) pair even if an operator reuses a key.
+fn subliminal_xnonce(
+    wire: &[u8; WIRE_NONCE_LEN],
+    epoch: u64,
+    direction: NonceDirection,
+) -> [u8; XCHACHA_NONCE_LEN] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"VB-SUBLIMINAL-TAIL-V1");
+    h.update(wire);
+    h.update(epoch.to_be_bytes());
+    h.update([direction as u8]);
+    let digest = h.finalize();
+    let mut nonce = [0u8; XCHACHA_NONCE_LEN];
+    nonce.copy_from_slice(&digest[..XCHACHA_NONCE_LEN]);
+    nonce
+}
+
+/// Seal a 48-byte hidden payload into the 64-byte tail of one frame.
+///
+/// The result is exactly the tail length, so the frame stays 576 bytes and an
+/// observer without `K_true` sees the same uniform field an innocent node emits.
+pub fn subliminal_tail_seal(
+    k_true: &[u8; 32],
+    wire: &[u8; WIRE_NONCE_LEN],
+    epoch: u64,
+    direction: NonceDirection,
+    payload: &[u8; SUBLIMINAL_PAYLOAD_LEN],
+) -> [u8; SUBLIMINAL_TAIL_LEN] {
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(k_true));
+    let mut buf = payload.to_vec();
+    cipher
+        .encrypt_in_place(
+            XNonce::from_slice(&subliminal_xnonce(wire, epoch, direction)),
+            b"GTF-SUBLIMINAL-TAIL",
+            &mut buf,
+        )
+        .expect("sealing a 48-byte buffer cannot fail");
+    debug_assert_eq!(buf.len(), SUBLIMINAL_TAIL_LEN);
+    let mut out = [0u8; SUBLIMINAL_TAIL_LEN];
+    out.copy_from_slice(&buf);
+    out
+}
+
+/// Open the hidden plane of a received tail. `None` when the frame carries no
+/// hidden plane for this key — which is exactly what a random innocent tail looks
+/// like, so a failed open proves nothing to an observer.
+pub fn subliminal_tail_open(
+    k_true: &[u8; 32],
+    wire: &[u8; WIRE_NONCE_LEN],
+    epoch: u64,
+    direction: NonceDirection,
+    tail: &[u8; SUBLIMINAL_TAIL_LEN],
+) -> Option<[u8; SUBLIMINAL_PAYLOAD_LEN]> {
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(k_true));
+    let mut buf = tail.to_vec();
+    cipher
+        .decrypt_in_place(
+            XNonce::from_slice(&subliminal_xnonce(wire, epoch, direction)),
+            b"GTF-SUBLIMINAL-TAIL",
+            &mut buf,
+        )
+        .ok()?;
+    if buf.len() != SUBLIMINAL_PAYLOAD_LEN {
+        return None;
+    }
+    let mut out = [0u8; SUBLIMINAL_PAYLOAD_LEN];
+    out.copy_from_slice(&buf);
+    Some(out)
+}
+
 /// Maximum safe counter value before forced session re-keying.
 /// We force re-key at u32::MAX - 1000 to leave a safety margin.
 pub const MAX_SAFE_COUNTER: u32 = u32::MAX - 1000;
@@ -700,5 +791,105 @@ mod tests {
         let v6: std::net::SocketAddr = "[::ffff:192.168.178.27]:55225".parse().unwrap();
         assert_ne!(v4, v6);
         assert_ne!(v4.ip(), v6.ip());
+    }
+}
+
+#[cfg(test)]
+mod subliminal_tests {
+    use super::*;
+
+    fn wire() -> [u8; WIRE_NONCE_LEN] {
+        [0x7Au8; WIRE_NONCE_LEN]
+    }
+
+    #[test]
+    fn the_hidden_plane_round_trips_and_is_exactly_one_tail_long() {
+        let k_true = [0x42u8; 32];
+        let payload = [0x5Au8; SUBLIMINAL_PAYLOAD_LEN];
+        let tail = subliminal_tail_seal(
+            &k_true,
+            &wire(),
+            9,
+            NonceDirection::InitiatorToResponder,
+            &payload,
+        );
+        assert_eq!(tail.len(), SUBLIMINAL_TAIL_LEN);
+        assert_ne!(&tail[..], &payload[..], "the payload is not in the clear");
+        let opened = subliminal_tail_open(
+            &k_true,
+            &wire(),
+            9,
+            NonceDirection::InitiatorToResponder,
+            &tail,
+        )
+        .expect("hidden plane opens with its key");
+        assert_eq!(opened, payload);
+    }
+
+    #[test]
+    fn a_random_tail_opens_no_hidden_plane_and_neither_does_a_tampered_one() {
+        let tail = random_xnonce();
+        let mut innocent = [0u8; SUBLIMINAL_TAIL_LEN];
+        innocent[..WIRE_NONCE_LEN].copy_from_slice(&tail);
+        assert!(
+            subliminal_tail_open(
+                &[0x42u8; 32],
+                &wire(),
+                9,
+                NonceDirection::InitiatorToResponder,
+                &innocent
+            )
+            .is_none(),
+            "an unused random tail must look like no hidden plane"
+        );
+
+        let k_true = [0x42u8; 32];
+        let payload = [0x11u8; SUBLIMINAL_PAYLOAD_LEN];
+        let mut sealed = subliminal_tail_seal(
+            &k_true,
+            &wire(),
+            9,
+            NonceDirection::InitiatorToResponder,
+            &payload,
+        );
+        sealed[0] ^= 0x01;
+        assert!(
+            subliminal_tail_open(
+                &k_true,
+                &wire(),
+                9,
+                NonceDirection::InitiatorToResponder,
+                &sealed
+            )
+            .is_none(),
+            "a rewritten tail fails the tag"
+        );
+    }
+
+    #[test]
+    fn the_hidden_plane_is_bound_to_epoch_direction_and_frame_nonce() {
+        let k_true = [0x33u8; 32];
+        let payload = [0x77u8; SUBLIMINAL_PAYLOAD_LEN];
+        let tail = subliminal_tail_seal(
+            &k_true,
+            &wire(),
+            1,
+            NonceDirection::InitiatorToResponder,
+            &payload,
+        );
+        for (nonce, epoch, direction) in [
+            (
+                [0x7Bu8; WIRE_NONCE_LEN],
+                1,
+                NonceDirection::InitiatorToResponder,
+            ),
+            (wire(), 2, NonceDirection::InitiatorToResponder),
+            (wire(), 1, NonceDirection::ResponderToInitiator),
+        ] {
+            assert!(
+                subliminal_tail_open(&k_true, &nonce, epoch, direction, &tail).is_none(),
+                "a tail must not open outside the frame metadata it was sealed for"
+            );
+        }
     }
 }

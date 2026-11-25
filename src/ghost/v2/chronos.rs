@@ -29,6 +29,7 @@
 //!   that is smaller than the outer one — that case needs a faster link, not a
 //!   pacer.
 
+use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -233,8 +234,12 @@ impl AckPacer {
     }
 }
 
+/// A clock observation this old is no longer evidence of the live flow.
+pub const EVIDENCE_TTL_SECS: u64 = 120;
+
 /// How a live flow looks to the cross-layer classifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ClockVerdict {
     /// Both clocks agree.
     Consistent,
@@ -242,6 +247,39 @@ pub enum ClockVerdict {
     Masking,
     /// The gap exceeds what pacing may hide; the flow looks like a relay.
     Divergent,
+}
+
+/// One measured clock state, with the horizon and age that make it evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ChronosEvidence {
+    pub inner_rtt_ms: f64,
+    pub outer_rtt_ms: f64,
+    pub horizon_ms: f64,
+    pub residual_ms: f64,
+    pub observations: u64,
+    pub observed_at: u64,
+    pub verdict: ClockVerdict,
+}
+
+impl ChronosEvidence {
+    /// Both clocks must have been observed at least once (a plan needs both).
+    pub fn measured(&self) -> bool {
+        self.observations >= 2
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.observed_at != 0
+            && super::now_secs().saturating_sub(self.observed_at) <= EVIDENCE_TTL_SECS
+    }
+
+    /// The claim the ledger may verify: fresh, measured, inside the stationary
+    /// horizon, and judged consistent by the same classifier the pacer uses.
+    pub fn is_verified(&self) -> bool {
+        self.measured()
+            && self.is_fresh()
+            && self.verdict == ClockVerdict::Consistent
+            && self.inner_rtt_ms <= self.horizon_ms
+    }
 }
 
 pub fn classify(plan: &SplicePlan) -> ClockVerdict {
@@ -263,6 +301,8 @@ struct ChronosRuntime {
     inner_rtt: Option<Duration>,
     pacer: AckPacer,
     observations: u64,
+    /// Unix time of the last RTT measurement, so `evidence()` can expire.
+    last_observed_unix: u64,
     /// Locked once at startup and never re-chosen.
     horizon: Duration,
 }
@@ -281,6 +321,7 @@ impl ChronosRuntime {
             inner_rtt: None,
             pacer: AckPacer::new(Duration::ZERO, 1024),
             observations: 0,
+            last_observed_unix: 0,
             horizon: stationary_horizon(session_seed()),
         }
     }
@@ -312,6 +353,7 @@ pub fn observe_outer_rtt(rtt: Duration) {
     let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.outer_rtt = Some(rtt);
     rt.observations = rt.observations.saturating_add(1);
+    rt.last_observed_unix = super::now_secs();
     rt.sync_pacer();
 }
 
@@ -320,6 +362,7 @@ pub fn observe_inner_rtt(rtt: Duration) {
     let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.inner_rtt = Some(rtt);
     rt.observations = rt.observations.saturating_add(1);
+    rt.last_observed_unix = super::now_secs();
     rt.sync_pacer();
 }
 
@@ -327,6 +370,22 @@ pub fn observe_inner_rtt(rtt: Duration) {
 pub fn current_plan() -> Option<SplicePlan> {
     let rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.plan()
+}
+
+/// Measured clock state for the ledger, including the age that decides whether
+/// it is still evidence. `None` until both RTTs have actually been observed.
+pub fn evidence() -> Option<ChronosEvidence> {
+    let rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
+    let plan = rt.plan()?;
+    Some(ChronosEvidence {
+        inner_rtt_ms: plan.inner_rtt.as_secs_f64() * 1000.0,
+        outer_rtt_ms: plan.outer_rtt.as_secs_f64() * 1000.0,
+        horizon_ms: plan.horizon.as_secs_f64() * 1000.0,
+        residual_ms: plan.residual.as_secs_f64() * 1000.0,
+        observations: rt.observations,
+        observed_at: rt.last_observed_unix,
+        verdict: classify(&plan),
+    })
 }
 
 /// Whether the outer and inner clocks currently agree and the circuit is inside
@@ -374,6 +433,14 @@ pub fn status_json() -> serde_json::Value {
         ClockVerdict::Masking => "masking",
         ClockVerdict::Divergent => "divergent",
     });
+    let fresh = rt.last_observed_unix != 0
+        && super::now_secs().saturating_sub(rt.last_observed_unix) <= EVIDENCE_TTL_SECS;
+    let claim = match &plan {
+        Some(p) if fresh && p.is_indistinguishable() && classify(p) == ClockVerdict::Consistent => {
+            "verified"
+        }
+        _ => "withheld",
+    };
     serde_json::json!({
         "observed": plan.is_some(),
         "observations": rt.observations,
@@ -390,6 +457,13 @@ pub fn status_json() -> serde_json::Value {
         "paced_outer_rtt_ms": plan.as_ref().map(|p| p.paced_outer_rtt.as_secs_f64() * 1000.0),
         "residual_ms": plan.as_ref().map(|p| p.residual.as_secs_f64() * 1000.0),
         "verdict": verdict.unwrap_or("unmeasured"),
+        "evidence_age_secs": if rt.last_observed_unix == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(super::now_secs().saturating_sub(rt.last_observed_unix))
+        },
+        "evidence_ttl_secs": EVIDENCE_TTL_SECS,
+        "claim": claim,
         "pacer_queued": rt.pacer.len(),
         "pacer_dropped": rt.pacer.dropped(),
     })
@@ -498,5 +572,55 @@ mod tests {
         assert_eq!(json["verdict"], "consistent");
         assert_eq!(json["horizon_ms"], 280.0);
         assert_eq!(json["inner_exceeds_horizon"], false);
+    }
+
+    #[test]
+    fn the_horizon_boundary_is_inclusive_and_one_millisecond_past_it_fails() {
+        let now = super::super::now_secs();
+        let mut evidence = ChronosEvidence {
+            inner_rtt_ms: 160.0,
+            outer_rtt_ms: 30.0,
+            horizon_ms: 160.0,
+            residual_ms: 0.0,
+            observations: 2,
+            observed_at: now,
+            verdict: ClockVerdict::Consistent,
+        };
+        assert!(evidence.is_verified(), "inner == horizon is inside");
+        evidence.inner_rtt_ms = 161.0;
+        assert!(!evidence.is_verified(), "one ms past the horizon is not");
+    }
+
+    #[test]
+    fn clock_evidence_expires_at_the_ttl_boundary() {
+        let now = super::super::now_secs();
+        let mut evidence = ChronosEvidence {
+            inner_rtt_ms: 150.0,
+            outer_rtt_ms: 30.0,
+            horizon_ms: 160.0,
+            residual_ms: 0.0,
+            observations: 2,
+            observed_at: now.saturating_sub(EVIDENCE_TTL_SECS),
+            verdict: ClockVerdict::Consistent,
+        };
+        assert!(evidence.is_fresh(), "exactly at the TTL is still fresh");
+        evidence.observed_at = now.saturating_sub(EVIDENCE_TTL_SECS + 1);
+        assert!(!evidence.is_fresh(), "one second past is stale");
+        assert!(!evidence.is_verified());
+    }
+
+    #[test]
+    fn a_single_observation_is_not_a_clock_claim() {
+        let evidence = ChronosEvidence {
+            inner_rtt_ms: 150.0,
+            outer_rtt_ms: 30.0,
+            horizon_ms: 160.0,
+            residual_ms: 0.0,
+            observations: 1,
+            observed_at: super::super::now_secs(),
+            verdict: ClockVerdict::Consistent,
+        };
+        assert!(!evidence.measured());
+        assert!(!evidence.is_verified());
     }
 }

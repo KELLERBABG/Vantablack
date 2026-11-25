@@ -15,7 +15,7 @@ use vantablack::ghost::layers::l2_aead::{
 
 use vantablack::ghost::net::{
     build_gtf_v2_frame, extract_auth_tag, extract_payload, frame_shard, is_v2_frame,
-    parse_gtf_v2_header, tail_for, unframe, GtfV2Header, GTF_BASE_SIZE, GTF_VERSION, JITTER_MAX,
+    parse_gtf_v2_header, random_tail, unframe, GtfV2Header, GTF_BASE_SIZE, GTF_VERSION, JITTER_MAX,
 };
 use vantablack::ghost::session::ratchet::{SessionRatchet, StepSecrets};
 use vantablack::ghost::session::{Session, SessionRole};
@@ -282,7 +282,7 @@ fn p3_1_a_rewritten_jitter_tail_fails_the_tag() {
 
     // The sender derives the tail from the seal metadata (it must be known before
     // sealing, and all three shards of one message share it).
-    let tail = tail_for(&key, &nonce, epoch, dir);
+    let tail = random_tail();
     let mut framed = 4u16.to_be_bytes().to_vec();
     framed.extend_from_slice(b"body");
     xchacha_seal_in_place_with_aad(&key, &nonce, epoch, dir, &mut framed, &tail).expect("seal");

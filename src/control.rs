@@ -135,6 +135,7 @@ pub fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
         direction: NonceDirection::InitiatorToResponder,
         session_hash: [0x11, 0x22, 0x33, 0x44],
         ratchet_due: false,
+        tail: vantablack::ghost::net::random_tail(),
     };
 
     let start = std::time::Instant::now();
@@ -874,6 +875,11 @@ pub fn spawn_control_center(
                                                 "application/json",
                                             ),
                                         }
+                                    } else if req.starts_with("GET /api/v2/adopt/")
+                                        || req.starts_with("POST /api/v2/adopt/")
+                                    {
+                                        let (status, body, ct) = v2::adopt::handle_http(&req).await;
+                                        (status, body, ct)
                                     } else if req.starts_with("GET /api/v2/") {
                                         let peers = nc_ref.sessions.len();
                                         // A regime listener is already the final port;
@@ -901,9 +907,12 @@ pub fn spawn_control_center(
                                                 relay_population: Some(relay_population),
                                                 relay_domains: Some(relay_domains),
                                                 cap_relay_verified: Some(relay_population),
-                                                circuit_hops: v2::boomerang::last_circuit_hops(),
-                                                cover_tx: Some(v2::racs::cover_packets_emitted()),
-                                                nonce_echo_hops: v2::xray::last_nonce_echo_hops(),
+                                                // Typed witnesses: the API can
+                                                // pass these through but cannot
+                                                // mint them from configuration.
+                                                circuit_hops: v2::xray::circuit_hops_witness(),
+                                                cover_tx: v2::xray::cover_tx_witness(),
+                                                nonce_echo_hops: v2::xray::nonce_echo_witness(),
                                                 ..Default::default()
                                             },
                                             identity_seed: Some(v2api::NodeSecret::new(
@@ -2094,6 +2103,9 @@ fn handle_get_settings(
         "zero_admin": vantablack::ghost::net::is_zero_admin(),
         "stego_carrier_mode": s.stego_carrier_mode,
         "energy_ledger_enabled": s.energy_ledger_enabled,
+        "blind_relay_enabled": s.blind_relay_enabled,
+        "blind_relay_ac_only": s.blind_relay_ac_only,
+        "relay": relay_status(&s),
         "jurisdiction_tag": s.jurisdiction_tag,
         "abos_skywave_enabled": s.abos_skywave_enabled,
         "qel_enabled": s.qel_enabled,
@@ -2169,6 +2181,29 @@ fn handle_post_settings(
     if let Some(energy) = val.get("energy_ledger_enabled").and_then(|v| v.as_bool()) {
         s.energy_ledger_enabled = energy;
     }
+    let mut relay_err: Option<String> = None;
+    if let Some(ac_only) = val.get("blind_relay_ac_only").and_then(|v| v.as_bool()) {
+        s.blind_relay_ac_only = ac_only;
+    }
+    if let Some(enabled) = val.get("blind_relay_enabled").and_then(|v| v.as_bool()) {
+        if enabled {
+            let policy = v2::adopt::RelayPolicy {
+                enabled: true,
+                ac_only: s.blind_relay_ac_only,
+            };
+            // An explicit opt-in is worth one real measurement: the cached
+            // reading may predate the user unplugging the machine.
+            let power = v2::adopt::probe_power_evidence();
+            let (decision, reason) = v2::adopt::relay_decision(policy, Some(power), v2::now_secs());
+            if decision == v2::adopt::RelayDecision::Withheld {
+                relay_err = reason.map(str::to_string);
+            } else {
+                s.blind_relay_enabled = true;
+            }
+        } else {
+            s.blind_relay_enabled = false;
+        }
+    }
     if let Some(juris) = val.get("jurisdiction_tag").and_then(|v| v.as_str()) {
         s.set_jurisdiction_tag(juris);
     }
@@ -2221,10 +2256,10 @@ fn handle_post_settings(
         s.threat_shield_allowlist.retain(|d| d != &clean);
         s.sync_threat_shield();
     }
-    if !cp_ref.is_empty() && bypass_err.is_none() {
+    if !cp_ref.is_empty() && bypass_err.is_none() && relay_err.is_none() {
         save_consumer_settings(cp_ref, &s);
     }
-    if let Some(err_msg) = bypass_err {
+    if let Some(err_msg) = bypass_err.or(relay_err) {
         let body = serde_json::json!({
             "success": false,
             "error": err_msg,
@@ -2242,6 +2277,9 @@ fn handle_post_settings(
             "private_mesh_scan_interval_secs": scan_interval_ref.load(Ordering::Relaxed),
             "stego_carrier_mode": s.stego_carrier_mode,
             "energy_ledger_enabled": s.energy_ledger_enabled,
+            "blind_relay_enabled": s.blind_relay_enabled,
+            "blind_relay_ac_only": s.blind_relay_ac_only,
+            "relay": relay_status(&s),
             "jurisdiction_tag": s.jurisdiction_tag,
             "abos_skywave_enabled": s.abos_skywave_enabled,
             "qel_enabled": s.qel_enabled,
@@ -2258,6 +2296,21 @@ fn handle_post_settings(
         .to_string();
         ("HTTP/1.1 200 OK", body, "application/json")
     }
+}
+
+fn relay_status(s: &ConsumerSettings) -> serde_json::Value {
+    let power = v2::adopt::read_power_evidence();
+    let policy = v2::adopt::RelayPolicy {
+        enabled: s.blind_relay_enabled,
+        ac_only: s.blind_relay_ac_only,
+    };
+    let (decision, reason) = v2::adopt::relay_decision(policy, Some(power), v2::now_secs());
+    serde_json::json!({
+        "state": decision.as_str(),
+        "reason": reason,
+        "power": power,
+        "applies": "next daemon restart (the relay role is created at boot)",
+    })
 }
 
 fn handle_get_threat_shield(

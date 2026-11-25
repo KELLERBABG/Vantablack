@@ -909,6 +909,7 @@ mod wan_core_unit_tests {
             direction: NonceDirection::InitiatorToResponder,
             session_hash: [0xAA, 0xBB, 0xCC, 0xDD],
             ratchet_due: false,
+            tail: vantablack::ghost::net::random_tail(),
         };
         let (shards, tag) = enc_split(&ctx, b"hello primary_fp");
 

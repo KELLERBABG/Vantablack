@@ -245,22 +245,26 @@ impl HpebScheduler {
         v
     }
 
-    /// True when at least two *physically distinct, pinned* paths are live.
-    /// Unpinned paths do not count: two sockets that both leave by the default
-    /// route are one physical path with extra steps.
-    pub fn is_bonded(&self) -> bool {
-        let live: Vec<&PhyPath> = self
+    /// Paths that may carry a shard under the bonding claim: live, pinned to a
+    /// real local address, and at most one per distinct address. Unpinned paths
+    /// do not count (two sockets that both leave by the default route are one
+    /// physical path with extra steps), and neither do two interfaces behind the
+    /// same address. The cheapest path wins an address collision.
+    pub fn bondable(&self) -> Vec<&PhyPath> {
+        let mut live: Vec<&PhyPath> = self
             .paths
             .iter()
             .filter(|p| p.available && p.is_pinned())
             .collect();
-        live.len() >= 2
-            && live
-                .iter()
-                .map(|p| p.local_addr.as_deref())
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                >= 2
+        live.sort_by_key(|p| (p.cost, p.local_addr.clone(), p.interface.clone()));
+        let mut seen = std::collections::HashSet::new();
+        live.retain(|p| seen.insert(p.local_addr.clone()));
+        live
+    }
+
+    /// True when at least two *physically distinct, pinned* paths are live.
+    pub fn is_bonded(&self) -> bool {
+        self.bondable().len() >= 2
     }
 
     /// Split `payload` across the live paths.
@@ -275,15 +279,15 @@ impl HpebScheduler {
     /// * **three or more** — `(c=1, r=m−2, f=1)` ramp bonding: one carrier learns
     ///   nothing, any one path may drop, rate `1 − 2/m`.
     ///
-    /// Errors when fewer than two paths are live, because a "bonded" send over
-    /// one path is a lie about redundancy.
+    /// Errors when fewer than two *bondable* paths remain, because a "bonded"
+    /// send over one physical path is a lie about redundancy.
     pub fn bond(&self, payload: &[u8]) -> Result<BondedSet, BondError> {
         self.bond_with(payload, BondMode::Confidentiality)
     }
 
     /// Same, with the two-path trade chosen explicitly.
     pub fn bond_with(&self, payload: &[u8], mode: BondMode) -> Result<BondedSet, BondError> {
-        let live = self.available();
+        let live = self.bondable();
         if live.len() < 2 {
             return Err(BondError::NotEnoughPaths { live: live.len() });
         }
@@ -296,11 +300,7 @@ impl HpebScheduler {
                 ),
             },
             n => {
-                if n > 255 {
-                    return Err(BondError::UnsupportedPathCount { paths: n });
-                }
-                let shards = n as u8;
-                let params = l4_rs::RampParams::new(1, shards - 2, 1)
+                let params = l4_rs::RampParams::for_paths(n)
                     .map_err(|_| BondError::UnsupportedPathCount { paths: n })?;
                 let pieces = l4_rs::encode_ramp(payload, &params).map_err(BondError::Encode)?;
                 (BondScheme::Ramp(params), pieces)
@@ -333,9 +333,10 @@ impl HpebScheduler {
         changed
     }
 
-    /// Interfaces currently live — what the dashboard shows as "bonded".
+    /// Interfaces that can actually carry a bonded shard — what the dashboard
+    /// shows as "bonded". An unpinned or duplicate-address path is not one.
     pub fn live_interfaces(&self) -> Vec<String> {
-        self.available()
+        self.bondable()
             .iter()
             .map(|p| p.interface.clone())
             .collect()
@@ -744,6 +745,35 @@ mod tests {
     }
 
     #[test]
+    fn bonding_refuses_paths_that_are_not_physically_distinct() {
+        // Two unpinned paths already fail `is_bonded`; `bond` must refuse them
+        // for the same reason instead of emitting a "one shard per carrier" set.
+        let unpinned = HpebScheduler::new(vec![PhyPath::new("wlan0"), PhyPath::new("rmnet0")]);
+        assert!(!unpinned.is_bonded());
+        assert!(unpinned.bond(b"payload").is_err());
+
+        // Two interfaces behind one local address are one physical path.
+        let same_addr = HpebScheduler::new(vec![
+            PhyPath::new("wlan0").pinned("192.168.1.42:0"),
+            PhyPath::new("wlan0.100").pinned("192.168.1.42:0"),
+        ]);
+        assert!(!same_addr.is_bonded());
+        assert!(same_addr.bond(b"payload").is_err());
+
+        // A mixed set bonds only over the distinct pinned subset: the unpinned
+        // path must not receive a shard and must not inflate the path count.
+        let mixed = HpebScheduler::new(vec![
+            PhyPath::new("wlan0").pinned("192.168.1.42:0"),
+            PhyPath::new("rmnet0").pinned("10.64.7.9:0"),
+            PhyPath::new("starlink0"),
+        ]);
+        let bonded = mixed.bond(b"payload").unwrap();
+        assert_eq!(bonded.scheme, BondScheme::Xor2);
+        assert_eq!(bonded.shards.len(), 2);
+        assert!(bonded.shards.iter().all(|s| s.interface != "starlink0"));
+    }
+
+    #[test]
     fn bonding_refuses_a_single_live_path() {
         let mut sched = HpebScheduler::new(three_paths());
         sched.set_available("rmnet0", false);
@@ -778,5 +808,168 @@ mod tests {
         h.prefer("wlan0", t0);
         assert!(!h.note_loss("rmnet0", &["wlan0", "rmnet0"], t0 + Duration::from_secs(1)));
         assert_eq!(h.active(), Some("wlan0"));
+    }
+
+    fn many_paths(n: usize) -> Vec<PhyPath> {
+        (0..n)
+            .map(|i| {
+                PhyPath::new(&format!("phy{i}"))
+                    .pinned(&format!("10.20.{}.{}:0", i / 200, i % 200 + 1))
+                    .with_asn(64_500 + i as u32)
+                    .with_cost(i as u8)
+            })
+            .collect()
+    }
+
+    /// Every path count in `3..=8`: the scheme is the honest `(c=1, r=m−2, f=1)`
+    /// ramp, exactly one shard leaves per physical path, every single-path
+    /// outage recovers, and two outages never do.
+    #[test]
+    fn ramp_bonding_is_honest_for_every_path_count_from_three_to_eight() {
+        for m in 3usize..=8 {
+            let sched = HpebScheduler::new(many_paths(m));
+            let payload = format!("payload across {m} physical paths").into_bytes();
+            let bonded = sched.bond(&payload).unwrap();
+
+            match bonded.scheme {
+                BondScheme::Ramp(p) => {
+                    assert_eq!(p.shards as usize, m);
+                    assert_eq!(p.masks, 1);
+                    assert_eq!(p.failures(), 1);
+                    assert_eq!(p.data as usize, m - 2);
+                    assert_eq!(p.required(), m - 1);
+                    assert!(
+                        p.shards as usize > p.masks as usize + p.failures() as usize,
+                        "Theorem 1 violated at m={m}"
+                    );
+                }
+                other => panic!("m={m} chose {other:?}"),
+            }
+            assert_eq!(bonded.shards.len(), m);
+            assert_eq!(
+                bonded
+                    .shards
+                    .iter()
+                    .map(|s| s.interface.as_str())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                m,
+                "m={m}: one shard per physical path"
+            );
+            assert_eq!(
+                bonded
+                    .shards
+                    .iter()
+                    .map(|s| s.index)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                m
+            );
+
+            // f = 1: exactly one path may vanish.
+            for drop in 0..m {
+                let kept: Vec<(u8, Vec<u8>)> = bonded
+                    .shards
+                    .iter()
+                    .filter(|s| s.index != drop as u8)
+                    .map(|s| (s.index, s.bytes.clone()))
+                    .collect();
+                assert_eq!(
+                    bonded.recover(&kept).as_deref(),
+                    Some(payload.as_slice()),
+                    "m={m}: dropping path {drop} must recover"
+                );
+            }
+
+            // f + 1 = 2 outages must not recover, even though the shards are
+            // authentic: this is the honesty boundary, not a corruption check.
+            for a in 0..m {
+                for b in (a + 1)..m {
+                    let kept: Vec<(u8, Vec<u8>)> = bonded
+                        .shards
+                        .iter()
+                        .filter(|s| s.index != a as u8 && s.index != b as u8)
+                        .map(|s| (s.index, s.bytes.clone()))
+                        .collect();
+                    assert!(
+                        bonded.recover(&kept).is_none(),
+                        "m={m}: recovered with two paths gone ({a},{b})"
+                    );
+                }
+            }
+
+            for shard in &bonded.shards {
+                assert!(bonded
+                    .recover(&[(shard.index, shard.bytes.clone())])
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn path_changes_reselect_the_scheme_and_honour_the_new_path_count() {
+        let mut sched = HpebScheduler::new(many_paths(5));
+        assert!(matches!(
+            sched.bond(b"five").unwrap().scheme,
+            BondScheme::Ramp(p) if p.shards == 5
+        ));
+
+        // Two interfaces drop: the bond is rebuilt over the three that remain.
+        sched.set_available("phy2", false);
+        sched.set_available("phy3", false);
+        let three = sched.bond(b"three").unwrap();
+        match three.scheme {
+            BondScheme::Ramp(p) => {
+                assert_eq!(p.shards, 3);
+                assert_eq!(p.data, 1);
+                assert_eq!(p.masks, 1);
+                assert_eq!(p.failures(), 1);
+            }
+            other => panic!("three paths chose {other:?}"),
+        }
+        let names: std::collections::HashSet<&str> =
+            three.shards.iter().map(|s| s.interface.as_str()).collect();
+        assert!(!names.contains("phy2") && !names.contains("phy3"));
+        for drop in 0..3u8 {
+            let kept: Vec<(u8, Vec<u8>)> = three
+                .shards
+                .iter()
+                .filter(|s| s.index != drop)
+                .map(|s| (s.index, s.bytes.clone()))
+                .collect();
+            assert_eq!(three.recover(&kept).as_deref(), Some(b"three".as_slice()));
+        }
+
+        // Interfaces return: the ramp grows again with the new path count.
+        sched.set_available("phy2", true);
+        sched.set_available("phy3", true);
+        assert!(matches!(
+            sched.bond(b"five again").unwrap().scheme,
+            BondScheme::Ramp(p) if p.shards == 5
+        ));
+
+        // Down to two bondable paths, the two-path trade becomes explicit.
+        for name in ["phy2", "phy3", "phy4"] {
+            sched.set_available(name, false);
+        }
+        assert!(matches!(
+            sched.bond(b"two").unwrap().scheme,
+            BondScheme::Xor2
+        ));
+        assert!(matches!(
+            sched
+                .bond_with(b"two", BondMode::Availability)
+                .unwrap()
+                .scheme,
+            BondScheme::Duplicate2
+        ));
+    }
+
+    #[test]
+    fn every_ramp_scheme_survives_the_wire() {
+        for m in 3usize..=8 {
+            let scheme = BondScheme::Ramp(l4_rs::RampParams::for_paths(m).unwrap());
+            assert_eq!(BondScheme::decode(&scheme.encode()), Some(scheme));
+        }
     }
 }

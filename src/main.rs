@@ -112,6 +112,9 @@ const GHOST_PEX_MAGIC: &[u8] = b"GHOST_PEX_____";
 const GHOST_PEX_V2_MAGIC: &[u8] = b"GHOST_PEX2____";
 const GHOST_BTCR_GOSSIP_MAGIC: &[u8] = b"GHOST_BTCR____";
 const GHOST_FLEET_REVOKE_MAGIC: &[u8] = b"GHOST_REVOKE__";
+/// Census epoch announcement: the sender's signed ticket, counted by the
+/// receiver against the routing domain it observed.
+const GHOST_CENSUS_MAGIC: &[u8] = b"GHOST_CENSUS__";
 /// Authenticated goodbye / reroute control notification sent when a node
 /// disconnects or deactivates the mesh.
 pub(crate) const GHOST_BYE_MAGIC: &[u8] = b"GHOST_BYE_____";
