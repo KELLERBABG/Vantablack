@@ -104,7 +104,7 @@ green including the multi-NAT and multi-hop integration suites;
 via the new `scripts/formal_verify.sh`: every model reproduces the committed
 attestation's RESULT lines exactly, including the positive reachability
 witnesses. No signed packages were produced — this host has no signing keys, so
-installers remain withheld. See `STAGE7_PROGRESS.md` for the open items.
+installers remain withheld. See `DEV/STAGE7_PROGRESS.md` for the open items.
 
 ---
 
@@ -258,7 +258,7 @@ release is the adoption layer over the Stage 1–4 primitives.
 Stage 5 verification: `cargo test --lib --no-fail-fast` 701 passed, 0 failed, 1
 ignored; `cargo clippy --all-targets -- -D warnings` and `cargo fmt -- --check`
 clean; 2.6.0 resource test passes. `DEV/V3_PIPELINE.md` is unchanged at 9,132
-bytes. Open items are listed in `STAGE5_PROGRESS.md`: relay activation still
+bytes. Open items are listed in `DEV/STAGE5_PROGRESS.md`: relay activation still
 applies on the next daemon restart, a real TUN device needs host privilege
 (only the in-memory path is exercised here), and no installer family has a
 production signature until the release signing keys are configured.
