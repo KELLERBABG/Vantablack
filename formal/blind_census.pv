@@ -1,0 +1,52 @@
+(*
+   Vantablack Blind Census — Address-Free Ticket & Observed-Cell Binding (ProVerif 2.05)
+   Models `src/ghost/v2/xray.rs::census` & `src/daemon/discovery.rs`.
+
+   A relay signs an epoch announcement; the receiver verifies the epoch
+   signature, discards any self-claimed cell, and derives `observed_cell`
+   from the authenticated transport endpoint. The gossiped census sketch
+   carries only hashed cell commitments and lottery tickets — never the
+   relay's IP address `relay_ip_addr`.
+*)
+
+free c: channel.
+
+type skey.
+type pkey.
+type sig.
+type cell.
+
+fun pk(skey): pkey.
+fun sign(bitstring, skey): sig.
+reduc forall m: bitstring, s: skey; verify(sign(m, s), pk(s)) = m.
+
+fun hash_cell(cell): bitstring.
+fun ticket_val(bitstring, bitstring): bitstring.
+
+free epoch: bitstring.
+free relay_ip_addr: bitstring [private].
+free obs_cell: cell.
+
+event census_ticket_accepted(bitstring).
+
+(* Zero-enumeration: gossiped census sketch never leaks the relay's IP address *)
+query attacker(relay_ip_addr).
+
+(* Positive reachability witness: valid epoch announcement enters sketch *)
+query h: bitstring; event(census_ticket_accepted(h)).
+
+process
+  new sk_r: skey;
+  let pk_r = pk(sk_r) in
+  out(c, pk_r);
+  (* Relay emits epoch announcement; claimed cell is ignored by receiver *)
+  new claimed_cell: cell;
+  let ann = sign((epoch, claimed_cell), sk_r) in
+  out(c, ann);
+  (* Receiver verifies signature, derives observed cell from transport, hashes it *)
+  in(c, rx_ann: sig);
+  let (=epoch, ignored_cell: cell) = verify(rx_ann, pk_r) in
+  let h_obs = hash_cell(obs_cell) in
+  let u_val = ticket_val(h_obs, epoch) in
+  out(c, (h_obs, u_val));
+  event census_ticket_accepted(h_obs)

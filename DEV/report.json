@@ -1,0 +1,38 @@
+{
+  "completed": true,
+  "completed_at_unix_ns": 1795608996739343100,
+  "coverage": null,
+  "gate": {
+    "baseline_suppressed": 0,
+    "breach": "run-timeout",
+    "deny_warn": false,
+    "gated_findings": 0,
+    "status": "run-timeout",
+    "strict_coverage": false
+  },
+  "run_directory": "C:\\Users\\lukas\\Downloads\\SYSTEMS & CREATIONS\\[OS] Vantablack\\.keller\\runs\\28080-1795605395902550300",
+  "run_id": "28080-1795605395902550300",
+  "schema_version": 1,
+  "settings": {
+    "deny_warn": false,
+    "gate_profile": null,
+    "keep_runs": 10,
+    "max_findings": null,
+    "only": null,
+    "run_timeout_seconds": 3600,
+    "run_timeout_source": "flag",
+    "solver_timeout_ms": 30000,
+    "solver_timeout_source": "default",
+    "strict_coverage": false
+  },
+  "stopped": {
+    "cap_seconds": 3600,
+    "crates_without_completion": [
+      "ggn",
+      "wan_mesh"
+    ],
+    "reason": "run-timeout"
+  },
+  "tool": "keller-verify",
+  "version": "1.4.8"
+}

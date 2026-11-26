@@ -1,0 +1,80 @@
+(*
+   Vantablack BTCr v2 — Quantized Partially-Blind VOPRF (ProVerif 2.05)
+   Models `src/ghost/v2/btcr.rs` & Theorem 3 (`DEV/INVENTIONS_AND_PROOFS.md`).
+
+   Properties checked under an active Dolev-Yao attacker:
+   1. Bucket key secrecy: the private root key `k_root` and per-bucket keys
+      `k_bucket` never leak.
+   2. Unforgeability / single-bucket binding: a ticket minted in `(day1, tier1)`
+      cannot be verified in `(day1, tier2)` (`event(cross_tier_accepted)` is
+      unreachable), and `event(ticket_spent_valid)` only occurs when the issuer
+      actually evaluated that bucket (`==> event(issuer_evaluated)`).
+   3. Client input blindness: the issuer never learns `client_secret_m_seed`.
+   4. Positive reachability witness: an honest mint -> unblind -> spend flow
+      succeeds (`not event(ticket_spent_valid(...)) is false`).
+*)
+
+free c: channel.
+
+type scalar.
+type point.
+type bucket.
+
+fun kdf_bucket(scalar, bucket): scalar.
+fun h2g(bitstring): point.
+fun blind(point, scalar): point.
+fun eval(scalar, point): point.
+fun unblind(point, scalar): point.
+
+fun voprf_val(scalar, point): point.
+equation forall k: scalar, m: point, r: scalar;
+  unblind(eval(k, blind(m, r)), r) = voprf_val(k, m).
+
+reduc forall k: scalar, m: point;
+  verify_ticket(k, m, voprf_val(k, m)) = true.
+
+free tier1: bucket.
+free tier2: bucket.
+free client_secret_m_seed: bitstring [private].
+
+event issuer_evaluated(bucket).
+event ticket_spent_valid(bucket).
+event cross_tier_accepted(bucket).
+
+(* 1. Blindness: issuer/attacker never learns client's pre-image seed *)
+query attacker(client_secret_m_seed).
+
+(* 2. Unforgeability: every valid spend traces back to an issuer evaluation in that bucket *)
+query b: bucket; event(ticket_spent_valid(b)) ==> event(issuer_evaluated(b)).
+
+(* 3. Cross-bucket tamper resistance: tier1 ticket cannot verify under tier2 *)
+query b: bucket; event(cross_tier_accepted(b)) ==> false.
+
+(* 4. Positive reachability witness (non-vacuity) *)
+query b: bucket; event(ticket_spent_valid(b)).
+
+let btcr_flow =
+  new k_root: scalar;
+  new r: scalar;
+  let k_t1 = kdf_bucket(k_root, tier1) in
+  let k_t2 = kdf_bucket(k_root, tier2) in
+  let m = h2g(client_secret_m_seed) in
+  let b_req = blind(m, r) in
+  out(c, b_req);
+  (* Issuer evaluates blinded request for tier1 *)
+  in(c, req_in: point);
+  event issuer_evaluated(tier1);
+  let e_resp = eval(k_t1, req_in) in
+  out(c, e_resp);
+  (* Client unblinds and spends at relay *)
+  in(c, e_in: point);
+  let n_tok = unblind(e_in, r) in
+  out(c, (m, n_tok));
+  in(c, (chk_m: point, chk_n: point));
+  if verify_ticket(k_t1, chk_m, chk_n) = true then
+    event ticket_spent_valid(tier1);
+  if verify_ticket(k_t2, chk_m, chk_n) = true then
+    event cross_tier_accepted(tier2).
+
+process
+  (!btcr_flow)

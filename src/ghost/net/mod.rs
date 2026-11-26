@@ -30,8 +30,6 @@ pub mod energy_currency;
 pub mod entropy_beacon;
 pub mod fallback;
 pub mod ice;
-#[cfg(feature = "research")]
-pub mod landauer;
 pub mod mesh;
 #[cfg(feature = "research")]
 pub mod mesh_archive;
@@ -40,8 +38,6 @@ pub mod metabolic;
 #[cfg(feature = "research")]
 pub mod model_gossip;
 pub mod orbit;
-#[cfg(feature = "research")]
-pub mod photonic_orbit;
 #[cfg(feature = "research")]
 pub mod polysemy;
 pub mod pow;

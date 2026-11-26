@@ -1,0 +1,85 @@
+(*
+   Vantablack Braid-Locked Identity (ProVerif 2.05 symbolic model)
+   Models `src/ghost/net/braid_identity.rs` & `DEV/UNPRECEDENTED_PRIMITIVES.md` §2.
+
+   Properties checked under an active Dolev-Yao attacker:
+   1. Unforgeability of clone revocation: an honest non-cloned node's key `pk_honest`
+      cannot be falsely revoked by the attacker (`event(false_revocation_on_honest)`
+      is unreachable).
+   2. Clone-fork detection: when a cloned node and the honest node both advance
+      from the same parent key `pk_parent`, a valid `CloneProof` is produced and
+      verified (`clone_detected(pk_parent)` is reachable).
+   3. Honest braid advancement completes without triggering revocation
+      (`honest_braid_step` is reachable).
+*)
+
+free c: channel.
+
+type skey.
+type pkey.
+type sig.
+
+fun pk(skey): pkey.
+fun sign(bitstring, skey): sig.
+reduc forall m: bitstring, s: skey; verify(sign(m, s), pk(s)) = m.
+
+fun h_braid(bitstring, pkey, bitstring): bitstring.
+
+free transcript_honest: bitstring.
+free transcript_a: bitstring.
+free transcript_b: bitstring.
+free prev_braid: bitstring.
+
+event honest_braid_step(pkey, pkey).
+event false_revocation_on_honest(pkey).
+event clone_detected(pkey).
+
+(* 1. Attacker cannot forge a CloneProof against an honest, uncloned key *)
+query p: pkey; event(false_revocation_on_honest(p)) ==> false.
+
+(* 2. Positive reachability witnesses (non-vacuity) *)
+query p1: pkey, p2: pkey; event(honest_braid_step(p1, p2)).
+query p: pkey; event(clone_detected(p)).
+
+(* Honest single-branch node: rotates sk0 -> sk1 once and never forks *)
+let honest_node =
+  new sk0: skey;
+  new sk1: skey;
+  let pk0 = pk(sk0) in
+  let pk1 = pk(sk1) in
+  out(c, pk0);
+  let b1 = h_braid(prev_braid, pk1, transcript_honest) in
+  let cert1 = sign((pk1, b1), sk0) in
+  out(c, (pk1, b1, cert1));
+  event honest_braid_step(pk0, pk1);
+  (* Verifier checks for two conflicting signed transitions under pk0 *)
+  in(c, (cand_pk1: pkey, cand_b1: bitstring, cand_sig1: sig));
+  in(c, (cand_pk2: pkey, cand_b2: bitstring, cand_sig2: sig));
+  let (=cand_pk1, =cand_b1) = verify(cand_sig1, pk0) in
+  let (=cand_pk2, =cand_b2) = verify(cand_sig2, pk0) in
+  if cand_pk1 <> cand_pk2 then
+  event false_revocation_on_honest(pk0).
+
+(* Cloned node scenario: sk_p is cloned; twin A and twin B sign distinct next keys *)
+let cloned_node =
+  new sk_p: skey;
+  new sk_a: skey;
+  new sk_b: skey;
+  let pk_p = pk(sk_p) in
+  let pk_a = pk(sk_a) in
+  let pk_b = pk(sk_b) in
+  let b_a = h_braid(prev_braid, pk_a, transcript_a) in
+  let b_b = h_braid(prev_braid, pk_b, transcript_b) in
+  out(c, pk_p);
+  out(c, (pk_a, b_a, sign((pk_a, b_a), sk_p)));
+  out(c, (pk_b, b_b, sign((pk_b, b_b), sk_p)));
+  (* Detector receives both transitions and verifies the CloneProof *)
+  in(c, (x_pk1: pkey, x_b1: bitstring, x_sig1: sig));
+  in(c, (x_pk2: pkey, x_b2: bitstring, x_sig2: sig));
+  let (=x_pk1, =x_b1) = verify(x_sig1, pk_p) in
+  let (=x_pk2, =x_b2) = verify(x_sig2, pk_p) in
+  if x_pk1 <> x_pk2 then
+  event clone_detected(pk_p).
+
+process
+  ((!honest_node) | (!cloned_node))

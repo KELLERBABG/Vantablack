@@ -1,0 +1,94 @@
+(*
+   Vantablack Chrono-Erosion / Threshold Ephemerizer (ProVerif 2.05 symbolic model)
+   Models `src/ghost/v2/erosion.rs` & Theorem 7 (`DEV/INVENTIONS_AND_PROOFS.md`).
+
+   Models a 2-of-3 threshold committee over Ristretto255-style blinded evaluation:
+   - Before expiry: an authorized client blinds M = h2g(bundle_id) with r,
+     gathers t=2 partial evaluations (s1*B, s2*B), unblinds mask = H(k*M),
+     and opens the bundle key. The committee never learns `secret_bundle_id`.
+   - After expiry: honest committee members wipe s1 and s2, leaving at most t-1
+     share (s3) in adversary hands alongside the archived ciphertext; the
+     post-expiry secret `post_expiry_key` remains secret (`not attacker(...)`).
+*)
+
+free c: channel.
+
+type scalar.
+type point.
+type key.
+
+(* Abstract group + VOPRF blinding algebra:
+   unblind(eval_2of3(s1, s2, blind(m, r)), r) = mask_secret(s1, s2, m) *)
+fun h2g(bitstring): point.
+fun blind(point, scalar): point.
+fun eval_partial(scalar, point): point.
+fun combine_partials(point, point): point.
+fun unblind(point, scalar): point.
+fun kdf_mask(point): key.
+
+(* Exact 2-of-3 threshold recombination + unblinding equation *)
+fun threshold_point(scalar, scalar, point): point.
+equation forall s1: scalar, s2: scalar, m: point, r: scalar;
+  unblind(combine_partials(eval_partial(s1, blind(m, r)), eval_partial(s2, blind(m, r))), r)
+    = threshold_point(s1, s2, m).
+
+(* Direct evaluation with committee secret shares (used at seal time) *)
+reduc forall s1: scalar, s2: scalar, m: point;
+  eval_direct(s1, s2, m) = threshold_point(s1, s2, m).
+
+fun senc(bitstring, key): bitstring.
+reduc forall msg: bitstring, k: key; sdec(senc(msg, k), k) = msg.
+
+free secret_bundle_id: bitstring [private].
+free live_bundle_key: bitstring [private].
+free post_expiry_id: bitstring [private].
+free post_expiry_key: bitstring [private].
+
+event bundle_opened(bitstring).
+
+(* 1. Committee blindness: adversary seeing B = blind(M, r) never learns bundle_id *)
+query attacker(secret_bundle_id).
+
+(* 2. Post-expiry oblivion: leaking t-1=1 share (s3) + archive reveals nothing *)
+query attacker(post_expiry_key).
+
+(* 3. Positive reachability witness: pre-expiry authorized read succeeds *)
+query x: bitstring; event(bundle_opened(x)).
+
+let pre_expiry_session =
+  new s1: scalar;
+  new s2: scalar;
+  new r: scalar;
+  (* Sender seals live_bundle_key under H(k_tau * M) *)
+  let m = h2g(secret_bundle_id) in
+  let seal_mask = kdf_mask(threshold_point(s1, s2, m)) in
+  out(c, senc(live_bundle_key, seal_mask));
+  (* Receiver blinds M and queries committee *)
+  let b = blind(m, r) in
+  out(c, b);
+  in(c, b_in: point);
+  let p1 = eval_partial(s1, b_in) in
+  let p2 = eval_partial(s2, b_in) in
+  out(c, (p1, p2));
+  in(c, (rp1: point, rp2: point));
+  let rec_pt = unblind(combine_partials(rp1, rp2), r) in
+  let rec_mask = kdf_mask(rec_pt) in
+  in(c, ct: bitstring);
+  let opened = sdec(ct, rec_mask) in
+  if opened = live_bundle_key then
+  event bundle_opened(opened).
+
+let post_expiry_archive =
+  new s1_exp: scalar;
+  new s2_exp: scalar;
+  new s3_exp: scalar;
+  (* Bundle sealed before expiry; s1_exp and s2_exp are wiped at tau_die *)
+  let m_exp = h2g(post_expiry_id) in
+  let exp_mask = kdf_mask(threshold_point(s1_exp, s2_exp, m_exp)) in
+  out(c, senc(post_expiry_key, exp_mask));
+  (* Post-expiry adversary compromises t-1 = 1 share (s3_exp) and bundle_id *)
+  out(c, s3_exp);
+  out(c, post_expiry_id).
+
+process
+  ((!pre_expiry_session) | (!post_expiry_archive))

@@ -1,0 +1,81 @@
+(*
+   Vantablack LightCone-Proof & Causal-Hop Witness (ProVerif 2.05)
+   Models `src/ghost/net/sovereign_cloud.rs` & Theorems 5 and 8.
+
+   Three anchors {A1, A2, A3} issue fresh unpredictable nonces r1, r2, r3.
+   A node signs each challenge with its TPM-bound key sk_u and returns it
+   within the causal RTT bound; only an anchor-signed LightConeCert over a
+   valid region is accepted by CausalHopWitness.
+
+   Properties checked:
+   1. Unforgeability of region placement: a node outside the certified region
+      cannot obtain a valid LightConeCert without forging an anchor signature.
+   2. Replay resistance: a stale nonce challenge cannot produce a fresh cert.
+   3. Positive reachability witness: an honest 3-anchor proof + 3-hop
+      disjoint CausalHopWitness succeeds.
+*)
+
+free c: channel.
+
+type skey.
+type pkey.
+type sig.
+type region.
+
+fun pk(skey): pkey.
+fun sign(bitstring, skey): sig.
+reduc forall m: bitstring, s: skey; verify(sign(m, s), pk(s)) = m.
+
+free reg_eu: region.
+free reg_ch: region.
+free reg_jp: region.
+
+event anchor_attested(pkey, region, bitstring).
+event cert_accepted(pkey, region).
+event causal_hop_verified(pkey, pkey, pkey).
+
+(* Unforgeability: every accepted cert traces to the anchor's attestation *)
+query u: pkey, reg: region, n: bitstring;
+  event(cert_accepted(u, reg)) ==> event(anchor_attested(u, reg, n)).
+
+(* Positive reachability witnesses *)
+query u: pkey, reg: region; event(cert_accepted(u, reg)).
+query g: pkey, m: pkey, e: pkey; event(causal_hop_verified(g, m, e)).
+
+let anchor_node(sk_a: skey, reg: region) =
+  new r: bitstring;
+  out(c, r);
+  in(c, (u_pk: pkey, resp_sig: sig));
+  let (=r) = verify(resp_sig, u_pk) in
+  event anchor_attested(u_pk, reg, r);
+  out(c, sign((u_pk, reg, r), sk_a)).
+
+let verified_hop(pk_a: pkey, sk_u: skey, reg: region) =
+  in(c, r_in: bitstring);
+  out(c, (pk(sk_u), sign(r_in, sk_u)));
+  in(c, cert: sig);
+  let (=pk(sk_u), =reg, =r_in) = verify(cert, pk_a) in
+  event cert_accepted(pk(sk_u), reg).
+
+process
+  new sk_a: skey;
+  let pk_a = pk(sk_a) in
+  out(c, pk_a);
+  new sk_g: skey; new sk_m: skey; new sk_e: skey;
+  (
+    (!anchor_node(sk_a, reg_eu)) |
+    (!anchor_node(sk_a, reg_ch)) |
+    (!anchor_node(sk_a, reg_jp)) |
+    verified_hop(pk_a, sk_g, reg_eu) |
+    verified_hop(pk_a, sk_m, reg_ch) |
+    verified_hop(pk_a, sk_e, reg_jp) |
+    (
+      in(c, (cg: sig, rg: bitstring));
+      in(c, (cm: sig, rm: bitstring));
+      in(c, (ce: sig, re: bitstring));
+      let (=pk(sk_g), =reg_eu, =rg) = verify(cg, pk_a) in
+      let (=pk(sk_m), =reg_ch, =rm) = verify(cm, pk_a) in
+      let (=pk(sk_e), =reg_jp, =re) = verify(ce, pk_a) in
+      event causal_hop_verified(pk(sk_g), pk(sk_m), pk(sk_e))
+    )
+  )

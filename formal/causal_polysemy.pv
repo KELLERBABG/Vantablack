@@ -1,0 +1,54 @@
+(*
+   Vantablack Causal Polysemy — Counterfactual Blindness (ProVerif 2.05)
+   Models `src/ghost/net/polysemy.rs` & `DEV/UNPRECEDENTED_PRIMITIVES.md` §1.
+
+   For (n=3, k=2): three physical paths {1, 2, 3} carry three contingency
+   realities {M_12, M_13, M_23}. Each world is split by 2-of-2 additive masking:
+   M_12 = u_12 + v_12, M_13 = u_13 + v_13, M_23 = u_23 + v_23.
+   Shard 1 = (u_12, u_13), Shard 2 = (v_12, u_23), Shard 3 = (v_13, v_23).
+
+   Adversary captures ALL n - 1 = 2 surviving shards {Shard 1, Shard 2}
+   (path 3 was cut/lost):
+   - World {1, 2} collapses cleanly (`world_12_collapsed` is reachable).
+   - Every counterfactual world requiring path 3 (`M_13`, `M_23`) remains
+     completely secret (`not attacker(M_13)` and `not attacker(M_23)` are true).
+*)
+
+free c: channel.
+
+type mask.
+
+fun xor_mask(bitstring, mask): bitstring.
+reduc forall m: bitstring, u: mask; xor_unmask(xor_mask(m, u), u) = m.
+
+free M_12: bitstring [private].
+free M_13: bitstring [private].
+free M_23: bitstring [private].
+
+event world_12_collapsed(bitstring).
+
+(* Counterfactual blindness when path 3 is cut and paths {1, 2} are captured *)
+query attacker(M_13).
+query attacker(M_23).
+
+(* Positive reachability witness: surviving world {1, 2} reconstructs M_12 *)
+query x: bitstring; event(world_12_collapsed(x)).
+
+process
+  new u_12: mask;
+  new u_13: mask;
+  new u_23: mask;
+  let v_12 = xor_mask(M_12, u_12) in
+  let v_13 = xor_mask(M_13, u_13) in
+  let v_23 = xor_mask(M_23, u_23) in
+  (* Path 1 & Path 2 shards exposed to attacker; Path 3 is cut *)
+  let shard1 = (u_12, u_13) in
+  let shard2 = (v_12, u_23) in
+  out(c, shard1);
+  out(c, shard2);
+  (* Receiver holding surviving paths {1, 2} collapses M_12 *)
+  in(c, (rx_u12: mask, rx_u13: mask));
+  in(c, (rx_v12: bitstring, rx_u23: mask));
+  let rec_12 = xor_unmask(rx_v12, rx_u12) in
+  if rec_12 = M_12 then
+  event world_12_collapsed(rec_12)

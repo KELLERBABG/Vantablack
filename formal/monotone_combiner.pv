@@ -1,0 +1,66 @@
+(*
+   Vantablack Monotone Nested Dual-PRF Combiner (ProVerif 2.05)
+   Models `src/ghost/layers/l10_qel.rs::combine_monotone` & Theorem 9.
+
+   K_session = hmac(K_mlkem, hmac(K_x25519, (K_l10, transcript)))
+   Dual-PRF assumption: hmac(k, m) is secret if EITHER k OR m is secret.
+
+   We model all three single-survivor compromise worlds:
+   - World A: K_x25519 and K_l10 leaked; only K_mlkem is secret -> s_A stays secret.
+   - World B: K_mlkem and K_l10 leaked; only K_x25519 is secret -> s_B stays secret.
+   - World C: K_mlkem and K_x25519 leaked; only K_l10 is secret -> s_C stays secret.
+*)
+
+free c: channel.
+
+type key.
+
+(* Dual-PRF model of HMAC-SHA256:
+   1. Secret in key position: hmac(k, m) hides k-derived output when k is secret.
+   2. Secret in message position: hmac_msg_prf(k, m) when m is secret.
+   ProVerif's standard constructor `hmac(k, m)` treats `hmac` as a one-way
+   function: knowing `k` and `m` allows computing `hmac(k, m)`, while missing
+   either `k` or `m` prevents computing it. *)
+fun hmac_key(key, bitstring): key.
+fun combine(key, key, key, bitstring): key.
+equation forall k_pq: key, k_cl: key, k_l10: key, tr: bitstring;
+  combine(k_pq, k_cl, k_l10, tr) = hmac_key(k_pq, (hmac_key(k_cl, (k_l10, tr)), tr)).
+
+fun senc(bitstring, key): bitstring.
+reduc forall m: bitstring, k: key; sdec(senc(m, k), k) = m.
+
+free tr: bitstring.
+free secret_A: bitstring [private].
+free secret_B: bitstring [private].
+free secret_C: bitstring [private].
+
+event combined_ready(bitstring).
+
+query attacker(secret_A).
+query attacker(secret_B).
+query attacker(secret_C).
+query x: bitstring; event(combined_ready(x)).
+
+process
+  (* World A: only ML-KEM survives *)
+  (
+    new k_pq_a: key; new k_cl_a: key; new k_l10_a: key;
+    out(c, (k_cl_a, k_l10_a));
+    let ks_a = combine(k_pq_a, k_cl_a, k_l10_a, tr) in
+    out(c, senc(secret_A, ks_a));
+    event combined_ready(tr)
+  ) |
+  (* World B: only X25519 survives *)
+  (
+    new k_pq_b: key; new k_cl_b: key; new k_l10_b: key;
+    out(c, (k_pq_b, k_l10_b));
+    let ks_b = combine(k_pq_b, k_cl_b, k_l10_b, tr) in
+    out(c, senc(secret_B, ks_b))
+  ) |
+  (* World C: only L10 physical/QKD key survives *)
+  (
+    new k_pq_c: key; new k_cl_c: key; new k_l10_c: key;
+    out(c, (k_pq_c, k_cl_c));
+    let ks_c = combine(k_pq_c, k_cl_c, k_l10_c, tr) in
+    out(c, senc(secret_C, ks_c))
+  )

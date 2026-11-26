@@ -1,0 +1,45 @@
+(*
+   Vantablack Vanta-Subliminal Tail — Coercion Deniability (ProVerif 2.05)
+   Models `src/ghost/layers/l2_aead.rs` (`subliminal_tail_seal`/`open`)
+   and Theorem 6 (`DEV/INVENTIONS_AND_PROOFS.md`).
+
+   An outer 576 B GTFv2 frame seals `decoy_msg` under `k_decoy` with `tail`
+   passed as associated data (AAD). The coercing auditor is explicitly handed
+   `k_decoy` and `decoy_msg` on channel `c`.
+
+   World 0 (choice[random_tail, ...]): tail is 64 fresh random bytes.
+   World 1 (choice[..., hidden_ct]):  tail is AEAD ciphertext of `hidden_msg`
+                                      under independent secret key `k_true`.
+
+   Observational equivalence checks that even with `k_decoy` in hand, the
+   auditor cannot distinguish World 0 from World 1.
+*)
+
+free c: channel.
+
+type key.
+type nonce.
+
+fun aead_seal(bitstring, key, nonce, bitstring): bitstring.
+reduc forall m: bitstring, k: key, n: nonce, aad: bitstring;
+  aead_open(aead_seal(m, k, n, aad), k, n, aad) = m.
+
+fun tail_seal(bitstring, key, nonce): bitstring.
+reduc forall m: bitstring, k: key, n: nonce;
+  tail_open(tail_seal(m, k, n), k, n) = m.
+
+free decoy_msg: bitstring.
+free hidden_msg: bitstring [private].
+
+process
+  new k_decoy: key;
+  new k_true: key;
+  new n: nonce;
+  new rand_tail: bitstring;
+  (* Coercing auditor holds the outer decoy key and nonce *)
+  out(c, k_decoy);
+  out(c, n);
+  let hidden_ct = tail_seal(hidden_msg, k_true, n) in
+  let tail = choice[rand_tail, hidden_ct] in
+  let outer_frame = aead_seal(decoy_msg, k_decoy, n, tail) in
+  out(c, (outer_frame, tail))

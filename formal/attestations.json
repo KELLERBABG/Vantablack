@@ -1,7 +1,52 @@
 {
-  "generated_at": "2026-11-24",
+  "generated_at": "2026-11-25",
   "proverif": "2.05",
   "models": [
+    {
+      "file": "formal/blind_census.pv",
+      "sha256": "970f62fded1f85e055515038d0793bcbb3d9ae86c5565197b1b8800beeacde39",
+      "results": [
+        "RESULT not attacker(relay_ip_addr[]) is true.",
+        "RESULT not event(census_ticket_accepted(h)) is false."
+      ]
+    },
+    {
+      "file": "formal/braid_identity.pv",
+      "sha256": "80b2926bfc194c8eb38c13c8b52c12005ff6024b6759303de7d43ab28bddd50b",
+      "results": [
+        "RESULT not event(false_revocation_on_honest(p)) is true.",
+        "RESULT not event(honest_braid_step(p1,p2)) is false.",
+        "RESULT not event(clone_detected(p)) is false."
+      ]
+    },
+    {
+      "file": "formal/btcr_v2.pv",
+      "sha256": "645a203d7904b2b4ac534bb9a8ba54daaf9d933d69951710bd465483e61a44e7",
+      "results": [
+        "RESULT not attacker(client_secret_m_seed[]) is true.",
+        "RESULT event(ticket_spent_valid(b)) ==> event(issuer_evaluated(b)) is true.",
+        "RESULT not event(cross_tier_accepted(b)) is true.",
+        "RESULT not event(ticket_spent_valid(b)) is false."
+      ]
+    },
+    {
+      "file": "formal/causal_polysemy.pv",
+      "sha256": "7bb8773435f94fc82b4d3f9c800d8b2edd6a12b0fa8ed2a46da7f5b756ab4dd5",
+      "results": [
+        "RESULT not attacker(M_13[]) is true.",
+        "RESULT not attacker(M_23[]) is true.",
+        "RESULT not event(world_12_collapsed(x)) is false."
+      ]
+    },
+    {
+      "file": "formal/chrono_erosion.pv",
+      "sha256": "f23222ccef840348a285517b7c570dfe7cb28e3057d7fa99b77f9ea419cd7027",
+      "results": [
+        "RESULT not attacker(secret_bundle_id[]) is true.",
+        "RESULT not attacker(post_expiry_key[]) is true.",
+        "RESULT not event(bundle_opened(x)) is false."
+      ]
+    },
     {
       "file": "formal/ghost_circuit_equiv.pv",
       "sha256": "ef4651c0219a40e41d546628e119cbee96addd66657cc0453c33c3a3c4ae1fa3",
@@ -34,6 +79,25 @@
       ]
     },
     {
+      "file": "formal/lightcone_causal_hop.pv",
+      "sha256": "0d3e5ee6f9598b49593be574a55af05e339379482f5f3567332f58da3dbe8148",
+      "results": [
+        "RESULT event(cert_accepted(u,reg_6)) ==> event(anchor_attested(u,reg_6,n)) is true.",
+        "RESULT not event(cert_accepted(u,reg_6)) is false.",
+        "RESULT not event(causal_hop_verified(g,m,e)) is false."
+      ]
+    },
+    {
+      "file": "formal/monotone_combiner.pv",
+      "sha256": "abf956615f17e9dcbc1365c566558fe415aa4399d3f96234c2398db2c0584c3f",
+      "results": [
+        "RESULT not attacker(secret_A[]) is true.",
+        "RESULT not attacker(secret_B[]) is true.",
+        "RESULT not attacker(secret_C[]) is true.",
+        "RESULT not event(combined_ready(x)) is false."
+      ]
+    },
+    {
       "file": "formal/session_ratchet.pv",
       "sha256": "ae7c5aeca2e5b851e8a25e99333e67d1f6c551409b568f0d79723cc82defff4d",
       "results": [
@@ -48,6 +112,13 @@
       "sha256": "8b5a8fbbe9c9440e3fbe92c8694121373fd7ff60ebba4dc90c48d94a3bdcab39",
       "results": [
         "RESULT not attacker(secret_payload[]) is true."
+      ]
+    },
+    {
+      "file": "formal/vanta_subliminal_tail.pv",
+      "sha256": "5768c534d7dfc577a1fdd595f11c8a86818466bbf058123ca279e88a36bcf3c5",
+      "results": [
+        "RESULT Observational equivalence is true."
       ]
     }
   ]

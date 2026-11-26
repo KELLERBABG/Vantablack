@@ -62,12 +62,11 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "GHOST_PSK private meshes, SOCKS5/Exit nodes, console commands, and GHOST_* variables.",
             ),
             (
-                "free-software",
-                "../FREE_SOFTWARE.md",
-                "Free Software — No License Gate",
-                "Free Software",
-                "What a build includes for everyone: no activation step, no license key, "
-                "no vendor server, and no capability gated on entitlement.",
+                "changelog",
+                "../CHANGELOG.md",
+                "Detailed Update Logs",
+                "Update Logs",
+                "Version-by-version release history, cryptographic upgrades, and verification notes.",
             ),
         ],
     ),
@@ -89,14 +88,6 @@ DOCS: list[tuple[str, list[tuple[str, str, str, str, str]]]] = [
                 "SOTA Benchmark Matrix",
                 "Definitive architectural and cryptographic benchmark matrix comparing "
                 "Vantablack against WireGuard, Tailscale, Tor, and commercial VPN systems.",
-            ),
-            (
-                "verification",
-                "VERIFICATION_AND_BENCHMARKS.md",
-                "Verification, Throughput Benchmarks &amp; Empirical Analysis",
-                "Verification &amp; Benchmarks",
-                "Release-mode A/B throughput benchmarks (204 MiB/s pipeline), DPI Shannon "
-                "entropy proofs (7.989 bits/B), RFC 4787 NAT matrix, and ProVerif reproduction.",
             ),
         ],
     ),
