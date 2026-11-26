@@ -725,6 +725,21 @@
 
 ---
 
+## 57. `exp_anonymous_abuse_strikes` — Multi-ASN Anonymes Blacklisting (`BLAC` / `Nymble`)
+- **Umgedrehtes Axiom:** Klassische Anonymitätsnetze kennen beim Missbrauch (DDoS, Spam, Port-Scans, Botnets) nur zwei kaputte Extreme: entweder totale Hilflosigkeit (jeder Angreifer zieht endlos weiter) oder De-Anonymisierung durch Logging.
+- **Konstruktion:**
+  - Baut auf den Ristretto255-Tickets aus `src/ghost/v2/btcr.rs` und der Anti-Abuse-Spezifikation in `docs/anti_abuse.md` (§5) auf:
+    - Objektive Verstöße gegen `egress.rs` / `threat_shield.rs` erzeugen signierte Strike-Tokens.
+    - Erst ab $k \ge 3$ unabhängigen Strikes aus **$\ge 3$ verschiedenen ASNs** ($N_{\text{eff}}^{\text{strikes}} \ge 3$) landet das Ticket-Pseudonym auf der zeitlich verfallenden Epochen-Blacklist.
+    - Jeder Client beweist beim Circuit-Aufbau in Zero-Knowledge Nicht-Mitgliedschaft:
+      $$\pi = \text{ZK}\big\{\text{Ticket-Seed } s \notin \text{Blacklist}_{\text{epoch}}\big\}$$
+    - Kombiniert mit Sandbox-Eintritt (`#46 pow_vdf_ladder`) + Pfand-Verlust (`#44`) gegen triviales `rm identity.key`.
+- **Andockpunkte im Code:** `src/ghost/v2/btcr.rs`, `src/ghost/net/egress.rs`, `src/ghost/net/threat_shield.rs`, `src/ghost/net/security/attest.rs`, `docs/anti_abuse.md`.
+- **Ehrliche Grenze:** Verlangt strenge Objektivität der Strike-Gründe und Multi-ASN-Quorum ($N_{\text{eff}} \ge 3$), damit ein einzelner bösartiger Exit das System nicht als Zensurwaffe gegen ehrliche Nutzer missbrauchen kann; ohne Re-Entry-Kosten (#46) könnte ein Angreifer nach dem Ban neue Identitäten farmen.
+- **Machbarkeit:** **Ja** (Ristretto255-Gruppe bereits vorhanden) | **Verifikation:** ProVerif (Unlinkability ehrlicher Nutzer + erzwungener Ausschluss nach 3 Strikes).
+
+---
+
 # Master-Synthese: Synergien & Multiplikator-Kombinationen
 
 Einzelne Flags sind stark — aber die echten Paradigmenwechsel entstehen, wenn **mehrere Ideen zusammenspielen**:
@@ -736,7 +751,7 @@ Einzelne Flags sind stark — aber die echten Paradigmenwechsel entstehen, wenn 
 
 ---
 
-# Master Sanity-Check Matrix (Alle 56 Kandidaten)
+# Master Sanity-Check Matrix (Alle 57 Kandidaten)
 
 | # | Flag | Domäne | Machbarkeit | Aufwand | Empfehlung für 1. Welle | Status |
 |---|---|---|---|---|---|---|
@@ -796,3 +811,4 @@ Einzelne Flags sind stark — aber die echten Paradigmenwechsel entstehen, wenn 
 | 54 | `exp_silent_mesh_bios_recovery` | X — Semantik/OS | **Vielleicht** | Hoch | Später (`no_std`-Core) | `[ ]` |
 | 55 | `exp_counterfactual_audit_replay` | X — Semantik/OS | **Ja** | Mittel | Hoch (persönlicher Angriffs-Sim) | `[ ]` |
 | 56 | `exp_cognitive_sidechannel_keystroke_pad` | X — Semantik/OS | **Ja** | Niedrig | **Sehr hoch** (SSH-Timing-Fix) | `[ ]` |
+| 57 | `exp_anonymous_abuse_strikes` | IX — Anti-Abuse | **Ja** | Mittel | **Sehr hoch** (`BLAC` Multi-ASN-Sperre) | `[ ]` |

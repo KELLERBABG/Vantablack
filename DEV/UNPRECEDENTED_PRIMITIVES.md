@@ -131,6 +131,8 @@ Because the sketch carries only $(U_{(j)}, \pi_j, \text{cell\_commit}_j)$ and ze
 
 ## 6. Photonic Secret Orbit (Matterless, Zero-Rest-State Memory)
 
+> **Codebase-Status:** Aus `src/ghost/net/` entfernt (`a9a3ea2`), da für reguläre Endnutzer-Netze physikalisch/infrastrukturell nicht realistisch (benötigt 3 dedizierte interkontinentale Glasfaser-Relays mit $<10\,\mu\text{s}$ Bypass-NICs). Hier nur als theoretische Referenz belassen.
+
 ### Inverted Axiom
 *A live cryptographic secret must reside in matter (DRAM capacitors, CPU registers, or flash cells), where cold-boot forensics, DMA, or synchronized physical seizure can dump it.*
 
@@ -153,6 +155,8 @@ Establish a planetary optical loop of $m = 3$ relays (e.g., Frankfurt $\to$ Toky
 ---
 
 ## 7. Thermodynamic Exhaust of Memoryful Observation (Theoretical Bound)
+
+> **Codebase-Status:** Aus `src/ghost/net/` entfernt (`a9a3ea2`), da reine physikalische Untergrenze ($10^{10}\times$ unter heutiger CMOS-Schaltenergie) ohne praktischen Abwehr-Effekt. Hier nur als theoretische Referenz belassen.
 
 ### Inverted Axiom
 *Passive traffic analysis and multi-packet wiretapping are physically free.*

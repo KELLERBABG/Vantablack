@@ -1,6 +1,6 @@
 # `v3.0.0` Release Gate — measured status
 
-Stage 7 of [`DEV/V3_PIPELINE.md`](V3_PIPELINE.md) is the release stage. Its gate
+Stage 7 (`v3.0.0`) is the release stage. Its gate
 has five items. Each one is listed with what was actually run on this host, not
 with what the pipeline wishes it were.
 
@@ -10,7 +10,7 @@ uncommitted Stage 7 work.
 | Gate item | State | Evidence |
 |---|---|---|
 | Full E2E multi-NAT & multi-hop suite | **pass** | `cargo test --features research --no-fail-fast`: every integration target green, including `multi_nat_e2e`, `wan_full_e2e`, `wan_resilience_e2e`, `p1_nat`, `p1_relay`, `p1_quic` |
-| Non-vacuous ProVerif pass | **pass** | `scripts/formal_verify.sh` run in WSL Ubuntu with ProVerif 2.05: all five models reproduce the committed attestation's RESULT lines exactly (18 results, including every `false` reachability witness), and each model's SHA-256 still matches `formal/attestations.json`. `build.rs` refuses a changed model without re-attestation; `xray::tests::formal_attestation_matches_the_committed_models` asserts the same in-tree |
+| Non-vacuous ProVerif pass | **pass** | `scripts/formal_verify.sh` run in WSL Ubuntu with ProVerif 2.05: all **13** attested models in `formal/attestations.json` reproduce their committed RESULT lines (including every `false` reachability witness), and each model's SHA-256 matches `formal/attestations.json`. `build.rs` refuses a changed model without re-attestation; `xray::tests::formal_attestation_matches_the_committed_models` asserts the same in-tree |
 | Reproducible build hashes | **pass** | `scripts/reproducible_hash.sh`; see below |
 | Signed packages | **withheld** | `packaging/verify_signed_release.sh` is the gate, but this host holds no Authenticode / Homebrew / `.deb` / APK signing keys. Nothing is claimed signed |
 | `X-Ray` live truth ledger | **pass (code path)** | `cargo test --lib --features research xray` green, including the census lower bound, witness freshness decay and the formal provenance check. Census tickets are now ingested from PEX in a running daemon, but no multi-host mesh was attached in this session |
