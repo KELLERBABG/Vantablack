@@ -239,12 +239,8 @@ impl Rung {
                 "no KISS TNC serial transport or attached LoRa radio in this build".into(),
             ),
             Rung::AbosHf => (
-                cfg!(feature = "sdr"),
-                if cfg!(feature = "sdr") {
-                    "ABOS skywave carrier compiled in".into()
-                } else {
-                    "rebuild with --features sdr to drive an ABOS HF carrier".into()
-                },
+                false,
+                "SDR/ABOS hardware support removed for now".into(),
             ),
         }
     }
@@ -675,7 +671,7 @@ mod tests {
         }));
         let table = ladder();
         assert_eq!(table.len(), 6);
-        let expected_available = if cfg!(feature = "sdr") { 4 } else { 3 };
+        let expected_available = 3;
         assert_eq!(
             table.iter().filter(|r| r.available).count(),
             expected_available

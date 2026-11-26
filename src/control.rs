@@ -1142,7 +1142,7 @@ pub fn spawn_control_center(
                                                 "link_count": carrier_ref.link_count(),
                                             }),
                                             "skywave": serde_json::json!({
-                                                "enabled": cfg!(feature = "sdr"),
+                                                "enabled": false,
                                                 "carrier": "ABOS (Atmospheric Broadcast OS)",
                                                 "band": "2-10 MHz NVIS HF",
                                                 "propagation": "Near-Vertical Incidence Skywave (Zero Skip Zone)",
@@ -1660,7 +1660,7 @@ pub fn spawn_control_center(
                                         "abos_skywave": match sky {
                                             Some(t) => serde_json::json!({
                                                 "status": if t.sdr_active { "online" } else { "standby" },
-                                                "synthetic": !cfg!(feature = "sdr"),
+                                                "synthetic": true,
                                                 "carrier_freq_hz": t.carrier_freq_hz,
                                                 "estimated_f0f2_hz": t.estimated_f0f2_hz,
                                                 "dsss_processing_gain_db": t.dsss_processing_gain_db,

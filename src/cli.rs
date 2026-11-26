@@ -76,14 +76,7 @@ pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
             println!("  Carrier Band: 2–10 MHz (NVIS Skywave)");
             println!("  Propagation: 70°–90° Near-Vertical Incidence (Zero Skip Zone)");
             println!("  Modulation: DSSS below-noise + LDPC(256/512)");
-            println!(
-                "  Status: {}",
-                if cfg!(feature = "sdr") {
-                    "Enabled (compiled with --features sdr)"
-                } else {
-                    "Disabled (compile with --features sdr)"
-                }
-            );
+            println!("  Status: Disabled (SDR hardware support removed for now)");
             Some(Ok(()))
         }
         "drop" => {

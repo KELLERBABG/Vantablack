@@ -16,7 +16,6 @@
 pub mod l0_identity;
 
 pub mod l10_qel;
-pub mod l10_qel_etsi;
 pub mod l1_kem;
 pub mod l2_aead;
 pub mod l3_shamir;

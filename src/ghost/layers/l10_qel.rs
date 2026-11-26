@@ -61,9 +61,8 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-use crate::ghost::layers::l10_qel_etsi::{
-    Etsi014Client, Etsi014Config, Etsi014Error, EtsiStatus, ENV_BACKEND,
-};
+/// Environment variable selecting the L10 QEL backend (`sim` or `rf_reciprocity`).
+pub const ENV_BACKEND: &str = "GHOST_QEL_BACKEND";
 
 /// How long a route computation may run before it is abandoned. Must stay
 /// below any caller's own deadline (the control endpoint's client gives up at
@@ -1013,11 +1012,7 @@ pub fn combine_monotone(
 /// Which key-delivery backend the anchor runs on.
 enum QelBackend {
     Simulated(SimulatedQel),
-    Etsi014(Etsi014Client),
-    /// The operator selected a backend that could not be configured. Held
-    /// *instead of* a working backend, never in addition to one: falling back to
-    /// the simulator after a misconfigured `etsi014` would change what the mixed
-    /// entropy actually is without anyone being told.
+    /// The operator selected a backend that could not be configured.
     Misconfigured {
         reason: String,
     },
@@ -1028,8 +1023,6 @@ pub struct QuantumAnchorController {
     backend: QelBackend,
     state: AtomicU8,
     probed: OnceLock<QelAnchorState>,
-    /// The most recent appliance status, for the control plane.
-    last_status: parking_lot::Mutex<Option<EtsiStatus>>,
 }
 
 impl Default for QuantumAnchorController {
@@ -1045,11 +1038,8 @@ impl QuantumAnchorController {
             "" | "sim" | "simulated" | "quantumnet" => {
                 QelBackend::Simulated(SimulatedQel::autodetect())
             }
-            "etsi014" | "etsi" | "qkd014" => match Etsi014Config::from_env() {
-                Ok(cfg) => QelBackend::Etsi014(Etsi014Client::new(cfg)),
-                Err(e) => QelBackend::Misconfigured {
-                    reason: e.to_string(),
-                },
+            "etsi014" | "etsi" | "qkd014" => QelBackend::Misconfigured {
+                reason: "ETSI GS QKD 014 hardware backend has been removed for now".to_string(),
             },
             // RF reciprocity is real key material, but it is interactive: the
             // peers must exchange a syndrome before either can derive the same
@@ -1073,7 +1063,6 @@ impl QuantumAnchorController {
             backend,
             state: AtomicU8::new(QelAnchorState::Unprobed as u8),
             probed: OnceLock::new(),
-            last_status: parking_lot::Mutex::new(None),
         }
     }
 
@@ -1083,25 +1072,13 @@ impl QuantumAnchorController {
             backend: QelBackend::Simulated(SimulatedQel::new(qel_dir)),
             state: AtomicU8::new(QelAnchorState::Unprobed as u8),
             probed: OnceLock::new(),
-            last_status: parking_lot::Mutex::new(None),
         }
     }
 
-    /// A controller on an already-built appliance client (tests, tools).
-    pub fn with_etsi_client(client: Etsi014Client) -> Self {
-        Self {
-            backend: QelBackend::Etsi014(client),
-            state: AtomicU8::new(QelAnchorState::Unprobed as u8),
-            probed: OnceLock::new(),
-            last_status: parking_lot::Mutex::new(None),
-        }
-    }
-
-    /// The backend in use: `simulated`, `etsi014`, or `misconfigured`.
+    /// The backend in use: `simulated` or `misconfigured`.
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
             QelBackend::Simulated(_) => "simulated",
-            QelBackend::Etsi014(_) => "etsi014",
             QelBackend::Misconfigured { .. } => "misconfigured",
         }
     }
@@ -1117,39 +1094,6 @@ impl QuantumAnchorController {
             QelBackend::Simulated(sim) => {
                 report["engine"] = serde_json::json!("quantumnet (simulated)");
                 report["dir"] = serde_json::json!(sim.dir().to_string_lossy());
-            }
-            QelBackend::Etsi014(client) => {
-                let cfg = client.config();
-                report["engine"] = serde_json::json!("ETSI GS QKD 014 key delivery");
-                report["kme_url"] = serde_json::json!(cfg.base_url);
-                report["sae_id"] = serde_json::json!(cfg.our_sae_id);
-                report["key_bits"] = serde_json::json!(cfg.key_bits);
-                report["request_timeout_ms"] = serde_json::json!(cfg.timeout.as_millis() as u64);
-                report["tls"] = serde_json::json!(cfg.is_https() && cfg!(feature = "qkd-tls"));
-                report["client_certificate"] =
-                    serde_json::json!(cfg.client_identity().map(|p| p.display().to_string()));
-                report["peer_sae_map"] = serde_json::json!(cfg.sae_map.len());
-                report["two_node_default"] = serde_json::json!(cfg.is_two_node_default());
-                // Surfaced rather than merely logged: an operator should be able
-                // to see from the control plane that this node is not verifying
-                // the appliance's certificate.
-                report["certificate_verification"] = serde_json::json!(if cfg.insecure {
-                    "disabled (GHOST_QKD_INSECURE)"
-                } else if cfg.ca_pem.is_some() {
-                    "custom CA bundle"
-                } else {
-                    "system trust store"
-                });
-                if let Some(status) = self.last_status.lock().clone() {
-                    report["last_status"] = serde_json::json!({
-                        "stored_key_count": status.stored_key_count,
-                        "key_size": status.key_size,
-                        "min_key_size": status.min_key_size,
-                        "max_key_size": status.max_key_size,
-                        "source_KME_ID": status.source_kme_id,
-                        "target_KME_ID": status.target_kme_id,
-                    });
-                }
             }
             QelBackend::Misconfigured { reason } => {
                 report["engine"] = serde_json::Value::Null;
@@ -1215,7 +1159,6 @@ impl QuantumAnchorController {
                 }
                 s
             }
-            QelBackend::Etsi014(client) => self.probe_etsi(client).await,
             QelBackend::Misconfigured { reason } => {
                 warn!(
                     error = %reason,
@@ -1227,58 +1170,6 @@ impl QuantumAnchorController {
         };
         let _ = self.probed.set(state);
         state
-    }
-
-    async fn probe_etsi(&self, client: &Etsi014Client) -> QelAnchorState {
-        match client.probe().await {
-            Ok(status) => {
-                // Report an appliance that cannot serve the size we ask for: it is
-                // reachable, so `Available`, but an operator needs the mismatch
-                // called out before a session silently never mixes.
-                if status.supports_key_bits(client.config().key_bits) == Some(false) {
-                    warn!(
-                        kme = %client.config().base_url,
-                        requested_bits = client.config().key_bits,
-                        advertised = %status.describe(),
-                        "qel: appliance reachable but does not advertise the requested key size — \
-                         set GHOST_QKD_KEY_BITS to a size it accepts"
-                    );
-                    *self.last_status.lock() = Some(status);
-                    return QelAnchorState::Degraded;
-                }
-                info!(
-                    kme = %client.config().base_url,
-                    sae = %client.config().our_sae_id,
-                    status = %status.describe(),
-                    "qel: anchor available — ETSI GS QKD 014 appliance reachable"
-                );
-                *self.last_status.lock() = Some(status);
-                QelAnchorState::Available
-            }
-            // Transport: the appliance is down, or the TLS configuration is
-            // unusable. An operator can do nothing from the session side.
-            Err(e) if e.is_transport() => {
-                warn!(
-                    kme = %client.config().base_url,
-                    error = %e,
-                    "qel: anchor unavailable — the QKD appliance is not answering; \
-                     sessions continue without quantum entropy; this is not logged again"
-                );
-                QelAnchorState::Unavailable
-            }
-            // Reachable and refusing us: a wrong SAE ID, a missing client
-            // certificate, a pool that will not serve our peer. All actionable.
-            Err(e) => {
-                warn!(
-                    kme = %client.config().base_url,
-                    error = %e,
-                    "qel: anchor degraded — the QKD appliance refused this SAE; \
-                     check the SAE IDs, the client certificate and the key pool; \
-                     this is not logged again"
-                );
-                QelAnchorState::Degraded
-            }
-        }
     }
 
     /// Obtain fresh key material for a session with `peer_fp` — the **starting**
@@ -1298,25 +1189,6 @@ impl QuantumAnchorController {
                 sim.establish_quantum_link(state, topology_json_path, our_fp, peer_fp)
                     .await
             }
-            QelBackend::Etsi014(client) => match client.acquire_key(peer_fp).await {
-                Ok(key) => {
-                    let epoch_key = key.epoch_key();
-                    info!(
-                        peer = %peer_fp,
-                        key_id = %key.key_id,
-                        bits = key.material.len().saturating_mul(8),
-                        "qel: epoch key acquired from the QKD appliance"
-                    );
-                    QelOutcome {
-                        anchor_state: QelAnchorState::Available,
-                        route: None,
-                        key: Some(epoch_key),
-                        label: Some(key.key_id),
-                        error: None,
-                    }
-                }
-                Err(e) => QelOutcome::degraded(self.state_for_error(&e), e.to_string()),
-            },
             QelBackend::Misconfigured { reason } => QelOutcome::degraded(
                 QelAnchorState::Degraded,
                 format!("qel backend misconfigured: {reason}"),
@@ -1325,34 +1197,12 @@ impl QuantumAnchorController {
     }
 
     /// Turn `label` back into the key it names — the **answering** side of a mix.
-    ///
-    /// On the appliance backend the label is the standard's `key_ID`, so this is
-    /// the `dec_keys` call: the material was produced by the quantum channel and
-    /// neither peer chose it.
-    pub async fn redeem_key(&self, peer_fp: &str, label: &str) -> QelOutcome {
+    pub async fn redeem_key(&self, _peer_fp: &str, label: &str) -> QelOutcome {
         let state = self.state().await;
         match &self.backend {
             QelBackend::Simulated(sim) => match SimulatedQel::parse_label(label) {
                 Ok((fidelity, seed)) => sim.derive_key_at(state, fidelity, seed).await,
                 Err(e) => QelOutcome::degraded(state, e),
-            },
-            QelBackend::Etsi014(client) => match client.redeem_key(peer_fp, label).await {
-                Ok(key) => {
-                    let epoch_key = key.epoch_key();
-                    info!(
-                        peer = %peer_fp,
-                        key_id = %key.key_id,
-                        "qel: epoch key redeemed from the QKD appliance"
-                    );
-                    QelOutcome {
-                        anchor_state: QelAnchorState::Available,
-                        route: None,
-                        key: Some(epoch_key),
-                        label: Some(key.key_id),
-                        error: None,
-                    }
-                }
-                Err(e) => QelOutcome::degraded(self.state_for_error(&e), e.to_string()),
             },
             QelBackend::Misconfigured { reason } => QelOutcome::degraded(
                 QelAnchorState::Degraded,
@@ -1361,23 +1211,7 @@ impl QuantumAnchorController {
         }
     }
 
-    /// Map a backend error onto an anchor state.
-    ///
-    /// The distinction the operator needs: *unreachable* is not actionable from
-    /// the node, *refused* is a configuration problem.
-    fn state_for_error(&self, e: &Etsi014Error) -> QelAnchorState {
-        if e.is_transport() {
-            QelAnchorState::Unavailable
-        } else {
-            QelAnchorState::Degraded
-        }
-    }
-
     /// Route a quantum path between two peers over a topology export.
-    ///
-    /// Kept for the control plane's route endpoint, which is a *routing* query.
-    /// The appliance backend has no such notion — it delivers key material by ID —
-    /// and says so rather than returning a misleading empty route.
     pub async fn establish_quantum_link(
         &self,
         topology_json_path: &Path,
@@ -1390,12 +1224,6 @@ impl QuantumAnchorController {
                 sim.establish_quantum_link(state, topology_json_path, from_fp, to_fp)
                     .await
             }
-            QelBackend::Etsi014(_) => QelOutcome::degraded(
-                state,
-                "the etsi014 backend has no route computation: ETSI GS QKD 014 delivers key \
-                 material by key ID, so there is no path to compute. Session mixes still work — \
-                 they call enc_keys/dec_keys instead.",
-            ),
             QelBackend::Misconfigured { reason } => QelOutcome::degraded(
                 QelAnchorState::Degraded,
                 format!("qel backend misconfigured: {reason}"),
@@ -1551,23 +1379,14 @@ mod tests {
     }
 
     #[test]
-    fn the_etsi_backend_without_a_kme_url_is_misconfigured_not_simulated() {
+    fn the_etsi_backend_is_reported_as_removed() {
         let previous_backend = std::env::var(ENV_BACKEND).ok();
-        let previous_url = std::env::var(crate::ghost::layers::l10_qel_etsi::ENV_KME_URL).ok();
         std::env::set_var(ENV_BACKEND, "etsi014");
-        std::env::remove_var(crate::ghost::layers::l10_qel_etsi::ENV_KME_URL);
         let ctrl = QuantumAnchorController::from_env();
-        assert_eq!(
-            ctrl.backend_name(),
-            "misconfigured",
-            "an appliance that was asked for but not configured must not become the simulator"
-        );
+        assert_eq!(ctrl.backend_name(), "misconfigured");
         match previous_backend {
             Some(v) => std::env::set_var(ENV_BACKEND, v),
             None => std::env::remove_var(ENV_BACKEND),
-        }
-        if let Some(v) = previous_url {
-            std::env::set_var(crate::ghost::layers::l10_qel_etsi::ENV_KME_URL, v);
         }
     }
 

@@ -44,11 +44,6 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-#[cfg(feature = "sdr")]
-use abos::ABOSSystem;
-#[cfg(feature = "sdr")]
-use tracing::error;
-
 /// The process-wide bridge, installed once at daemon boot. Egress paths and
 /// the control plane read this instead of threading a handle through every
 /// signature; `None` means the run has no skywave carrier and every skywave
@@ -118,10 +113,6 @@ pub const SKYWAVE_UDP_ENV: &str = "GHOST_SKYWAVE_UDP";
 /// receive tick, so steady state stays far below this.
 const INGRESS_SOFT_CAPACITY: usize = 256;
 
-/// How long boot waits for the DSP actor to report the ABOS system online.
-#[cfg(feature = "sdr")]
-const DSP_ONLINE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 fn parse_socket_addr(s: &str) -> Option<SocketAddr> {
     use std::net::ToSocketAddrs;
     s.to_socket_addrs().ok()?.next()
@@ -176,10 +167,6 @@ pub struct SkywaveBridge {
     ingress_rx: Arc<parking_lot::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
     /// Persistent outbound socket for the virtual carrier, if started.
     carrier_sock: Arc<parking_lot::RwLock<Option<Arc<tokio::net::UdpSocket>>>>,
-    /// Handle to the DSP actor thread (feature `sdr` only). `None` when the
-    /// ABOS system failed to come online and the bridge runs synthetic.
-    #[cfg(feature = "sdr")]
-    dsp_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
 }
 
 impl std::fmt::Debug for SkywaveBridge {
@@ -187,76 +174,6 @@ impl std::fmt::Debug for SkywaveBridge {
         f.debug_struct("SkywaveBridge")
             .field("telemetry", &self.telemetry.read().clone())
             .finish()
-    }
-}
-
-/// Spawn the ABOS DSP actor thread and wait for it to report system state.
-///
-/// The actor owns the whole `ABOSSystem` for the process lifetime: a non-Send
-/// type behind a thread boundary is the one arrangement that lets the bridge
-/// stay `Send + Sync`. Returns the payload channel when the system is online.
-#[cfg(feature = "sdr")]
-fn spawn_dsp_actor() -> Option<std::sync::mpsc::Sender<Vec<u8>>> {
-    let (payload_tx, payload_rx) = std::sync::mpsc::channel::<Vec<u8>>();
-    let (online_tx, online_rx) = std::sync::mpsc::channel::<bool>();
-
-    let spawned = std::thread::Builder::new()
-        .name("abos-dsp".to_string())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = online_tx.send(false);
-                    error!(error = %e, "skywave: DSP actor runtime failed");
-                    return;
-                }
-            };
-            match rt.block_on(ABOSSystem::new()) {
-                Ok(mut system) => {
-                    let _ = rt.block_on(system.start());
-                    let _ = online_tx.send(true);
-                    info!("skywave: ABOS DSP actor online — full TX chain owned by the actor thread");
-                    for payload in payload_rx {
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            rt.block_on(system.transmit(&payload))
-                        })) {
-                            Ok(Ok(())) => {}
-                            Ok(Err(e)) => {
-                                error!(error = %e, "skywave: DSP transmit failed");
-                            }
-                            Err(_) => {
-                                error!(
-                                    len = payload.len(),
-                                    "skywave: DSP transmit panicked — recovered actor thread"
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = online_tx.send(false);
-                    warn!(
-                        error = %e,
-                        "skywave: ABOS system init failed — DSP actor runs synthetic (frames discarded)"
-                    );
-                    // Drain so senders never block, discarding the frames: the
-                    // bridge keeps shipping to the virtual carrier, which is
-                    // where the loop actually lives in synthetic mode.
-                    for _ in payload_rx {}
-                }
-            }
-        });
-
-    if spawned.is_err() {
-        error!("skywave: could not spawn the DSP actor thread");
-        return None;
-    }
-    match online_rx.recv_timeout(DSP_ONLINE_TIMEOUT) {
-        Ok(true) => Some(payload_tx),
-        Ok(false) | Err(_) => None,
     }
 }
 
@@ -291,47 +208,13 @@ impl SkywaveBridge {
         ingress_tx: mpsc::UnboundedSender<Vec<u8>>,
         ingress_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     ) -> Result<Self, SdrBridgeError> {
-        #[cfg(feature = "sdr")]
-        {
-            info!("skywave: initializing Atmospheric Broadcast OS (ABOS) SDR bridge...");
-            let dsp_tx = spawn_dsp_actor();
-            if dsp_tx.is_some() {
-                info!("skywave: ABOS SDR physical layer online and listening on NVIS HF channels");
-            } else {
-                warn!(
-                    "skywave: ABOS system not available — running in synthetic mode (virtual carrier only)"
-                );
-            }
-            let telem = SkywaveTelemetry {
-                sdr_active: dsp_tx.is_some(),
-                ..Default::default()
-            };
-            Ok(Self {
-                telemetry: Arc::new(parking_lot::RwLock::new(telem)),
-                ingress_tx,
-                ingress_rx: Arc::new(parking_lot::Mutex::new(ingress_rx)),
-                carrier_sock: Arc::new(parking_lot::RwLock::new(None)),
-                dsp_tx,
-            })
-        }
-
-        #[cfg(not(feature = "sdr"))]
-        {
-            // Synthetic mode without the `sdr` feature: the fallback ladder,
-            // telemetry and the virtual carrier stay fully functional; only the
-            // DSP stages are skipped. `sdr_active` stays false, so the ladder
-            // never selects skywave unless the operator turns the synthetic
-            // carrier on deliberately (see `activate_synthetic`).
-            info!(
-                "skywave: synthetic mode — no DSP (compile with --features sdr for the ABOS chain)"
-            );
-            Ok(Self {
-                telemetry: Arc::new(parking_lot::RwLock::new(SkywaveTelemetry::default())),
-                ingress_tx,
-                ingress_rx: Arc::new(parking_lot::Mutex::new(ingress_rx)),
-                carrier_sock: Arc::new(parking_lot::RwLock::new(None)),
-            })
-        }
+        info!("skywave: synthetic virtual-carrier mode (SDR hardware support removed)");
+        Ok(Self {
+            telemetry: Arc::new(parking_lot::RwLock::new(SkywaveTelemetry::default())),
+            ingress_tx,
+            ingress_rx: Arc::new(parking_lot::Mutex::new(ingress_rx)),
+            carrier_sock: Arc::new(parking_lot::RwLock::new(None)),
+        })
     }
 
     /// Mark the synthetic carrier as active for the fallback ladder.
@@ -477,20 +360,6 @@ impl SkywaveBridge {
     /// Returns the payload as handed to the medium — the wire-level unit tests
     /// round-trip against [`SkywaveBridge::rx_from_carrier`].
     pub async fn process_and_send(&self, payload: &[u8]) -> Result<Vec<u8>, SdrBridgeError> {
-        #[cfg(feature = "sdr")]
-        if let Some(dsp) = &self.dsp_tx {
-            dsp.send(payload.to_vec()).map_err(|_| {
-                SdrBridgeError::HardwareError("ABOS DSP actor thread is gone".to_string())
-            })?;
-            {
-                let mut telem = self.telemetry.write();
-                telem.tx_packet_count = telem.tx_packet_count.saturating_add(1);
-                telem.tx_dsp_bytes = telem.tx_dsp_bytes.saturating_add(payload.len() as u64);
-            }
-            self.ship_to_carrier(payload).await;
-            return Ok(payload.to_vec());
-        }
-
         debug!(
             len = payload.len(),
             "skywave (synthetic): frame handed to virtual carrier"
