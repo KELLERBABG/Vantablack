@@ -66,6 +66,37 @@ Um einen wiederholt missbrauchenden Knoten netzwerkweit zu stoppen, **ohne** sei
 - **Optionales High-Trust-Tier:** Anonyme Hardware-Attestierung (**TPM-DAA** via `src/ghost/net/security/attest.rs`) erlaubt Geräten den Nachweis „echtes, ungesperrtes Gerät“ ohne Identifizierung.
 
 ### 5.3 Schutz gegen Missbrauch des Ban-Systems als Zensurwaffe
+
+---
+
+## §6. Sitzungsgebundene Relay-Voucher (`GHOST_RELAY_VOUCHERS`)
+
+Ein Relay, das fremden Transit trägt, darf nicht zum kostenlosen Verstärker werden. `research_hooks::voucher` koppelt jede Weiterleitung an ein Guthaben, das der Absender zuvor vorgelegt hat — und zwar **auf beiden Weiterleitungspfaden**:
+
+- **`BLND!` (Blind-Hop):** der Umschlag wird byte-genau weitergereicht, das Guthaben wird beim Eingang belastet.
+- **`RLY!` (Multi-Hop-Onion):** jeder Hop mit `remaining_hops > 0` belastet dasselbe Guthaben. Ein Peer kann also nicht zwischen den beiden Hüllen wechseln, um ein Kontingent doppelt auszugeben — es gibt genau eine Bank pro Peer und Epoche.
+
+### 6.1 Warum der Voucher sitzungsgebunden ist
+
+Ein Voucher ist **kein** eigenständig handelbares Zertifikat. Er wird
+
+1. erst nach erfolgreicher PQ-Authentifizierung über die bestehende Session präsentiert (`GHOST_VOUCHER_`),
+2. unter dem Nullifier des Senders verbucht, den nur diese Session benennen kann, und
+3. ausschließlich für Weiterleitungen belastet, die **auf derselben Session** eintreffen.
+
+Daraus folgen die drei Eigenschaften, auf die sich die Zählung stützt:
+
+- **Kein Replay über Knoten hinweg:** ein abgefangener Voucher trägt den Nullifier eines *anderen* Peers; ein zweiter Relay würde ihn entweder als bereits eingelöst oder als fremd verwerfen. Transfer zwischen Relays ist damit wertlos, ohne dass eine globale Nullifier-Datenbank nötig wäre.
+- **Kein Replay über IP-Wechsel:** die Belastung hängt am Fingerprint der authentifizierten Session, nicht an der Quell-IP. Ein NAT-Rebind oder ein Pfadwechsel ändert das Guthaben nicht und erzeugt auch kein neues.
+- **Kein anonymer Gratis-Transit:** ohne vorgelegten Voucher verweigert das Relay die Weiterleitung, sobald `GHOST_RELAY_VOUCHERS=1` gesetzt ist. Die Prüfung ist ein reiner Zählervergleich, kein Inhaltsblick — die Null-Kenntnis-Eigenschaft des Relays bleibt unberührt.
+
+### 6.2 Kosten und Grenzen
+
+Jeder Voucher wird mit einem Proof-of-Work über `epoch ‖ preimage` gemünzt (8 führende Nullbits) und deckt ein festes Kontingent pro Epoche. Das ist bewusst *billig genug für ehrliche Knoten und teuer genug gegen Massenmünzung* — es ersetzt keine Reputation, sondern verhindert, dass ein einzelner Peer unbegrenzt fremden Transit verbraucht.
+
+Die Gate ist standardmäßig **aus**: ein Relay, das ohne Wissen seiner Peers plötzlich Gebühren erhebt, würde deren Verkehr schwarzlochieren. Erst `GHOST_RELAY_VOUCHERS=1` aktiviert die Belastung, und dann gilt sie symmetrisch für `BLND!` und `RLY!`.
+
+> **Telemetrie:** `/api/status` meldet unter `research.voucher` `admitted`, `denied`, `blind_bytes` und `onion_bytes` — getrennt gezählt, gemeinsam gedeckelt.
 - **Kein Single-Exit-Ban:** Ein einzelner (z. B. staatlich kontrollierter) Exit kann einen Nutzer nur lokal ablehnen, niemals global sperren ($N_{\text{eff}}^{\text{strikes}} \ge 3$ über disjunkte ASNs zwingend erforderlich).
 - **Strenge Objektivität:** Strikes gelten ausschließlich für lokal verifizierbare Protokoll-/Netzwerk-Angriffe (§2–§3), niemals für politische Inhalte.
 - **Epochen-Verjährung:** Blacklist-Einträge verfallen automatisch nach festen Epochen (analog `Chrono-Erosion`), damit Sperrlisten kompakt bleiben und dauerhafte Fehl-Ausschlüsse verhindert werden.

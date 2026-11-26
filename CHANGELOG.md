@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.7.3] — 2026-11-26
+
+- **Voucher & Onion Unification (`src/daemon/research_hooks.rs`, `src/daemon/peer_loop.rs`):** Unified `BLND!` and `RLY!` transit admission onto a single shared `RelayBandwidthBank` nullifier; added `§6` session-bound relay voucher documentation to `docs/anti_abuse.md`.
+- **Control-Plane Telemetry (`src/control.rs`):** Exposed `research_hooks::status_json` (`entropy_beacon`, `braid`, `vault`, `voucher`) in `/api/status` under `#[cfg(feature = "research")]`.
+
+## [3.7.2] — 2026-11-26
+
+- **Configurable Erosion Windows & Keep-Proofs (`src/daemon/research_hooks.rs`):** Replaced hardcoded `3600s`/`900s` constants with floor-guarded `GHOST_EROSION_EPOCH_SECS` (floor `60`) and `GHOST_EROSION_TTL_SECS` (floor `1`); wired `dead_drop::prove_retention_interest` locally and via `OP_KEEP`.
+
+## [3.7.1] — 2026-11-26
+
+- **Multi-Host Vault Distribution (`src/daemon/research_hooks.rs`, `src/ghost/v2/erosion.rs`):** Added `EphemerizerCommittee::share_bytes` / `from_shares` and `GHOST_VSHARE__` (`STORE_SHARE`/`SHARD`/`CHUNK`, `FETCH`, `ITEMS`, `PURGE`) to distribute DTN erosion shares, archive shards, and dead-drop chunks across 3 sorted peers (falling back to local when `< 3` peers are connected).
+
+---
+
 ## [3.7.0] — 2026-11-26
 
 > **Versioning Policy:** `vX.0.0` = full major release; `v0.X.0` = module(s) wired, added, or upgraded; `v0.0.X` = bugfixes and small incremental changes (`3.7.x` tracks multi-host hardening toward `v4.0.0`).

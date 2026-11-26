@@ -916,7 +916,20 @@ pub(crate) async fn handle_pkt(
         // relay branches, so none of them can be read as application data.
         #[cfg(feature = "research")]
         if let Some(payload) = frame_payload(pt) {
-            if super::research_hooks::handle_control(&peer_fp, payload) {
+            if let Some(replies) = super::research_hooks::handle_control(&peer_fp, payload) {
+                // A vault fetch is answered on the session it arrived on; the
+                // handler cannot await a send, so it hands the replies back.
+                for reply in replies {
+                    super::research_hooks::deliver(
+                        &node,
+                        sock,
+                        src,
+                        fallback_state,
+                        &peer_fp,
+                        &reply,
+                    )
+                    .await;
+                }
                 return;
             }
         }
@@ -1271,6 +1284,16 @@ pub(crate) async fn handle_pkt(
             let payload = unsealed.as_deref().unwrap_or(payload);
             if let Some(relay) = parse_relay_header(payload) {
                 if relay.remaining_hops > 0 {
+                    // Tier 1 wiring: a multi-hop onion hop draws on the same
+                    // voucher bank as blind (`BLND!`) transit. With
+                    // `GHOST_RELAY_VOUCHERS` off this is a no-op.
+                    #[cfg(feature = "research")]
+                    if !super::research_hooks::voucher::admit_transit_onion(
+                        &peer_fp,
+                        payload.len(),
+                    ) {
+                        return;
+                    }
                     // WIRED: Tit-for-Tat enforcer - drop forwarding for evicted leechers
                     if let Some(enforcer) = tft {
                         if enforcer.is_evicted(&peer_fp) {

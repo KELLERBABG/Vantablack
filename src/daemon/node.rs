@@ -277,7 +277,13 @@ pub(crate) async fn run_node(
     // persisted chain and verifier before anything else in `run_node` runs, and
     // `advance_and_tip` refuses to sign until it has.
     #[cfg(feature = "research")]
-    super::research_hooks::braid::init(&node.fingerprint());
+    {
+        super::research_hooks::braid::init(&node.fingerprint());
+        // Vault placement reads the live session table to decide whether a
+        // bundle can be spread over three hosts; binding it here keeps that
+        // decision off the synchronous deposit path.
+        super::research_hooks::vault::bind_sessions(Arc::clone(&node.sessions));
+    }
     // ── Boomerang home-exit advertisement ──────────────────────────────
     // A node that runs exit service *and* opted in publishes CAP_HOME_EXIT in
     // its signed descriptor. If the opt-in is set while exit service is off, the

@@ -241,6 +241,57 @@ impl EphemerizerCommittee {
         &self.commitments
     }
 
+    /// This member's share, for the peer that will host it.
+    ///
+    /// The daemon spreads one share per host so that no single machine holds a
+    /// threshold of them, which is what makes a seizure of this node reveal no
+    /// bundle key. `None` means the member already wiped its share.
+    pub fn share_bytes(&self, index: usize) -> Option<[u8; 32]> {
+        self.shares.get(index).copied().flatten()
+    }
+
+    /// Rebuild a committee from the shares that survived on their hosts.
+    ///
+    /// Commitments are recomputed as `s_j * G` for the shares present, which is
+    /// exactly what the dealer published for those members, so their partial
+    /// evaluations still verify. Absent members get the identity point, which no
+    /// evaluation can match.
+    pub fn from_shares(
+        threshold: usize,
+        members: usize,
+        deadline: u64,
+        shares: Vec<Option<[u8; 32]>>,
+    ) -> Result<Self, ErosionError> {
+        if threshold == 0 {
+            return Err(ErosionError::Shape("threshold must be at least 1"));
+        }
+        if threshold > members {
+            return Err(ErosionError::Shape("threshold cannot exceed members"));
+        }
+        if shares.len() != members {
+            return Err(ErosionError::Shape("one share slot per member"));
+        }
+        if shares.iter().flatten().count() < threshold {
+            return Err(ErosionError::TooFewShares);
+        }
+        let mut commitments = Vec::with_capacity(members);
+        for slot in &shares {
+            match slot {
+                Some(bytes) => {
+                    let scalar = scalar_from_bytes(bytes).ok_or(ErosionError::NotOnCurve)?;
+                    commitments.push(scalar * BASEPOINT);
+                }
+                None => commitments.push(RistrettoPoint::identity()),
+            }
+        }
+        Ok(Self {
+            threshold,
+            deadline,
+            commitments,
+            shares,
+        })
+    }
+
     /// How many shares this member set still holds. Read this after `expire`.
     pub fn retained_shares(&self) -> usize {
         self.shares.iter().filter(|s| s.is_some()).count()

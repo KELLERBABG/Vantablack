@@ -1,5 +1,5 @@
-# Vantablack v3.7.0 — Tier-1 Research Wiring & Software Hardening
+# Vantablack v3.7.3 — Distributed Research Vault & Unified Relay Accounting
 
-Vantablack **v3.7.0** wires all 7 Tier-1 `research` primitives (`braid_identity`, `erosion`, `dead_drop`, `entropy_beacon`, `polysemy`, `mesh_archive`, `bandwidth_voucher`) into the live daemon (`src/daemon/research_hooks.rs`), rolls back unused SDR/QKD hardware backends, and documents the anti-abuse & dormant module architecture.
+Vantablack **v3.7.3** completes the `3.7.x` Tier-1 research hardening series: multi-host `GHOST_VSHARE__` distribution across 3 peers for `erosion` + `mesh_archive` + `dead_drop`, configurable erosion windows with `OP_KEEP` retention proofs, unified `BLND!` + `RLY!` voucher accounting, and live `/api/status` research telemetry (`18` daemon hook tests + `9` Tier-1 tests passing).
 
 For full release notes and version-by-version changes, see the [**Detailed Update Logs**](https://vantablack.kellersystems.dev/docs#changelog).

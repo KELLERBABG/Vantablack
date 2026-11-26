@@ -1183,6 +1183,16 @@ pub fn spawn_control_center(
                                                     )
                                                 ),
                                             );
+                                            // Tier 1 telemetry: entropy-beacon rounds,
+                                            // braid revocation/quarantine and the vault's
+                                            // placement split. Counter-only, no keys.
+                                            #[cfg(feature = "research")]
+                                            obj.insert(
+                                                "research".to_string(),
+                                                crate::daemon::research_hooks::status_json(
+                                                    sessions_count,
+                                                ),
+                                            );
                                         }
                                         let body = body_val.to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")

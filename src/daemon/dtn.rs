@@ -169,6 +169,11 @@ pub(crate) fn pending_for(peer_fp: &str) -> usize {
 /// Flush every peer that has a session now. Bundles reach the peer over its own
 /// session, sealed exactly like any other payload.
 pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, SocketAddr>) {
+    // Vault placement PDUs ride the same tick. This is independent of the DTN
+    // toggle: a bundle deposited before the toggle changed must still reach the
+    // hosts that are supposed to hold its pieces.
+    #[cfg(feature = "research")]
+    super::research_hooks::vault::flush_outbox(nc, peers).await;
     if !enabled() {
         return;
     }
@@ -195,7 +200,8 @@ pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, Socke
             // passed cannot be opened at all; it is marked delivered so the
             // queue does not retry a mathematically destroyed payload forever.
             #[cfg(feature = "research")]
-            let body = match super::research_hooks::vault::open(&bundle.payload) {
+            let body =
+                match super::research_hooks::vault::open_mesh(nc, peers, &bundle.payload).await {
                 Ok(plain) => plain,
                 Err(reason) => {
                     tracing::warn!(
