@@ -21,6 +21,7 @@
 //! | [`diffusion`] | emergency epidemic routing for frames no route could carry |
 //! | [`tunnel`] | local TCP forwards over the mesh, with exit and target allowlists |
 //! | [`dtn`] | per-peer bundle store flushed when a session returns |
+//! | [`research_hooks`] | live hooks for the Tier 1 `research` modules (feature `research`) |
 //! | [`rendezvous`] | multi-slot blind rendezvous plus a routing table of known contacts |
 //!
 //! Items are `pub(crate)` rather than private because the orchestrator and the
@@ -75,5 +76,7 @@ pub(crate) fn masque_carries(dst: &std::net::SocketAddr, session: &[u8; 4]) -> b
 }
 pub(crate) mod relay_fallback;
 pub(crate) mod rendezvous;
+#[cfg(feature = "research")]
+pub(crate) mod research_hooks;
 pub(crate) mod srtp;
 pub(crate) mod tunnel;

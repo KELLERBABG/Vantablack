@@ -269,6 +269,15 @@ pub(crate) async fn run_node(
             GhostNode::new("0.0.0.0:0").await?
         }
     };
+
+    // ── Braid identity restore ─────────────────────────────────────────
+    // The per-peer braid seed is deterministic, so a restart that began at
+    // genesis again would sign a second child of a key a peer already accepted —
+    // an honest node that looks exactly like a clone. `init` restores every
+    // persisted chain and verifier before anything else in `run_node` runs, and
+    // `advance_and_tip` refuses to sign until it has.
+    #[cfg(feature = "research")]
+    super::research_hooks::braid::init(&node.fingerprint());
     // ── Boomerang home-exit advertisement ──────────────────────────────
     // A node that runs exit service *and* opted in publishes CAP_HOME_EXIT in
     // its signed descriptor. If the opt-in is set while exit service is off, the

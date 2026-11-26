@@ -438,18 +438,33 @@ pub(crate) fn spawn(
                 let mut buf = vec![0u8; 65_535];
                 loop {
                     match socket.recv_from(&mut buf).await {
-                        Ok((n, from)) => match unpack(&buf[..n], from) {
-                            Some((frame, src)) => {
-                                if inbound.send((frame, src)).is_err() {
-                                    return;
-                                }
+                        Ok((n, from)) => {
+                            #[cfg(feature = "research")]
+                            if let Some((survivors, message)) =
+                                super::research_hooks::worlds::handle_datagram(&buf[..n], from.ip())
+                            {
+                                tracing::info!(
+                                    %from,
+                                    iface = %interface,
+                                    paths = ?survivors,
+                                    tag = %hex::encode(&message[4..]),
+                                    "polysemy: bonded path world collapsed"
+                                );
+                                continue;
                             }
-                            None => tracing::trace!(
-                                %from,
-                                iface = %interface,
-                                "HPEB: not a bonded shard"
-                            ),
-                        },
+                            match unpack(&buf[..n], from) {
+                                Some((frame, src)) => {
+                                    if inbound.send((frame, src)).is_err() {
+                                        return;
+                                    }
+                                }
+                                None => tracing::trace!(
+                                    %from,
+                                    iface = %interface,
+                                    "HPEB: not a bonded shard"
+                                ),
+                            }
+                        }
                         Err(e) => {
                             tracing::debug!(iface = %interface, error = %e, "HPEB: receive failed");
                             return;
@@ -540,7 +555,9 @@ async fn dispatch(
     let now = Instant::now();
     // Pick the assignment and clone the socket handles under the lock, then send
     // outside it: a slow or failing interface must not hold up other peers.
-    let plan: Vec<(usize, String, Arc<UdpSocket>)> = {
+    // `live_count` is only read by the `research` polysemy probe below; the
+    // underscore keeps a default build warning-free without a second `cfg`.
+    let (plan, _live_count): (Vec<(usize, String, Arc<UdpSocket>)>, usize) = {
         let mut guard = state().lock();
         let st = guard.as_mut()?;
         for path in st.paths.iter_mut() {
@@ -584,12 +601,34 @@ async fn dispatch(
                 .map(|p| Arc::clone(&p.socket))?;
             plan.push((i, iface, socket));
         }
-        plan
+        let live_count = live.len();
+        (plan, live_count)
+    };
+
+    // Poly­semy (`docs/DORMANT_MODULES.md` §1): the bonded link has three
+    // carriers. With three live physical paths, one causal probe per path lets
+    // the peer learn *which subset* of paths actually survived, from a message
+    // that only its own surviving subset can collapse.
+    #[cfg(feature = "research")]
+    let probe = if super::research_hooks::worlds::enabled() && _live_count >= 3 {
+        super::research_hooks::worlds::encode_probe(3, b"PROB")
+    } else {
+        None
     };
 
     let mut carried = Vec::new();
     for (index, interface, socket) in plan {
         let datagram = pack(index as u8, src_port, &carriers[index]);
+        #[cfg(feature = "research")]
+        if let Some((id, n, k, shards)) = &probe {
+            if let Some(shard) = shards.get(index) {
+                let probe_datagram =
+                    super::research_hooks::worlds::wrap(id, index as u8, *n, *k, shard);
+                if let Err(e) = socket.send_to(&probe_datagram, dest).await {
+                    tracing::trace!(iface = %interface, error = %e, "polysemy: path probe not delivered");
+                }
+            }
+        }
         match socket.send_to(&datagram, dest).await {
             Ok(_) => carried.push(interface),
             Err(e) => {

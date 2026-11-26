@@ -551,6 +551,12 @@ pub(crate) async fn send_pex(
     let ctx = SealCtx::from_session(&sess);
     drop(sess);
 
+    // Tier 1 research gossip rides the same beat: the current braid tip, this
+    // round's entropy share (with the sender's beacon grid), and a bandwidth
+    // voucher when a new epoch needs one.
+    #[cfg(feature = "research")]
+    super::research_hooks::gossip_beat(node, sock.as_ref(), &dest_addr, None, dest_fp).await;
+
     // PEX v2: batches of signed PeerDescriptorV2 bounded to <= 2200B per frame.
     if let Some(payload_v2) = pex_v2_payload(known_descriptors, dest_fp) {
         let count_v2 = payload_v2[GHOST_PEX_V2_MAGIC.len()];

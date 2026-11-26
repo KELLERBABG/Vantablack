@@ -150,6 +150,25 @@ impl PolysemicCode {
         self.subsets.len()
     }
 
+    /// The worlds in message order: every `k`-subset of paths, lexicographically
+    /// ordered. A caller that builds one message per world needs this order, and
+    /// a receiver that collapsed a subset can name the world it holds.
+    pub fn world_subsets(&self) -> &[Vec<usize>] {
+        &self.subsets
+    }
+
+    /// The world index a set of `k` surviving paths collapses to, or `None` when
+    /// the set is not a world.
+    pub fn world_index(&self, survivors: &[usize]) -> Option<usize> {
+        let mut sorted = survivors.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        if sorted.len() != self.k {
+            return None;
+        }
+        self.subsets.iter().position(|subset| *subset == sorted)
+    }
+
     /// Bytes each path must carry: `C(n-1, k-1) * r`.
     pub fn shard_len(&self) -> usize {
         binomial(self.n - 1, self.k - 1) * self.r

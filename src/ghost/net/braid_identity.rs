@@ -276,6 +276,15 @@ impl BraidChain {
         self.revoked.len()
     }
 
+    /// Mark `identity` revoked without a proof pair.
+    ///
+    /// Used when restoring verifier state that was journaled earlier: the fork
+    /// proof was checked when it was first seen, and replaying the certificate
+    /// would require keeping both halves forever. Idempotent.
+    pub fn revoke(&mut self, identity: &[u8; 32]) {
+        self.revoked.insert(*identity);
+    }
+
     /// Ingest a gossiped transition.
     ///
     /// A parent key may have exactly one child. A second, different child is a
@@ -429,6 +438,25 @@ mod tests {
         assert_eq!(
             BraidChain::new().accept(&bad_signature),
             BraidVerdict::Invalid
+        );
+    }
+
+    #[test]
+    fn a_restored_revocation_outranks_an_unknown_child() {
+        let mut node = lock();
+        let transition = node.advance(b"revoked elsewhere");
+
+        // What a journal replay rebuilds: the revocation, without the two
+        // proofs that originally established it.
+        let mut restored = BraidChain::new();
+        restored.revoke(&transition.parent_pk);
+        restored.revoke(&transition.parent_pk); // idempotent
+        assert_eq!(restored.revoked_count(), 1);
+        assert!(restored.is_revoked(&transition.parent_pk));
+        assert_eq!(
+            restored.accept(&transition),
+            BraidVerdict::Revoked(transition.parent_pk),
+            "a revoked key is refused even though no child was ever seen"
         );
     }
 

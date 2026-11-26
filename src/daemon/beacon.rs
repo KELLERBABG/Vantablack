@@ -248,9 +248,32 @@ pub(crate) fn register_peer_session(
         }
     }
 
+    #[cfg(feature = "research")]
+    let session_master = session.master_key;
     peers.insert(fp.to_string(), src);
     node.sessions.insert(fp.to_string(), session);
     record_active_peer(src);
+
+    // Braid-Locked Identity: every registered session is a transcript step in
+    // this node's per-peer key chain. The transition is published by
+    // `research_hooks::session_established` and re-gossiped on each PEX beat.
+    #[cfg(feature = "research")]
+    {
+        let our_fp = node.fingerprint();
+        // A session is the first thing that can advance a chain, so this is the
+        // last point at which the boot restore must have happened. `init` is
+        // idempotent, so on the normal boot path this is one atomic read; it
+        // closes the window in which a datagram arrives before `run_node` has
+        // finished its explicit call.
+        //
+        // Not in unit tests: they drive the real receive path, and this would
+        // create a state directory in the developer's data dir for the whole
+        // test process. Test builds therefore keep the pre-boot state, where
+        // `advance_and_tip` refuses to sign.
+        #[cfg(not(test))]
+        super::research_hooks::braid::init(&our_fp);
+        let _ = super::research_hooks::braid::advance_and_tip(&our_fp, fp, &session_master);
+    }
 }
 
 #[cfg(test)]

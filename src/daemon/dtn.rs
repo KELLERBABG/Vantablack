@@ -113,6 +113,21 @@ fn queue(store: &mut PeerStore, peer_fp: &str, payload: &[u8]) -> bool {
     }
     let sequence = store.next_sequence;
     store.next_sequence = store.next_sequence.saturating_add(1);
+
+    // Tier 1 wiring: with the vault on, the tree holds a descriptor and the
+    // bytes live in blind dead-drop chunks under an erosion epoch. The
+    // descriptor is what `flush_all` hands to `research_hooks::vault::open`.
+    #[cfg(feature = "research")]
+    if super::research_hooks::vault::enabled() {
+        let Some(descriptor) = super::research_hooks::vault::deposit(peer_fp, payload) else {
+            return false;
+        };
+        store
+            .tree
+            .insert(DtnBundle::new(id, sequence, descriptor));
+        return true;
+    }
+
     store
         .tree
         .insert(DtnBundle::new(id, sequence, payload.to_vec()));
@@ -176,8 +191,30 @@ pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, Socke
         }
         let mut sent = Vec::new();
         for bundle in &pending {
-            if super::tunnel::send_payload(nc, peers, &peer_fp, &bundle.payload).await {
+            // Recover the payload from the vault. A bundle whose erosion epoch
+            // passed cannot be opened at all; it is marked delivered so the
+            // queue does not retry a mathematically destroyed payload forever.
+            #[cfg(feature = "research")]
+            let body = match super::research_hooks::vault::open(&bundle.payload) {
+                Ok(plain) => plain,
+                Err(reason) => {
+                    tracing::warn!(
+                        peer = %peer_fp,
+                        bundle = %hex::encode(&bundle.bundle_id[..4]),
+                        ?reason,
+                        "vault: undeliverable bundle dropped from the queue"
+                    );
+                    sent.push(bundle.bundle_id);
+                    continue;
+                }
+            };
+            #[cfg(not(feature = "research"))]
+            let body = bundle.payload.clone();
+
+            if super::tunnel::send_payload(nc, peers, &peer_fp, &body).await {
                 sent.push(bundle.bundle_id);
+                #[cfg(feature = "research")]
+                super::research_hooks::vault::forget(&bundle.payload);
             } else {
                 // The session disappeared mid-flush: keep the rest queued.
                 break;
@@ -219,6 +256,10 @@ pub(crate) fn spawn_flush_loop(
         loop {
             tick.tick().await;
             flush_all(&nc, &peers).await;
+            // One self-eating decay pass per flush tick. The observed error
+            // rate is derived from bundles the vault had to drop.
+            #[cfg(feature = "research")]
+            super::research_hooks::vault::collect_decay();
         }
     })
 }

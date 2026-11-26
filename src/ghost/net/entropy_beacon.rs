@@ -61,6 +61,21 @@ impl EntropyBeaconCommons {
             .insert(share.contributor_id, share);
     }
 
+    /// Drop every round for which `keep` answers false.
+    ///
+    /// The daemon submits a share on every PEX beat, so a long-lived node would
+    /// otherwise retain one map entry per contributor per round forever. Pruning
+    /// is the caller's policy — this type holds no clock — but the retention
+    /// decision belongs next to the round key it is about.
+    pub fn retain_rounds(&mut self, keep: impl Fn(u64) -> bool) {
+        self.rounds.retain(|round, _| keep(*round));
+    }
+
+    /// Number of rounds currently retained. Status and test surface.
+    pub fn round_count(&self) -> usize {
+        self.rounds.len()
+    }
+
     /// Try finalizing beacon output for a round once threshold is reached.
     pub fn try_finalize_round(&self, round: u64) -> Option<BeaconRandomnessOutput> {
         let shares_map = self.rounds.get(&round)?;

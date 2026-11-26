@@ -139,6 +139,11 @@ pub(crate) async fn handle_pq_auth_pdu(
                         if role == SessionRole::Responder {
                             send_pq_auth_proof(node, sock, src, fallback, peer_fp).await;
                         }
+                        // Tier 1 wiring: advertise the braid tip this session
+                        // just produced, and present a relay bandwidth voucher.
+                        #[cfg(feature = "research")]
+                        super::research_hooks::session_established(node, sock, src, fallback, peer_fp)
+                            .await;
                     }
                     Err(err) => {
                         tracing::warn!(

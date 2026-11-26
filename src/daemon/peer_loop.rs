@@ -869,6 +869,17 @@ pub(crate) async fn handle_pkt(
             }
         }
 
+        // ── Tier 1 revocation gate (braid clone-suicide proof) ──
+        //
+        // A peer that signed two different rotations from one key has proven it
+        // is a clone. Nothing it sends afterwards is attributable to one device,
+        // so the packet path stops here rather than carrying traffic for it.
+        #[cfg(feature = "research")]
+        if super::research_hooks::braid::peer_revoked(&peer_fp) {
+            tracing::warn!(peer = %peer_fp, "braid: payload from a revoked identity dropped");
+            return;
+        }
+
         // ── Ratchet step ──
         //
         // Before any data handling, and before the tunnel check: these two magics
@@ -894,6 +905,18 @@ pub(crate) async fn handle_pkt(
         // ── Post-Quantum Identity Authentication ──
         if let Some(payload) = frame_payload(pt) {
             if handle_pq_auth_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
+                return;
+            }
+        }
+
+        // ── Tier 1 research control PDUs ──
+        //
+        // Braid transitions, entropy-beacon shares and bandwidth vouchers all
+        // have their own magics and are consumed here, ahead of the tunnel and
+        // relay branches, so none of them can be read as application data.
+        #[cfg(feature = "research")]
+        if let Some(payload) = frame_payload(pt) {
+            if super::research_hooks::handle_control(&peer_fp, payload) {
                 return;
             }
         }
@@ -1185,6 +1208,13 @@ pub(crate) async fn handle_pkt(
                     );
                     return;
                 };
+                // Tier 1 wiring: relay transit is charged against the sender's
+                // banked voucher. With `GHOST_RELAY_VOUCHERS` off this is a
+                // no-op that always admits.
+                #[cfg(feature = "research")]
+                if !super::research_hooks::voucher::admit_transit(&peer_fp, payload.len()) {
+                    return;
+                }
                 match fallback::relay_hop(relay, &peer_fp, payload) {
                     Ok(hop) => {
                         // Length only, never contents: enough to show the relay
