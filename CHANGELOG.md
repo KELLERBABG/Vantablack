@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [3.7.0] — 2026-11-26
+
+> **Versioning Policy:** `vX.0.0` = full major release; `v0.X.0` = module(s) wired, added, or upgraded; `v0.0.X` = bugfixes and small incremental changes (`3.7.x` tracks multi-host hardening toward `v4.0.0`).
+
+### Added / Wired
+- **Tier-1 `research` Daemon Hooks (`src/daemon/research_hooks.rs`, `tests/research_tier1.rs`):** Wired all 7 Tier-1 primitives (`braid_identity`, `erosion`, `dead_drop`, `entropy_beacon`, `polysemy`, `mesh_archive`, `bandwidth_voucher`) with durable `.braid`/`.journal` persistence, publish-gate protection, frozen beacon rounds, and DTN vault sealing (`9` integration tests + `12` daemon hook unit tests passing).
+- **Architecture & Anti-Abuse Docs:** Added `docs/anti_abuse.md` and `docs/DORMANT_MODULES.md`.
+
+### Removed / Rolled Back
+- **SDR & QKD Hardware Backends (`20b7f7d`):** Removed `sdr` (`abos`), `qkd-tls`, `src/ghost/layers/l10_qel_etsi.rs`, and `tests/qkd_etsi014_kme.rs`; removed `landauer.rs` and `photonic_orbit.rs` (`a9a3ea2`).
+
+### Earlier `v3.0.0+` Unreleased Notes
+
 Implements the four primitives `DEV/UNPRECEDENTED_PRIMITIVES.md` lists as
 "not yet implemented". They are `research`-gated like every other dormant
 module, add no node state, and are not promoted until benchmarked against the
