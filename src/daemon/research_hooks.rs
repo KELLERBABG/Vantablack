@@ -27,7 +27,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
-use vantablack::ghost::net::{braid_identity, dead_drop, entropy_beacon, mesh_archive, polysemy};
+use vantablack::ghost::net::{braid_identity, dead_drop, entropy_beacon, mesh_archive, polysemy, sheaf};
 use vantablack::ghost::v2::erosion;
 
 /// Wall-clock seconds, the clock every epoch in this module is expressed on.
@@ -78,6 +78,7 @@ pub(crate) fn handle_control(from_fp: &str, payload: &[u8]) -> Option<Vec<Vec<u8
     if braid::handle_pdu(from_fp, payload)
         || beacon_wire::handle_pdu(from_fp, payload)
         || voucher::handle_pdu(from_fp, payload)
+        || sheaf_monitor::handle_pdu(from_fp, payload)
     {
         return Some(Vec::new());
     }
@@ -101,6 +102,10 @@ pub(crate) async fn session_established(
     if let Some(present) = voucher::present_payload(peer_fp) {
         deliver(nc, sock, src, fallback, peer_fp, &present).await;
     }
+    let our_fp = nc.fingerprint();
+    if let Some(obs) = sheaf_monitor::obs_payload(&our_fp) {
+        deliver(nc, sock, src, fallback, peer_fp, &obs).await;
+    }
     for queued in vault::take_outbox(peer_fp) {
         deliver(nc, sock, src, fallback, peer_fp, &queued).await;
     }
@@ -121,6 +126,12 @@ pub(crate) async fn gossip_beat(
     let our_fp = nc.fingerprint();
     let share = beacon_wire::share_payload(&our_fp);
     deliver(nc, sock, src, fallback, peer_fp, &share).await;
+    if let Some(obs) = sheaf_monitor::obs_payload(&our_fp) {
+        deliver(nc, sock, src, fallback, peer_fp, &obs).await;
+    }
+    for edge_pdu in sheaf_monitor::edge_gossip_payloads() {
+        deliver(nc, sock, src, fallback, peer_fp, &edge_pdu).await;
+    }
     if let Some(present) = voucher::present_payload(peer_fp) {
         deliver(nc, sock, src, fallback, peer_fp, &present).await;
     }
@@ -153,6 +164,7 @@ pub(crate) fn status_json(active_sessions: usize) -> serde_json::Value {
         },
         "vault": vault::status(),
         "voucher": voucher::stats(),
+        "sheaf": sheaf_monitor::status(),
     })
 }
 
@@ -2856,6 +2868,243 @@ pub(crate) mod worlds {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// 6. sheaf — topological split-world detection over discrete state
+// ══════════════════════════════════════════════════════════════════
+
+pub(crate) mod sheaf_monitor {
+    use super::*;
+
+    pub(crate) const MAGIC: &[u8; 14] = b"GHOST_SHEAF___";
+    const OP_OBS: u8 = 1;
+    const OP_EDGE: u8 = 2;
+    const DIMENSION: usize = 3;
+    const MAX_EDGES: usize = 512;
+
+    #[derive(Default)]
+    struct SheafState {
+        local_fp: Option<String>,
+        local_obs: [i64; DIMENSION],
+        vertex_ids: HashMap<String, usize>,
+        /// Canonical undirected edge key `(min_fp, max_fp)` -> `(u_fp, v_fp, delta)`
+        edges: HashMap<(String, String), (String, String, [i64; DIMENSION])>,
+    }
+
+    impl SheafState {
+        fn vertex(&mut self, fp: &str) -> usize {
+            if let Some(&idx) = self.vertex_ids.get(fp) {
+                return idx;
+            }
+            let idx = self.vertex_ids.len();
+            self.vertex_ids.insert(fp.to_string(), idx);
+            idx
+        }
+
+        fn record_edge(&mut self, u_fp: &str, v_fp: &str, delta: [i64; DIMENSION]) {
+            if u_fp == v_fp {
+                return;
+            }
+            let key = if u_fp < v_fp {
+                (u_fp.to_string(), v_fp.to_string())
+            } else {
+                (v_fp.to_string(), u_fp.to_string())
+            };
+            if self.edges.len() >= MAX_EDGES && !self.edges.contains_key(&key) {
+                return;
+            }
+            self.vertex(u_fp);
+            self.vertex(v_fp);
+            self.edges
+                .insert(key, (u_fp.to_string(), v_fp.to_string(), delta));
+        }
+
+        fn evaluate(&self) -> (usize, usize, bool, usize) {
+            let vertices = self.vertex_ids.len();
+            if vertices == 0 || self.edges.is_empty() {
+                return (vertices, 0, false, 0);
+            }
+            let mut complex = sheaf::SheafComplex::new(vertices, DIMENSION);
+            for (u_fp, v_fp, delta) in self.edges.values() {
+                if let (Some(&u), Some(&v)) = (self.vertex_ids.get(u_fp), self.vertex_ids.get(v_fp))
+                {
+                    let _ = complex.connect(u, v, delta.to_vec());
+                }
+            }
+            let obs = complex.obstructions();
+            (vertices, complex.edges().len(), !obs.is_empty(), obs.len())
+        }
+    }
+
+    fn state() -> &'static Mutex<SheafState> {
+        static STATE: OnceLock<Mutex<SheafState>> = OnceLock::new();
+        STATE.get_or_init(|| Mutex::new(SheafState::default()))
+    }
+
+    pub(crate) fn enabled() -> bool {
+        toggle("GHOST_SHEAF", true)
+    }
+
+    /// Discrete local observation vector: `[grid_epoch, grid_cycle, rounds_frozen]`.
+    /// Uses discrete protocol counters only (no noisy WAN RTTs) to prevent false positives.
+    pub(crate) fn current_observation() -> [i64; DIMENSION] {
+        let (grid_epoch, grid_cycle, rounds_frozen) = beacon_wire::snapshot();
+        [grid_epoch as i64, grid_cycle as i64, rounds_frozen as i64]
+    }
+
+    pub(crate) fn obs_payload(our_fp: &str) -> Option<Vec<u8>> {
+        if !enabled() {
+            return None;
+        }
+        let obs = current_observation();
+        {
+            let mut st = state().lock();
+            st.local_fp = Some(our_fp.to_string());
+            st.local_obs = obs;
+            st.vertex(our_fp);
+        }
+        let fp_bytes = our_fp.as_bytes();
+        let fp_len = u8::try_from(fp_bytes.len()).ok()?;
+        let mut out = Vec::with_capacity(14 + 1 + 1 + fp_bytes.len() + DIMENSION * 8);
+        out.extend_from_slice(MAGIC);
+        out.push(OP_OBS);
+        out.push(fp_len);
+        out.extend_from_slice(fp_bytes);
+        for val in obs {
+            out.extend_from_slice(&val.to_be_bytes());
+        }
+        Some(out)
+    }
+
+    pub(crate) fn edge_gossip_payloads() -> Vec<Vec<u8>> {
+        if !enabled() {
+            return Vec::new();
+        }
+        let st = state().lock();
+        let mut out = Vec::new();
+        for (u_fp, v_fp, delta) in st.edges.values().take(16) {
+            let (Ok(ul), Ok(vl)) = (u8::try_from(u_fp.len()), u8::try_from(v_fp.len())) else {
+                continue;
+            };
+            let mut pdu = Vec::with_capacity(14 + 1 + 2 + u_fp.len() + v_fp.len() + DIMENSION * 8);
+            pdu.extend_from_slice(MAGIC);
+            pdu.push(OP_EDGE);
+            pdu.push(ul);
+            pdu.extend_from_slice(u_fp.as_bytes());
+            pdu.push(vl);
+            pdu.extend_from_slice(v_fp.as_bytes());
+            for val in delta {
+                pdu.extend_from_slice(&val.to_be_bytes());
+            }
+            out.push(pdu);
+        }
+        out
+    }
+
+    fn parse_i64_triple(bytes: &[u8]) -> Option<[i64; DIMENSION]> {
+        if bytes.len() != DIMENSION * 8 {
+            return None;
+        }
+        Some([
+            i64::from_be_bytes(bytes[0..8].try_into().ok()?),
+            i64::from_be_bytes(bytes[8..16].try_into().ok()?),
+            i64::from_be_bytes(bytes[16..24].try_into().ok()?),
+        ])
+    }
+
+    pub(crate) fn handle_pdu(from_fp: &str, payload: &[u8]) -> bool {
+        if payload.len() < 15 || &payload[..14] != MAGIC {
+            return false;
+        }
+        if !enabled() {
+            return true;
+        }
+        let op = payload[14];
+        let body = &payload[15..];
+        match op {
+            OP_OBS => {
+                let Some(&fp_len) = body.first() else {
+                    return true;
+                };
+                let fp_len = fp_len as usize;
+                if body.len() != 1 + fp_len + DIMENSION * 8 {
+                    return true;
+                }
+                let Ok(claimed_fp) = std::str::from_utf8(&body[1..1 + fp_len]) else {
+                    return true;
+                };
+                if claimed_fp != from_fp {
+                    return true;
+                }
+                let Some(peer_obs) = parse_i64_triple(&body[1 + fp_len..]) else {
+                    return true;
+                };
+                let mut st = state().lock();
+                if let Some(our_fp) = st.local_fp.clone() {
+                    let delta = [
+                        peer_obs[0].saturating_sub(st.local_obs[0]),
+                        peer_obs[1].saturating_sub(st.local_obs[1]),
+                        peer_obs[2].saturating_sub(st.local_obs[2]),
+                    ];
+                    st.record_edge(&our_fp, from_fp, delta);
+                }
+            }
+            OP_EDGE => {
+                let Some(&ul) = body.first() else {
+                    return true;
+                };
+                let ul = ul as usize;
+                if body.len() < 2 + ul {
+                    return true;
+                }
+                let Ok(u_fp) = std::str::from_utf8(&body[1..1 + ul]) else {
+                    return true;
+                };
+                let vl = body[1 + ul] as usize;
+                let rest = &body[2 + ul..];
+                if rest.len() != vl + DIMENSION * 8 {
+                    return true;
+                }
+                let Ok(v_fp) = std::str::from_utf8(&rest[..vl]) else {
+                    return true;
+                };
+                let Some(delta) = parse_i64_triple(&rest[vl..]) else {
+                    return true;
+                };
+                state().lock().record_edge(u_fp, v_fp, delta);
+            }
+            _ => {}
+        }
+        true
+    }
+
+    pub(crate) fn status() -> serde_json::Value {
+        let (vertices, edges, split_world, cycles) = state().lock().evaluate();
+        serde_json::json!({
+            "enabled": enabled(),
+            "vertices": vertices,
+            "edges": edges,
+            "split_world_detected": split_world,
+            "obstruction_cycles": cycles,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_and_record_for_test(edges: &[(&str, &str, [i64; DIMENSION])]) -> serde_json::Value {
+        let mut st = state().lock();
+        *st = SheafState::default();
+        for (u, v, d) in edges {
+            st.record_edge(u, v, *d);
+        }
+        let (vertices, edge_cnt, split_world, cycles) = st.evaluate();
+        serde_json::json!({
+            "vertices": vertices,
+            "edges": edge_cnt,
+            "split_world_detected": split_world,
+            "obstruction_cycles": cycles,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3451,5 +3700,29 @@ mod tests {
         assert!(status["braid"]["quarantined_peers"].is_number());
         assert!(status["vault"]["epoch_secs"].as_u64().unwrap_or(0) >= 60);
         assert!(status["voucher"]["onion_bytes"].is_number());
+        assert!(status["sheaf"]["vertices"].is_number());
+    }
+
+    /// v3.8.0: consistent discrete sheaf observations yield zero obstructions;
+    /// a split-world / lying edge around a cycle surfaces as a CycleWitness.
+    #[test]
+    fn sheaf_detects_split_world_cycle_and_accepts_consistent_triangle() {
+        let ok = sheaf_monitor::reset_and_record_for_test(&[
+            ("a", "b", [1, 2, 0]),
+            ("b", "c", [0, -1, 1]),
+            ("c", "a", [-1, -1, -1]),
+        ]);
+        assert_eq!(ok["vertices"], 3);
+        assert_eq!(ok["edges"], 3);
+        assert_eq!(ok["split_world_detected"], false);
+        assert_eq!(ok["obstruction_cycles"], 0);
+
+        let split = sheaf_monitor::reset_and_record_for_test(&[
+            ("a", "b", [1, 0, 0]),
+            ("b", "c", [0, 0, 0]),
+            ("c", "a", [0, 0, 0]),
+        ]);
+        assert_eq!(split["split_world_detected"], true);
+        assert_eq!(split["obstruction_cycles"], 1);
     }
 }

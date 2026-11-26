@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.8.0] — 2026-11-26
+
+- **Tier-2 `sheaf` Wiring (`src/daemon/research_hooks.rs::sheaf_monitor`):** Wired `SheafComplex` (`GHOST_SHEAF___` `OP_OBS` / `OP_EDGE` PDUs, `GHOST_SHEAF=1` default) using discrete protocol counters (`[grid_epoch, grid_cycle, rounds_frozen]`) instead of noisy WAN RTTs to detect split-world / eclipse cycles (`obstruction_cycles`) and surface `research.sheaf` in `/api/status` (`19` daemon hook tests passing, `0` clippy warnings).
+
+---
+
 ## [3.7.3] — 2026-11-26
 
 - **Voucher & Onion Unification (`src/daemon/research_hooks.rs`, `src/daemon/peer_loop.rs`):** Unified `BLND!` and `RLY!` transit admission onto a single shared `RelayBandwidthBank` nullifier; added `§6` session-bound relay voucher documentation to `docs/anti_abuse.md`.
