@@ -27,7 +27,9 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
-use vantablack::ghost::net::{braid_identity, dead_drop, entropy_beacon, mesh_archive, polysemy, sheaf};
+use vantablack::ghost::net::{
+    braid_identity, dead_drop, entropy_beacon, mesh_archive, metabolic, polysemy, sheaf,
+};
 use vantablack::ghost::v2::erosion;
 
 /// Wall-clock seconds, the clock every epoch in this module is expressed on.
@@ -103,6 +105,7 @@ pub(crate) async fn session_established(
         deliver(nc, sock, src, fallback, peer_fp, &present).await;
     }
     let our_fp = nc.fingerprint();
+    metabolic_guard::note_peer_pulse(src.ip(), now_secs());
     if let Some(obs) = sheaf_monitor::obs_payload(&our_fp) {
         deliver(nc, sock, src, fallback, peer_fp, &obs).await;
     }
@@ -124,6 +127,7 @@ pub(crate) async fn gossip_beat(
         deliver(nc, sock, src, fallback, peer_fp, &tip).await;
     }
     let our_fp = nc.fingerprint();
+    metabolic_guard::note_peer_pulse(src.ip(), now_secs());
     let share = beacon_wire::share_payload(&our_fp);
     deliver(nc, sock, src, fallback, peer_fp, &share).await;
     if let Some(obs) = sheaf_monitor::obs_payload(&our_fp) {
@@ -165,6 +169,7 @@ pub(crate) fn status_json(active_sessions: usize) -> serde_json::Value {
         "vault": vault::status(),
         "voucher": voucher::stats(),
         "sheaf": sheaf_monitor::status(),
+        "metabolic": metabolic_guard::status(),
     })
 }
 
@@ -3105,6 +3110,139 @@ pub(crate) mod sheaf_monitor {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// 7. metabolic_guard — Tier-2 radioactive half-life authority decay
+// ══════════════════════════════════════════════════════════════════
+
+pub(crate) mod metabolic_guard {
+    use super::*;
+
+    const DEFAULT_HALF_LIFE_SECS: f64 = 300.0;
+    const MIN_HALF_LIFE_SECS: f64 = 10.0;
+    const DEFAULT_THETA: f64 = 2.0;
+    const MIN_THETA: f64 = 0.5;
+
+    struct MetabolicState {
+        clock: metabolic::MetabolicClock,
+        theta: f64,
+    }
+
+    impl MetabolicState {
+        fn with_params(half_life: f64, theta: f64) -> Self {
+            let clock = metabolic::MetabolicClock::new(half_life)
+                .expect("validated positive finite half-life");
+            Self { clock, theta }
+        }
+    }
+
+    fn parse_f64_env(name: &str, default: f64, floor: f64) -> f64 {
+        match std::env::var(name) {
+            Ok(raw) => raw
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v >= floor)
+                .unwrap_or(default),
+            Err(_) => default,
+        }
+    }
+
+    fn state() -> &'static Mutex<MetabolicState> {
+        static STATE: OnceLock<Mutex<MetabolicState>> = OnceLock::new();
+        STATE.get_or_init(|| {
+            let half_life = parse_f64_env(
+                "GHOST_METABOLIC_HALF_LIFE_SECS",
+                DEFAULT_HALF_LIFE_SECS,
+                MIN_HALF_LIFE_SECS,
+            );
+            let theta = parse_f64_env("GHOST_METABOLIC_THETA", DEFAULT_THETA, MIN_THETA);
+            Mutex::new(MetabolicState::with_params(half_life, theta))
+        })
+    }
+
+    pub(crate) fn enabled() -> bool {
+        toggle("GHOST_METABOLIC", true)
+    }
+
+    /// Derive a Sybil-resistant `DomainId` from the authenticated transport IP's
+    /// coarse routing cluster (`/16` for IPv4, `/32` for IPv6) rather than any
+    /// peer-declared ID, collapsing single-host/single-prefix Sybils to 1 domain.
+    pub(crate) fn domain_for_ip(ip: IpAddr) -> metabolic::DomainId {
+        let mut h = Sha256::new();
+        match ip {
+            IpAddr::V4(v4) => {
+                h.update(b"VB-METABOLIC-V4-16");
+                let oct = v4.octets();
+                h.update([oct[0], oct[1]]);
+            }
+            IpAddr::V6(v6) => {
+                h.update(b"VB-METABOLIC-V6-32");
+                let seg = v6.segments();
+                h.update(seg[0].to_be_bytes());
+                h.update(seg[1].to_be_bytes());
+            }
+        }
+        let digest = h.finalize();
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&digest[..16]);
+        out
+    }
+
+    /// Record a pulse from an authenticated peer's transport endpoint.
+    pub(crate) fn note_peer_pulse(ip: IpAddr, at: u64) {
+        if !enabled() {
+            return;
+        }
+        let domain = domain_for_ip(ip);
+        state().lock().clock.note_pulse(domain, at);
+    }
+
+    /// Whether metabolic mass currently meets `theta` (or `true` if disabled).
+    #[allow(dead_code)]
+    pub(crate) fn is_authorized() -> bool {
+        if !enabled() {
+            return true;
+        }
+        let st = state().lock();
+        st.clock.is_authorized(now_secs(), st.theta)
+    }
+
+    pub(crate) fn status_at(now: u64) -> serde_json::Value {
+        let st = state().lock();
+        let mass = st.clock.mass(now);
+        let mass_rounded = (mass * 10_000.0).round() / 10_000.0;
+        serde_json::json!({
+            "enabled": enabled(),
+            "domains": st.clock.domains(),
+            "mass": mass_rounded,
+            "theta": st.theta,
+            "half_life_secs": st.clock.half_life(),
+            "authorized": st.clock.is_authorized(now, st.theta),
+            "projected_death_secs": st.clock.projected_death(now, st.theta),
+        })
+    }
+
+    pub(crate) fn status() -> serde_json::Value {
+        status_at(now_secs())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_and_record_for_test(
+        half_life: f64,
+        theta: f64,
+        pulses: &[(IpAddr, u64)],
+        eval_at: u64,
+    ) -> serde_json::Value {
+        let mut st = state().lock();
+        *st = MetabolicState::with_params(half_life, theta);
+        for (ip, at) in pulses {
+            st.clock.note_pulse(domain_for_ip(*ip), *at);
+        }
+        drop(st);
+        status_at(eval_at)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3701,6 +3839,8 @@ mod tests {
         assert!(status["vault"]["epoch_secs"].as_u64().unwrap_or(0) >= 60);
         assert!(status["voucher"]["onion_bytes"].is_number());
         assert!(status["sheaf"]["vertices"].is_number());
+        assert!(status["metabolic"]["domains"].is_number());
+        assert!(status["metabolic"]["theta"].is_number());
     }
 
     /// v3.8.0: consistent discrete sheaf observations yield zero obstructions;
@@ -3724,5 +3864,30 @@ mod tests {
         ]);
         assert_eq!(split["split_world_detected"], true);
         assert_eq!(split["obstruction_cycles"], 1);
+    }
+
+    /// Tier 2: same-/16 Sybils collapse to 1 saturated domain; distinct
+    /// routing clusters nourish authority and decay below theta on schedule.
+    #[test]
+    fn metabolic_collapses_same_prefix_sybils_and_decays_across_half_life() {
+        let sybil_pulses: Vec<(IpAddr, u64)> = (1u8..=50)
+            .map(|host| (IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, host)), 1_000))
+            .collect();
+        let sybil = metabolic_guard::reset_and_record_for_test(60.0, 1.5, &sybil_pulses, 1_000);
+        assert_eq!(sybil["domains"], 1);
+        assert_eq!(sybil["mass"], 1.0);
+        assert_eq!(sybil["authorized"], false);
+
+        let mut two_domains = sybil_pulses;
+        two_domains.push((IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 5)), 1_000));
+        let alive = metabolic_guard::reset_and_record_for_test(60.0, 1.5, &two_domains, 1_000);
+        assert_eq!(alive["domains"], 2);
+        assert_eq!(alive["mass"], 2.0);
+        assert_eq!(alive["authorized"], true);
+        assert_eq!(alive["projected_death_secs"], 1_025);
+
+        let decayed = metabolic_guard::status_at(1_060);
+        assert_eq!(decayed["mass"], 1.0);
+        assert_eq!(decayed["authorized"], false);
     }
 }

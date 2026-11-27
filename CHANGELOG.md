@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.8.1] — 2026-11-26
+
+- **Tier-2 `metabolic` Wiring (`src/daemon/research_hooks.rs::metabolic_guard`):** Wired `MetabolicClock` (`GHOST_METABOLIC=1` default, `GHOST_METABOLIC_HALF_LIFE_SECS=300`, `GHOST_METABOLIC_THETA=2.0`) on `session_established` and `gossip_beat` using transport-verified `/16` (IPv4) and `/32` (IPv6) routing-cluster domains to collapse single-prefix Sybils to one saturated unit and surface `research.metabolic` (`domains`, `mass`, `theta`, `half_life_secs`, `authorized`, `projected_death_secs`) in `/api/status` (`20` daemon hook tests passing).
+
+---
+
 ## [3.8.0] — 2026-11-26
 
 - **Tier-2 `sheaf` Wiring (`src/daemon/research_hooks.rs::sheaf_monitor`):** Wired `SheafComplex` (`GHOST_SHEAF___` `OP_OBS` / `OP_EDGE` PDUs, `GHOST_SHEAF=1` default) using discrete protocol counters (`[grid_epoch, grid_cycle, rounds_frozen]`) instead of noisy WAN RTTs to detect split-world / eclipse cycles (`obstruction_cycles`) and surface `research.sheaf` in `/api/status` (`19` daemon hook tests passing, `0` clippy warnings).
