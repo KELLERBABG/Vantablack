@@ -34,10 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-/// LEDBAT++ queueing-delay target.
 pub const LEDBAT_TARGET_MS: f64 = 60.0;
-
-// ── Deterministic RNG (no dependency on the global thread RNG) ──────────────
 
 #[derive(Debug, Clone)]
 struct SplitMix(u64);
@@ -64,32 +61,16 @@ impl SplitMix {
     }
 }
 
-// ── Input-independent slot schedule ─────────────────────────────────────────
-
-/// Slot length. Every slot is the same length whether or not a frame leaves.
 pub const SLOT_MS: u64 = 250;
-/// Wire size of one scheduled frame.
 pub const FRAME_BYTES: usize = 576;
-/// Slots per renewal cycle. ON lengths are drawn per cycle; OFF is the rest.
 const CYCLE_SLOTS: u64 = 12;
-/// ON lengths a cycle may draw.
 const ON_CHOICES: [u64; 3] = [1, 2, 3];
-/// Hard bound on a consecutive ON run. A renewal schedule whose bursts can
-/// merge across a cycle boundary is a longer burst-end marker than the one it
-/// replaced, so a cycle never wraps and this is measurable.
 pub const MAX_ON_RUN_SLOTS: u64 = 3;
-/// Maximum fraction of slots that may be ON in the measured window.
 pub const MAX_DUTY: f64 = 0.35;
-/// How many slots of schedule are required before shaping is evidence at all.
 pub const MIN_SHAPING_SLOTS: u64 = 48;
-/// How long a shaping observation remains evidence.
 pub const SHAPING_TTL_SECS: u64 = 120;
-/// Slots summarized by one evidence sample (60 s at [`SLOT_MS`]).
 const EVIDENCE_WINDOW_SLOTS: u64 = 240;
 
-/// What the live schedule actually did, as opposed to what it was configured to
-/// do. `slots` is the measured window length, `duty` and `max_on_run` are
-/// computed from the same pure schedule the emitter obeys.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ShapingEvidence {
     pub slots: u64,
@@ -100,12 +81,10 @@ pub struct ShapingEvidence {
 }
 
 impl ShapingEvidence {
-    /// Enough schedule and at least one real emission to talk about shaping.
     pub fn measured_enough(&self) -> bool {
         self.slots >= MIN_SHAPING_SLOTS && self.emissions > 0
     }
 
-    /// The burst and duty bounds. A violation is a failure, not a footnote.
     pub fn within_contract(&self) -> bool {
         self.max_on_run <= MAX_ON_RUN_SLOTS && self.duty <= MAX_DUTY
     }
@@ -119,43 +98,23 @@ impl ShapingEvidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
-    /// This slot may carry one frame. `real` says a queued real frame took the
-    /// slot; `false` means the 576 bytes are dummy.
     EmitFrame {
         bytes: usize,
         real: bool,
         after_ms: u64,
     },
-    /// OFF slot: nothing leaves, whatever the queue holds.
     Sleep { ms: u64 },
 }
 
-/// Whether slot `slot` of `seed`'s schedule is ON.
-///
-/// This is a pure function of `(seed, slot_index)`. It reads no queue and no
-/// clock, so traffic cannot move an edge — the failure that made the old 25 ms
-/// yield window a deterministic burst-end marker. Each cycle redraws its ON
-/// start and length, which is the renewal part: bursts vary, the duty cycle
-/// stays bounded.
-///
-/// The ON run is placed wholly inside its cycle, after a guard OFF slot at
-/// position 0. Without the guard, a cycle ending ON could touch the next cycle
-/// starting ON, producing a run of up to `2 * MAX_ON_RUN_SLOTS` and a
-/// correspondingly longer silence — exactly the burst-end edge this shaper
-/// exists to bound. The guard slot is never ON, so consecutive cycles always
-/// have at least one OFF slot between their bursts.
 pub fn slot_is_on(seed: u64, slot: u64) -> bool {
     let cycle = slot / CYCLE_SLOTS;
     let pos = slot % CYCLE_SLOTS;
     let mut rng = SplitMix::new(seed ^ cycle.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     let len = ON_CHOICES[rng.below(ON_CHOICES.len() as u64) as usize];
-    // start >= 1 is the guard: slot 0 of every cycle is OFF.
     let start = 1 + rng.below(CYCLE_SLOTS - len);
     pos >= start && pos < start + len
 }
 
-/// Summarize `slots` slots of `seed`'s schedule plus the emitter's counters.
-/// Pure: tests can pin a window without touching the process clock.
 pub fn shaping_evidence_for(
     seed: u64,
     slots: u64,
@@ -187,8 +146,6 @@ pub fn shaping_evidence_for(
     }
 }
 
-// ── Scavenger ───────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
@@ -213,11 +170,6 @@ pub struct Scavenger {
 }
 
 impl Scavenger {
-    /// One scheduling decision, timed with a monotonic clock.
-    ///
-    /// `background_due` says a cover/background packet wants the link;
-    /// `real_pending` says an interactive packet is queued. Real traffic always
-    /// wins, and the elapsed time is the in-process yield latency.
     pub fn decide(&mut self, real_pending: bool, background_due: bool) -> Decision {
         let started = Instant::now();
         let decision = if real_pending {
@@ -265,13 +217,6 @@ impl Scavenger {
         }
     }
 
-    /// Measure the real decision path `iterations` times.
-    ///
-    /// Decisions are timed in batches of 64 and divided by the batch size. A
-    /// per-call `Instant` pair measures the platform clock as much as the work:
-    /// on Windows the observable granularity is ~100 µs, which would make an
-    /// honest sub-microsecond decision look like it missed the budget. Batching
-    /// keeps the timer out of the measurement.
     pub fn bench(&mut self, iterations: usize) -> YieldStats {
         const BATCH: usize = 4_096;
         let mut done: usize = 0;
@@ -289,9 +234,6 @@ impl Scavenger {
     }
 }
 
-// ── LEDBAT++ ────────────────────────────────────────────────────────────────
-
-/// LEDBAT++ congestion window for the bulk path.
 #[derive(Debug, Clone, Serialize)]
 pub struct Ledbat {
     cwnd: f64,
@@ -326,7 +268,6 @@ impl Ledbat {
         self.base_rtt_ms
     }
 
-    /// One acknowledged packet. `rtt_ms` is measured, `bytes_acked` is payload.
     pub fn on_ack(&mut self, rtt_ms: f64, bytes_acked: f64) {
         self.last_rtt_ms = rtt_ms;
         let base = *self.base_rtt_ms.get_or_insert(rtt_ms);
@@ -349,7 +290,6 @@ impl Ledbat {
         self.cwnd = self.cwnd.max(self.min_cwnd);
     }
 
-    /// Multiplicative decrease on loss, with a floor.
     pub fn on_loss(&mut self) {
         self.ssthresh = (self.cwnd / 2.0).max(self.min_cwnd);
         self.cwnd = self.ssthresh;
@@ -363,20 +303,13 @@ impl Ledbat {
     }
 }
 
-// ── Live runtime ────────────────────────────────────────────────────────────
-
 struct Runtime {
     enabled: bool,
-    /// Monotonic-enough epoch the slot grid is counted from.
     epoch_ms: u64,
-    /// Per-process schedule seed. Independent of traffic.
     seed: u64,
     last_real_ms: AtomicU64,
     real_packets: AtomicU64,
-    /// Frames emitted on the schedule, dummy or real.
     cover_packets: AtomicU64,
-    /// When the last frame actually left, so the truth ledger can expire the
-    /// witness instead of treating a counter from hours ago as live cover.
     last_cover_emission: AtomicU64,
     scavenger: Mutex<Scavenger>,
 }
@@ -412,23 +345,16 @@ pub fn enabled() -> bool {
     runtime().enabled
 }
 
-/// Current slot on this process's schedule.
 fn current_slot(rt: &Runtime) -> u64 {
     now_ms().saturating_sub(rt.epoch_ms) / SLOT_MS
 }
 
-/// Real traffic was seen. This records *what* is queued for the next ON slot; it
-/// never delays or gates an emission.
 pub fn note_real_traffic() {
     let rt = runtime();
     rt.last_real_ms.store(now_ms(), Ordering::Relaxed);
     rt.real_packets.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Whether a real frame is queued for the current slot.
-///
-/// This is a one-slot lookback for classification only. Nothing in the schedule
-/// reads it.
 pub fn real_traffic_pending() -> bool {
     let rt = runtime();
     if !rt.enabled {
@@ -438,23 +364,11 @@ pub fn real_traffic_pending() -> bool {
     last != 0 && now_ms().saturating_sub(last) <= SLOT_MS
 }
 
-/// Whether the cover task may emit in this slot.
-///
-/// Disabled RACS returns `true` (v1 behaviour). Enabled RACS returns the
-/// schedule's decision for the current slot, and nothing else: no queue length,
-/// no recent-traffic timer, no rate estimate.
 pub fn cover_allowed() -> bool {
     let rt = runtime();
     !rt.enabled || slot_is_on(rt.seed, current_slot(rt))
 }
 
-/// Account for one emission attempt and return the slot's decision.
-///
-/// A slot that is ON emits one [`FRAME_BYTES`] frame; a queued real frame is
-/// offered the slot first (`real: true`), otherwise the frame is dummy. An OFF
-/// slot emits nothing even when real traffic is queued — that is the cost of an
-/// input-independent schedule, and it is why the covered link must have enough
-/// duty cycle for the flows it carries.
 pub fn observe_cover(real_pending: bool) -> Action {
     let rt = runtime();
     let on = !rt.enabled || slot_is_on(rt.seed, current_slot(rt));
@@ -476,14 +390,10 @@ pub fn observe_cover(real_pending: bool) -> Action {
     action
 }
 
-/// Frames emitted on the schedule since process start. This is the counter the
-/// truth ledger reads, so it must be a wire event and not a configuration bit.
 pub fn cover_packets_emitted() -> u64 {
     runtime().cover_packets.load(Ordering::Relaxed)
 }
 
-/// `(frames emitted, unix time of the last emission)`. A zero timestamp means
-/// nothing has been emitted, which is unmeasured rather than a zero count.
 pub fn cover_measurement() -> (u64, u64) {
     let rt = runtime();
     (
@@ -492,8 +402,6 @@ pub fn cover_measurement() -> (u64, u64) {
     )
 }
 
-/// Measured shaping evidence, or `None` before the emitter has put a frame on
-/// the wire. A `None` is not "shaped": it is unmeasured, and the ledger says so.
 pub fn shaping_evidence() -> Option<ShapingEvidence> {
     let rt = runtime();
     let (emissions, last) = cover_measurement();
@@ -508,12 +416,10 @@ pub fn shaping_evidence() -> Option<ShapingEvidence> {
 
 static REAL_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Mark that a real application frame was queued/sent for the current RACS slot.
 pub fn note_real_sent() {
     REAL_PENDING.store(true, Ordering::Release);
 }
 
-/// Consume the real-frame flag for the current RACS cover emission slot.
 pub fn take_real_pending() -> bool {
     REAL_PENDING.swap(false, Ordering::AcqRel)
 }
@@ -575,8 +481,6 @@ mod tests {
 
     #[test]
     fn the_schedule_reads_no_traffic_state() {
-        // `slot_is_on` takes only `(seed, slot)`, so the strongest test is that
-        // the same slot sequence is reproduced after a burst of real packets.
         let seed = 0x1234_5678_9ABC_DEF0;
         let baseline: Vec<bool> = (0..CYCLE_SLOTS * 8).map(|s| slot_is_on(seed, s)).collect();
 
@@ -607,7 +511,6 @@ mod tests {
                     saw_off = true;
                 }
             }
-            // ON runs never wrap, so a single cycle cannot exceed one burst.
             assert!(
                 on_in_cycle <= cap,
                 "cycle {cycle} had {on_in_cycle} ON slots, cap {cap}"
@@ -629,8 +532,6 @@ mod tests {
 
     #[test]
     fn an_off_slot_emits_nothing_and_an_on_slot_emits_one_frame() {
-        // The live slot is clock-driven, so the assertion is the invariant the
-        // two branches share rather than a forced state.
         match observe_cover(true) {
             Action::EmitFrame {
                 bytes, after_ms, ..

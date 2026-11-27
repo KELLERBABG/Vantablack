@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.8.2] — 2026-11-27
+
+- **Codebase Cleanup:** Removed verbose inline `///` and `//` comments across `123` Rust files in `src/` (`7,857` `///` lines and `4,290` `//` lines) while preserving all `//!` module-level headers (file purpose, brief explanation, wire layouts/invariants) and `// SAFETY:` invariants (`cargo clippy --all-targets --features research -- -D warnings` clean, `20` `research_hooks` + `48` `layer_tests` passing).
+
+---
+
 ## [3.8.1] — 2026-11-26
 
 - **Tier-2 `metabolic` Wiring (`src/daemon/research_hooks.rs::metabolic_guard`):** Wired `MetabolicClock` (`GHOST_METABOLIC=1` default, `GHOST_METABOLIC_HALF_LIFE_SECS=300`, `GHOST_METABOLIC_THETA=2.0`) on `session_established` and `gossip_beat` using transport-verified `/16` (IPv4) and `/32` (IPv6) routing-cluster domains to collapse single-prefix Sybils to one saturated unit and surface `research.metabolic` (`domains`, `mass`, `theta`, `half_life_secs`, `authorized`, `projected_death_secs`) in `/api/status` (`20` daemon hook tests passing).

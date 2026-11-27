@@ -41,18 +41,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
-/// Total wire size of one cell.
 pub const CELL_LEN: usize = 180;
-/// Sealed body size.
 pub const SEALED_LEN: usize = 152;
-/// Authentication tag size.
 pub const TAG_LEN: usize = 16;
-/// Maximum plaintext that fits in one cell (2-byte length prefix).
 pub const MAX_PAYLOAD: usize = SEALED_LEN - 2;
-/// A stable domain separator for the nonce derivation.
 const NONCE_DOMAIN: &[u8] = b"VB-GHOSTCELL-NANO-V1";
 
-/// One 180-byte DTN cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhostCellNano {
     pub cell_id: [u8; 4],
@@ -62,7 +56,6 @@ pub struct GhostCellNano {
 }
 
 impl GhostCellNano {
-    /// Seal `payload` (never more than [`MAX_PAYLOAD`] bytes).
     pub fn seal(
         key: &[u8; 32],
         cell_id: [u8; 4],
@@ -104,7 +97,6 @@ impl GhostCellNano {
         })
     }
 
-    /// Open a cell. A truncated, reordered or tampered cell fails here.
     pub fn open(&self, key: &[u8; 32]) -> Result<Vec<u8>, String> {
         let cipher = XChaCha20Poly1305::new(key.into());
         let mut combined = Vec::with_capacity(SEALED_LEN + TAG_LEN);
@@ -132,7 +124,6 @@ impl GhostCellNano {
         Ok(body[2..2 + len].to_vec())
     }
 
-    /// The exact 180 bytes that cross a rung.
     pub fn to_bytes(&self) -> [u8; CELL_LEN] {
         let mut out = [0u8; CELL_LEN];
         out[..4].copy_from_slice(&self.cell_id);
@@ -184,9 +175,6 @@ fn cell_aad(cell_id: &[u8; 4], seq: u64) -> [u8; 12] {
     aad
 }
 
-// ── Ladder ──────────────────────────────────────────────────────────────────
-
-/// The six rungs, in descending preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Rung {
@@ -219,7 +207,6 @@ impl Rung {
         }
     }
 
-    /// Whether this build can drive the rung, with the reason when it cannot.
     pub fn availability(self) -> (bool, String) {
         match self {
             Rung::MultiPhyIp => (true, "compiled UDP datagram path".into()),
@@ -282,11 +269,6 @@ pub struct LadderPlan {
     pub rungs_refused: Vec<&'static str>,
 }
 
-/// Build a plan for `bytes` under `max_rungs` rungs.
-///
-/// A rung that cannot be driven is skipped and named in `rungs_refused`; if no
-/// rung is available the call fails with every reason, rather than returning an
-/// empty plan that looks like success.
 pub fn plan(bytes: usize, max_rungs: usize) -> Result<LadderPlan, String> {
     if bytes == 0 {
         return Err("nothing to carry: payload is empty".into());
@@ -312,8 +294,6 @@ pub fn plan(bytes: usize, max_rungs: usize) -> Result<LadderPlan, String> {
         if !available {
             continue;
         }
-        // Distribute cells across the remaining usable rungs, so a large bundle
-        // is not forced through one link while another sits idle.
         steps.push(LadderStep {
             rung: rung.id(),
             cells: 1,
@@ -332,7 +312,6 @@ pub fn plan(bytes: usize, max_rungs: usize) -> Result<LadderPlan, String> {
             .collect();
         return Err(format!("no continuum rung available — {}", why.join("; ")));
     }
-    // Spread the remaining cells evenly over the chosen rungs.
     let mut remaining = needed.saturating_sub(steps.len());
     let step_count = steps.len();
     let mut i: usize = 0;
@@ -348,9 +327,6 @@ pub fn plan(bytes: usize, max_rungs: usize) -> Result<LadderPlan, String> {
     })
 }
 
-// ── Mule store (Merkle-CRDT DTN) ────────────────────────────────────────────
-
-/// A content-addressed bundle in a mule store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Bundle {
     pub id: String,
@@ -359,8 +335,6 @@ pub struct Bundle {
     pub cell: [u8; 4],
 }
 
-/// A directory of bundles. This is the "sneakernet" half of the mule rung: the
-/// same contents on a USB stick, an SD card or a synced folder.
 #[derive(Debug, Clone)]
 pub struct MuleStore {
     dir: PathBuf,
@@ -387,7 +361,6 @@ impl MuleStore {
             .map_err(|e| format!("cannot create mule dir {}: {e}", self.dir.display()))
     }
 
-    /// Store a cell's bytes and return its content address.
     pub fn put(&self, bytes: &[u8]) -> Result<Bundle, String> {
         if bytes.len() != CELL_LEN {
             return Err(format!("a bundle carries one {CELL_LEN}-byte cell"));
@@ -451,7 +424,6 @@ impl MuleStore {
         std::fs::read(self.dir.join(format!("{id}.cell"))).ok()
     }
 
-    /// Merkle root over sorted bundle ids. Empty stores have the all-zero root.
     pub fn merkle_root(&self) -> String {
         let mut level: Vec<[u8; 32]> = self
             .list()
@@ -487,10 +459,6 @@ impl MuleStore {
         hex::encode(level[0])
     }
 
-    /// CRDT union sync: copy every bundle this store lacks from `other`.
-    ///
-    /// Ids are content hashes, so union is commutative, associative and
-    /// idempotent; two mules that meet twice end with the same set.
     pub fn sync_from(&self, other: &MuleStore) -> Result<usize, String> {
         self.ensure()?;
         let mut copied: usize = 0;
@@ -510,8 +478,6 @@ impl MuleStore {
     }
 }
 
-// ── UDP path ────────────────────────────────────────────────────────────────
-
 pub async fn send_cell(
     sock: &UdpSocket,
     dst: SocketAddr,
@@ -520,7 +486,6 @@ pub async fn send_cell(
     sock.send_to(&cell.to_bytes(), dst).await
 }
 
-/// Receive one cell with a bounded wait.
 pub async fn recv_cell(sock: &UdpSocket, timeout_ms: u64) -> Result<GhostCellNano, String> {
     let mut buf = [0u8; CELL_LEN + 64];
     let (n, _) = tokio::time::timeout(Duration::from_millis(timeout_ms), sock.recv_from(&mut buf))
@@ -541,8 +506,6 @@ pub struct DemoReport {
     pub payloads_ok: bool,
 }
 
-/// Loopback proof for `ggn ladder --demo`: real UDP sockets, real sealing, real
-/// Merkle union. No hardware rung is involved, and none is claimed.
 pub async fn loopback_demo() -> Result<DemoReport, String> {
     let key = [9u8; 32];
     let receiver = UdpSocket::bind("127.0.0.1:0")
@@ -585,7 +548,6 @@ pub async fn loopback_demo() -> Result<DemoReport, String> {
         a.put(&cell.to_bytes())?;
     }
     let merkle_before = a.merkle_root();
-    // Only the first cell reaches the second mule; sync must complete the set.
     b.put(&sent[0].to_bytes())?;
     let merged = b.sync_from(&a)?;
     let merkle_after = b.merkle_root();
@@ -680,7 +642,6 @@ mod tests {
 
     #[test]
     fn an_empty_plan_is_refused() {
-        // Zero bytes is not a plan, and the refusal must say why.
         let err = plan(0, 6).unwrap_err();
         assert!(err.contains("empty"), "{err}");
     }

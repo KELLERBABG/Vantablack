@@ -38,70 +38,42 @@
 
 use subtle::ConstantTimeEq;
 
-/// Domain-separation magic for the envelope.
 pub const MAGIC: [u8; 6] = *b"GGNATT";
-/// Envelope format version.
 pub const VERSION: u8 = 1;
-/// Length of the measurement digest.
 pub const DIGEST_LEN: usize = 32;
-/// Length of the freshness nonce.
 pub const NONCE_LEN: usize = 32;
-/// Length of the issuer public key.
 pub const ISSUER_PK_LEN: usize = 32;
-/// Length of the Ed25519 signature.
 pub const SIGNATURE_LEN: usize = 64;
 
-/// `magic ‖ version`.
 const HEADER_LEN: usize = MAGIC.len() + 1;
-/// Everything the signature covers: `header ‖ digest ‖ nonce ‖ issuer_pk`.
 const SIGNED_LEN: usize = HEADER_LEN + DIGEST_LEN + NONCE_LEN + ISSUER_PK_LEN;
-/// Total encoded length (the signed region plus the signature).
 pub const ENCODED_LEN: usize = SIGNED_LEN + SIGNATURE_LEN;
 
-/// Why an attestation envelope could not be parsed or accepted.
-///
-/// Typed rather than a bare `String` so a caller can branch on the *kind* of
-/// refusal — a stale nonce is a retry, a bad signature is an attack.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AttestError {
-    /// The buffer was not exactly [`ENCODED_LEN`] bytes.
     #[error("attestation envelope is {got} bytes, expected {expected}")]
     BadLength { got: usize, expected: usize },
-    /// The leading magic was not [`MAGIC`].
     #[error("attestation envelope magic is wrong")]
     BadMagic,
-    /// The version byte is not one this build understands.
     #[error("unsupported attestation envelope version {0}")]
     UnsupportedVersion(u8),
-    /// The envelope names a different issuer than the one expected.
     #[error("attestation envelope names a different issuer key")]
     IssuerMismatch,
-    /// The envelope's nonce is not the nonce we asked for.
     #[error("attestation envelope nonce does not match the expected nonce")]
     NonceMismatch,
-    /// The Ed25519 signature did not verify (or the key bytes were not a point).
     #[error("attestation signature does not verify")]
     BadSignature,
 }
 
-/// A signed measurement quote, in the DPE/TPM-shaped format above.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestationEnvelope {
-    /// Measurement digest the issuer attests to.
     pub quote_digest: [u8; DIGEST_LEN],
-    /// Verifier-chosen freshness value.
     pub nonce: [u8; NONCE_LEN],
-    /// Ed25519 public key of the issuer.
     pub issuer_pk: [u8; ISSUER_PK_LEN],
-    /// Ed25519 signature over the signed region.
     pub signature: [u8; SIGNATURE_LEN],
 }
 
 impl AttestationEnvelope {
-    /// The region the signature covers: `header ‖ digest ‖ nonce ‖ issuer_pk`.
-    ///
-    /// Binding the header in means the version byte is authenticated too, so it
-    /// cannot be rewritten to steer a verifier at a different parse.
     fn signed_region(
         quote_digest: &[u8; DIGEST_LEN],
         nonce: &[u8; NONCE_LEN],
@@ -116,10 +88,6 @@ impl AttestationEnvelope {
         out
     }
 
-    /// Issue (sign) an envelope binding `quote_digest` and `nonce` to `issuer`.
-    ///
-    /// This is the producer half a real backend would call once it has a quote;
-    /// here it is also what makes the format testable without hardware.
     pub fn issue(
         issuer: &ed25519_dalek::SigningKey,
         quote_digest: [u8; DIGEST_LEN],
@@ -137,7 +105,6 @@ impl AttestationEnvelope {
         }
     }
 
-    /// Serialise to [`ENCODED_LEN`] bytes.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Self::signed_region(&self.quote_digest, &self.nonce, &self.issuer_pk);
         out.extend_from_slice(&self.signature);
@@ -145,11 +112,6 @@ impl AttestationEnvelope {
         out
     }
 
-    /// Parse an envelope, refusing a wrong length, magic or version.
-    ///
-    /// Parsing does **not** verify the signature — that is
-    /// [`verify`](Self::verify)'s job, and keeping them separate means a
-    /// malformed-but-well-framed envelope is still a *typed* error, not a panic.
     pub fn decode(bytes: &[u8]) -> Result<Self, AttestError> {
         if bytes.len() != ENCODED_LEN {
             return Err(AttestError::BadLength {
@@ -182,14 +144,6 @@ impl AttestationEnvelope {
         })
     }
 
-    /// Verify the envelope against the nonce we asked for and the issuer key we
-    /// expected.
-    ///
-    /// The nonce and issuer comparisons are **constant-time**: a byte-at-a-time
-    /// `==` on a nonce leaks how many leading bytes matched, which is exactly
-    /// the oracle a forgery or replay attempt wants. The digest is bound by the
-    /// signature rather than compared here, so no separate digest check is
-    /// needed — a tampered digest fails [`AttestError::BadSignature`].
     pub fn verify(
         &self,
         expected_nonce: &[u8; NONCE_LEN],
@@ -245,7 +199,6 @@ mod tests {
         let sk = issuer();
         let pk = sk.verifying_key().to_bytes();
         let env = AttestationEnvelope::issue(&sk, [0x11; DIGEST_LEN], [0x22; NONCE_LEN]);
-        // The verifier asked for a different nonce: a replayed quote dies here.
         assert_eq!(
             env.verify(&[0x23; NONCE_LEN], &pk),
             Err(AttestError::NonceMismatch)
@@ -262,8 +215,6 @@ mod tests {
         bytes[HEADER_LEN + DIGEST_LEN] ^= 0x01; // first byte of the nonce
         let tampered = AttestationEnvelope::decode(&bytes).expect("still well-framed");
         assert_ne!(tampered.nonce, env.nonce, "the nonce field did change");
-        // Re-pin the nonce so the ct_eq gate passes; the signature must still
-        // fail, because the nonce is inside the signed region.
         assert_eq!(
             tampered.verify(&tampered.nonce, &pk),
             Err(AttestError::BadSignature)

@@ -28,27 +28,16 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Mean Earth radius (IUGG), kilometres.
 pub const EARTH_RADIUS_KM: f64 = 6371.0088;
 
-/// Light in silica fibre: 204,000 km/s, i.e. 204 km/ms.
 pub const FIBRE_KM_PER_MS: f64 = 204.0;
 
-/// Slack added to every cone for scheduling, serialisation and timestamping.
-///
-/// The physical bound is a floor on RTT; a measurement above it is always
-/// possible (queues, interrupts), so the cone radius is the *lower* bound plus a
-/// margin. The margin widens the certified region, which is the conservative
-/// direction for a jurisdiction check.
 pub const LIGHTCONE_SLACK_KM: f64 = 25.0;
 
-/// Anchors whose cones must agree before a proof is evidence.
 pub const MIN_ANCHORS: usize = 3;
 
-/// A proof older than this is not evidence of where the node is *now*.
 pub const PROOF_MAX_AGE_SECS: u64 = 300;
 
-/// Legal / geographic jurisdiction perimeters for data sovereignty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum JurisdictionTag {
     Any,
@@ -58,8 +47,6 @@ pub enum JurisdictionTag {
     Apac,
 }
 
-/// A latitude/longitude rectangle. Deliberately coarse: a jurisdiction is a
-/// legal perimeter, and the proof only has to be contained in it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JurisdictionRegion {
     pub min_lat: f64,
@@ -69,16 +56,12 @@ pub struct JurisdictionRegion {
 }
 
 impl JurisdictionRegion {
-    /// Conservative containment: the disc's bounding box must fit inside the
-    /// region. A disc that crosses the perimeter is refused even if its centre
-    /// is inside, because the key could be on the wrong side of the border.
     pub fn contains_disc(&self, center: GeoPoint, radius_km: f64) -> bool {
         let lat_delta = radius_km / 111.32;
         let lon_scale = center.lat_deg.to_radians().cos().abs().max(0.01);
         let lon_delta = lat_delta / lon_scale;
         let (south, north) = (center.lat_deg - lat_delta, center.lat_deg + lat_delta);
         let (west, east) = (center.lon_deg - lon_delta, center.lon_deg + lon_delta);
-        // Dateline-crossing regions are not modelled; refuse rather than guess.
         if east > 180.0 || west < -180.0 {
             return false;
         }
@@ -90,7 +73,6 @@ impl JurisdictionRegion {
 }
 
 impl JurisdictionTag {
-    /// The perimeter this tag stands for. `None` means "no restriction".
     pub fn region(self) -> Option<JurisdictionRegion> {
         match self {
             JurisdictionTag::Any => None,
@@ -122,7 +104,6 @@ impl JurisdictionTag {
     }
 }
 
-/// A point on the Earth's surface.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GeoPoint {
     pub lat_deg: f64,
@@ -130,7 +111,6 @@ pub struct GeoPoint {
 }
 
 impl GeoPoint {
-    /// Construct a point, refusing coordinates that are not on the globe.
     pub fn new(lat_deg: f64, lon_deg: f64) -> Result<Self, LightConeError> {
         if !lat_deg.is_finite() || !(-90.0..=90.0).contains(&lat_deg) {
             return Err(LightConeError::BadCoordinate(format!("latitude {lat_deg}")));
@@ -143,7 +123,6 @@ impl GeoPoint {
         Ok(Self { lat_deg, lon_deg })
     }
 
-    /// Great-circle distance (haversine), kilometres.
     pub fn distance_km(&self, other: &GeoPoint) -> f64 {
         let rad = std::f64::consts::PI / 180.0;
         let dlat = (other.lat_deg - self.lat_deg) * rad;
@@ -156,42 +135,32 @@ impl GeoPoint {
     }
 }
 
-/// A verifier anchor at a known surface position.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LightConeAnchor {
     pub anchor_id: String,
     pub at: GeoPoint,
 }
 
-/// One anchor's measurement of the candidate's round trip.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnchorMeasurement {
     pub anchor_id: String,
-    /// Measured round-trip time in milliseconds. Below `2·d/c` for the claimed
-    /// position is physically impossible and refuses the proof.
     pub rtt_ms: f64,
 }
 
-/// Physics evidence for where a signing key sits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LightConeProof {
     pub subject: String,
-    /// The position the subject claims, in coordinates.
     pub center: GeoPoint,
     pub measurements: Vec<AnchorMeasurement>,
     pub issued_at: u64,
 }
 
-/// What a successful verification established.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightConeVerification {
-    /// Radius that certainly contains the signing key, from the cone
-    /// intersection (planar approximation around `center`).
     pub certified_radius_km: f64,
     pub anchors: usize,
 }
 
-/// Why a proof is not evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LightConeError {
     TooFewAnchors(usize),
@@ -200,16 +169,12 @@ pub enum LightConeError {
     InvalidRtt(String),
     Stale(u64),
     BadCoordinate(String),
-    /// The claimed position is farther from an anchor than the measured RTT
-    /// permits — the measurement contradicts the claim.
     DistanceExceedsCone {
         anchor: String,
         distance_km: u64,
         allowed_km: u64,
     },
-    /// The certified region is not wholly inside the required perimeter.
     RegionLeavesJurisdiction,
-    /// Two hops' certified regions intersect, so one machine could be both.
     RegionsOverlap,
     NoAnchorsConfigured,
 }
@@ -251,7 +216,6 @@ impl std::fmt::Display for LightConeError {
 
 impl std::error::Error for LightConeError {}
 
-/// Project a nearby point into kilometres on a plane tangent at `origin`.
 fn local_xy(origin: GeoPoint, p: GeoPoint) -> (f64, f64) {
     let rad = std::f64::consts::PI / 180.0;
     let x =
@@ -260,7 +224,6 @@ fn local_xy(origin: GeoPoint, p: GeoPoint) -> (f64, f64) {
     (x, y)
 }
 
-/// Intersection points of two circles in the tangent plane.
 fn circle_intersections(
     (x1, y1, r1): (f64, f64, f64),
     (x2, y2, r2): (f64, f64, f64),
@@ -285,11 +248,6 @@ fn circle_intersections(
 }
 
 impl LightConeProof {
-    /// Area of the cone intersection that certainly contains the key.
-    ///
-    /// The intersection of the anchors' discs is convex and contains `center`;
-    /// its farthest point from `center` is a circle-circle intersection vertex,
-    /// or the far side of one disc when the discs are nested. Both are checked.
     fn certified_radius(&self, cones: &[(f64, f64, f64)]) -> f64 {
         let inside_all = |p: (f64, f64)| {
             cones
@@ -306,7 +264,6 @@ impl LightConeProof {
             }
         };
         for (i, a) in cones.iter().enumerate() {
-            // Far side of this disc along the ray from the origin.
             let d = a.0.hypot(a.1);
             if d > f64::EPSILON {
                 let scale = 1.0 + a.2 / d;
@@ -321,7 +278,6 @@ impl LightConeProof {
         farthest
     }
 
-    /// Recompute the light-cone intersection and check the claims against it.
     pub fn verify(
         &self,
         anchors: &[LightConeAnchor],
@@ -368,8 +324,6 @@ impl LightConeProof {
 
         let certified_radius_km = self.certified_radius(&cones);
         if !certified_radius_km.is_finite() {
-            // The claimed centre is not inside every cone: the measurements
-            // contradict each other.
             return Err(LightConeError::DistanceExceedsCone {
                 anchor: "intersection".to_string(),
                 distance_km: 0,
@@ -382,8 +336,6 @@ impl LightConeProof {
         })
     }
 
-    /// Verify and require the whole certified region to be inside `tag`'s
-    /// perimeter. This is the only way a device earns a jurisdiction claim.
     pub fn verify_in(
         &self,
         tag: JurisdictionTag,
@@ -400,32 +352,19 @@ impl LightConeProof {
     }
 }
 
-/// How strongly a circuit's hops are separated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HopSeparation {
-    /// The hops hold distinct keys in provably disjoint regions. One machine
-    /// with exportable keys can still hold all three.
     KeyDisjoint,
-    /// Each hop's key is non-exportable and the regions are disjoint, so no
-    /// single physical machine can be all three.
     PhysicallyDisjoint,
 }
 
-/// Three hops' Light-Cone proofs, composed for the causal-hop check (Invention 8).
 #[derive(Debug, Clone)]
 pub struct CausalHopWitness<'a> {
     pub hops: [&'a LightConeProof; 3],
 }
 
 impl CausalHopWitness<'_> {
-    /// Verify all three proofs and require their certified regions to be
-    /// pairwise disjoint.
-    ///
-    /// `hardware_bound` says the hop keys live in non-exportable silicon. Only
-    /// then, and only in a build that can actually bind keys that way, does the
-    /// witness report [`HopSeparation::PhysicallyDisjoint`]; otherwise it reports
-    /// [`HopSeparation::KeyDisjoint`], which is what the evidence supports.
     pub fn classify(
         &self,
         anchors: &[LightConeAnchor],
@@ -453,21 +392,15 @@ impl CausalHopWitness<'_> {
     }
 }
 
-/// An endpoint device participating in the sovereign cloud mesh.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SovereignDevice {
     pub device_id: String,
-    /// What the operator *declares*. Kept for reporting only; placement never
-    /// trusts it — see [`SovereignDevice::attested`].
     pub jurisdiction: JurisdictionTag,
-    /// Physics evidence for where this device's key is. `None` means the device
-    /// has not proven anything, so it can only hold unrestricted objects.
     pub attested: Option<LightConeProof>,
     pub storage_capacity_bytes: u64,
 }
 
 impl SovereignDevice {
-    /// Where the device's key provably is, or `None` when it has no proof.
     pub fn proved_jurisdiction(
         &self,
         anchors: &[LightConeAnchor],
@@ -485,7 +418,6 @@ impl SovereignDevice {
     }
 }
 
-/// A stored sovereign object metadata record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SovereignObject {
     pub object_id: [u8; 32],
@@ -493,7 +425,6 @@ pub struct SovereignObject {
     pub assigned_devices: Vec<String>,
 }
 
-/// Sovereign Cloud Fabric coordinating multi-device storage and topological enforcement.
 #[derive(Debug, Default)]
 pub struct SovereignCloudFabric {
     devices: HashMap<String, SovereignDevice>,
@@ -506,10 +437,6 @@ impl SovereignCloudFabric {
         Self::default()
     }
 
-    /// Install the verifier anchors whose measurements this fabric will trust.
-    ///
-    /// Without anchors, every jurisdiction-restricted placement is refused: a
-    /// declaration alone has never been evidence.
     pub fn set_anchors(&mut self, anchors: Vec<LightConeAnchor>) {
         self.anchors = anchors;
     }
@@ -518,12 +445,10 @@ impl SovereignCloudFabric {
         &self.anchors
     }
 
-    /// Register an owned device into the sovereign cloud fabric.
     pub fn register_device(&mut self, device: SovereignDevice) {
         self.devices.insert(device.device_id.clone(), device);
     }
 
-    /// Devices the fabric may place `required` on right now.
     fn eligible(&self, required: JurisdictionTag, now: u64) -> Vec<&SovereignDevice> {
         self.devices
             .values()
@@ -539,8 +464,6 @@ impl SovereignCloudFabric {
             .collect()
     }
 
-    /// Store an object ensuring strict compliance with the required jurisdiction.
-    /// Returns Ok(assigned_device_ids) or Err if no compliant devices are available.
     pub fn place_object(
         &mut self,
         object_id: [u8; 32],
@@ -555,7 +478,6 @@ impl SovereignCloudFabric {
         )
     }
 
-    /// [`Self::place_object`] with the clock supplied, for tests and replay.
     pub fn place_object_at(
         &mut self,
         object_id: [u8; 32],
@@ -587,13 +509,10 @@ impl SovereignCloudFabric {
         Ok(assigned)
     }
 
-    /// Verify whether all current holders of an object strictly satisfy its legal
-    /// jurisdiction — re-checking their proofs, not their declarations.
     pub fn verify_object_compliance(&self, object_id: &[u8; 32]) -> bool {
         self.verify_object_compliance_at(object_id, crate::ghost::v2::now_secs())
     }
 
-    /// [`Self::verify_object_compliance`] with the clock supplied.
     pub fn verify_object_compliance_at(&self, object_id: &[u8; 32], now: u64) -> bool {
         let Some(obj) = self.objects.get(object_id) else {
             return false;
@@ -638,8 +557,6 @@ mod tests {
         ]
     }
 
-    /// A proof whose RTTs are exactly the physical floor for `at` plus a tiny
-    /// serialisation margin, as a real measurement would be.
     fn proof_at(subject: &str, at: GeoPoint, anchors: &[LightConeAnchor]) -> LightConeProof {
         LightConeProof {
             subject: subject.to_string(),
@@ -685,7 +602,6 @@ mod tests {
     #[test]
     fn a_claim_faster_than_light_is_refused() {
         let anchors = anchors();
-        // Claim New York, but report Berlin-sized RTTs: physically impossible.
         let mut proof = proof_at("spoofed", point(52.51, 13.40), &anchors);
         proof.center = point(40.7128, -74.0060);
         assert!(matches!(
@@ -711,7 +627,6 @@ mod tests {
             Err(LightConeError::TooFewAnchors(2))
         ));
 
-        // A duplicated anchor must not count as two independent cones.
         let mut proof = proof_at("laptop_berlin", point(52.51, 13.40), &anchors);
         proof.measurements[1].anchor_id = proof.measurements[0].anchor_id.clone();
         assert!(matches!(
@@ -726,15 +641,12 @@ mod tests {
         let mut fabric = SovereignCloudFabric::new();
         fabric.set_anchors(anchors.clone());
 
-        // This device *declares* EU but proves it is in New York. The declaration
-        // must not buy it an EU placement.
         let us_anchor_rtts = proof_at("server_us", point(40.7128, -74.0060), &anchors);
         fabric.register_device(device("declared_eu", JurisdictionTag::Eu, us_anchor_rtts));
         assert!(fabric
             .place_object_at([0xAA; 32], JurisdictionTag::Eu, 1, NOW)
             .is_err());
 
-        // An unproven device is likewise refused.
         fabric.register_device(SovereignDevice {
             device_id: "unproven".into(),
             jurisdiction: JurisdictionTag::Eu,
@@ -745,7 +657,6 @@ mod tests {
             .place_object_at([0xBB; 32], JurisdictionTag::Eu, 1, NOW)
             .is_err());
 
-        // A device that proves EU *and* declares it is accepted.
         fabric.register_device(device(
             "laptop_berlin",
             JurisdictionTag::Eu,
@@ -763,8 +674,6 @@ mod tests {
         let anchors = anchors();
         let mut fabric = SovereignCloudFabric::new();
         fabric.set_anchors(anchors.clone());
-        // Zurich is inside the EU perimeter's coarse bounding box, so use a
-        // device that physically proves a US position while declaring CH.
         fabric.register_device(device(
             "liar",
             JurisdictionTag::Ch,
@@ -789,14 +698,11 @@ mod tests {
             witness.classify(&anchors, false, NOW),
             Ok(HopSeparation::KeyDisjoint)
         );
-        // This build's test target has no `hardware-tpm`, so even an operator
-        // claim of hardware binding may not upgrade the verdict.
         assert_eq!(
             witness.classify(&anchors, true, NOW),
             Ok(HopSeparation::KeyDisjoint)
         );
 
-        // Three threads on one machine share a cone and must be refused.
         let same = proof_at("same", point(52.51, 13.40), &anchors);
         let witness = CausalHopWitness {
             hops: [&berlin, &same, &zurich],

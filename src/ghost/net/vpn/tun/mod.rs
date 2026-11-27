@@ -12,11 +12,8 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Abstract TUN device: read one IP packet, write one IP packet.
 pub trait TunDevice: Send {
-    /// Blocking-ish read of the next IP packet from the OS. Returns size.
     fn read_packet(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
-    /// Inject an IP packet into the OS stack.
     fn write_packet(&self, buf: &[u8]) -> std::io::Result<usize>;
     fn mtu(&self) -> u16;
     fn shutdown(&self);
@@ -24,8 +21,6 @@ pub trait TunDevice: Send {
 }
 
 pub const DEFAULT_MTU: u16 = crate::ghost::net::vpn::TUN_MTU;
-
-// ── Windows: wintun FFI ─────────────────────────────────────────────
 
 #[cfg(windows)]
 mod wintun {
@@ -42,8 +37,6 @@ mod wintun {
         fn FreeLibrary(lib: Handle) -> i32;
     }
 
-    // wintun.dll exports are dynamically resolved at runtime.
-
     pub struct WintunTun {
         lib: Handle,
         adapter: Handle,
@@ -55,7 +48,6 @@ mod wintun {
     unsafe impl Send for WintunTun {}
     unsafe impl Sync for WintunTun {}
 
-    /// Locate wintun.dll (exe dir → cwd → System32 → PATH).
     pub fn find_dll() -> Option<PathBuf> {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Ok(exe) = std::env::current_exe() {
@@ -78,7 +70,6 @@ mod wintun {
     }
 
     impl WintunTun {
-        /// Create adapter + start session. Administrator required.
         pub fn new(name: &str, addr: Ipv4Addr, mask: Ipv4Addr) -> std::io::Result<Self> {
             let dll = find_dll().ok_or_else(|| {
                 std::io::Error::new(
@@ -91,8 +82,6 @@ mod wintun {
             if lib.is_null() {
                 return Err(std::io::Error::last_os_error());
             }
-            // resolve functions we call through GetProcAddress to avoid
-            // import-table requirements on the DLL
             unsafe fn sym(lib: Handle, name: &str) -> std::io::Result<*mut c_void> {
                 let c = CString::new(name).unwrap();
                 let p = GetProcAddress(lib, c.as_ptr());
@@ -140,7 +129,6 @@ mod wintun {
                     FreeLibrary(lib);
                     return Err(std::io::Error::last_os_error());
                 }
-                // configure IPv4 via netsh (best-effort; needs admin)
                 let _ = std::process::Command::new("netsh")
                     .args([
                         "interface",
@@ -178,8 +166,6 @@ mod wintun {
                 let mut size: u32 = 0;
                 let pkt = recv(self.session, &mut size);
                 if pkt.is_null() {
-                    // no packet available; brief sleep instead of event wait
-                    // (the pump loop handles pacing)
                     std::thread::sleep(std::time::Duration::from_millis(1));
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
@@ -251,26 +237,21 @@ mod wintun {
 #[cfg(windows)]
 pub use wintun::{find_dll, WintunTun};
 
-/// Check if wintun.dll is available on the machine.
 #[cfg(windows)]
 pub fn is_wintun_installed() -> bool {
     find_dll().is_some()
 }
 
-/// Check if wintun.dll is available on the machine (false on non-windows).
 #[cfg(not(windows))]
 pub fn is_wintun_installed() -> bool {
     false
 }
-
-// ── Unix: /dev/net/tun ──────────────────────────────────────────────
 
 #[cfg(all(unix, not(target_os = "macos")))]
 mod unixtun {
     use super::*;
     use std::ffi::CString;
 
-    // ioctl numbers (Linux)
     const TUNSETIFF: std::ffi::c_ulong = 0x400454ca;
     const IFF_TUN: u16 = 0x0001;
     const IFF_NO_PI: u16 = 0x1000;
@@ -293,7 +274,6 @@ mod unixtun {
     impl UnixTun {
         pub fn new(name: &str) -> std::io::Result<Self> {
             let path = CString::new("/dev/net/tun").unwrap();
-            // O_RDWR = 2
             let fd = unsafe { open(path.as_ptr(), 2) };
             if fd < 0 {
                 return Err(std::io::Error::last_os_error());
@@ -309,7 +289,6 @@ mod unixtun {
                 unsafe { close(fd) };
                 return Err(std::io::Error::last_os_error());
             }
-            // best-effort address config
             let _ = std::process::Command::new("ip")
                 .args(["addr", "add", "10.66.0.10/24", "dev", name])
                 .status();
@@ -326,7 +305,6 @@ mod unixtun {
 
     impl TunDevice for UnixTun {
         fn read_packet(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            // read(2)
             unsafe fn read_raw(fd: i32, buf: *mut u8, len: usize) -> isize {
                 extern "C" {
                     fn read(fd: i32, buf: *mut c_void, count: usize) -> isize;
@@ -378,8 +356,6 @@ mod unixtun {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 pub use unixtun::UnixTun;
-
-// ── macOS: utun kernel control socket ──────────────────────────────
 
 #[cfg(target_os = "macos")]
 mod macostun {
@@ -466,7 +442,6 @@ mod macostun {
                 return Err(std::io::Error::last_os_error());
             }
 
-            // Assign overlay address
             let _ = std::process::Command::new("ifconfig")
                 .args([name, "10.66.0.10", "10.66.0.1", "up"])
                 .status();
@@ -528,8 +503,6 @@ mod macostun {
 #[cfg(target_os = "macos")]
 pub use macostun::MacOSUtun;
 
-// ── Platform TUN + the zero-elevation fake backend ──────────────────
-
 #[cfg(target_os = "windows")]
 pub type RealTun = WintunTun;
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -540,14 +513,6 @@ pub type RealTun = MacOSUtun;
 #[cfg(not(any(windows, unix)))]
 compile_error!("VPN client requires windows or unix");
 
-/// The client's TUN device.
-///
-/// `Real` is the platform device (wintun.dll on Windows, `/dev/net/tun` on
-/// Unix) and needs Administrator or CAP_NET_ADMIN. `Fake` is the in-memory
-/// [`FakeTun`], selected by `GHOST_VPN_FAKE_TUN`, which lets a full client run
-/// with **no privileges and no OS interface** — the vehicle for the two-process
-/// loopback self-test that PROTOTYPE.md lists as the outstanding
-/// "nothing is wire-proven yet" gate.
 pub enum PlatformTun {
     Real(RealTun),
     Fake(FakeTun),
@@ -586,7 +551,6 @@ impl TunDevice for PlatformTun {
     }
 }
 
-/// Open the real platform TUN named `name` with address `addr`.
 pub fn open_tun(name: &str, addr: Ipv4Addr, mask: Ipv4Addr) -> std::io::Result<PlatformTun> {
     #[cfg(windows)]
     {
@@ -605,19 +569,11 @@ pub fn open_tun(name: &str, addr: Ipv4Addr, mask: Ipv4Addr) -> std::io::Result<P
     }
 }
 
-/// Open the zero-elevation fake TUN.
-///
-/// Returns the device for the pump plus a shared handle: cloning a `FakeTun`
-/// shares the same queues, so the caller can inject packets the "OS" would have
-/// written and observe everything the tunnel writes back.
 pub fn open_fake_tun() -> (PlatformTun, FakeTun) {
     let t = FakeTun::new();
     (PlatformTun::Fake(t.clone()), t)
 }
 
-// ── Fake backend (tests + GHOST_VPN_FAKE_TUN) ───────────────────────
-
-/// In-memory TUN: reads drain a queue, writes fill another.
 #[derive(Clone)]
 pub struct FakeTun {
     inbound: Arc<parking_lot::Mutex<std::collections::VecDeque<Vec<u8>>>>,
@@ -633,11 +589,9 @@ impl FakeTun {
             name: "fake0".into(),
         }
     }
-    /// Queue a packet the "OS" wrote (next read returns it).
     pub fn push_inbound(&self, pkt: Vec<u8>) {
         self.inbound.lock().push_back(pkt);
     }
-    /// Drain everything the mesh pump injected "into the OS".
     pub fn drain_outbound(&self) -> Vec<Vec<u8>> {
         std::mem::take(&mut *self.outbound.lock())
     }
@@ -699,7 +653,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn wintun_dll_locator_finds_something_or_none() {
-        // smoke: the locator must not panic; may find the Tailscale copy
         let _ = find_dll();
     }
 }

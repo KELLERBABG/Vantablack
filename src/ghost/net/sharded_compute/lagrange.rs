@@ -25,21 +25,16 @@ use std::fmt;
 use rand::rngs::OsRng;
 use rand::RngCore;
 
-/// The fixed-point field: the Mersenne prime `2^31 - 1`.
 pub const FIELD: u64 = 2_147_483_647;
 
-/// Why an LC-Vantablack job could not be encoded or decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LccError {
     Shape(&'static str),
-    /// The decoder saw fewer usable evaluations than the bound requires.
     TooFewEvaluations {
         need: usize,
         got: usize,
     },
-    /// Berlekamp–Welch could not separate errors from the codeword.
     Undecodable,
-    /// A layer or input element is not a canonical field element.
     OutOfField(u64),
 }
 
@@ -97,7 +92,6 @@ fn random_element() -> u64 {
     u64::from_be_bytes(bytes) % FIELD
 }
 
-/// One worker's delegated evaluation point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LccTask {
     pub worker_index: usize,
@@ -106,7 +100,6 @@ pub struct LccTask {
     pub vector: Vec<u64>,
 }
 
-/// A worker's returned evaluation, honest or otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LccOutput {
     pub worker_index: usize,
@@ -114,7 +107,6 @@ pub struct LccOutput {
     pub vector: Vec<u64>,
 }
 
-/// Evaluate a degree-`layer.len()-1` polynomial layer element-wise.
 pub fn apply_layer(layer: &[u64], task: &LccTask) -> LccOutput {
     let vector = task
         .vector
@@ -134,7 +126,6 @@ pub fn apply_layer(layer: &[u64], task: &LccTask) -> LccOutput {
     }
 }
 
-/// The client-side codec for one LC-Vantablack job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LagrangeCodedInference {
     data_symbols: usize,
@@ -142,7 +133,6 @@ pub struct LagrangeCodedInference {
 }
 
 impl LagrangeCodedInference {
-    /// `data_symbols` is `K`, `masks` is `T`. Both must be at least 1.
     pub fn new(data_symbols: usize, masks: usize) -> Result<Self, LccError> {
         if data_symbols == 0 || masks == 0 {
             return Err(LccError::Shape("K and T must both be at least 1"));
@@ -161,12 +151,10 @@ impl LagrangeCodedInference {
         self.masks
     }
 
-    /// Degree of the composite codeword `f(u(z))`.
     pub fn composite_degree(&self, layer_degree: usize) -> usize {
         layer_degree * (self.data_symbols + self.masks - 1)
     }
 
-    /// Theorem 10: `N >= d(K + T - 1) + 1 + S + 2A`.
     pub fn required_workers(
         &self,
         layer_degree: usize,
@@ -176,7 +164,6 @@ impl LagrangeCodedInference {
         self.composite_degree(layer_degree) + 1 + stragglers + 2 * byzantine
     }
 
-    /// Encode the inputs with fresh uniform masks.
     pub fn encode(
         &self,
         inputs: &[Vec<u64>],
@@ -191,9 +178,6 @@ impl LagrangeCodedInference {
         self.encode_with_masks(inputs, &masks, worker_asns)
     }
 
-    /// Encode with caller-supplied masks (must be uniform for the privacy
-    /// property; this exists for tests and for callers with their own
-    /// randomness).
     pub fn encode_with_masks(
         &self,
         inputs: &[Vec<u64>],
@@ -223,14 +207,8 @@ impl LagrangeCodedInference {
             }
         }
 
-        // u(z) is the unique degree-(K+T-1) polynomial through the client
-        // inputs at z = 1..=K and the uniform masks at z = K+1..=K+T. Its
-        // coefficients are recomputed per symbol; the vectors are tensors, not
-        // field elements, so each symbol position is an independent job.
         let mut tasks = Vec::with_capacity(worker_asns.len());
         for (worker_index, &assigned_asn) in worker_asns.iter().enumerate() {
-            // Worker points start after every client and mask point, so no
-            // worker is handed an input or a mask directly.
             let alpha = (self.data_symbols + self.masks + 1 + worker_index) as u64;
             let vector = (0..width)
                 .map(|symbol| {
@@ -255,8 +233,6 @@ impl LagrangeCodedInference {
         Ok(tasks)
     }
 
-    /// Recover `f(X_1)..f(X_K)` from the workers' (possibly missing, possibly
-    /// lying) evaluations.
     pub fn decode(
         &self,
         outputs: &[Option<LccOutput>],
@@ -290,7 +266,6 @@ impl LagrangeCodedInference {
     }
 }
 
-/// Lagrange interpolation through `points`, returning coefficients by degree.
 fn interpolate_coefficients(points: &[(u64, u64)]) -> Vec<u64> {
     let mut coefficients = vec![0u64; points.len()];
     for (j, &(x_j, y_j)) in points.iter().enumerate() {
@@ -323,8 +298,6 @@ fn evaluate(coefficients: &[u64], x: u64) -> u64 {
         .fold(0u64, |acc, coeff| add(mul(acc, x), *coeff))
 }
 
-/// Solve `Q(alpha_i) = y_i * E(alpha_i)` for `E` monic of degree `errors` and
-/// `Q` of degree `<= degree + errors`, then divide.
 fn berlekamp_welch(
     points: &[(u64, u64)],
     degree: usize,
@@ -442,11 +415,9 @@ mod tests {
 
     #[test]
     fn the_worker_bound_is_the_theorem_bound() {
-        // K=1, T=1, d=1, S=1, A=1 -> 1(1+1-1)+1+1+2 = 5 workers.
         let linear = LagrangeCodedInference::new(1, 1).unwrap();
         assert_eq!(linear.required_workers(1, 1, 1), 5);
         assert_eq!(linear.required_workers(1, 0, 0), 2);
-        // A quadratic layer doubles the composite degree before the same terms.
         assert_eq!(linear.required_workers(2, 0, 1), 2 + 1 + 2);
         let two_inputs = LagrangeCodedInference::new(2, 1).unwrap();
         assert_eq!(two_inputs.composite_degree(1), 2);
@@ -466,7 +437,6 @@ mod tests {
             .expect("encodes");
         assert_eq!(tasks.len(), workers);
 
-        // f(y) = 2y + 3.
         let layer = vec![3u64, 2u64];
         let mut outputs: Vec<Option<LccOutput>> = tasks
             .iter()
@@ -491,7 +461,6 @@ mod tests {
         let tasks = code
             .encode(std::slice::from_ref(&input), &asns(workers))
             .expect("encodes");
-        // f(y) = 2y^2 + 3y + 5.
         let layer = vec![5u64, 3u64, 2u64];
         let mut outputs: Vec<Option<LccOutput>> = tasks
             .iter()
@@ -508,7 +477,6 @@ mod tests {
         let expected = add(add(mul(2, mul(x, x)), mul(3, x)), 5);
         assert_eq!(recovered, vec![vec![expected]]);
 
-        // One worker short of the bound: the liar cannot be separated.
         outputs.pop();
         assert!(matches!(
             code.decode(&outputs, 2, 1),
@@ -518,9 +486,6 @@ mod tests {
 
     #[test]
     fn one_worker_learns_nothing_about_the_input() {
-        // K=1, T=1: u interpolates (1, X) and (2, Z), and worker 0 sees
-        // u(3) = 2Z - X with Z uniform. For any observed value, every candidate
-        // X has exactly one mask reproducing it, so the view is uniform in X.
         let code = LagrangeCodedInference::new(1, 1).unwrap();
         let workers = 2;
         let observed_task = code
@@ -532,7 +497,6 @@ mod tests {
 
         let mut reachable = std::collections::BTreeSet::new();
         for candidate in 0u64..256 {
-            // 2Z - X = observed  =>  Z = (observed + X) / 2.
             let mask = mul(add(observed, candidate), two_inverse);
             let rebuilt = code
                 .encode_with_masks(&[vec![candidate]], &[vec![mask]], &asns(workers))

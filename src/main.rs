@@ -4,18 +4,12 @@
 //! cryptographic identities, peer discovery, mesh networking, SOCKS5 proxy,
 //! control center REST API, and native desktop UI / system tray integration.
 
-// The desktop build is a GUI application, so on Windows it must not spawn a
-// console window next to the app. Diagnostics are not lost: the log writer
-// below mirrors every line into ghost.log.
 #![cfg_attr(all(windows, feature = "webview"), windows_subsystem = "windows")]
 
 use rand::RngCore;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-// Named by the mesh topology export (a path the operator may override).
 use std::path::PathBuf;
-// Only the optional-transport paths name a local address (multipath, B23), so the
-// type is imported where it is used rather than in every build.
 #[cfg(feature = "quic")]
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -106,59 +100,18 @@ use vantablack::ghost::{
 use vpn::{hub::VPN_PAYLOAD_MAGIC, tun::TunDevice};
 use vpn::{init_vpn_mode_with_rotator, VpnMode};
 
-/// Peer Exchange gossip frame magic — encrypted payload prefix.
 const GHOST_PEX_MAGIC: &[u8] = b"GHOST_PEX_____";
-/// Peer Exchange v2 gossip frame magic — batches of signed `PeerDescriptorV2`.
 const GHOST_PEX_V2_MAGIC: &[u8] = b"GHOST_PEX2____";
 const GHOST_BTCR_GOSSIP_MAGIC: &[u8] = b"GHOST_BTCR____";
 const GHOST_FLEET_REVOKE_MAGIC: &[u8] = b"GHOST_REVOKE__";
-/// Census epoch announcement: the sender's signed ticket, counted by the
-/// receiver against the routing domain it observed.
 const GHOST_CENSUS_MAGIC: &[u8] = b"GHOST_CENSUS__";
-/// Authenticated goodbye / reroute control notification sent when a node
-/// disconnects or deactivates the mesh.
 pub(crate) const GHOST_BYE_MAGIC: &[u8] = b"GHOST_BYE_____";
-/// Maximum peers to advertise per PEX message.
 const MAX_PEX_PEERS: usize = 32;
 
-/// Embedded bootstrap seeds (public VPS rendezvous nodes). Override at runtime
-/// via `GHOST_SEEDS=ip:port,ip:port,...`. When empty and no env var is set,
-/// the node starts in listen-only mode (beacon + accept incoming handshakes).
 const EMBEDDED_SEEDS: &[&str] = &[];
 
-/// Cloudflare Worker bootstrap URL. Every node hits this on startup to
-/// register its public address and learn about other active nodes.
-/// Override with GHOST_BOOTSTRAP_URL env var.
 const DEFAULT_BOOTSTRAP_URL: &str = "https://red-star-512e.papababg02.workers.dev/peers?port=55225";
 
-// ── SOCKS5 mesh tunneling (initiator ⇄ exit) ───────────────────────
-//
-// Wire protocol (all data frames are length-prefixed via enc_split):
-//   initiator → exit   ctr = session tx counter   payload "host:port"  (SOCKS5 CONNECT)
-//   exit      → init   ctr = exit's tx counter    payload "OK"
-//   initiator → exit   ctr = connect_ctr+1, +2…   relayed client bytes
-//   exit      → init   ctr = ok_ctr+1, +2…        relayed remote bytes
-//
-// Nonces are direction-bound (NonceDirection) so the two directions
-// never reuse a (key, nonce) pair even at equal counters. Each side
-// re-orders out-of-order UDP frames before delivery.
-//
-// Known limitation: tunnel relays use their own counter space, so a
-// keepalive firing while a tunnel is idle >60s could collide counters
-// within one direction. Active tunnels reset the idle timer, so this
-// cannot happen during live traffic.
-
-// ── Post-Quantum In-Band Authentication ───────────────────
-
-// ═══════════════════════════════════════════════════════════════════
-// CONSUMER CONTROL PLANE HELPERS
-// ═══════════════════════════════════════════════════════════════════
-
-/// Writes every log line to stderr *and* to `ghost.log`.
-///
-/// The desktop build runs as a Windows GUI-subsystem process, which has no
-/// console attached, so without the file mirror a user could not report what
-/// went wrong. `GHOST_LOG=off` disables the mirror; `GHOST_LOG=<path>` moves it.
 #[cfg(feature = "webview")]
 #[derive(Clone)]
 struct TeeWriter {
@@ -200,9 +153,6 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TeeWriter {
     }
 }
 
-/// True when this process should present a native desktop window. Headless
-/// builds (`--no-default-features`) and `GHOST_NO_GUI=1` fall back to the HTTP
-/// control center, which is the server/sidenote path.
 #[cfg_attr(not(feature = "webview"), allow(dead_code))]
 fn gui_enabled() -> bool {
     if !cfg!(feature = "webview") {
@@ -217,10 +167,6 @@ fn main() -> anyhow::Result<()> {
     if let Some(res) = cli::handle_cli_args() {
         return res;
     }
-    // The desktop window owns the main thread: tao refuses to build an
-    // EventLoop anywhere else on Windows, and macOS requires the main thread.
-    // The node therefore runs on its own thread and hands its handle back so
-    // the tray menu can read and toggle node state.
     #[cfg(feature = "webview")]
     if gui_enabled() {
         let control_port = control_port_from_env();
@@ -239,10 +185,8 @@ fn main() -> anyhow::Result<()> {
                 None
             }
         };
-        // `run_desktop` never returns; control leaves through `process::exit`.
         webview::run_desktop(control_port, node);
     }
 
-    // Headless / server: no window at all, the HTTP control center is the UI.
     run_daemon(false, None)
 }

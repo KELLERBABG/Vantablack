@@ -31,18 +31,11 @@ use std::time::{Duration, Instant};
 
 use crate::ghost::layers::l4_rs;
 
-/// A physical path a shard can leave by.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhyPath {
-    /// Interface name (`wlan0`, `rmnet0`, `starlink0`, or `lo` in tests).
     pub interface: String,
-    /// Local address already bound to that interface, when the platform layer
-    /// has done so. `None` means "not pinned" — the scheduler still assigns
-    /// shards, but the caller must not claim physical separation.
     pub local_addr: Option<String>,
-    /// Autonomous system of the carrier, when known (`0` = unknown).
     pub asn: u32,
-    /// Relative cost: lower is preferred for the *parity* shard on ties.
     pub cost: u8,
     pub available: bool,
 }
@@ -73,54 +66,34 @@ impl PhyPath {
         self
     }
 
-    /// True when the path is pinned to a real interface address. Diversity
-    /// claims are only honest for pinned paths.
     pub fn is_pinned(&self) -> bool {
         self.local_addr.is_some()
     }
 }
 
-/// One shard and the path it must leave by.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BondedShard {
     pub interface: String,
     pub index: u8,
-    /// One shard of the bonded encoding (never a plaintext fragment).
     pub bytes: Vec<u8>,
 }
 
-/// The trade a two-carrier bond has to make. On two paths the two goals are
-/// mutually exclusive, so the caller states which one it is buying.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BondMode {
-    /// 2-of-2 XOR split: each shard alone is uniformly random, so neither
-    /// carrier learns one bit. Losing either path loses the message.
     Confidentiality,
-    /// 1-of-2 duplication: either carrier can be lost. Secrecy rests on the L2
-    /// AEAD, exactly as it does on every single-path send.
     Availability,
 }
 
-/// The split actually applied to one payload.
-///
-/// This is the receiver's decode instruction, so it travels with the shards:
-/// a receiver that guesses wrong gets garbage, never a subtle downgrade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BondScheme {
-    /// Two paths, 2-of-2 XOR.
     Xor2,
-    /// Two paths, full duplication.
     Duplicate2,
-    /// Three or more paths, `(c, r, f)` ramp over GF(2^8).
     Ramp(l4_rs::RampParams),
 }
 
 impl BondScheme {
-    /// Wire length of [`BondScheme::encode`].
     pub const ENCODED_LEN: usize = 4;
 
-    /// `[tag, data, masks, shards]` — four bytes the receiver can trust as far
-    /// as its own authentication of the carrier goes.
     pub fn encode(self) -> [u8; Self::ENCODED_LEN] {
         match self {
             BondScheme::Xor2 => [0, 0, 0, 2],
@@ -147,7 +120,6 @@ impl BondScheme {
         }
     }
 
-    /// Shards that must arrive before a decode is attempted.
     pub fn required(self) -> usize {
         match self {
             BondScheme::Xor2 => 2,
@@ -156,7 +128,6 @@ impl BondScheme {
         }
     }
 
-    /// Shards the sender emitted.
     pub fn emitted(self) -> usize {
         match self {
             BondScheme::Xor2 | BondScheme::Duplicate2 => 2,
@@ -180,7 +151,6 @@ impl BondScheme {
     }
 }
 
-/// A payload split into shards plus the scheme needed to put it back together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BondedSet {
     pub scheme: BondScheme,
@@ -188,13 +158,11 @@ pub struct BondedSet {
 }
 
 impl BondedSet {
-    /// Rebuild the payload from whichever shards arrived.
     pub fn recover(&self, shards: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
         recover_with(self.scheme, shards)
     }
 }
 
-/// XOR a payload with a fresh mask: two shards, neither of which is a fragment.
 fn xor_split(payload: &[u8]) -> Vec<Vec<u8>> {
     use rand::RngCore;
     let mut mask = vec![0u8; payload.len()];
@@ -203,7 +171,6 @@ fn xor_split(payload: &[u8]) -> Vec<Vec<u8>> {
     vec![mask, body]
 }
 
-/// Rebuild a payload under a known scheme.
 pub fn recover_with(scheme: BondScheme, shards: &[(u8, Vec<u8>)]) -> Option<Vec<u8>> {
     match scheme {
         BondScheme::Xor2 => {
@@ -223,7 +190,6 @@ pub fn recover_with(scheme: BondScheme, shards: &[(u8, Vec<u8>)]) -> Option<Vec<
     }
 }
 
-/// Chooses paths and produces bonded shard sets.
 #[derive(Debug, Clone)]
 pub struct HpebScheduler {
     paths: Vec<PhyPath>,
@@ -238,18 +204,12 @@ impl HpebScheduler {
         &self.paths
     }
 
-    /// Paths that are usable right now.
     pub fn available(&self) -> Vec<&PhyPath> {
         let mut v: Vec<&PhyPath> = self.paths.iter().filter(|p| p.available).collect();
         v.sort_by_key(|p| p.cost);
         v
     }
 
-    /// Paths that may carry a shard under the bonding claim: live, pinned to a
-    /// real local address, and at most one per distinct address. Unpinned paths
-    /// do not count (two sockets that both leave by the default route are one
-    /// physical path with extra steps), and neither do two interfaces behind the
-    /// same address. The cheapest path wins an address collision.
     pub fn bondable(&self) -> Vec<&PhyPath> {
         let mut live: Vec<&PhyPath> = self
             .paths
@@ -262,30 +222,14 @@ impl HpebScheduler {
         live
     }
 
-    /// True when at least two *physically distinct, pinned* paths are live.
     pub fn is_bonded(&self) -> bool {
         self.bondable().len() >= 2
     }
 
-    /// Split `payload` across the live paths.
-    ///
-    /// The scheme follows the path count, because the number of carriers *is*
-    /// the constraint:
-    ///
-    /// * **two** paths — a 2-of-2 XOR split. Round-robin over three RS(2,1)
-    ///   shards put two of them on one carrier, which broke both the "no single
-    ///   carrier holds a message" claim and the recovery claim. XOR is 0 %
-    ///   overhead and leaks nothing per carrier, but tolerates no outage.
-    /// * **three or more** — `(c=1, r=m−2, f=1)` ramp bonding: one carrier learns
-    ///   nothing, any one path may drop, rate `1 − 2/m`.
-    ///
-    /// Errors when fewer than two *bondable* paths remain, because a "bonded"
-    /// send over one physical path is a lie about redundancy.
     pub fn bond(&self, payload: &[u8]) -> Result<BondedSet, BondError> {
         self.bond_with(payload, BondMode::Confidentiality)
     }
 
-    /// Same, with the two-path trade chosen explicitly.
     pub fn bond_with(&self, payload: &[u8], mode: BondMode) -> Result<BondedSet, BondError> {
         let live = self.bondable();
         if live.len() < 2 {
@@ -321,7 +265,6 @@ impl HpebScheduler {
         })
     }
 
-    /// Mark a path down (or up) as the OS reports interface changes.
     pub fn set_available(&mut self, interface: &str, available: bool) -> bool {
         let mut changed = false;
         for p in self.paths.iter_mut().filter(|p| p.interface == interface) {
@@ -333,8 +276,6 @@ impl HpebScheduler {
         changed
     }
 
-    /// Interfaces that can actually carry a bonded shard — what the dashboard
-    /// shows as "bonded". An unpinned or duplicate-address path is not one.
     pub fn live_interfaces(&self) -> Vec<String> {
         self.bondable()
             .iter()
@@ -366,13 +307,6 @@ impl std::fmt::Display for BondError {
 
 impl std::error::Error for BondError {}
 
-/// Handover bookkeeping: which interface is preferred, and when it last moved.
-///
-/// The cooldown exists because real interfaces flap on driver resets and DHCP
-/// renewals; without it a "0 ms handover" becomes a switch storm that is worse
-/// than staying put. While the cooldown is running, sends continue on the
-/// previous interface *and* the shards already in flight on the other one, which
-/// is why nothing is lost.
 #[derive(Debug, Clone)]
 pub struct HandoverState {
     active: Option<String>,
@@ -405,8 +339,6 @@ impl HandoverState {
             .unwrap_or(false)
     }
 
-    /// A loss event on `interface`. Returns `true` when this call moved the
-    /// active path.
     pub fn note_loss(&mut self, interface: &str, candidates: &[&str], now: Instant) -> bool {
         if self.active.as_deref() != Some(interface) {
             return false; // a loss elsewhere does not move the preferred path
@@ -426,8 +358,6 @@ impl HandoverState {
         }
     }
 
-    /// Preference update when a better interface appears. Same cooldown, so a
-    /// returning Wi-Fi does not yank a healthy 5G flow mid-packet.
     pub fn prefer(&mut self, interface: &str, now: Instant) -> bool {
         if self.active.as_deref() == Some(interface) || self.in_cooldown(now) {
             return false;
@@ -439,16 +369,12 @@ impl HandoverState {
     }
 }
 
-// ── Live multipath UDP (one bound socket per path) ────────────────────────
-
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     hex::encode(h.finalize())
 }
 
-/// Split a payload through `HpebScheduler` and send every shard from the UDP
-/// socket bound to that shard's path address.
 pub fn run_multipath_client(
     connect: &str,
     paths: &[String],
@@ -496,8 +422,6 @@ pub fn run_multipath_client(
 
     let scheme = bonded.scheme.encode();
     for shard in &bonded.shards {
-        // `--single-source` deliberately sends every shard over one binding so
-        // the server's refusal path can be exercised; it is not a normal send.
         let (_, sock, local) = if single_source {
             &sockets[0]
         } else {
@@ -526,8 +450,6 @@ pub fn run_multipath_client(
     Ok(())
 }
 
-/// Receive shards from any source, rebuild through the same AONT+RS path, and
-/// report the source addresses each shard actually arrived from.
 pub fn run_multipath_server(listen: &str, out: &Path) -> Result<(), String> {
     let sock = UdpSocket::bind(listen).map_err(|e| format!("bind {listen}: {e}"))?;
     sock.set_read_timeout(Some(Duration::from_secs(5)))
@@ -638,7 +560,6 @@ mod tests {
         let sched = HpebScheduler::new(three_paths());
         let bonded = sched.bond(payload).unwrap();
 
-        // Keep any two of the three and rebuild.
         for drop in 0..3u8 {
             let kept: Vec<(u8, Vec<u8>)> = bonded
                 .shards
@@ -704,8 +625,6 @@ mod tests {
             .collect();
         assert_eq!(bonded.recover(&both).unwrap(), payload);
 
-        // Zero outage tolerance is the price of zero single-carrier leakage,
-        // and it is a refusal, not a corrupt payload.
         assert!(bonded.recover(&both[..1]).is_none());
     }
 
@@ -746,13 +665,10 @@ mod tests {
 
     #[test]
     fn bonding_refuses_paths_that_are_not_physically_distinct() {
-        // Two unpinned paths already fail `is_bonded`; `bond` must refuse them
-        // for the same reason instead of emitting a "one shard per carrier" set.
         let unpinned = HpebScheduler::new(vec![PhyPath::new("wlan0"), PhyPath::new("rmnet0")]);
         assert!(!unpinned.is_bonded());
         assert!(unpinned.bond(b"payload").is_err());
 
-        // Two interfaces behind one local address are one physical path.
         let same_addr = HpebScheduler::new(vec![
             PhyPath::new("wlan0").pinned("192.168.1.42:0"),
             PhyPath::new("wlan0.100").pinned("192.168.1.42:0"),
@@ -760,8 +676,6 @@ mod tests {
         assert!(!same_addr.is_bonded());
         assert!(same_addr.bond(b"payload").is_err());
 
-        // A mixed set bonds only over the distinct pinned subset: the unpinned
-        // path must not receive a shard and must not inflate the path count.
         let mixed = HpebScheduler::new(vec![
             PhyPath::new("wlan0").pinned("192.168.1.42:0"),
             PhyPath::new("rmnet0").pinned("10.64.7.9:0"),
@@ -792,9 +706,7 @@ mod tests {
         assert!(h.prefer("wlan0", t0));
         assert!(!h.prefer("wlan0", t0), "already active");
 
-        // Loss inside the cooldown does not move yet.
         assert!(!h.note_loss("wlan0", &live, t0 + Duration::from_millis(100)));
-        // After the cooldown it moves, once.
         assert!(h.note_loss("wlan0", &live, t0 + Duration::from_millis(600)));
         assert_eq!(h.active(), Some("rmnet0"));
         assert!(!h.note_loss("wlan0", &live, t0 + Duration::from_millis(700)));
@@ -821,9 +733,6 @@ mod tests {
             .collect()
     }
 
-    /// Every path count in `3..=8`: the scheme is the honest `(c=1, r=m−2, f=1)`
-    /// ramp, exactly one shard leaves per physical path, every single-path
-    /// outage recovers, and two outages never do.
     #[test]
     fn ramp_bonding_is_honest_for_every_path_count_from_three_to_eight() {
         for m in 3usize..=8 {
@@ -866,7 +775,6 @@ mod tests {
                 m
             );
 
-            // f = 1: exactly one path may vanish.
             for drop in 0..m {
                 let kept: Vec<(u8, Vec<u8>)> = bonded
                     .shards
@@ -881,8 +789,6 @@ mod tests {
                 );
             }
 
-            // f + 1 = 2 outages must not recover, even though the shards are
-            // authentic: this is the honesty boundary, not a corruption check.
             for a in 0..m {
                 for b in (a + 1)..m {
                     let kept: Vec<(u8, Vec<u8>)> = bonded
@@ -914,7 +820,6 @@ mod tests {
             BondScheme::Ramp(p) if p.shards == 5
         ));
 
-        // Two interfaces drop: the bond is rebuilt over the three that remain.
         sched.set_available("phy2", false);
         sched.set_available("phy3", false);
         let three = sched.bond(b"three").unwrap();
@@ -940,7 +845,6 @@ mod tests {
             assert_eq!(three.recover(&kept).as_deref(), Some(b"three".as_slice()));
         }
 
-        // Interfaces return: the ramp grows again with the new path count.
         sched.set_available("phy2", true);
         sched.set_available("phy3", true);
         assert!(matches!(
@@ -948,7 +852,6 @@ mod tests {
             BondScheme::Ramp(p) if p.shards == 5
         ));
 
-        // Down to two bondable paths, the two-path trade becomes explicit.
         for name in ["phy2", "phy3", "phy4"] {
             sched.set_available(name, false);
         }

@@ -23,22 +23,14 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use std::fmt;
 
-/// Reasons a polysemic frame cannot be built or collapsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolysemyError {
-    /// The `(n, k, r)` shape is degenerate.
     Shape { n: usize, k: usize, r: usize },
-    /// One message per `k`-subset is required.
     WorldCount { expected: usize, got: usize },
-    /// Every message (and mask) is exactly `r` bytes.
     MessageLen { expected: usize, got: usize },
-    /// A world needs `k-1` masks.
     MaskCount { expected: usize, got: usize },
-    /// Collapse needs exactly `k` distinct surviving paths.
     Survivors { expected: usize, got: usize },
-    /// A path index is outside `0..n`.
     PathOutOfRange(usize),
-    /// A shard is shorter than the code requires.
     ShardLen { expected: usize, got: usize },
 }
 
@@ -97,17 +89,12 @@ fn combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
     out
 }
 
-/// An `(n, k, r)` counterfactually blind polysemic code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolysemicCode {
     n: usize,
     k: usize,
     r: usize,
-    /// Every `k`-subset of paths, lexicographically ordered. The world message
-    /// list is indexed by position in this vector.
     subsets: Vec<Vec<usize>>,
-    /// `slot_of[path][subset]` is the symbol slot in `path`'s shard that holds
-    /// this subset's mask, or `usize::MAX` when the path is not in the subset.
     slot_of: Vec<Vec<usize>>,
 }
 
@@ -145,20 +132,14 @@ impl PolysemicCode {
         self.r
     }
 
-    /// Number of independently decodable worlds: `C(n, k)`.
     pub fn world_count(&self) -> usize {
         self.subsets.len()
     }
 
-    /// The worlds in message order: every `k`-subset of paths, lexicographically
-    /// ordered. A caller that builds one message per world needs this order, and
-    /// a receiver that collapsed a subset can name the world it holds.
     pub fn world_subsets(&self) -> &[Vec<usize>] {
         &self.subsets
     }
 
-    /// The world index a set of `k` surviving paths collapses to, or `None` when
-    /// the set is not a world.
     pub fn world_index(&self, survivors: &[usize]) -> Option<usize> {
         let mut sorted = survivors.to_vec();
         sorted.sort_unstable();
@@ -169,12 +150,10 @@ impl PolysemicCode {
         self.subsets.iter().position(|subset| *subset == sorted)
     }
 
-    /// Bytes each path must carry: `C(n-1, k-1) * r`.
     pub fn shard_len(&self) -> usize {
         binomial(self.n - 1, self.k - 1) * self.r
     }
 
-    /// Encode every world, drawing fresh masks from the OS RNG.
     pub fn encode(&self, worlds: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, PolysemyError> {
         let masks: Vec<Vec<Vec<u8>>> = self
             .subsets
@@ -192,9 +171,6 @@ impl PolysemicCode {
         self.encode_with_masks(worlds, &masks)
     }
 
-    /// Encode with caller-supplied masks. Masks must be uniform for the
-    /// blindness property to hold; this exists so a caller that already has
-    /// fresh randomness (or a test) can pin it.
     pub fn encode_with_masks(
         &self,
         worlds: &[Vec<u8>],
@@ -252,7 +228,6 @@ impl PolysemicCode {
         Ok(shards)
     }
 
-    /// Collapse to the world whose `k` paths survived.
     pub fn collapse(
         &self,
         shards: &[Vec<u8>],
@@ -334,22 +309,14 @@ mod tests {
         let worlds = bytes(&[0xA1, 0xB2, 0xC3]);
         let shards = code.encode(&worlds).expect("encodes");
 
-        // The censor severs path 1: only the {0, 2} world is reachable, and it
-        // is exactly the fallback that world carries.
         let collapsed = code.collapse(&shards, &[0, 2]).expect("collapse");
         assert_eq!(collapsed, worlds[1]);
-        // A single surviving path is not a world.
         assert!(code.collapse(&shards, &[0]).is_err());
-        // Three paths are not a k=2 world either (no such decoder).
         assert!(code.collapse(&shards, &[0, 1, 2]).is_err());
     }
 
     #[test]
     fn a_lost_path_leaves_the_hidden_world_a_bijection() {
-        // n=3, k=2, r=1. Hold paths 1 and 2 (all of Y_{-0}) and show every
-        // candidate value of the {0,1} world is consistent with those exact
-        // shards: 256 of 256 candidates are reachable, so the observation is
-        // independent of that world.
         let code = PolysemicCode::new(3, 2, 1).expect("3-path link");
         let worlds = bytes(&[0xAA, 0xBB, 0xCC]);
         let masks = vec![vec![vec![0x11u8]], vec![vec![0x22u8]], vec![vec![0x33u8]]];
@@ -357,9 +324,6 @@ mod tests {
             .encode_with_masks(&worlds, &masks)
             .expect("encodes with pinned masks");
 
-        // Shard 0's slot 0 is the {0,1} mask; shard 1's slot 0 holds
-        // M_{01} XOR that mask. Recover the mask for any candidate M and the
-        // two surviving shards stay byte-identical.
         let mut reachable = std::collections::BTreeSet::new();
         for candidate in 0u8..=255 {
             let mut alt_masks = masks.clone();
@@ -377,13 +341,10 @@ mod tests {
 
     #[test]
     fn the_shard_is_exactly_the_counterfactual_capacity() {
-        // C(n-1, k-1) * r, the bound Theorem 1 says is necessary and sufficient.
         assert_eq!(PolysemicCode::new(3, 2, 1).unwrap().shard_len(), 2);
         assert_eq!(PolysemicCode::new(3, 2, 3).unwrap().shard_len(), 6);
         assert_eq!(PolysemicCode::new(4, 2, 3).unwrap().shard_len(), 9);
         assert_eq!(PolysemicCode::new(4, 3, 2).unwrap().shard_len(), 6);
-        // Every path appears in exactly C(n-1, k-1) worlds, so each slot is
-        // written once and the encoder cannot alias two worlds.
         let code = PolysemicCode::new(5, 3, 2).unwrap();
         for path in 0..5 {
             let slots = code.slot_of[path]

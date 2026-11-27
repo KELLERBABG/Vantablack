@@ -61,58 +61,34 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-/// Domain separator for hashing an arbitrary input to a Ristretto point.
 const H2G_DOMAIN: &[u8] = b"VB-BTCR-H2G-V1";
-/// Domain separator for the private root key derived from `identity.key`.
 const ROOT_SEED_DOMAIN: &[u8] = b"VB-BTCR-V2";
-/// Domain separator for a quantized `(day, tier)` bucket scalar.
 const BUCKET_DOMAIN: &[u8] = b"VB-BTCR-BUCKET-V2";
-/// Domain separator for the nullifier (one spend per ticket, not per input).
 const NULLIFIER_DOMAIN: &[u8] = b"VB-BTCR-NULLIFIER-V1";
-/// Domain separator for the receipt nullifier (one mint per work receipt).
 const RECEIPT_NULLIFIER_DOMAIN: &[u8] = b"VB-BTCR-RCPT";
-/// Version byte in the 81-byte ticket encoding.
 pub const TICKET_VERSION: u8 = 2;
-/// Default ticket lifetime: the rest of the current UTC-day bucket.
 pub const DEFAULT_TICKET_TTL_SECS: u64 = 24 * 3600;
-/// A ticket is 81 bytes: version, M, N, expiry, work credit.
 pub const TICKET_ENCODED_LEN: usize = 81;
-/// Fixed work tiers. `work_bytes` is always exactly one of these, so the ticket
-/// length and value distribution do not identify the issuer or the receipt.
 pub const TIER_BYTES: [u64; 3] = [1 << 20, 16 << 20, 256 << 20];
 
-/// The quantized metadata a ticket shares with every other ticket minted in the
-/// same bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Bucket {
-    /// UTC-day index, `unix_secs / 86400 + 1` at issuance.
     pub day: u32,
-    /// Index into [`TIER_BYTES`].
     pub tier: u8,
 }
 
-/// The UTC-day bucket a ticket issued at `now` belongs to.
-///
-/// `+1` puts the ticket in *tomorrow's* bucket, so an issuance at 23:59 UTC is
-/// still valid for a full day instead of expiring seconds later.
 pub fn bucket_day(now: u64) -> u32 {
     (now / 86_400 + 1).min(u32::MAX as u64) as u32
 }
 
-/// The last second a ticket in `day` is valid.
 pub fn expiry_for_day(day: u32) -> u64 {
     (day as u64 + 1) * 86_400
 }
 
-/// Recover the bucket day from the quantized expiry stored in a ticket.
 fn day_of_expiry(expires_at: u64) -> u32 {
     (expires_at / 86_400).saturating_sub(1).min(u32::MAX as u64) as u32
 }
 
-/// The largest tier at or below `work_bytes`.
-///
-/// Floor, never ceiling: a receipt for 3 MiB earns the 1 MiB tier, so
-/// quantization can only under-issue relative to the work proved.
 pub fn tier_for(work_bytes: u64) -> u8 {
     let mut tier = 0u8;
     for (index, bytes) in TIER_BYTES.iter().enumerate() {
@@ -123,7 +99,6 @@ pub fn tier_for(work_bytes: u64) -> u8 {
     tier
 }
 
-/// Credit carried by a tier index, clamped to the last tier.
 pub fn tier_bytes(tier: u8) -> u64 {
     TIER_BYTES[(tier as usize).min(TIER_BYTES.len() - 1)]
 }
@@ -134,7 +109,6 @@ fn random_scalar() -> Scalar {
     Scalar::from_bytes_mod_order_wide(&wide)
 }
 
-/// Hash an arbitrary byte string to a Ristretto point.
 pub fn hash_to_group(input: &[u8]) -> RistrettoPoint {
     let mut h = Sha512::new();
     h.update(H2G_DOMAIN);
@@ -143,7 +117,6 @@ pub fn hash_to_group(input: &[u8]) -> RistrettoPoint {
     RistrettoPoint::hash_from_bytes::<Sha512>(&h.finalize())
 }
 
-/// Decode a 32-byte hex Ristretto point.
 pub fn decode_point(hex_str: &str) -> Result<RistrettoPoint, String> {
     point_from_hex(hex_str)
 }
@@ -160,9 +133,6 @@ fn point_from_hex(hex_str: &str) -> Result<RistrettoPoint, String> {
         .ok_or_else(|| "point is not a canonical Ristretto encoding".to_string())
 }
 
-// ── DLEQ ────────────────────────────────────────────────────────────────────
-
-/// Chaum–Pedersen proof that the issuer used one key for `G -> K` and `B -> E`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dleq {
     pub c: String,
@@ -202,7 +172,6 @@ impl Dleq {
         }
     }
 
-    /// Verify `log_G K == log_B E` without learning the secret.
     pub fn verify(
         &self,
         public: &RistrettoPoint,
@@ -224,29 +193,17 @@ impl Dleq {
         let (Some(c), Some(s)) = (Option::<Scalar>::from(c), Option::<Scalar>::from(s)) else {
             return false;
         };
-        // Rebuild A1/A2 from the response: A = s·X − c·Y.
         let a1 = s * RISTRETTO_BASEPOINT_POINT - c * public;
         let a2 = s * blinded - c * eval;
         dleq_challenge(public, blinded, eval, &a1, &a2) == c
     }
 }
 
-// ── Issuer ──────────────────────────────────────────────────────────────────
-
-/// The blind-signing authority. The root scalar never leaves this struct, and
-/// the bucket scalars it derives are never stored or published.
 pub struct Issuer {
     root: Scalar,
 }
 
 impl Issuer {
-    /// Derive the private root from the node's `identity.key` secret.
-    ///
-    /// The identity seed is the only input. The 32-byte Ed25519 secret is
-    /// expanded through HKDF-SHA256 under [`ROOT_SEED_DOMAIN`], so the ticket
-    /// root is independent of the handshake key (a ticket compromise cannot
-    /// forge sessions, and a session compromise cannot mint tickets) while
-    /// still surviving a restart without a second key file.
     pub fn from_identity_seed(seed: &[u8; 32]) -> Self {
         let hk = hkdf::Hkdf::<Sha256>::new(None, seed);
         let mut okm = [0u8; 64];
@@ -257,13 +214,10 @@ impl Issuer {
         Self { root }
     }
 
-    /// Alias kept for callers that traffic in "a seed" rather than "the identity
-    /// seed". Both mean the same thing: private key material, never a public name.
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         Self::from_identity_seed(seed)
     }
 
-    /// The bucket scalar `k_{day,tier}`. Never leaves this type in the clear.
     pub fn secret_for(&self, day: u32, tier: u8) -> Scalar {
         let mut h = Sha512::new();
         h.update(BUCKET_DOMAIN);
@@ -273,7 +227,6 @@ impl Issuer {
         Scalar::from_hash(h)
     }
 
-    /// The published bucket key `K_{day,tier} = k_{day,tier}·G`.
     pub fn public_for(&self, day: u32, tier: u8) -> RistrettoPoint {
         self.secret_for(day, tier) * RISTRETTO_BASEPOINT_POINT
     }
@@ -282,8 +235,6 @@ impl Issuer {
         hex::encode(self.public_for(day, tier).compress().as_bytes())
     }
 
-    /// Blind-evaluate one request inside `(day, tier)` and attach a DLEQ proof
-    /// tying the evaluation to that bucket's published key.
     pub fn evaluate(
         &self,
         blinded_hex: &str,
@@ -298,9 +249,6 @@ impl Issuer {
         Ok((hex::encode(eval.compress().as_bytes()), proof))
     }
 
-    /// The check a relay performs: `N == k_{day,tier}·M` for the ticket's own
-    /// claimed bucket. A ticket minted in another bucket fails here, which is
-    /// what stops a relay from re-labelling its metadata.
     pub fn verify_ticket(&self, ticket: &Ticket) -> bool {
         let (Ok(m), Ok(n)) = (point_from_hex(&ticket.m), point_from_hex(&ticket.n)) else {
             return false;
@@ -310,9 +258,6 @@ impl Issuer {
     }
 }
 
-// ── Client-side blinding ────────────────────────────────────────────────────
-
-/// A blinded request plus the blinding factor the client must keep.
 #[derive(Clone)]
 pub struct BlindRequest {
     pub input: String,
@@ -330,7 +275,6 @@ impl std::fmt::Debug for BlindRequest {
     }
 }
 
-/// Blind `input` with fresh randomness. The issuer learns nothing about `input`.
 pub fn blind(input: &[u8]) -> BlindRequest {
     let m = hash_to_group(input);
     let r = random_scalar();
@@ -342,7 +286,6 @@ pub fn blind(input: &[u8]) -> BlindRequest {
     }
 }
 
-/// Verify the issuer's DLEQ and unblind the evaluation into a spendable ticket.
 pub fn finalize(
     request: &BlindRequest,
     eval_hex: &str,
@@ -359,9 +302,6 @@ pub fn finalize(
     }
     let input = hex::decode(&request.input).map_err(|e| format!("bad input hex: {e}"))?;
     let m = hash_to_group(&input);
-    // The DLEQ proved E = k·B for the published K, so unblinding with r⁻¹
-    // yields N = k·M. Checking N against K without k is impossible, which is
-    // exactly why the proof is mandatory before this point.
     let n = request.r.invert() * eval;
     Ok(Ticket {
         m: hex::encode(m.compress().as_bytes()),
@@ -371,15 +311,11 @@ pub fn finalize(
     })
 }
 
-/// A bearer transit ticket. Possession is the credit; it carries no identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ticket {
-    /// Blinded input point `M`. Public.
     pub m: String,
-    /// Unblinded evaluation `N = k·M`. This is the bearer secret.
     pub n: String,
     pub expires_at: u64,
-    /// Relay bytes this ticket was issued against.
     pub work_bytes: u64,
 }
 
@@ -422,7 +358,6 @@ impl Ticket {
         })
     }
 
-    /// The quantized bucket this ticket was issued in.
     pub fn bucket(&self) -> Bucket {
         Bucket {
             day: day_of_expiry(self.expires_at),
@@ -430,7 +365,6 @@ impl Ticket {
         }
     }
 
-    /// One spendable unit, independent of which relay sees it first.
     pub fn nullifier(&self) -> String {
         let mut h = Sha256::new();
         h.update(NULLIFIER_DOMAIN);
@@ -443,27 +377,16 @@ impl Ticket {
     }
 }
 
-// ── Work receipts ───────────────────────────────────────────────────────────
-
-/// A relay's signed claim of bytes forwarded during one epoch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Receipt {
     pub worker: String,
     pub work_bytes: u64,
     pub epoch: u64,
-    /// Ed25519 signature over [`receipt_message`], hex.
     pub signature: String,
-    /// Beneficiary public key that must sign the receipt, hex.
     pub beneficiary: String,
 }
 
 impl Receipt {
-    /// Deterministic one-mint-per-receipt identifier.
-    ///
-    /// It is stable for the same `(worker, epoch, beneficiary)` triple, so a
-    /// replayed receipt is recognised even when the issuer has restarted (the
-    /// set is reloaded from the spend journal) and even if the receipt is
-    /// wrapped in a fresh blinding request.
     pub fn nullifier(&self) -> String {
         let mut h = Sha256::new();
         h.update(RECEIPT_NULLIFIER_DOMAIN);
@@ -525,7 +448,6 @@ pub fn verify_receipt(receipt: &Receipt, allowed: &VerifyingKey) -> Result<(), S
         .map_err(|_| "receipt signature does not verify".to_string())
 }
 
-/// Issue a ticket only after checking a beneficiary-signed work receipt.
 pub fn issue_for_work(
     issuer: &Issuer,
     receipt: &Receipt,
@@ -538,8 +460,6 @@ pub fn issue_for_work(
         day: bucket_day(now),
         tier: tier_for(receipt.work_bytes),
     };
-    // Evaluate before claiming the receipt, so a malformed blinding request
-    // does not burn a unit of work.
     let (eval, proof) = issuer.evaluate(&request.blinded, bucket.day, bucket.tier)?;
     redeem_receipt(receipt)?;
     let ticket = finalize(
@@ -553,17 +473,10 @@ pub fn issue_for_work(
     Ok((ticket, proof))
 }
 
-/// Claim a receipt for minting. A second mint from the same receipt is refused.
-///
-/// The check is deliberately separate from [`verify_receipt`]: a signature says
-/// the receipt is authentic, not that it is unspent. Callers that mint directly
-/// (the HTTP surface) must go through this too.
 pub fn redeem_receipt(receipt: &Receipt) -> Result<(), String> {
     let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
     guard.redeem_local(receipt)
 }
-
-// ── Ledger: double-spend refusal ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct LedgerSnapshot {
@@ -587,20 +500,10 @@ struct Ledger {
     nullifiers: HashSet<String>,
     receipts: HashSet<String>,
     gossip_merged: u64,
-    /// Where the double-spend sets are persisted. `None` keeps them in memory
-    /// only (unit tests, so a test run cannot mutate an operator's history).
     journal_path: Option<PathBuf>,
-    /// Set when the journal exists but cannot be read. Spends and mints then
-    /// fail closed: forgetting a nullifier is worse than refusing the request.
     journal_error: Option<String>,
 }
 
-/// On-disk form of the double-spend sets.
-///
-/// Deliberately separate from [`Wallet`]: the wallet holds *unspent* bearer
-/// tickets, while this file is the issuer/relay memory of what has already been
-/// used. Losing it would let a restarted process redeem one receipt for a fresh
-/// ticket, which is exactly the unbounded-replay break this set exists to stop.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct SpendJournal {
     #[serde(default)]
@@ -642,14 +545,10 @@ fn save_journal(
     std::fs::rename(&tmp, path).map_err(|e| format!("rename into {}: {e}", path.display()))
 }
 
-/// One journal per wallet, both governed by the same `GHOST_DATA_DIR`.
 fn journal_path() -> PathBuf {
     wallet_path().with_file_name("btcr_spend_journal.json")
 }
 
-/// The global ledger persists in production. The library test build uses a
-/// memory-only ledger because its tests deliberately spend the same fixtures
-/// repeatedly; the journal round-trip is exercised directly in the tests below.
 fn global_journal_path() -> Option<PathBuf> {
     if cfg!(test) {
         None
@@ -686,9 +585,6 @@ impl Ledger {
         }
     }
 
-    /// Check a receipt for replay and persist its nullifier before returning.
-    /// A failed write removes the in-memory entry again, so a disk error cannot
-    /// look like a successful redemption.
     fn redeem_local(&mut self, receipt: &Receipt) -> Result<(), String> {
         if let Some(err) = &self.journal_error {
             return Err(format!(
@@ -711,7 +607,6 @@ impl Ledger {
         Ok(())
     }
 
-    /// Verify, then persist the ticket nullifier before counting the spend.
     fn spend_local(&mut self, issuer: &Issuer, ticket: &Ticket, now: u64) -> Result<(), String> {
         if ticket.is_expired(now) {
             return Err(format!("ticket expired at {}", ticket.expires_at));
@@ -754,7 +649,6 @@ pub fn record_rejected_receipt() {
     guard.rejected_receipts = guard.rejected_receipts.saturating_add(1);
 }
 
-/// Spend a ticket. A second spend of the same ticket is refused.
 pub fn spend(issuer: &Issuer, ticket: &Ticket, now: u64) -> Result<(), String> {
     let mut guard = ledger().lock().unwrap_or_else(|e| e.into_inner());
     guard.spend_local(issuer, ticket, now)
@@ -773,8 +667,6 @@ pub fn snapshot() -> LedgerSnapshot {
         gossip_merged: guard.gossip_merged,
     }
 }
-
-// ── Wallet ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Wallet {
@@ -805,7 +697,6 @@ impl Wallet {
         std::fs::rename(&tmp, path).map_err(|e| format!("rename into {}: {e}", path.display()))
     }
 
-    /// Merge tickets by `M` (the unique blinded input), newest credit wins.
     pub fn merge(&mut self, other: &Wallet) -> usize {
         let mut added: usize = 0;
         for ticket in &other.tickets {
@@ -832,8 +723,6 @@ impl Wallet {
     }
 }
 
-/// Encode up to `max` unexpired tickets from `wallet` into a compact length-prefixed
-/// mesh gossip batch: `[count u8]([len u16 BE][encoded ticket UTF-8]...)`.
 pub fn encode_gossip_batch(wallet: &Wallet, max: usize, now: u64) -> Vec<u8> {
     let mut out = Vec::new();
     out.push(0u8);
@@ -863,7 +752,6 @@ pub fn encode_gossip_batch(wallet: &Wallet, max: usize, now: u64) -> Vec<u8> {
     out
 }
 
-/// Decode a gossip batch produced by [`encode_gossip_batch`], dropping expired or malformed entries.
 pub fn decode_gossip_batch(bytes: &[u8], now: u64) -> Wallet {
     let mut wallet = Wallet::default();
     if bytes.is_empty() {
@@ -892,13 +780,11 @@ pub fn decode_gossip_batch(bytes: &[u8], now: u64) -> Wallet {
     wallet
 }
 
-/// Export up to `max` unexpired tickets from the node's wallet for `GHOST_BTCR____` PEX gossip.
 pub fn export_gossip_batch(max: usize) -> Vec<u8> {
     let wallet = Wallet::load(&wallet_path());
     encode_gossip_batch(&wallet, max, super::now_secs())
 }
 
-/// Merge an incoming `GHOST_BTCR____` gossip batch into the node's wallet on disk.
 pub fn ingest_gossip_batch(bytes: &[u8]) -> usize {
     let now = super::now_secs();
     let incoming = decode_gossip_batch(bytes, now);
@@ -919,12 +805,6 @@ pub fn ingest_gossip_batch(bytes: &[u8]) -> usize {
     added
 }
 
-// ── Reporting ───────────────────────────────────────────────────────────────
-
-/// Status for `/api/v2/btcr`, parameterised by the **private** issuer.
-///
-/// The published key is per bucket, so the report names the bucket in force
-/// rather than a stable node-wide key.
 pub fn status_json(issuer: &Issuer, now: u64) -> serde_json::Value {
     let wallet = Wallet::load(&wallet_path());
     let snap = snapshot();
@@ -965,8 +845,6 @@ mod tests {
         Issuer::from_identity_seed(&[seed; 32])
     }
 
-    /// A receipt with a process-unique epoch: the redeemed-receipt set is
-    /// process-global, so a shared `(worker, epoch)` would collide across tests.
     fn unique_receipt(key: &SigningKey, worker: &str, work: u64) -> Receipt {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let epoch = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -989,14 +867,12 @@ mod tests {
             issue_for_work(&issuer, &receipt, &key.verifying_key(), &request, now).unwrap();
         assert!(issuer.verify_ticket(&ticket));
 
-        // The ticket carries quantized metadata, not the receipt's raw numbers.
         let bucket = ticket.bucket();
         assert_eq!(bucket.day, bucket_day(now));
         assert_eq!(bucket.tier, 0, "4 MB floors to the 1 MiB tier");
         assert_eq!(ticket.work_bytes, TIER_BYTES[0]);
         assert_eq!(ticket.expires_at, expiry_for_day(bucket.day));
 
-        // The DLEQ is over the bucket key, and verifies independently.
         let public = issuer.public_for(bucket.day, bucket.tier);
         let (eval, proof2) = issuer
             .evaluate(&request.blinded, bucket.day, bucket.tier)
@@ -1092,13 +968,10 @@ mod tests {
 
     #[test]
     fn the_root_key_is_private_and_seed_determined() {
-        // Same private seed, same issuer — restarts keep working.
         assert_eq!(
             issuer_from_seed(9).public_hex_for(1, 0),
             issuer_from_seed(9).public_hex_for(1, 0)
         );
-        // Different identity, different key. No public string is an input, so
-        // knowing a node's fingerprint tells an attacker nothing about this.
         assert_ne!(
             issuer_from_seed(9).public_hex_for(1, 0),
             issuer_from_seed(10).public_hex_for(1, 0)
@@ -1154,12 +1027,10 @@ mod tests {
         assert!(issuer.verify_ticket(&ticket));
         assert_eq!(ticket.bucket().tier, 1);
 
-        // Re-labelling the day moves it to a key the issuer never signed with.
         let mut shifted = ticket.clone();
         shifted.expires_at += 86_400;
         assert!(!issuer.verify_ticket(&shifted));
 
-        // Re-labelling the tier does the same.
         let mut retiered = ticket.clone();
         retiered.work_bytes = TIER_BYTES[2];
         assert!(!issuer.verify_ticket(&retiered));
@@ -1183,7 +1054,6 @@ mod tests {
         assert_eq!(Ticket::decode(&encoded).unwrap(), ticket);
         assert!(Ticket::decode("00").is_err());
 
-        // A v1 ticket is refused rather than reinterpreted.
         let mut v1 = hex::decode(&encoded).unwrap();
         v1[0] = 1;
         assert!(Ticket::decode(&hex::encode(v1)).is_err());
@@ -1245,8 +1115,6 @@ mod tests {
         dir.join("btcr_spend_journal.json")
     }
 
-    /// The audit fix is only real across restarts: a process that forgets its
-    /// nullifier set can re-mint from one receipt and re-spend one ticket.
     #[test]
     fn spend_history_survives_a_restart() {
         let path = scratch_journal("restart");
@@ -1281,8 +1149,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
-    /// Forgetting a nullifier is a security regression; an unreadable journal
-    /// must refuse the operation instead of silently starting empty.
     #[test]
     fn a_corrupt_journal_refuses_instead_of_forgetting() {
         let path = scratch_journal("corrupt");

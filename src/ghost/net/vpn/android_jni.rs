@@ -42,8 +42,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use x25519_dalek::PublicKey;
 
-/// Normalize an address: if it's an IPv4-mapped IPv6 address (::ffff:a.b.c.d)
-/// produced by dual-stack sockets on Android/Linux, convert it to a standard IPv4 SocketAddr.
 pub(crate) fn canonicalize_addr(addr: std::net::SocketAddr) -> std::net::SocketAddr {
     match addr {
         std::net::SocketAddr::V6(v6) => {
@@ -58,8 +56,6 @@ pub(crate) fn canonicalize_addr(addr: std::net::SocketAddr) -> std::net::SocketA
         std::net::SocketAddr::V4(_) => addr,
     }
 }
-
-// ── TUN over a VpnService fd ─────────────────────────────────────────
 
 use std::ffi::c_void;
 
@@ -82,7 +78,6 @@ macro_rules! alog {
     };
 }
 
-/// TUN device backed by the fd returned by `VpnService.Builder.establish()`.
 pub struct AndroidTun {
     fd: i32,
     running: Arc<AtomicBool>,
@@ -137,13 +132,8 @@ impl TunDevice for AndroidTun {
     }
 }
 
-// ── Framing Helpers ──────────────────────────────────────────────────
-
 const MAGIC: &[u8; 5] = crate::ghost::net::vpn::hub::VPN_PAYLOAD_MAGIC;
 const GHOST_BYE_MAGIC: &[u8] = crate::ghost::net::vpn::hub::GHOST_BYE_MAGIC;
-
-// `frame_shard` / `unframe` come from `ghost::net` (canonical);
-// this module used to carry its own byte-identical copies.
 
 fn tunnel_frame(
     key: &[u8; 32],
@@ -186,7 +176,6 @@ fn receiver_open(
     sh: [u8; 4],
     ctr: u32,
 ) -> Option<Vec<u8>> {
-    // 1. Support GTF v2 wire format from updated hubs (using SessionRatchet per-counter keys)
     if let Some(h) = crate::ghost::net::parse_gtf_v2_header(&frame[..amt]) {
         let tag_start = if h.bulk {
             amt.saturating_sub(16)
@@ -235,7 +224,6 @@ fn receiver_open(
         }
     }
 
-    // 2. GTF v1 fallback
     let pe = BULK_OFFSET_AUTH_TAG_START.min(amt);
     if pe <= BULK_OFFSET_PAYLOAD_START {
         return None;
@@ -286,8 +274,6 @@ fn receiver_open(
         None
     }
 }
-
-// ── Native Core Handle ───────────────────────────────────────────────
 
 pub struct AndroidCore {
     pub state: Arc<ClientState>,
@@ -471,7 +457,6 @@ fn detect_local_lan_subnets() -> (Vec<[u8; 3]>, std::collections::HashSet<std::n
         std::collections::HashSet::new();
 
     if let Ok(temp_sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        // 1. Check all 192.168.X.0/24 subnets via fast kernel FIB lookup (no packets sent)
         for third in 0..=254u8 {
             let target = std::net::SocketAddr::new(
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, third, 1)),
@@ -492,7 +477,6 @@ fn detect_local_lan_subnets() -> (Vec<[u8; 3]>, std::collections::HashSet<std::n
                 }
             }
         }
-        // 2. Check common 10.X.Y.0/24 and 172.16..31.X.0/24 LAN/hotspot subnets
         let extra_prefixes: &[[u8; 3]] = &[
             [10, 0, 0],
             [10, 0, 1],
@@ -552,8 +536,6 @@ fn perform_lan_discovery(
         local_ips
     );
 
-    // 1. Broadcast standard signed beacons (112B: prefix + pk + sig) to 2270 and 55225
-    // so any PC running Global Ghost Net immediately auto-handshakes this device
     let mut broadcast_targets: Vec<std::net::SocketAddr> = vec![
         "255.255.255.255:55225".parse().unwrap(),
         "255.255.255.255:2270".parse().unwrap(),
@@ -578,7 +560,6 @@ fn perform_lan_discovery(
         let _ = sock.send_to(&beacon_buf, *target);
     }
 
-    // 2. Active subnet unicast probe: send handshake shards directly to hosts on LAN
     for sn in &subnets {
         for host in 1..=254 {
             let target_ip = std::net::Ipv4Addr::new(sn[0], sn[1], sn[2], host);
@@ -634,7 +615,6 @@ fn perform_lan_discovery(
             }
         }
 
-        // Check if any peer has collected >= 2 shards
         let mut completed_peers = Vec::new();
         for (&src, shards) in peer_shards.iter_mut() {
             if shards.iter().filter(|s| s.is_some()).count() >= 2 {
@@ -688,8 +668,6 @@ fn perform_lan_discovery(
     discovered
 }
 
-/// One TUN→mesh step: read a packet from the TUN, seal it, wrap in GTF bulk frame,
-/// and send via the protected socket to the hub.
 pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
     let Some(tun) = core.tun.as_mut() else {
         std::thread::sleep(Duration::from_millis(50));
@@ -701,8 +679,6 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
         _ => return,
     };
 
-    // Intercept DNS queries (UDP dst port 53) for instant Ad/Tracker blocking
-    // even when zero mesh peers are connected (Local Ad-Shield DNS mode).
     let ihl = ((buf[0] & 0x0F) as usize) * 4;
     let is_udp_dns = buf[9] == 17
         && ihl >= 20
@@ -730,9 +706,6 @@ pub fn pump_once(core: &mut AndroidCore, buf: &mut [u8]) {
             }
         }
 
-        // In Local Ad-Shield mode (no Exit Hub connected yet), tun0 only routes
-        // 10.66.0.1/32, so direct UDP to 1.1.1.1:53 / 9.9.9.9:53 bypasses tun0
-        // and keeps normal internet working while filtering ads/trackers!
         if core.hub_addr.is_none() || core.session_key.lock().is_none() {
             if let Ok(dns_sock) = UdpSocket::bind("0.0.0.0:0") {
                 let _ = dns_sock.set_read_timeout(Some(Duration::from_millis(1200)));
@@ -815,8 +788,6 @@ fn is_tunnel_healthy(core: &AndroidCore) -> bool {
     now_ms.saturating_sub(last_in) < 30_000
 }
 
-/// One mesh→TUN step: recv a GTF datagram from hub, open it, and write the inner
-/// IP packet into the TUN. Also processes incoming handshakes from LAN peers.
 pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     let Some(sock) = core.sock.as_ref() else {
         std::thread::sleep(Duration::from_millis(50));
@@ -829,11 +800,9 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     };
     let src = canonicalize_addr(raw_src);
     if crate::ghost::net::stun::is_stun_packet(&buf[..n]) {
-        // Single-socket STUN/ICE demux: handle reflexive discovery or ICE connectivity checks
         return false;
     }
     if n > 5 && &buf[..5] == b"BLND!" {
-        // DERP blind relay envelope demux
         return false;
     }
     if n < MIN_FRAME_SIZE {
@@ -841,7 +810,6 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
     }
     let ctr = crate::ghost::net::parse_packet_counter_u64(&buf[..n]) as u32;
 
-    // Inbound handshake initiation from a peer (counter == 0)
     if ctr == 0 {
         let is_current_hub = core
             .hub_addr
@@ -850,12 +818,10 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         let has_hub_session = core.hub_addr.is_some() && core.session_key.lock().is_some();
         let healthy = is_tunnel_healthy(core);
 
-        // If from our current hub and tunnel is healthy, ignore redundant re-handshake probes
         if is_current_hub && healthy {
             return false;
         }
 
-        // If we already have a hub session, do NOT let a non-hub peer hijack hub_addr!
         if has_hub_session && !is_current_hub {
             if !core.known_peers.lock().contains_key(&src) {
                 if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
@@ -870,7 +836,6 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
             return false;
         }
 
-        // Hub handshake / initial adoption / explicit reconnect
         if !has_hub_session || !healthy || is_current_hub {
             if let Some((key, sh)) = perform_handshake(sock, src, &core.identity) {
                 core.known_peers.lock().insert(src, (key, sh));
@@ -890,7 +855,6 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         return false;
     }
 
-    // Check if a non-hub known peer sent GHOST_BYE_____
     let flags = parse_flags(&buf[..n]);
     if flags & 0x02 != 0 {
         let non_hub = core
@@ -918,7 +882,6 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
         }
     }
 
-    // Tunnel traffic from established hub
     let session_key_opt = *core.session_key.lock();
     let session_hash = *core.session_hash.lock();
     if let (Some(hub), Some(session_key)) = (core.hub_addr, session_key_opt) {
@@ -988,7 +951,6 @@ pub fn drain_once(core: &mut AndroidCore, buf: &mut [u8]) -> bool {
                     }
                 }
             } else {
-                // Control or gossip frame (e.g. PEX or beacon) without FLAG_TUNNEL — ignore quietly
             }
         }
     }
@@ -1005,8 +967,6 @@ impl Drop for AndroidCore {
     }
 }
 
-// ── JNI Surface ──────────────────────────────────────────────────────
-
 #[allow(unused_imports)]
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jint, jlong, jlongArray, jstring};
@@ -1016,7 +976,6 @@ fn throw(env: &mut JNIEnv, msg: &str) {
     let _ = env.throw_new("java/lang/IllegalStateException", msg);
 }
 
-/// `fun init(hubFingerprint: String, storageDir: String): Long`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
     mut env: JNIEnv,
@@ -1072,7 +1031,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_init(
     Box::into_raw(core) as jlong
 }
 
-/// `fun setSessionKey(ptr: Long, key: ByteArray)`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_setSessionKey(
     mut env: JNIEnv,
@@ -1095,7 +1053,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_setSessionKey(
     core.install_session(arr, compute_session_hash(&arr));
 }
 
-/// `fun updateTun(ptr: Long, tunFd: Int)`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_updateTun(
     _env: JNIEnv,
@@ -1268,7 +1225,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getXrayJson<'local>(
         .unwrap_or(std::ptr::null_mut())
 }
 
-/// `fun start(ptr: Long, tunFd: Int, sockFd: Int, hubAddr: String): Boolean`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
     mut env: JNIEnv,
@@ -1310,7 +1266,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_start(
         }
     }
 
-    // Always run LAN discovery if no active hub session was established yet
     if core.session_key.lock().is_none() {
         let found = perform_lan_discovery(&sock, &core.identity);
         for (peer, key, sh) in found {
@@ -1372,7 +1327,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     };
     let has_hub_session = core.hub_addr.is_some() && core.session_key.lock().is_some();
     let healthy = is_tunnel_healthy(core);
-    // If tunnel is already established and healthy, do not disturb hub session
     if has_hub_session && healthy {
         return core.known_peers.lock().len().max(1) as jint;
     }
@@ -1414,8 +1368,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     }
 }
 
-/// `fun connectPeer(ptr: Long, peerAddr: String): Boolean`
-/// Connect to a specific peer endpoint discovered via Cloudflare Worker tracker or manual config.
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
     mut env: JNIEnv,
@@ -1468,8 +1420,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_connectPeer(
     }
 }
 
-/// `fun selectHub(ptr: Long, peerAddr: String): Boolean`
-/// Explicitly switch the active exit hub to `peerAddr`.
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_selectHub(
     mut env: JNIEnv,
@@ -1511,7 +1461,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_selectHub(
     }
 }
 
-/// `fun getActiveHub(ptr: Long): String`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_getActiveHub(
     env: JNIEnv,
@@ -1532,7 +1481,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getActiveHub(
     }
 }
 
-/// `fun getKnownPeers(ptr: Long): String` (comma-separated list of ip:port)
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_getKnownPeers(
     env: JNIEnv,
@@ -1561,7 +1509,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getKnownPeers(
     }
 }
 
-/// `fun stats(ptr: Long): LongArray` — [rxPackets, txPackets, epoch, txCounter, rxBytes, txBytes]
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_stats(
     env: JNIEnv,
@@ -1588,7 +1535,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_stats(
     }
 }
 
-/// `fun pump(ptr: Long)` — one TUN→mesh step (pump thread loop).
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_pump(
     _env: JNIEnv,
@@ -1605,7 +1551,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_pump(
     pump_once(core, &mut buf);
 }
 
-/// `fun drain(ptr: Long): Boolean` — one mesh→TUN step (drain thread loop).
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_drain(
     _env: JNIEnv,
@@ -1630,7 +1575,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_drain(
     received as jboolean
 }
 
-/// `fun destroy(ptr: Long)`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_destroy(
     _env: JNIEnv,
@@ -1646,7 +1590,6 @@ static RENDEZVOUS_URL: Mutex<String> = Mutex::new(String::new());
 static HANDOVER_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_RTT_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 
-/// `fun importInvite(ptr: Long, invite: String): String`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
     mut env: JNIEnv,
@@ -1695,7 +1638,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
         .unwrap_or(std::ptr::null_mut())
 }
 
-/// `fun setRendezvousUrl(ptr: Long, url: String)`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_setRendezvousUrl(
     mut env: JNIEnv,
@@ -1709,7 +1651,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_setRendezvousUrl(
     }
 }
 
-/// `fun getConnectionPath(ptr: Long): String`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_getConnectionPath(
     env: JNIEnv,
@@ -1733,7 +1674,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getConnectionPath(
         .unwrap_or(std::ptr::null_mut())
 }
 
-/// `fun getRttMs(ptr: Long): Long`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_getRttMs(
     _env: JNIEnv,
@@ -1748,7 +1688,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getRttMs(
     }
 }
 
-/// `fun getHandoverCount(ptr: Long): Long`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_getHandoverCount(
     _env: JNIEnv,
@@ -1758,7 +1697,6 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_getHandoverCount(
     HANDOVER_COUNT.load(Ordering::Relaxed) as jlong
 }
 
-/// `fun recordHandover(ptr: Long)`
 #[no_mangle]
 pub extern "system" fn Java_dev_globalghost_net_GhostCore_recordHandover(
     _env: JNIEnv,

@@ -8,16 +8,11 @@ use vantablack::ghost::v2::{
     btcr, continuum, expose::ExposeConfig, fleet, party::PartyConfig, racs, vbdns, xray,
 };
 
-/// Handles command line subcommands and flags.
-/// Returns `Some(result)` if the CLI invocation was handled (and the process should terminate),
-/// or `None` if the daemon should proceed with standard boot.
 pub fn handle_cli_args() -> Option<anyhow::Result<()>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         return None;
     }
-    // Global runtime flags. The daemon reads the resolved environment variables,
-    // so flags set here survive into `run_node` and subsystem daemons unchanged.
     apply_global_flags(&args);
     match args[1].as_str() {
         "split-key" | "split_key" => {
@@ -372,7 +367,6 @@ where
     runtime.block_on(future)
 }
 
-/// `ggn btcr` — inspect credits, or demonstrate blind issuance end to end.
 fn run_btcr(args: &[String]) -> anyhow::Result<()> {
     use btcr::{blind, issue_for_work, sign_receipt, spend, Issuer, Receipt, Wallet};
     use ed25519_dalek::SigningKey;
@@ -394,8 +388,6 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // The CLI has no node identity loaded on this path, so the status view is
-    // keyed by a fixed demonstration seed and says so.
     let demo_seed = [0x42u8; 32];
     let issuer = Issuer::from_identity_seed(&demo_seed);
 
@@ -416,7 +408,6 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
     let receipt =
         sign_receipt(&beneficiary, "demo-home-pc", 4_000_000, now / 3600).map_err(to_any)?;
 
-    // A tampered receipt must be refused before anything is minted.
     let mut forged: Receipt = receipt.clone();
     forged.work_bytes = 400_000_000;
     let refused = btcr::verify_receipt(&forged, &beneficiary.verifying_key()).is_err();
@@ -491,7 +482,6 @@ fn run_btcr(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `ggn ladder` — rung availability, or a real UDP + mule-store demo.
 async fn run_ladder(args: &[String]) -> anyhow::Result<()> {
     if has_flag(args, "--demo") {
         let report = continuum::loopback_demo()
@@ -532,7 +522,6 @@ async fn run_ladder(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `ggn racs` — live shaper state, or a real preemption measurement.
 fn run_racs(args: &[String]) -> anyhow::Result<()> {
     if has_flag(args, "--bench") {
         let stats = racs::bench(10_000);
@@ -549,8 +538,6 @@ fn run_racs(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `ggn mode` — read or set the persisted regime.
-/// `ggn fleet` — offline-root issuance, `vb-fleet://` onboarding and revocation.
 fn run_fleet(args: &[String]) -> anyhow::Result<()> {
     use fleet::{RevocationSet, RevokeReason};
 
@@ -710,14 +697,12 @@ fn run_mode(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `ggn vb-dns` — run the `.vb` stub, or answer one name and exit.
 fn run_vb_dns(args: &[String]) -> anyhow::Result<()> {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use vantablack::ghost::v2::vbdns::NameRegistry;
 
     let registry = Arc::new(NameRegistry::new());
-    // `--map name=<28 hex chars>` binds a name to the first 14 bytes of a node id.
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--map" {
@@ -725,8 +710,6 @@ fn run_vb_dns(args: &[String]) -> anyhow::Result<()> {
                 let Some((name, id)) = spec.split_once('=') else {
                     return Err(anyhow::anyhow!("--map expects name=<28 hex chars>"));
                 };
-                // Accept both `laptop` and `laptop.vb`; a bare label is the
-                // common case at a shell and requiring the suffix is friction.
                 let parsed = vbdns::VbName::parse(name)
                     .or_else(|| vbdns::VbName::parse(&format!("{name}.vb")))
                     .ok_or_else(|| anyhow::anyhow!("{name:?} is not a valid <name>.vb"))?;
@@ -782,7 +765,6 @@ fn run_vb_dns(args: &[String]) -> anyhow::Result<()> {
     })
 }
 
-/// `ggn xray` — read the control center's status and print the truth ledger.
 async fn run_xray(args: &[String]) -> anyhow::Result<()> {
     use vantablack::ghost::v2::xray::LedgerInput;
 
@@ -803,9 +785,6 @@ async fn run_xray(args: &[String]) -> anyhow::Result<()> {
         .unwrap_or(0) as usize;
 
     let regime = vantablack::ghost::v2::regime::active().map_err(|e| anyhow::anyhow!(e))?;
-    // `ggn xray` has a peer count and nothing else: no circuit witness, no
-    // cover counter, no domain grouping. Those stay `None` and the ledger
-    // reports them as unmeasured instead of copying the regime's wish list.
     let input = LedgerInput {
         regime: Some(regime),
         public_relays: Some(peers),
@@ -848,7 +827,6 @@ async fn run_xray(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Pure command-line specification for OS service management (`sc.exe`, `systemctl`, `launchctl`).
 pub(crate) fn service_command_spec(
     action: &str,
     exe_path: &str,

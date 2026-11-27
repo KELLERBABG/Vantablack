@@ -29,25 +29,19 @@
 
 use std::path::{Path, PathBuf};
 
-/// Overrides the application-data directory outright.
 pub const DATA_DIR_ENV: &str = "GHOST_DATA_DIR";
 
-/// Overrides the cache directory outright.
 pub const CACHE_DIR_ENV: &str = "GHOST_CACHE_DIR";
 
-/// Directory name used on Windows and macOS (Linux uses the XDG-style name).
 pub const APP_DIR_NAME: &str = "GlobalGhostNet";
 
 fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
-/// The platform's per-user application-data directory for this app.
 fn platform_data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        // Roaming first: a domain user's settings and identity follow them
-        // between machines, exactly as they would for any other desktop app.
         for key in ["APPDATA", "LOCALAPPDATA"] {
             if let Some(base) = non_empty_env(key) {
                 return Some(Path::new(&base).join(APP_DIR_NAME));
@@ -87,11 +81,6 @@ fn platform_data_dir() -> Option<PathBuf> {
     }
 }
 
-/// The directory the application owns. Pure: no directory is created and no
-/// filesystem is touched, so this is safe to call for logging or diagnostics.
-///
-/// Returns the current working directory only when the OS gives us nothing to
-/// work with, which keeps the historic behaviour as a last resort.
 pub fn data_dir() -> PathBuf {
     if let Some(explicit) = non_empty_env(DATA_DIR_ENV) {
         return PathBuf::from(explicit);
@@ -100,11 +89,6 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
-/// The platform's per-user *non-roaming* directory for this app.
-///
-/// Regenerable data lives here. A Windows roaming profile is synchronised
-/// between machines, so a browser cache belongs in `%LOCALAPPDATA%` rather than
-/// in [`platform_data_dir`].
 fn platform_cache_dir() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
@@ -140,24 +124,16 @@ fn platform_cache_dir() -> Option<PathBuf> {
     }
 }
 
-/// Where regenerable data goes: the WebView2 user-data folder, caches, and the
-/// like. Falls back to [`data_dir`] where the platform has no separate location,
-/// so callers never have to handle an `Option`.
 pub fn cache_dir() -> PathBuf {
     cache_dir_with(non_empty_env(CACHE_DIR_ENV))
 }
 
-/// Split out from [`cache_dir`] so the override branch can be asserted without
-/// mutating the process environment (which would race against other tests).
 fn cache_dir_with(explicit: Option<String>) -> PathBuf {
     explicit
         .map(PathBuf::from)
         .unwrap_or_else(|| platform_cache_dir().unwrap_or_else(data_dir))
 }
 
-/// Create `dir` and any missing parents, so first-run writers do not each have
-/// to repeat the dance. A path that exists as a *file* is an error, not a
-/// success — that is exactly the case a caller needs to hear about.
 pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     if dir.is_dir() {
         return Ok(());
@@ -165,23 +141,15 @@ pub fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
-/// Resolve a state-file name to its real path inside [`data_dir`].
-///
-/// A bare filename (`"identity.key"`) is placed in the application-data
-/// directory. Anything the caller spelled out — an absolute path, or one
-/// containing a separator — is returned untouched, because that is an explicit
-/// instruction rather than a default.
 pub fn data_file(name: &str) -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     resolve(&data_dir(), &cwd, name)
 }
 
-/// Same as [`data_file`], for the many call sites that want a `String`.
 pub fn data_file_string(name: &str) -> String {
     data_file(name).to_string_lossy().into_owned()
 }
 
-/// True when `name` is a bare filename rather than a path the user chose.
 fn is_bare_name(name: &str) -> bool {
     !name.is_empty() && !name.contains(['/', '\\'])
 }
@@ -193,18 +161,12 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// The testable core of [`data_file`]: place `name` inside `dir`, making sure
-/// the directory exists and carrying over a file an older build left in `cwd`
-/// the first time it is needed.
 fn resolve(dir: &Path, cwd: &Path, name: &str) -> PathBuf {
     if !is_bare_name(name) {
-        // The caller spelled out a path; honour it exactly.
         return PathBuf::from(name);
     }
     let target = dir.join(name);
     if !same_dir(dir, cwd) {
-        // The directory has to exist before anyone writes the file into it —
-        // the very first thing a fresh install does is save an identity key.
         if !dir.exists() {
             if let Err(e) = std::fs::create_dir_all(dir) {
                 tracing::warn!(dir = %dir.display(), error = %e, "Could not create the application data directory");
@@ -217,11 +179,6 @@ fn resolve(dir: &Path, cwd: &Path, name: &str) -> PathBuf {
     target
 }
 
-/// Carry a file from an older build's working directory into the data dir.
-///
-/// This copies rather than moves: the original is never touched, so a failed
-/// copy cannot lose someone's identity key. It is logged, because the user
-/// still has a stale duplicate sitting in their old working directory.
 fn adopt(legacy: &Path, target: &Path) {
     if !legacy.is_file() {
         return;
@@ -248,7 +205,6 @@ mod tests {
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    /// A unique, empty directory under the system temp dir.
     fn scratch(tag: &str) -> PathBuf {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir =
@@ -272,7 +228,6 @@ mod tests {
     fn explicit_paths_are_left_alone() {
         let data = scratch("explicit");
         let cwd = scratch("cwd2");
-        // Absolute paths, and anything the caller spelled with a separator.
         let abs = if cfg!(windows) {
             "C:\\tmp\\a.key"
         } else {
@@ -298,8 +253,6 @@ mod tests {
         let resolved = resolve(&data, &cwd, "identity.key");
         assert_eq!(resolved, data.join("identity.key"));
         assert_eq!(std::fs::read(&resolved).unwrap(), b"legacy-seed");
-        // The original is copied, never moved — losing an identity key to a
-        // failed migration would be unforgivable.
         assert!(cwd.join("identity.key").exists());
     }
 
@@ -327,8 +280,6 @@ mod tests {
 
     #[test]
     fn an_explicit_cache_dir_is_used_verbatim() {
-        // Whatever the caller spelled out is honoured exactly, absolute or not —
-        // that is what makes GHOST_CACHE_DIR usable for sandboxed runs.
         let abs = if cfg!(windows) {
             "C:\\ggn-cache"
         } else {
@@ -343,7 +294,6 @@ mod tests {
 
     #[test]
     fn the_cache_dir_is_separate_from_the_data_dir() {
-        // Overrides are someone else's contract; this is about the defaults.
         if non_empty_env(DATA_DIR_ENV).is_some() || non_empty_env(CACHE_DIR_ENV).is_some() {
             return;
         }
@@ -360,8 +310,6 @@ mod tests {
             "{} does not end with {expected}",
             cache.display()
         );
-        // Keeping a browser cache out of a roaming profile is the entire reason
-        // this directory exists; if the two ever coincide the point is lost.
         assert_ne!(
             cache,
             data_dir(),
@@ -376,7 +324,6 @@ mod tests {
         ensure_dir(&nested).expect("first create");
         assert!(nested.is_dir());
         ensure_dir(&nested).expect("second create is a no-op");
-        // A path that exists as a *file* is an error, not a silent success.
         let file = base.join("not-a-dir");
         std::fs::write(&file, b"x").unwrap();
         assert!(ensure_dir(&file).is_err());
@@ -384,9 +331,6 @@ mod tests {
 
     #[test]
     fn the_default_data_dir_is_per_user_and_absolute() {
-        // Explicit overrides are someone else's contract, and `resolve` is
-        // covered above; this is only about what the platform default looks
-        // like, so that it can never be "wherever the .exe happens to be".
         if non_empty_env(DATA_DIR_ENV).is_some() {
             return;
         }

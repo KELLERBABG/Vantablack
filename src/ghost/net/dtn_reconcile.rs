@@ -14,19 +14,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Whether experimental outage state reconciliation is enabled.
 pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Enable or disable experimental outage state reconciliation.
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
 pub const DTN_RECONCILE_MAGIC: &[u8; 4] = b"MREC";
 
-/// An archived bundle or state update buffered during a communications blackout.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DtnBundle {
     pub bundle_id: [u8; 16],
@@ -48,7 +45,6 @@ impl DtnBundle {
         }
     }
 
-    /// Leaf hash binding bundle_id, sequence, and payload_hash.
     pub fn leaf_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_DTN_LEAF_V1");
@@ -58,7 +54,6 @@ impl DtnBundle {
         hasher.finalize().into()
     }
 
-    /// Export bundle as an atmospheric skywave transmission payload (ABOS).
     pub fn to_skywave_payload(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(64 + self.payload.len());
         out.extend_from_slice(DTN_RECONCILE_MAGIC);
@@ -70,7 +65,6 @@ impl DtnBundle {
         out
     }
 
-    /// Parse a bundle received from an atmospheric skywave transmission (ABOS).
     pub fn from_skywave_payload(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 64 || &bytes[..4] != DTN_RECONCILE_MAGIC {
             return None;
@@ -94,7 +88,6 @@ impl DtnBundle {
     }
 }
 
-/// Merkle tree over buffered DTN bundles for logarithmic anti-entropy reconciliation.
 #[derive(Debug, Clone, Default)]
 pub struct DtnMerkleTree {
     bundles: BTreeMap<[u8; 16], DtnBundle>,
@@ -105,7 +98,6 @@ impl DtnMerkleTree {
         Self::default()
     }
 
-    /// Insert or buffer a bundle recorded during blackout.
     pub fn insert(&mut self, bundle: DtnBundle) {
         self.bundles.insert(bundle.bundle_id, bundle);
     }
@@ -122,7 +114,6 @@ impl DtnMerkleTree {
         self.bundles.is_empty()
     }
 
-    /// Compute root hash over all buffered bundle leaf hashes in sorted order.
     pub fn root_hash(&self) -> [u8; 32] {
         if self.bundles.is_empty() {
             return [0u8; 32];
@@ -135,7 +126,6 @@ impl DtnMerkleTree {
         hasher.finalize().into()
     }
 
-    /// Partition bundle set into 2 buckets (left/right by first bit of bundle_id) for logarithmic sync.
     pub fn bucket_hashes(&self) -> ([u8; 32], [u8; 32]) {
         let mut left_hasher = Sha256::new();
         let mut right_hasher = Sha256::new();
@@ -155,7 +145,6 @@ impl DtnMerkleTree {
         )
     }
 
-    /// Identifies all bundle IDs present locally that are missing from a remote bundle manifest.
     pub fn compute_missing_from(&self, remote_known_ids: &[[u8; 16]]) -> Vec<DtnBundle> {
         self.bundles
             .iter()
@@ -164,7 +153,6 @@ impl DtnMerkleTree {
             .collect()
     }
 
-    /// Reconcile and splice incoming missing bundles into the local store.
     pub fn splice_incoming(&mut self, incoming: Vec<DtnBundle>) -> usize {
         let mut added = 0;
         for b in incoming {
@@ -177,7 +165,6 @@ impl DtnMerkleTree {
     }
 }
 
-/// Helper performing two-way anti-entropy sync between two partitioned node stores.
 pub fn reconcile_blackout_stores(
     node_a: &mut DtnMerkleTree,
     node_b: &mut DtnMerkleTree,
@@ -189,9 +176,7 @@ pub fn reconcile_blackout_stores(
     let a_ids: Vec<[u8; 16]> = node_a.bundles.keys().copied().collect();
     let b_ids: Vec<[u8; 16]> = node_b.bundles.keys().copied().collect();
 
-    // Node A sends to B what B lacks
     let missing_on_b = node_a.compute_missing_from(&b_ids);
-    // Node B sends to A what A lacks
     let missing_on_a = node_b.compute_missing_from(&a_ids);
 
     let added_to_b = node_b.splice_incoming(missing_on_b);
@@ -209,19 +194,15 @@ mod tests {
         let mut node_a = DtnMerkleTree::new();
         let mut node_b = DtnMerkleTree::new();
 
-        // Common bundles created before partition
         let b0 = DtnBundle::new([0x01; 16], 0, b"common_bundle_0".to_vec());
         node_a.insert(b0.clone());
         node_b.insert(b0);
 
-        // Blackout begins: nodes are partitioned!
-        // Node A buffers bundle 1 & 2 while offline
         let b1 = DtnBundle::new([0x10; 16], 1, b"offline_node_a_bundle_1".to_vec());
         let b2 = DtnBundle::new([0x20; 16], 2, b"offline_node_a_bundle_2".to_vec());
         node_a.insert(b1);
         node_a.insert(b2);
 
-        // Node B buffers bundle 3 while offline
         let b3 = DtnBundle::new([0x90; 16], 3, b"offline_node_b_bundle_3".to_vec());
         node_b.insert(b3);
 
@@ -231,17 +212,14 @@ mod tests {
             "Partitions have divergent root hashes"
         );
 
-        // Link returns! Reconcile blackout stores
         let (added_to_a, added_to_b) = reconcile_blackout_stores(&mut node_a, &mut node_b);
         assert_eq!(added_to_a, 1, "Node A should receive 1 bundle from B");
         assert_eq!(added_to_b, 2, "Node B should receive 2 bundles from A");
 
-        // Both nodes must now possess identical root hashes and converged bundle sets
         assert_eq!(node_a.root_hash(), node_b.root_hash());
         assert_eq!(node_a.len(), 4);
         assert_eq!(node_b.len(), 4);
 
-        // Second reconcile on converged stores is a zero-op
         let (re_a, re_b) = reconcile_blackout_stores(&mut node_a, &mut node_b);
         assert_eq!((re_a, re_b), (0, 0));
     }

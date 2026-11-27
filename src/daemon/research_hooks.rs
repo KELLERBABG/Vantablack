@@ -32,7 +32,6 @@ use vantablack::ghost::net::{
 };
 use vantablack::ghost::v2::erosion;
 
-/// Wall-clock seconds, the clock every epoch in this module is expressed on.
 fn now_secs() -> u64 {
     super::beacon::unix_now_secs() as u64
 }
@@ -41,8 +40,6 @@ fn short(id: &[u8; 32]) -> String {
     hex::encode(&id[..8])
 }
 
-/// Whether an env toggle is on. `default` covers hooks that are on in a
-/// `research` build unless explicitly disabled.
 fn toggle(name: &str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
@@ -50,8 +47,6 @@ fn toggle(name: &str, default: bool) -> bool {
     }
 }
 
-/// Send one control payload over `peer_fp`'s session, sealed exactly like any
-/// other payload. `false` when there is no session to seal for.
 pub(crate) async fn deliver(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
@@ -70,12 +65,6 @@ pub(crate) async fn deliver(
     true
 }
 
-/// Dispatch a decrypted payload to whichever research control PDU claims it.
-///
-/// Returns `Some(replies)` when the payload was a research PDU and must not be
-/// handled as application traffic; each reply is meant for `from_fp` on the same
-/// session (a vault fetch answers with the pieces this node hosts). Called
-/// before the tunnel, relay and SOCKS branches.
 pub(crate) fn handle_control(from_fp: &str, payload: &[u8]) -> Option<Vec<Vec<u8>>> {
     if braid::handle_pdu(from_fp, payload)
         || beacon_wire::handle_pdu(from_fp, payload)
@@ -87,10 +76,6 @@ pub(crate) fn handle_control(from_fp: &str, payload: &[u8]) -> Option<Vec<Vec<u8
     vault::handle_pdu(from_fp, payload)
 }
 
-/// The immediate post-authentication burst: advertise the current braid tip and
-/// present a bandwidth voucher. Both are idempotent control PDUs; the peer's
-/// handlers are what give them meaning. Queued vault placements for this peer go
-/// out here too, so a bundle deposited while it was offline is spread at once.
 pub(crate) async fn session_established(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
@@ -114,8 +99,6 @@ pub(crate) async fn session_established(
     }
 }
 
-/// The periodic PEX-beat gossip: re-advertise the braid tip, contribute entropy
-/// for this round, and keep the relay voucher current.
 pub(crate) async fn gossip_beat(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
@@ -144,11 +127,6 @@ pub(crate) async fn gossip_beat(
     }
 }
 
-/// Research telemetry for `/api/status`.
-///
-/// `active_sessions` is the caller's session count, so `peers_per_round` is the
-/// number of complete three-share entropy rounds the current population can
-/// contribute to (`peers / 3`) — a property of the mesh, not of this node.
 pub(crate) fn status_json(active_sessions: usize) -> serde_json::Value {
     let (grid_epoch, grid_cycle, rounds_frozen) = beacon_wire::snapshot();
     let (tracked, revoked) = braid::stats();
@@ -173,10 +151,6 @@ pub(crate) fn status_json(active_sessions: usize) -> serde_json::Value {
     })
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 1. braid_identity — epidemic clone suicide on the live session path
-// ══════════════════════════════════════════════════════════════════
-
 pub(crate) mod braid {
     use super::*;
     use std::io::Write as _;
@@ -184,20 +158,10 @@ pub(crate) mod braid {
 
     use zeroize::Zeroize;
 
-    /// Control PDU magic. Fourteen bytes, matching every other control magic.
     pub(crate) const MAGIC: &[u8; 14] = b"GHOST_BRAID___";
 
-    /// This node's own chain for one peer.
-    ///
-    /// Deliberately a different map from [`chains`]: ingesting a peer's
-    /// transition must not be able to create — and a later session then advance —
-    /// a lock of ours. The two directions share a fingerprint but not state.
     struct OurBraid {
-        /// This node's rotating key chain for this peer. The seed is stable, so
-        /// two clones of this process derive the same key, and every restart
-        /// must continue the persisted one rather than re-derive genesis.
         chain: braid_identity::BraidLock,
-        /// The last transition we *durably* published, re-gossiped on PEX beats.
         last: Option<braid_identity::Transition>,
     }
 
@@ -210,29 +174,21 @@ pub(crate) mod braid {
         }
     }
 
-    /// Our chains, one per peer.
     fn ours() -> &'static DashMap<String, Mutex<OurBraid>> {
         static OURS: OnceLock<DashMap<String, Mutex<OurBraid>>> = OnceLock::new();
         OURS.get_or_init(DashMap::new)
     }
 
-    /// The verifier for what each peer has shown us: one accepted child per
-    /// parent key. Nothing here holds a secret, so an inbound PDU can only ever
-    /// grow this map.
     fn chains() -> &'static DashMap<String, Mutex<braid_identity::BraidChain>> {
         static CHAINS: OnceLock<DashMap<String, Mutex<braid_identity::BraidChain>>> = OnceLock::new();
         CHAINS.get_or_init(DashMap::new)
     }
 
-    /// Fingerprints revoked by a clone proof, with the key that equivocated.
     fn revoked() -> &'static DashMap<String, [u8; 32]> {
         static REVOKED: OnceLock<DashMap<String, [u8; 32]>> = OnceLock::new();
         REVOKED.get_or_init(DashMap::new)
     }
 
-    /// A braid chain is only as strong as its seed being *this* node's. Mixing
-    /// both fingerprints means two peers derive different chains and a clone of
-    /// the process derives the same one — which is what makes a fork possible.
     pub(super) fn seed_for(our_fp: &str, peer_fp: &str) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"VB-BRAID-DAEMON-SEED-V1");
@@ -241,25 +197,10 @@ pub(crate) mod braid {
         hasher.finalize().into()
     }
 
-    // ── durability ─────────────────────────────────────────────────────
-    //
-    // The seed is deterministic, so a process that starts from `from_seed`
-    // after a restart holds the genesis key again. If it then advances, it
-    // signs a *second* child of a key its peers already accepted — byte for
-    // byte what a clone does, and grounds for revocation. The primitive leaves
-    // persistence to the caller on purpose: `secret_state()` hands back
-    // `(secret, braid, height)` so the new state can be fsynced before the
-    // transition that belongs to it is sent. This is that caller.
-
-    /// Subdirectory of the app's data dir holding one record per peer.
     const STATE_DIR: &str = "braid";
     const RECORD_MAGIC: &[u8; 8] = b"VBBRAID1";
     const RECORD_VERSION: u8 = 1;
 
-    /// One peer's chain as it must exist on disk. `secret` is the current
-    /// signing key; `last` is the certificate it already published, kept so a
-    /// restart can re-gossip the same tip (a `Stale` at the peer) and so the
-    /// restored key can be checked against the chain the peer accepted.
     struct Record {
         our_fp: String,
         peer_fp: String,
@@ -280,26 +221,16 @@ pub(crate) mod braid {
         &ROOT
     }
 
-    /// The directory advances fsync into. `None` until [`init`] runs, which is
-    /// what keeps a research build's chains in memory when no daemon booted
-    /// (unit tests) instead of writing into a developer's data directory.
     fn root() -> Option<&'static Path> {
         state_root().get().map(PathBuf::as_path)
     }
 
-    /// Restore every chain an earlier process persisted, then point future
-    /// advances at the same directory.
-    ///
-    /// Call once, at boot, before a session can register. A build that never
-    /// calls this keeps its chains in memory only; the daemon always calls it.
     pub(crate) fn init(our_fp: &str) -> usize {
         if state_root().get().is_some() {
             return 0;
         }
         let root = vantablack::ghost::paths::data_dir().join(STATE_DIR);
         if let Err(error) = std::fs::create_dir_all(&root) {
-            // Keep the directory configured anyway: every write will fail and
-            // no transition will be published, which is the safe failure.
             tracing::error!(
                 dir = %root.display(),
                 %error,
@@ -401,11 +332,6 @@ pub(crate) mod braid {
         })
     }
 
-    /// Persist one record with fsync-before-publish ordering: the bytes are
-    /// flushed to a temporary file and `sync_all`ed, the old record is replaced
-    /// by an atomic rename, and the directory entry is synced where the platform
-    /// has directory handles (Windows does not; the rename is the durability
-    /// point there).
     fn write_record(root: &Path, record: &Record) -> std::io::Result<()> {
         std::fs::create_dir_all(root)?;
         let path = record_path(root, &record.our_fp, &record.peer_fp);
@@ -431,17 +357,11 @@ pub(crate) mod braid {
         result
     }
 
-    /// Records that failed their own integrity check. A quarantined peer gets
-    /// no further transition: continuing a chain we cannot reconstruct would
-    /// either fork the key the peer accepted or sign from one it never saw.
     fn quarantined() -> &'static DashMap<String, &'static str> {
         static QUARANTINED: OnceLock<DashMap<String, &'static str>> = OnceLock::new();
         QUARANTINED.get_or_init(DashMap::new)
     }
 
-    /// Load every record in `root` that belongs to `our_fp`, returning how many
-    /// chains were continued. Only our own fingerprint's records are restored:
-    /// a record written under a different long-term identity is not ours.
     pub(crate) fn restore_from(root: &Path, our_fp: &str) -> usize {
         let entries = match std::fs::read_dir(root) {
             Ok(entries) => entries,
@@ -469,11 +389,6 @@ pub(crate) mod braid {
             }
             let lock = braid_identity::BraidLock::restore(record.secret, record.braid, record.height);
             if let Some(last) = &record.last {
-                // The persisted secret must be the key that `last` handed
-                // authority to, at the height `last` claims, and `last` must
-                // verify. A record that fails this cannot be continued safely:
-                // signing from it would fork the key the peer already accepted,
-                // and signing around it would rewrite the chain.
                 if last.height != record.height
                     || last.next_pk != lock.identity()
                     || !last.verify()
@@ -502,12 +417,6 @@ pub(crate) mod braid {
         restored
     }
 
-    // ── verifier durability ────────────────────────────────────────────
-    //
-    // Our own chains are records; what a peer showed us is a journal. Keeping
-    // the two apart means an inbound PDU can append to a verifier without ever
-    // touching a signing key, and replay needs no secret material at all.
-
     const JOURNAL_TRANSITION: u8 = 1;
     const JOURNAL_REVOKED: u8 = 2;
 
@@ -515,8 +424,6 @@ pub(crate) mod braid {
         root.join("peers")
     }
 
-    /// Fingerprints become file names here, so accept only the shape a real one
-    /// has. Anything else is not journaled rather than trusted as a path.
     fn valid_peer_fp(peer_fp: &str) -> bool {
         !peer_fp.is_empty()
             && peer_fp.len() <= 64
@@ -525,9 +432,6 @@ pub(crate) mod braid {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     }
 
-    /// Append one verifier frame and fsync it. A fork proof must be on disk
-    /// before the handler returns: that is what makes "this peer forked"
-    /// outlive the process that learned it.
     fn append_journal(
         root: &Path,
         peer_fp: &str,
@@ -554,10 +458,6 @@ pub(crate) mod braid {
         file.sync_all()
     }
 
-    /// Rebuild one peer's verifier from its journal. A torn tail (a crash in the
-    /// middle of an append) ends replay at the last complete frame; a frame that
-    /// does not verify ends it with an error, because everything after it was
-    /// written by a process whose view we can no longer trust.
     fn replay_journal(peer_fp: &str, path: &Path) -> Option<braid_identity::BraidChain> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
@@ -625,9 +525,6 @@ pub(crate) mod braid {
         }
     }
 
-    /// Restore every verifier journal under `root`, returning how many chains
-    /// were rebuilt. The peer name is the file stem, so no header is needed and
-    /// a journal cannot claim to be another peer's.
     pub(crate) fn restore_verifiers(root: &Path) -> usize {
         let entries = match std::fs::read_dir(verifier_dir(root)) {
             Ok(entries) => entries,
@@ -660,16 +557,11 @@ pub(crate) mod braid {
         payload
     }
 
-    /// Advance this node's chain with a transcript and publish the tip.
     pub(crate) fn advance_and_tip(
         our_fp: &str,
         peer_fp: &str,
         transcript: &[u8],
     ) -> Option<Vec<u8>> {
-        // No boot restore, no signature. A transition signed before the state
-        // directory exists cannot be continued after a restart, so the next
-        // process would sign a sibling of it — the clone proof this module is
-        // supposed to make impossible for an honest node.
         let Some(root) = root() else {
             tracing::error!(
                 peer = %peer_fp,
@@ -680,9 +572,6 @@ pub(crate) mod braid {
         advance_with(Some(root), our_fp, peer_fp, transcript)
     }
 
-    /// [`advance_and_tip`] with an explicit state directory, so the restart and
-    /// failed-fsync paths are testable without touching the process-wide root.
-    /// `None` keeps the chain in memory only.
     pub(crate) fn advance_with(
         root: Option<&Path>,
         our_fp: &str,
@@ -698,9 +587,6 @@ pub(crate) mod braid {
             );
             return None;
         }
-        // Read the population *before* taking a shard write lock: DashMap's
-        // `len` walks every shard, and doing that from inside an entry guard is
-        // a self-deadlock.
         let peers_live = ours().len().max(2);
         let guard = ours()
             .entry(peer_fp.to_string())
@@ -708,10 +594,6 @@ pub(crate) mod braid {
         let mut peer = guard.lock();
         let transition = peer.chain.advance(transcript);
 
-        // The durability contract: the *new* secret, braid and height are on
-        // disk before the transition they belong to is handed to a sender. A
-        // restart then continues this key instead of signing a sibling of a key
-        // a peer already accepted.
         if let Some(root) = root {
             let (secret, braid, height) = peer.chain.secret_state();
             let record = Record {
@@ -733,8 +615,6 @@ pub(crate) mod braid {
         }
 
         peer.last = Some(transition.clone());
-        // The theorem's collision bound, logged where an operator can see it:
-        // how many gossip rounds a clone needs to be caught.
         tracing::info!(
             peer = %peer_fp,
             height = transition.height,
@@ -749,22 +629,16 @@ pub(crate) mod braid {
         Some(framed(&transition))
     }
 
-    /// The last transition we published, re-sent on a PEX beat. A replay is
-    /// `Stale` at the peer, which is the correct answer and costs one frame.
     pub(crate) fn tip_payload(peer_fp: &str) -> Option<Vec<u8>> {
         let guard = ours().get(peer_fp)?;
         let peer = guard.lock();
         Some(framed(peer.last.as_ref()?))
     }
 
-    /// Ingest a gossiped transition. Returns `true` when the payload was a braid
-    /// PDU (whether or not it verified).
     pub(crate) fn handle_pdu(from_fp: &str, payload: &[u8]) -> bool {
         handle_pdu_at(root(), from_fp, payload)
     }
 
-    /// [`handle_pdu`] with an explicit durable root, so restart replay is
-    /// testable without the process-wide boot state.
     pub(crate) fn handle_pdu_at(root: Option<&Path>, from_fp: &str, payload: &[u8]) -> bool {
         if !payload.starts_with(MAGIC) {
             return false;
@@ -774,15 +648,10 @@ pub(crate) mod braid {
             tracing::warn!(peer = %from_fp, bytes = body.len(), "braid: malformed transition dropped");
             return true;
         };
-        // Only the peer's verifier is touched here. Our own chain for a peer is
-        // created solely by our own durable advance, so a transition arriving
-        // from the network can never seed — or advance — a lock of ours.
         let guard = chains().entry(from_fp.to_string()).or_default();
         let mut chain = guard.lock();
         let verdict = chain.accept(&transition);
 
-        // Journal what the verdict changed: a new child, or a fork proof. A
-        // restart that forgot the fork would hand the peer a clean slate.
         if let Some(root) = root {
             let frame = match &verdict {
                 braid_identity::BraidVerdict::Extended => {
@@ -842,14 +711,10 @@ pub(crate) mod braid {
         true
     }
 
-    /// Whether this peer has been caught equivocating. The packet path drops
-    /// every payload from a revoked fingerprint.
     pub(crate) fn peer_revoked(peer_fp: &str) -> bool {
         revoked().contains_key(peer_fp)
     }
 
-    /// `(tracked peers, revoked peers)` for the status document and tests. A peer
-    /// is tracked when either direction has state for it.
     pub(crate) fn stats() -> (usize, usize) {
         let mut tracked = std::collections::HashSet::new();
         for entry in ours().iter() {
@@ -861,14 +726,10 @@ pub(crate) mod braid {
         (tracked.len(), revoked().len())
     }
 
-    /// Peers whose persisted state failed its own certificate. A quarantined
-    /// peer is counted, never retried.
     pub(crate) fn quarantined_count() -> usize {
         quarantined().len()
     }
 
-    /// Height of our in-memory chain for `peer_fp`, when we have one. `None`
-    /// after ingesting a peer's transition is the property the split guarantees.
     #[cfg(test)]
     pub(crate) fn our_height(peer_fp: &str) -> Option<u64> {
         let guard = ours().get(peer_fp)?;
@@ -876,8 +737,6 @@ pub(crate) mod braid {
         Some(height)
     }
 
-    /// Drop every in-memory trace of `peer_fp`, leaving only what is on disk —
-    /// the state a restart begins from.
     #[cfg(test)]
     pub(crate) fn forget_for_test(peer_fp: &str) {
         ours().remove(peer_fp);
@@ -886,27 +745,18 @@ pub(crate) mod braid {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 4. entropy_beacon — threshold randomness on the PEX beat
-// ══════════════════════════════════════════════════════════════════
-
 pub(crate) mod beacon_wire {
     use super::*;
     use vantablack::ghost::net::BeaconGridEpoch;
 
-    /// Control PDU magic for one entropy share.
     pub(crate) const MAGIC: &[u8; 14] = b"GHOST_EBEACON_";
-    /// Shares needed before a round finalizes. Three independent contributions.
     pub(crate) const THRESHOLD: usize = 3;
-    /// Round length. Short enough that a 30 s PEX beat lands in a fresh round.
     pub(crate) const ROUND_SECS: u64 = 30;
 
     struct Wire {
         commons: entropy_beacon::EntropyBeaconCommons,
         grid: BeaconGridEpoch,
         round: u64,
-        /// A round's output is frozen at the first threshold completion: shares
-        /// that arrive later for the same round must not rewrite it.
         finalized: HashMap<u64, [u8; 32]>,
         last: Option<[u8; 32]>,
     }
@@ -935,9 +785,6 @@ pub(crate) mod beacon_wire {
         now / ROUND_SECS
     }
 
-    /// Build this node's share for the current round, plus the grid epoch it
-    /// currently believes. The grid rides the share because both are 32 bytes and
-    /// both are peer-visible state that changes on the same beat.
     pub(crate) fn share_payload(our_fp: &str) -> Vec<u8> {
         let now = now_secs();
         let round = current_round(now);
@@ -947,8 +794,6 @@ pub(crate) mod beacon_wire {
         let grid_bytes = {
             let mut wire = state().lock();
             if wire.round != round {
-                // Keep the map bounded: two rounds of history is enough for a
-                // share that arrives a beat late.
                 wire.commons.retain_rounds(|r| r + 2 >= round);
                 wire.finalized.retain(|r, _| *r + 2 >= round);
                 wire.round = round;
@@ -988,7 +833,6 @@ pub(crate) mod beacon_wire {
         );
     }
 
-    /// Ingest a peer's share. Returns `true` when the payload was an entropy PDU.
     pub(crate) fn handle_pdu(from_fp: &str, payload: &[u8]) -> bool {
         if !payload.starts_with(MAGIC) {
             return false;
@@ -1032,22 +876,16 @@ pub(crate) mod beacon_wire {
         true
     }
 
-    /// The last frozen beacon output, for the status surface and tests.
     #[cfg(test)]
     pub(crate) fn last_output() -> Option<[u8; 32]> {
         state().lock().last
     }
 
-    /// `(grid epoch, grid cycle, rounds frozen)`.
     pub(crate) fn snapshot() -> (u64, u32, usize) {
         let wire = state().lock();
         (wire.grid.grid_epoch, wire.grid.cycle_count, wire.finalized.len())
     }
 }
-
-// ══════════════════════════════════════════════════════════════════
-// 2/3/6. erosion + dead_drop + mesh_archive — the DTN vault
-// ══════════════════════════════════════════════════════════════════
 
 pub(crate) mod vault {
     use super::*;
@@ -1059,16 +897,10 @@ pub(crate) mod vault {
     use vantablack::ghost::net::dead_drop::DropCommitment;
     use vantablack::ghost::session::Session;
 
-    /// Descriptor magic. A DTN bundle whose payload does not start with this is
-    /// legacy plaintext and is delivered unchanged.
     pub(crate) const DESCRIPTOR_MAGIC: &[u8; 4] = b"VBSL";
-    /// Control PDU magic for every vault mesh message. One magic and an opcode:
-    /// placement, fetch, purge and retention are one exchange, not four.
     pub(crate) const MAGIC: &[u8; 14] = b"GHOST_VSHARE__";
-    /// Blind-blob frame size: the dead-drop module's fixed chunk.
     const CHUNK: usize = dead_drop::DEAD_DROP_FRAME_LEN;
 
-    // `[MAGIC 14][op 1][request id 8][body]` for every message.
     const OP_STORE_SHARE: u8 = 1;
     const OP_STORE_SHARD: u8 = 2;
     const OP_STORE_CHUNK: u8 = 3;
@@ -1081,35 +913,20 @@ pub(crate) mod vault {
     const ITEM_SHARD: u8 = 1;
     const ITEM_CHUNK: u8 = 2;
 
-    /// Hosts needed before a bundle is placed instead of kept here. With fewer
-    /// than three there is no assignment that leaves this node below the 2-of-3
-    /// threshold, so the vault keeps everything and says so in the log rather
-    /// than pretending to have distributed it.
     const PLACEMENT_HOSTS: usize = 3;
-    /// Default erosion epoch: turning it over retires every committee sealed
-    /// under it. Override with `GHOST_EROSION_EPOCH_SECS`.
     const DEFAULT_EPOCH_SECS: u64 = 3_600;
-    /// Default bundle lifetime. Override with `GHOST_EROSION_TTL_SECS`.
     const DEFAULT_TTL_SECS: u64 = 900;
     const MIN_EPOCH_SECS: u64 = 60;
     const MAX_INDICES_PER_PDU: usize = 256;
     const MAX_OUTBOX_PER_PEER: usize = 64;
-    /// How long an open waits for one host's pieces before giving up. A DTN
-    /// bundle that times out stays queued and is retried on the next tick.
     const FETCH_TIMEOUT: Duration = Duration::from_millis(700);
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum OpenError {
-        /// The erosion epoch passed; the key is gone.
         Expired,
-        /// A chunk is missing, the archive hash failed, or the AEAD refused.
         Corrupt,
     }
 
-    // ── windows ────────────────────────────────────────────────────────
-
-    /// Parse one duration knob. A value below `floor` is treated as unset: an
-    /// epoch of zero seconds would retire every committee on every call.
     fn window_value(raw: Option<&str>, default: u64, floor: u64) -> u64 {
         raw.and_then(|value| value.trim().parse::<u64>().ok())
             .filter(|secs| *secs >= floor)
@@ -1121,22 +938,16 @@ pub(crate) mod vault {
         window_value(raw.as_deref(), default, floor)
     }
 
-    /// Length of one erosion epoch, in seconds.
     pub(crate) fn epoch_secs() -> u64 {
         static SECS: OnceLock<u64> = OnceLock::new();
         *SECS.get_or_init(|| window_env("GHOST_EROSION_EPOCH_SECS", DEFAULT_EPOCH_SECS, MIN_EPOCH_SECS))
     }
 
-    /// How long a queued bundle may live, in seconds.
     pub(crate) fn ttl_secs() -> u64 {
         static SECS: OnceLock<u64> = OnceLock::new();
         *SECS.get_or_init(|| window_env("GHOST_EROSION_TTL_SECS", DEFAULT_TTL_SECS, 1))
     }
 
-    // ── placement state ────────────────────────────────────────────────
-
-    /// One peer's share of one bundle, as the host keeps it. The share is only
-    /// useful with a sibling: a host learns nothing on its own.
     #[derive(Clone)]
     struct HostedShare {
         share: [u8; 32],
@@ -1149,17 +960,12 @@ pub(crate) mod vault {
         }
     }
 
-    /// Where each piece of one bundle lives. `hosts` is empty when the bundle
-    /// never left this node; otherwise every entry in the three vectors names
-    /// the peer holding that piece and nothing of it is kept locally.
     #[derive(Clone)]
     struct Plan {
         hosts: Vec<String>,
         share_hosts: Vec<Option<String>>,
         shard_hosts: Vec<Option<String>>,
         chunk_hosts: Vec<Option<String>>,
-        /// 2-of-3 is what [`fresh_committee`] deals; kept per bundle so a
-        /// restart-less open can rebuild the committee from fetched shares.
         threshold: usize,
         members: usize,
         deadline: u64,
@@ -1170,15 +976,11 @@ pub(crate) mod vault {
         sealed: erosion::SealedBundle,
         cipher_len: usize,
         content_hash: [u8; 32],
-        /// The dealt committee, only when every share stayed local.
         local_committee: Option<erosion::EphemerizerCommittee>,
-        /// The archival record, only when its shards stayed local.
         local_archive: Option<mesh_archive::ArchivalRecord>,
         plan: Plan,
     }
 
-    /// The pieces an open gathered: from this node's own maps, from host
-    /// replies, or (in tests) from the host maps directly.
     struct Pieces {
         shares: Vec<Option<[u8; 32]>>,
         shards: Vec<Option<Vec<u8>>>,
@@ -1190,7 +992,6 @@ pub(crate) mod vault {
         ENABLED.get_or_init(|| toggle("GHOST_DTN_VAULT", true))
     }
 
-    /// Whether the vault is the DTN store for this process.
     pub(crate) fn enabled() -> bool {
         *enabled_once()
     }
@@ -1205,33 +1006,26 @@ pub(crate) mod vault {
         STORED.get_or_init(DashMap::new)
     }
 
-    /// Shares this node hosts for other nodes' bundles.
     fn hosted_shares() -> &'static DashMap<([u8; 32], u8), HostedShare> {
         static HOSTED: OnceLock<DashMap<([u8; 32], u8), HostedShare>> = OnceLock::new();
         HOSTED.get_or_init(DashMap::new)
     }
 
-    /// Archive shards this node hosts for other nodes' bundles.
     fn hosted_shards() -> &'static DashMap<([u8; 32], u8), Vec<u8>> {
         static HOSTED: OnceLock<DashMap<([u8; 32], u8), Vec<u8>>> = OnceLock::new();
         HOSTED.get_or_init(DashMap::new)
     }
 
-    /// Chunk commitments this node hosts, so a purge can consume the chunks.
     fn hosted_chunks() -> &'static DashMap<[u8; 32], Vec<DropCommitment>> {
         static HOSTED: OnceLock<DashMap<[u8; 32], Vec<DropCommitment>>> = OnceLock::new();
         HOSTED.get_or_init(DashMap::new)
     }
 
-    /// Placement PDUs waiting for their peer's session to be free enough to
-    /// send. `deposit` runs on the synchronous DTN path, so it cannot await a
-    /// send; the beat, the session handshake and the DTN tick drain this.
     fn outbox() -> &'static DashMap<String, Vec<Vec<u8>>> {
         static OUTBOX: OnceLock<DashMap<String, Vec<Vec<u8>>>> = OnceLock::new();
         OUTBOX.get_or_init(DashMap::new)
     }
 
-    /// Fetch replies waiting on their request id.
     fn pending() -> &'static DashMap<[u8; 8], oneshot::Sender<Vec<(u8, Vec<u8>)>>> {
         static PENDING: OnceLock<DashMap<[u8; 8], oneshot::Sender<Vec<(u8, Vec<u8>)>>>> =
             OnceLock::new();
@@ -1243,16 +1037,10 @@ pub(crate) mod vault {
         &SESSIONS
     }
 
-    /// Point placement at the live session table.
-    ///
-    /// Called once at boot, before a bundle can be deposited. A build that never
-    /// calls this (a unit test) places nothing and keeps every piece locally.
     pub(crate) fn bind_sessions(table: Arc<DashMap<String, Session>>) {
         let _ = sessions().set(table);
     }
 
-    /// The peers a bundle may be spread over: at most three, in fingerprint
-    /// order so the same population always produces the same assignment.
     fn connected_hosts() -> Vec<String> {
         let Some(table) = sessions().get() else {
             return Vec::new();
@@ -1267,8 +1055,6 @@ pub(crate) mod vault {
         use curve25519_dalek::scalar::Scalar;
         let mut seed = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut seed);
-        // 2-of-3 is the smallest committee that still tolerates one forgotten
-        // share, and three is exactly the number of hosts a placement uses.
         erosion::EphemerizerCommittee::from_secret(
             2,
             3,
@@ -1287,8 +1073,6 @@ pub(crate) mod vault {
         hasher.finalize().into()
     }
 
-    // ── outbox ─────────────────────────────────────────────────────────
-
     fn enqueue(host: &str, payload: Vec<u8>) {
         if host.is_empty() {
             return;
@@ -1305,7 +1089,6 @@ pub(crate) mod vault {
         queue.push(payload);
     }
 
-    /// Take everything queued for one peer. The caller delivers the payloads.
     pub(crate) fn take_outbox(peer_fp: &str) -> Vec<Vec<u8>> {
         outbox()
             .remove(peer_fp)
@@ -1313,7 +1096,6 @@ pub(crate) mod vault {
             .unwrap_or_default()
     }
 
-    /// Send every queued placement PDU whose peer has a session now.
     pub(crate) async fn flush_outbox(
         nc: &Arc<GhostNode>,
         peers: &DashMap<String, SocketAddr>,
@@ -1347,8 +1129,6 @@ pub(crate) mod vault {
         }
         sent
     }
-
-    // ── wire encoding ──────────────────────────────────────────────────
 
     fn random_id() -> [u8; 8] {
         let mut id = [0u8; 8];
@@ -1475,21 +1255,14 @@ pub(crate) mod vault {
         payload
     }
 
-    // ── deposit ────────────────────────────────────────────────────────
-
-    /// Seal `payload` for `peer_fp` and return the descriptor that replaces it in
-    /// the DTN tree. The bytes themselves live in blind chunks.
     pub(crate) fn deposit(peer_fp: &str, payload: &[u8]) -> Option<Vec<u8>> {
         deposit_at(peer_fp, payload, now_secs())
     }
 
-    /// `deposit` with an explicit clock, so expiry is testable without sleeping.
     pub(crate) fn deposit_at(peer_fp: &str, payload: &[u8], now: u64) -> Option<Vec<u8>> {
         deposit_with_hosts(peer_fp, payload, now, &connected_hosts())
     }
 
-    /// `deposit_at` with an explicit host list, so placement is testable without
-    /// a live session table.
     pub(crate) fn deposit_with_hosts(
         peer_fp: &str,
         payload: &[u8],
@@ -1502,8 +1275,6 @@ pub(crate) mod vault {
         }
         let die_at = now.saturating_add(ttl_secs());
         let epoch = now / epoch_secs();
-        // The committee dies at the next epoch boundary: that is the epoch this
-        // bundle is sealed under, and turning it over is the forgetting.
         let deadline = (epoch + 1) * epoch_secs();
 
         let mut key = [0u8; 32];
@@ -1527,8 +1298,6 @@ pub(crate) mod vault {
             return None;
         };
 
-        // The archive covers nonce ‖ ciphertext, so a corrupted chunk and a
-        // wrong nonce are both an integrity failure rather than a decrypt error.
         let mut wrapped = Vec::with_capacity(nonce.len() + cipher.len());
         wrapped.extend_from_slice(&nonce);
         wrapped.extend_from_slice(&cipher);
@@ -1580,8 +1349,6 @@ pub(crate) mod vault {
                 );
                 chunk_hosts[index] = Some(host);
             }
-            // Nothing of this bundle stays below threshold on this node, and the
-            // dealt shares are wiped as soon as their packets are built.
             committee.expire();
         } else {
             for (index, piece) in pieces.iter().enumerate() {
@@ -1602,8 +1369,6 @@ pub(crate) mod vault {
                 local_committee,
                 local_archive,
                 plan: Plan {
-                    // A local bundle names no hosts: `hosts` non-empty is the
-                    // single signal that its pieces are somewhere else.
                     hosts: if distributed { hosts } else { Vec::new() },
                     share_hosts,
                     shard_hosts,
@@ -1684,9 +1449,6 @@ pub(crate) mod vault {
         })
     }
 
-    // ── host side ──────────────────────────────────────────────────────
-
-    /// Pure response to one fetch: the pieces of `id` this node hosts.
     fn fetch_reply(request_id: &[u8; 8], body: &[u8]) -> Option<Vec<u8>> {
         if body.len() < 35 {
             return None;
@@ -1724,8 +1486,6 @@ pub(crate) mod vault {
         Some(encode_items(request_id, kind, &items))
     }
 
-    /// Handle one vault control PDU. `Some(replies)` means the payload was a
-    /// vault PDU; the caller delivers each reply on the same session.
     pub(crate) fn handle_pdu(from_fp: &str, payload: &[u8]) -> Option<Vec<Vec<u8>>> {
         if !payload.starts_with(MAGIC) {
             return None;
@@ -1880,11 +1640,6 @@ pub(crate) mod vault {
         Some(replies)
     }
 
-    // ── open ───────────────────────────────────────────────────────────
-
-    /// Recover a DTN bundle payload from local pieces only. Returns `Corrupt`
-    /// for a bundle whose pieces were placed on other hosts: the synchronous
-    /// opener has no way to ask for them.
     pub(crate) fn open_at(payload: &[u8], now: u64) -> Result<Vec<u8>, OpenError> {
         let Some(descriptor) = parse_descriptor(payload) else {
             return Ok(payload.to_vec());
@@ -1914,8 +1669,6 @@ pub(crate) mod vault {
         complete(&stored_bundle, &descriptor, pieces, now)
     }
 
-    /// Recover a DTN bundle, asking the hosts that hold its pieces when it was
-    /// distributed. This is the live DTN path.
     pub(crate) async fn open_mesh(
         nc: &Arc<GhostNode>,
         peers: &DashMap<String, SocketAddr>,
@@ -1957,12 +1710,6 @@ pub(crate) mod vault {
         Ok(plain)
     }
 
-    /// A bundle past `die_at` is mathematically gone. Drop it and tell the hosts
-    /// to do the same, so the oblivion is mesh-wide rather than local.
-    ///
-    /// Only the bundle being opened is dropped here. Sweeping `now` from a
-    /// caller-supplied clock would let one expired descriptor reap every other
-    /// bundle in the process; the general sweep uses the wall clock instead.
     fn expired(descriptor: &Descriptor, now: u64) -> bool {
         if now < descriptor.die_at {
             return false;
@@ -2002,8 +1749,6 @@ pub(crate) mod vault {
                 .collect(),
             None => vec![None; stored.plan.members],
         };
-        // Two of three archival shards are enough, and one is deliberately
-        // withheld to exercise the erasure code on every recovery.
         let shards = match &stored.local_archive {
             Some(record) => (0..3)
                 .map(|index| {
@@ -2098,8 +1843,6 @@ pub(crate) mod vault {
         pieces
     }
 
-    /// One request/response over `host`'s session. An unanswered request is
-    /// dropped after [`FETCH_TIMEOUT`]; the bundle stays queued and retries.
     async fn fetch(
         nc: &Arc<GhostNode>,
         peers: &DashMap<String, SocketAddr>,
@@ -2134,7 +1877,6 @@ pub(crate) mod vault {
         }
     }
 
-    /// Reassemble and verify one bundle from whatever pieces were gathered.
     fn complete(
         stored: &Stored,
         descriptor: &Descriptor,
@@ -2225,9 +1967,6 @@ pub(crate) mod vault {
         Ok(plain)
     }
 
-    /// Consume a bundle's pieces once it has actually been delivered, and tell
-    /// the hosts to consume theirs. This is the deliberate forgetting; expiry
-    /// ([`reap_expired`]) is the involuntary one.
     pub(crate) fn forget(payload: &[u8]) {
         let Some(descriptor) = parse_descriptor(payload) else {
             return;
@@ -2249,9 +1988,6 @@ pub(crate) mod vault {
         }
     }
 
-    /// Keep-proof for the chunks of a bundle that was just delivered: the bundle
-    /// is hot, so the host must not let self-eating decay reclaim it before the
-    /// next attempt succeeds.
     fn keep_hot(descriptor: &Descriptor, stored: &Stored) {
         let now = now_secs();
         for commitment in &descriptor.chunks {
@@ -2270,8 +2006,6 @@ pub(crate) mod vault {
         }
     }
 
-    /// Drop every bundle past its lifetime or its epoch, and queue a purge for
-    /// whatever lived on another host. Returns how many bundles were reaped.
     pub(crate) fn reap_expired(now: u64) -> usize {
         let dead: Vec<[u8; 32]> = stored()
             .iter()
@@ -2289,8 +2023,6 @@ pub(crate) mod vault {
         dead.len()
     }
 
-    /// Counters behind the adaptive decay rate: a vault losing bundles to expiry
-    /// is a vault under stress, and retention stretches while that is true.
     static EXPIRED: AtomicU64 = AtomicU64::new(0);
     static DELIVERED: AtomicU64 = AtomicU64::new(0);
 
@@ -2303,7 +2035,6 @@ pub(crate) mod vault {
         (expired / (expired + delivered)).clamp(0.0, 1.0)
     }
 
-    /// Run one self-eating decay pass. Returns the number of reclaimed chunks.
     pub(crate) fn collect_decay() -> usize {
         let now = now_secs();
         let reaped = reap_expired(now);
@@ -2321,7 +2052,6 @@ pub(crate) mod vault {
         removed + reaped
     }
 
-    /// `(stored, distributed, hosted shares, hosted shards, hosted chunks)`.
     pub(crate) fn status() -> serde_json::Value {
         let total = stored().len();
         let distributed = stored()
@@ -2340,13 +2070,11 @@ pub(crate) mod vault {
         })
     }
 
-    /// Number of descriptors the vault currently holds. Test surface.
     #[cfg(test)]
     pub(crate) fn stored_count() -> usize {
         stored().len()
     }
 
-    /// Number of blind chunks at rest. Test surface.
     #[cfg(test)]
     pub(crate) fn chunk_count() -> usize {
         blobs().stored_count()
@@ -2359,8 +2087,6 @@ pub(crate) mod vault {
         (!bundle.plan.hosts.is_empty()).then_some(bundle.plan.hosts)
     }
 
-    /// The live open's fetch, answered from this process's host maps: the test
-    /// equivalent of a peer that answered every request.
     #[cfg(test)]
     pub(crate) fn open_from_hosts_for_test(payload: &[u8], now: u64) -> Result<Vec<u8>, OpenError> {
         let Some(descriptor) = parse_descriptor(payload) else {
@@ -2399,7 +2125,6 @@ pub(crate) mod vault {
         complete(&bundle, &descriptor, pieces, now)
     }
 
-    /// How many of a descriptor's chunks are still in this node's own vault.
     #[cfg(test)]
     pub(crate) fn local_chunks_for_test(payload: &[u8]) -> Option<usize> {
         let descriptor = parse_descriptor(payload)?;
@@ -2438,7 +2163,6 @@ pub(crate) mod vault {
         blobs().sweep(commitment).map(|blob| blob.last_kept_timestamp)
     }
 
-    /// Test helper: frame one chunk placement exactly as `deposit` does.
     #[cfg(test)]
     pub(crate) fn store_chunk_for_test(
         id: &[u8; 32],
@@ -2450,13 +2174,11 @@ pub(crate) mod vault {
         encode_store_chunk(id, commitment, deposited_at, ttl, bytes)
     }
 
-    /// Test helper: frame one retention keep-proof.
     #[cfg(test)]
     pub(crate) fn keep_for_test(id: &[u8; 32], commitments: &[DropCommitment]) -> Vec<u8> {
         encode_keep(id, commitments)
     }
 
-    /// Test helper: frame one purge.
     #[cfg(test)]
     pub(crate) fn purge_for_test(id: &[u8; 32]) -> Vec<u8> {
         encode_purge(id)
@@ -2468,28 +2190,15 @@ pub(crate) mod vault {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 7. bandwidth_voucher — relay admission credit
-// ══════════════════════════════════════════════════════════════════
-
 pub(crate) mod voucher {
     use super::*;
     use vantablack::ghost::net::bandwidth_voucher::{BandwidthVoucher, RelayBandwidthBank};
 
-    /// Control PDU magic for a presented voucher.
     pub(crate) const MAGIC: &[u8; 14] = b"GHOST_VOUCHER_";
-    /// Megabytes one voucher buys.
     const QUOTA_MB: u32 = 16;
-    /// One epoch of voucher validity.
     const EPOCH_SECS: u64 = 3_600;
-    /// Leading zero bits the local mint must find. Eight is one hash in 256 —
-    /// enough to make bulk minting cost something, small enough to be invisible
-    /// next to a datagram.
     const POW_BITS: u8 = 8;
 
-    /// Which forwarding path spent the credit. One bank, two paths: a relay
-    /// charges the same voucher whether the envelope arrived as a blind
-    /// (`BLND!`) hop or as a multi-hop onion (`RLY!`) hop.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum Transit {
         Blind,
@@ -2498,9 +2207,7 @@ pub(crate) mod voucher {
 
     struct Bank {
         relay: RelayBandwidthBank,
-        /// Sender fingerprint → the nullifier its presented voucher is banked under.
         by_peer: HashMap<String, [u8; 32]>,
-        /// Peer → epoch slot its last voucher was minted for.
         issued: HashMap<String, u64>,
         admitted: u64,
         denied: u64,
@@ -2523,8 +2230,6 @@ pub(crate) mod voucher {
         })
     }
 
-    /// Whether relay forwarding is gated on vouchers. Off by default: a relay
-    /// that starts charging without its peers knowing would black-hole traffic.
     pub(crate) fn enabled() -> bool {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         *ENABLED.get_or_init(|| toggle("GHOST_RELAY_VOUCHERS", false))
@@ -2554,8 +2259,6 @@ pub(crate) mod voucher {
         unreachable!("a 64-bit nonce space will find an 8-bit proof")
     }
 
-    /// A voucher payload for `peer_fp`, at most once per epoch. Returns `None`
-    /// while the voucher already banked for this peer is still current.
     pub(crate) fn present_payload(peer_fp: &str) -> Option<Vec<u8>> {
         let now = now_secs();
         let slot = now / EPOCH_SECS;
@@ -2584,8 +2287,6 @@ pub(crate) mod voucher {
         Some(payload)
     }
 
-    /// Bank a voucher presented by `from_fp`. Returns `true` when the payload was
-    /// a voucher PDU.
     pub(crate) fn handle_pdu(from_fp: &str, payload: &[u8]) -> bool {
         if !payload.starts_with(MAGIC) {
             return false;
@@ -2619,15 +2320,10 @@ pub(crate) mod voucher {
         true
     }
 
-    /// Charge `bytes` of blind relay transit to `from_fp`'s banked voucher.
-    /// Without a banked voucher the forward is refused once the gate is on.
     pub(crate) fn admit_transit(from_fp: &str, bytes: usize) -> bool {
         admit_transit_as(from_fp, bytes, Transit::Blind)
     }
 
-    /// Charge `bytes` of multi-hop onion transit to the same bank. Unifying the
-    /// two paths means a peer cannot alternate `BLND!` and `RLY!` envelopes to
-    /// spend one voucher twice: both draw on the same nullifier's quota.
     pub(crate) fn admit_transit_onion(from_fp: &str, bytes: usize) -> bool {
         admit_transit_as(from_fp, bytes, Transit::Onion)
     }
@@ -2664,7 +2360,6 @@ pub(crate) mod voucher {
         }
     }
 
-    /// Relay accounting for `/api/status`: one quota, two forwarding paths.
     pub(crate) fn stats() -> serde_json::Value {
         let bank = state().lock();
         serde_json::json!({
@@ -2676,7 +2371,6 @@ pub(crate) mod voucher {
         })
     }
 
-    /// Test helper: bank a voucher directly, without the PDU framing.
     #[cfg(test)]
     pub(crate) fn present_for_test(from_fp: &str, voucher: &BandwidthVoucher) -> Result<u32, &'static str> {
         let mut bank = state().lock();
@@ -2686,13 +2380,11 @@ pub(crate) mod voucher {
         Ok(granted)
     }
 
-    /// Test helper: charge without the env gate.
     #[cfg(test)]
     pub(crate) fn charge_for_test(from_fp: &str, bytes: usize) -> bool {
         charge_as_for_test(from_fp, bytes, Transit::Blind)
     }
 
-    /// Test helper: charge one path without the env gate, on the same bank.
     #[cfg(test)]
     pub(crate) fn charge_as_for_test(from_fp: &str, bytes: usize, path: Transit) -> bool {
         let mut bank = state().lock();
@@ -2711,19 +2403,12 @@ pub(crate) mod voucher {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 5. polysemy — causal path-subset probe on the bonded link
-// ══════════════════════════════════════════════════════════════════
-
 pub(crate) mod worlds {
     use super::*;
 
-    /// Envelope magic of one polysemic probe shard on the bond socket.
     pub(crate) const MAGIC: &[u8; 4] = b"GBWD";
     const VERSION: u8 = 1;
-    /// `[GBWD 4][version 1][n 1][k 1][path 1][id 8][shard]`.
     const HEADER: usize = 16;
-    /// A probe world message: 4-byte world index plus the probe tag.
     const MESSAGE: usize = 8;
     const MAX_GROUPS: usize = 64;
 
@@ -2739,17 +2424,11 @@ pub(crate) mod worlds {
         GROUPS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    /// Whether the bonded link sends a polysemic path probe. Off unless asked:
-    /// it is control traffic, and a bond that only needs carriers should not
-    /// carry it.
     pub(crate) fn enabled() -> bool {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         *ENABLED.get_or_init(|| toggle("GHOST_BOND_WORLDS", false))
     }
 
-    /// Encode the probe: one world per `k`-subset of `n` paths. World `i`'s
-    /// message names `i`, so a receiver that collapses a subset learns which
-    /// subset it actually holds.
     pub(crate) fn encode_probe(
         n: usize,
         tag: &[u8; 4],
@@ -2773,7 +2452,6 @@ pub(crate) mod worlds {
         Some((id, n as u8, k as u8, shards))
     }
 
-    /// Wrap one path's shard for the bond socket.
     pub(crate) fn wrap(
         id: &[u8; 8],
         path: u8,
@@ -2792,10 +2470,6 @@ pub(crate) mod worlds {
         datagram
     }
 
-    /// Collect one probe shard. When `k` distinct paths have delivered, collapse
-    /// the world and verify that the recovered world index names the surviving
-    /// subset — the message is only useful if it agrees with the paths that
-    /// carried it.
     pub(crate) fn handle_datagram(datagram: &[u8], from: IpAddr) -> Option<(Vec<usize>, [u8; MESSAGE])> {
         if datagram.len() <= HEADER || &datagram[..4] != MAGIC || datagram[4] != VERSION {
             return None;
@@ -2866,16 +2540,11 @@ pub(crate) mod worlds {
         Some((survivors, body))
     }
 
-    /// Test helper: number of in-flight probe groups.
     #[cfg(test)]
     pub(crate) fn group_count() -> usize {
         groups().lock().len()
     }
 }
-
-// ══════════════════════════════════════════════════════════════════
-// 6. sheaf — topological split-world detection over discrete state
-// ══════════════════════════════════════════════════════════════════
 
 pub(crate) mod sheaf_monitor {
     use super::*;
@@ -2891,7 +2560,6 @@ pub(crate) mod sheaf_monitor {
         local_fp: Option<String>,
         local_obs: [i64; DIMENSION],
         vertex_ids: HashMap<String, usize>,
-        /// Canonical undirected edge key `(min_fp, max_fp)` -> `(u_fp, v_fp, delta)`
         edges: HashMap<(String, String), (String, String, [i64; DIMENSION])>,
     }
 
@@ -2949,8 +2617,6 @@ pub(crate) mod sheaf_monitor {
         toggle("GHOST_SHEAF", true)
     }
 
-    /// Discrete local observation vector: `[grid_epoch, grid_cycle, rounds_frozen]`.
-    /// Uses discrete protocol counters only (no noisy WAN RTTs) to prevent false positives.
     pub(crate) fn current_observation() -> [i64; DIMENSION] {
         let (grid_epoch, grid_cycle, rounds_frozen) = beacon_wire::snapshot();
         [grid_epoch as i64, grid_cycle as i64, rounds_frozen as i64]
@@ -3110,10 +2776,6 @@ pub(crate) mod sheaf_monitor {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// 7. metabolic_guard — Tier-2 radioactive half-life authority decay
-// ══════════════════════════════════════════════════════════════════
-
 pub(crate) mod metabolic_guard {
     use super::*;
 
@@ -3164,9 +2826,6 @@ pub(crate) mod metabolic_guard {
         toggle("GHOST_METABOLIC", true)
     }
 
-    /// Derive a Sybil-resistant `DomainId` from the authenticated transport IP's
-    /// coarse routing cluster (`/16` for IPv4, `/32` for IPv6) rather than any
-    /// peer-declared ID, collapsing single-host/single-prefix Sybils to 1 domain.
     pub(crate) fn domain_for_ip(ip: IpAddr) -> metabolic::DomainId {
         let mut h = Sha256::new();
         match ip {
@@ -3188,7 +2847,6 @@ pub(crate) mod metabolic_guard {
         out
     }
 
-    /// Record a pulse from an authenticated peer's transport endpoint.
     pub(crate) fn note_peer_pulse(ip: IpAddr, at: u64) {
         if !enabled() {
             return;
@@ -3197,7 +2855,6 @@ pub(crate) mod metabolic_guard {
         state().lock().clock.note_pulse(domain, at);
     }
 
-    /// Whether metabolic mass currently meets `theta` (or `true` if disabled).
     #[allow(dead_code)]
     pub(crate) fn is_authorized() -> bool {
         if !enabled() {
@@ -3248,8 +2905,6 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// The vault's host maps are process-global, so the two tests that use them
-    /// run one at a time rather than clearing each other's pieces.
     fn host_state_lock() -> parking_lot::MutexGuard<'static, ()> {
         static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
         LOCK.lock()
@@ -3289,8 +2944,6 @@ mod tests {
         assert!(braid::handle_pdu(peer, &second));
         assert!(braid::peer_revoked(peer), "two children of one key revoke it");
 
-        // Replaying the honest half now answers Revoked, and revocation is
-        // what the packet path consults.
         assert!(braid::handle_pdu(peer, &first));
         assert!(braid::peer_revoked(peer));
         let (tracked, revoked) = braid::stats();
@@ -3325,7 +2978,6 @@ mod tests {
         let frozen = beacon_wire::last_output().expect("a third share finalizes the round");
         assert_ne!(frozen, [0u8; 32]);
 
-        // A fourth share for the same round cannot rewrite the frozen output.
         let mut late = beacon_wire::MAGIC.to_vec();
         late.extend_from_slice(&round.to_be_bytes());
         late.extend_from_slice(&[0x44u8; 32]);
@@ -3345,8 +2997,6 @@ mod tests {
     fn a_dtn_payload_survives_the_vault_and_is_gone_after_its_epoch() {
         let peer = "vault-unit-peer";
         let payload = b"GHOST_PEX2____ descriptor batch that belongs in a blind chunk";
-        // Ten seconds into the current erosion epoch, so a second-long test
-        // cannot straddle a rotation (which would be an Expired result).
         let epoch = vault::epoch_secs();
         let now = (now_secs() / epoch) * epoch + 10;
         let descriptor = vault::deposit_at(peer, payload, now).expect("deposits");
@@ -3373,7 +3023,6 @@ mod tests {
         let last = descriptor.len() - 1;
         descriptor[last] ^= 0xFF; // last commitment byte
         assert_eq!(vault::open_at(&descriptor, now + 1), Err(vault::OpenError::Corrupt));
-        // A non-descriptor payload is legacy plaintext and passes through.
         assert_eq!(
             vault::open_at(b"GHOST_PEX_____ legacy", now),
             Ok(b"GHOST_PEX_____ legacy".to_vec())
@@ -3399,7 +3048,6 @@ mod tests {
         assert_eq!((n, k), (3, 2));
         assert_eq!(shards.len(), 3);
 
-        // Paths 0 and 2 survive: their two shards must collapse world {0,2}.
         let from: IpAddr = "192.0.2.7".parse().unwrap();
         assert!(worlds::handle_datagram(&worlds::wrap(&id, 0, n, k, &shards[0]), from).is_none());
         let (survivors, message) =
@@ -3433,17 +3081,12 @@ mod tests {
         payload
     }
 
-    /// Restarting used to re-derive the deterministic genesis key and sign a
-    /// second child of a key the peer already accepted — indistinguishable from
-    /// a clone, and revoked. The persisted record must let the next process
-    /// continue the chain the peer observed.
     #[test]
     fn a_restarted_node_continues_its_persisted_chain_instead_of_forking() {
         let root = unique_dir("restart");
         let our_fp = "braid-restart-self";
         let peer_fp = "braid-restart-peer";
 
-        // Session one, before the restart: durable, and a peer saw it.
         let first_payload = braid::advance_with(Some(&root), our_fp, peer_fp, b"session-1")
             .expect("a durable advance publishes");
         let first = transition_of(&first_payload);
@@ -3454,12 +3097,9 @@ mod tests {
             braid_identity::BraidVerdict::Extended
         );
 
-        // Restart: process state is gone, only the record survives.
         braid::forget_for_test(peer_fp);
         assert_eq!(braid::restore_from(&root, our_fp), 1);
 
-        // The restored tip is the same transition (a replay is `Stale` at the
-        // peer), and the next session extends it rather than forking genesis.
         assert_eq!(
             braid::tip_payload(peer_fp).expect("the published tip is restored"),
             first_payload
@@ -3481,7 +3121,6 @@ mod tests {
             "an honest restart must never be revoked as a clone"
         );
 
-        // A second restart continues again at the new height.
         braid::forget_for_test(peer_fp);
         assert_eq!(braid::restore_from(&root, our_fp), 1);
         let third = transition_of(
@@ -3499,9 +3138,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Ingesting a peer's transition used to insert (and therefore seed) an
-    /// `ours` lock for that peer from an empty fingerprint. The split keeps the
-    /// verifier and our lock in separate maps.
     #[test]
     fn ingesting_a_peers_transition_never_seeds_or_advances_our_own_chain() {
         let peer_fp = "braid-split-peer";
@@ -3518,7 +3154,6 @@ mod tests {
         );
         assert!(braid::tip_payload(peer_fp).is_none());
 
-        // Our advance starts at our own genesis, height 1, not from their key.
         let ours_payload = braid::advance_with(None, "braid-split-self", peer_fp, b"our session")
             .expect("publishes in memory");
         let ours = transition_of(&ours_payload);
@@ -3533,9 +3168,6 @@ mod tests {
         braid::forget_for_test(peer_fp);
     }
 
-    /// The fsync obligation is a publish gate: no durable state, no transition.
-    /// The publish gate: before boot restore there is no state directory, so no
-    /// transition is signed at all. (No test in this binary calls `init`.)
     #[test]
     fn a_transition_before_boot_restore_is_refused_rather_than_signed() {
         let peer_fp = "braid-preboot-peer";
@@ -3547,13 +3179,10 @@ mod tests {
         assert!(braid::tip_payload(peer_fp).is_none());
     }
 
-    /// A restart must not forget which peers forked, nor which child it accepted
-    /// for a parent key that has not forked yet.
     #[test]
     fn verifier_state_and_fork_proofs_survive_restart_through_the_journal() {
         let root = unique_dir("verifier");
 
-        // A linear peer: the accepted child is what makes a later sibling a fork.
         let mut honest = braid_identity::BraidLock::from_seed([0x31u8; 32]);
         let mut sibling = braid_identity::BraidLock::restore(
             honest.secret_state().0,
@@ -3570,7 +3199,6 @@ mod tests {
             &framed_transition(&linear)
         ));
 
-        // A forking peer: two children of one key, caught and journaled.
         let mut real = braid_identity::BraidLock::from_seed([0x32u8; 32]);
         let mut clone = braid_identity::BraidLock::restore(
             real.secret_state().0,
@@ -3593,7 +3221,6 @@ mod tests {
         ));
         assert!(braid::peer_revoked(peer_fork));
 
-        // Restart: every in-memory trace is gone, journals are all that remain.
         braid::forget_for_test(peer_linear);
         braid::forget_for_test(peer_fork);
         assert!(!braid::peer_revoked(peer_fork));
@@ -3604,8 +3231,6 @@ mod tests {
             "the fork is remembered across the restart"
         );
 
-        // The linear peer's child survived too: a sibling of its parent is now a
-        // fork, not a fresh extension.
         assert!(braid::handle_pdu_at(
             Some(&root),
             peer_linear,
@@ -3645,9 +3270,6 @@ mod tests {
         let _ = std::fs::remove_file(Path::new(&blocker));
     }
 
-    /// v3.7.1: three hosts means no piece stays here. The local opener must
-    /// refuse (below threshold), and the hosts' pieces must reconstruct the
-    /// bundle byte for byte.
     #[test]
     fn three_hosts_hold_every_piece_and_none_stays_local() {
         let peer = "vault-mesh-peer";
@@ -3679,7 +3301,6 @@ mod tests {
             "this node holds below threshold and must not be able to open it"
         );
 
-        // Deliver every queued placement PDU to the host it names.
         let mut placements = 0usize;
         for host in &hosts {
             for pdu in vault::take_outbox(host) {
@@ -3700,12 +3321,10 @@ mod tests {
             "each host keeps one share, one shard and its chunk"
         );
 
-        // What the live opener would fetch is exactly what reconstructs it.
         let recovered = vault::open_from_hosts_for_test(&descriptor, now + 1)
             .expect("the hosted pieces reconstruct the bundle");
         assert_eq!(recovered, payload);
 
-        // Delivery consumes every hosted piece, not just the local ones.
         vault::forget(&descriptor);
         for host in &hosts {
             for pdu in vault::take_outbox(host) {
@@ -3719,8 +3338,6 @@ mod tests {
         );
     }
 
-    /// v3.7.1: below three hosts there is no sub-threshold placement, so the
-    /// vault stays local and queues nothing on the wire.
     #[test]
     fn fewer_than_three_hosts_keeps_the_bundle_local() {
         let epoch = vault::epoch_secs();
@@ -3747,8 +3364,6 @@ mod tests {
         );
     }
 
-    /// v3.7.2: `prove_retention_interest` is reachable over the control channel,
-    /// which is what keeps a hot hosted chunk ahead of self-eating decay.
     #[test]
     fn a_keep_proof_pdu_renews_a_hosted_chunks_retention() {
         let _serial = host_state_lock();
@@ -3770,8 +3385,6 @@ mod tests {
         vault::handle_pdu("keep-host", &vault::purge_for_test(&id));
     }
 
-    /// v3.7.2: the two erosion windows are configuration, with a floor that
-    /// rejects a value that would expire everything immediately.
     #[test]
     fn erosion_windows_are_parsed_with_a_floor() {
         assert_eq!(vault::window_value_for_test(Some("120"), 3_600, 60), 120);
@@ -3793,8 +3406,6 @@ mod tests {
         assert!(vault::epoch_secs() >= 60 && vault::ttl_secs() >= 1);
     }
 
-    /// v3.7.3: `BLND!` and `RLY!` draw on one voucher, so alternating envelopes
-    /// cannot double the quota.
     #[test]
     fn onion_and_blind_transit_draw_on_the_same_voucher() {
         let peer = "voucher-unified-peer";
@@ -3818,8 +3429,6 @@ mod tests {
         assert!(stats["blind_bytes"].as_u64().unwrap_or(0) >= 2 * 1_048_576);
     }
 
-    /// v3.7.3: the control plane reports the beacon's population figure and the
-    /// braid's revocation/quarantine counters, and nothing that is secret.
     #[test]
     fn the_status_document_reports_beacon_and_braid_counters() {
         let status = status_json(7);
@@ -3843,8 +3452,6 @@ mod tests {
         assert!(status["metabolic"]["theta"].is_number());
     }
 
-    /// v3.8.0: consistent discrete sheaf observations yield zero obstructions;
-    /// a split-world / lying edge around a cycle surfaces as a CycleWitness.
     #[test]
     fn sheaf_detects_split_world_cycle_and_accepts_consistent_triangle() {
         let ok = sheaf_monitor::reset_and_record_for_test(&[
@@ -3866,8 +3473,6 @@ mod tests {
         assert_eq!(split["obstruction_cycles"], 1);
     }
 
-    /// Tier 2: same-/16 Sybils collapse to 1 saturated domain; distinct
-    /// routing clusters nourish authority and decay below theta on schedule.
     #[test]
     fn metabolic_collapses_same_prefix_sybils_and_decays_across_half_life() {
         let sybil_pulses: Vec<(IpAddr, u64)> = (1u8..=50)

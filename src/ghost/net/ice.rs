@@ -43,41 +43,25 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-/// Upper bound on in-flight checks we track for RTT measurement. A check that
-/// never comes back is eventually forgotten rather than pinning memory; the
-/// retransmission bound (`Nmax`) already limits how many can be outstanding.
 pub const MAX_TRACKED_CHECKS: usize = 128;
 
-/// The single component this tunnel multiplexes. RFC 8445 uses components for
-/// RTP/RTCP separation; we have one logical tunnel, so everything is component 1.
 pub const DEFAULT_COMPONENT: u16 = 1;
 
-/// Local preference used for every candidate we gather (RFC 8445 §5.1.2.1).
 pub const DEFAULT_LOCAL_PREFERENCE: u16 = 65535;
 
-/// Default per-check retransmission timeout (RFC 8445 §14.3 `RTO`).
 pub const DEFAULT_RTO: Duration = Duration::from_millis(500);
 
-/// Default number of retransmissions before a pair fails (§14.3 `Nmax`).
 pub const DEFAULT_CHECK_ATTEMPTS: u32 = 7;
 
-// ── Candidate types ─────────────────────────────────────────────────
-
-/// A candidate's origin (RFC 8445 §5.1.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CandidateType {
-    /// A local interface address.
     Host,
-    /// A public mapping discovered from a STUN server.
     ServerReflexive,
-    /// A public mapping learned from an inbound check.
     PeerReflexive,
-    /// An address on a relay (TURN).
     Relay,
 }
 
 impl CandidateType {
-    /// RFC 8445 §5.1.2.2 type preferences.
     pub fn preference(self) -> u32 {
         match self {
             CandidateType::Host => 126,
@@ -97,15 +81,11 @@ impl CandidateType {
     }
 }
 
-/// ICE candidate priority: `2^24·type + 2^8·local + (256 − component)`.
 pub fn candidate_priority(ctype: CandidateType, local_preference: u16, component: u16) -> u32 {
     let component_term = 256u32.saturating_sub(component as u32);
     (ctype.preference() << 24) + ((local_preference as u32) << 8) + component_term
 }
 
-/// A foundation groups candidates that were gathered on the same base address
-/// against the same STUN server with the same type (RFC 8445 §5.1.1.3).
-/// Candidates that share a foundation must not be checked in parallel.
 fn foundation(ctype: CandidateType, base: SocketAddr, stun_server: Option<SocketAddr>) -> String {
     let key = format!(
         "{}|{}|{}",
@@ -113,23 +93,16 @@ fn foundation(ctype: CandidateType, base: SocketAddr, stun_server: Option<Socket
         base.ip(),
         stun_server.map(|s| s.ip().to_string()).unwrap_or_default()
     );
-    // CRC-32 of the identity tuple: deterministic across runs and platforms,
-    // and cheap enough to compute per candidate.
     format!("{:08x}", stun::crc32_ieee(key.as_bytes()))
 }
 
-/// A single candidate address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// Groups related candidates (§5.1.1.3).
     pub foundation: String,
-    /// Component ID, 1 for our single tunnel.
     pub component: u16,
     pub ctype: CandidateType,
     pub priority: u32,
-    /// The local address this candidate was gathered from.
     pub base: SocketAddr,
-    /// The address a peer would send to / connect with.
     pub addr: SocketAddr,
 }
 
@@ -151,12 +124,6 @@ impl Candidate {
         }
     }
 
-    /// Parse the RFC 8445 §5.1.1 candidate-attribute form
-    /// (`candidate:<foundation> <component> <transport> <priority> <addr> <port>
-    /// typ <type> [raddr <ip> rport <port>]`).
-    ///
-    /// Signalling between peers uses this text form, so peers can exchange
-    /// candidates through the existing beacon payload.
     pub fn from_attribute(value: &str) -> Result<Candidate, IceError> {
         let s = value.strip_prefix("candidate:").unwrap_or(value);
         let mut it = s.split_whitespace();
@@ -169,8 +136,6 @@ impl Candidate {
             .ok_or(IceError::Malformed("candidate: missing component"))?
             .parse()
             .map_err(|_| IceError::Malformed("candidate: bad component"))?;
-        // Transport is the RFC's third field. We only do UDP; anything else is
-        // refused rather than silently treated as UDP.
         let transport = it
             .next()
             .ok_or(IceError::Malformed("candidate: missing transport"))?;
@@ -204,8 +169,6 @@ impl Candidate {
             _ => return Err(IceError::Malformed("candidate: unknown type")),
         };
         let addr = SocketAddr::new(addr, port);
-        // `raddr`/`rport` carry the base address. Absent, the candidate was
-        // gathered on the address a peer connects to (a host candidate).
         let mut base = addr;
         while let Some(key) = it.next() {
             match key {
@@ -239,13 +202,6 @@ impl Candidate {
         })
     }
 
-    /// Render as the RFC 8445 §5.1.1 candidate attribute.
-    ///
-    /// The base address rides in `raddr`/`rport` when it differs from the
-    /// address a peer sends to — which is exactly the server-reflexive and relay
-    /// case. Without it a round trip through text signalling silently rewrites a
-    /// candidate's base to its public address, and the checks then go out of the
-    /// wrong socket.
     pub fn to_attribute(&self) -> String {
         let mut s = format!(
             "candidate:{} {} UDP {} {} {} typ {}",
@@ -267,20 +223,13 @@ impl Candidate {
     }
 }
 
-// ── Credentials, role, tie-breaker ──────────────────────────────────
-
-/// ICE short-term credentials, exchanged out of band (here: over the beacon).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IceCredentials {
-    /// `ufrag`, 4–256 characters of ice-chars.
     pub ufrag: String,
-    /// `password`, 22–256 characters of ice-chars.
     pub password: String,
 }
 
 impl IceCredentials {
-    /// Generate random credentials. Hex keeps us inside the ice-char set
-    /// (`ALPHA / DIGIT / "+" / "/"`), so no escaping is needed.
     pub fn generate() -> Self {
         let mut u = [0u8; 6];
         let mut p = [0u8; 16];
@@ -293,18 +242,9 @@ impl IceCredentials {
     }
 }
 
-/// Maximum candidates accepted from a peer's offer.
-///
-/// An offer arrives over unauthenticated signalling (the beacon), and each
-/// candidate becomes a pair to check, so an unbounded list is a cheap way to
-/// make a node burn CPU and sockets. 32 is far above anything a real agent needs.
 pub const MAX_CANDIDATES_IN_OFFER: usize = 32;
 
 impl IceCredentials {
-    /// RFC 8445 §5.3 length bounds.
-    ///
-    /// Enforced on anything arriving from the network: short credentials weaken
-    /// the check authentication, and the offer is parsed before any trust exists.
     pub fn validate(&self) -> Result<(), IceError> {
         if self.ufrag.len() < 4 || self.ufrag.len() > 256 {
             return Err(IceError::Malformed("ice-ufrag must be 4..=256 characters"));
@@ -316,13 +256,10 @@ impl IceCredentials {
     }
 }
 
-/// A peer's ICE offer: structured as ufrag, ufrag for the peer's
-/// [`IceCredentials`], candidates and role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IceOffer {
     pub credentials: IceCredentials,
     pub candidates: Vec<Candidate>,
-    /// True when the sender claims the controlling role.
     pub controlling: bool,
 }
 
@@ -335,16 +272,6 @@ impl IceOffer {
         }
     }
 
-    /// Line-oriented text encoding, so an offer fits an existing text signalling
-    /// field (beacon, peers cache, side channel) without inventing a binary
-    /// framing:
-    ///
-    /// ```text
-    /// ice-ufrag:1a2b3c4d5e6f
-    /// ice-pwd:00112233445566778899aabbccddeeff
-    /// role:controlling
-    /// candidate:<foundation> 1 host <prio> 192.168.1.10 5000 typ host
-    /// ```
     pub fn encode(&self) -> String {
         let mut s = String::new();
         s.push_str(&format!("ice-ufrag:{}\n", self.credentials.ufrag));
@@ -364,8 +291,6 @@ impl IceOffer {
         s
     }
 
-    /// Parse an offer. Every field is required and validated: this input comes
-    /// off the wire.
     pub fn decode(text: &str) -> Result<IceOffer, IceError> {
         let mut ufrag = None;
         let mut password = None;
@@ -410,7 +335,6 @@ impl IceOffer {
     }
 }
 
-/// Which agent drives nomination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IceRole {
     Controlling,
@@ -433,34 +357,23 @@ impl IceRole {
     }
 }
 
-// ── Check list ──────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairState {
-    /// Not yet eligible (foundation conflicts with an in-progress pair).
     Frozen,
-    /// Eligible to be checked.
     Waiting,
-    /// A check is outstanding.
     InProgress,
-    /// A check succeeded.
     Succeeded,
-    /// The check list exhausted its retransmissions.
     Failed,
 }
 
-/// A local/remote candidate pair (RFC 8445 §6.1.2.2).
 #[derive(Debug, Clone)]
 pub struct CandidatePair {
     pub local: Candidate,
     pub remote: Candidate,
     pub state: PairState,
-    /// Set when a check carrying `USE-CANDIDATE` succeeded.
     pub nominated: bool,
     pub priority: u64,
-    /// Checks sent so far (§14.3 `Nmax` bound).
     pub attempts: u32,
-    /// Measured round-trip time of the last successful check.
     pub rtt: Option<Duration>,
 }
 
@@ -470,7 +383,6 @@ impl CandidatePair {
     }
 }
 
-/// Pair priority for the controlling agent: `2^32·min(G,D) + 2·max(G,D) + (G>D)`.
 fn pair_priority_minmax(g: u32, d: u32) -> u64 {
     let (lo, hi) = if g < d { (g, d) } else { (d, g) };
     ((1u64 << 32).wrapping_mul(lo as u64))
@@ -478,8 +390,6 @@ fn pair_priority_minmax(g: u32, d: u32) -> u64 {
         .wrapping_add(u64::from(g > d))
 }
 
-/// Pair priority computed for `role` (RFC 8445 §6.1.2.3: `G` is the controlling
-/// agent's candidate and `D` the controlled one).
 pub fn pair_priority_for(role: IceRole, local_priority: u32, remote_priority: u32) -> u64 {
     match role {
         IceRole::Controlling => pair_priority_minmax(local_priority, remote_priority),
@@ -487,22 +397,14 @@ pub fn pair_priority_for(role: IceRole, local_priority: u32, remote_priority: u3
     }
 }
 
-/// Coarse agent state, for logging and for deciding when to fall back to a relay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IceState {
-    /// No candidates yet.
     New,
-    /// Gathering candidates.
     Gathering,
-    /// Have candidates, checks outstanding.
     Checking,
-    /// A pair is nominated and succeeded.
     Connected,
-    /// Every pair failed — the caller should try a relay.
     Failed,
 }
-
-// ── Errors ──────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
 pub enum IceError {
@@ -522,15 +424,6 @@ pub enum IceError {
     Malformed(&'static str),
 }
 
-// ── Local address probing ───────────────────────────────────────────
-
-/// Discover the local source address the OS would use to reach `dest`.
-///
-/// Uses the classic `connect`-on-UDP trick: a UDP `connect` performs a route
-/// lookup without sending a packet, so `local_addr()` reveals the outbound
-/// interface. This is how we get a *host* candidate with no extra dependency and
-/// no interface enumeration (a bound `0.0.0.0:port` socket does not say which
-/// interface it will send from).
 pub fn probe_local_addr(dest: SocketAddr) -> std::io::Result<SocketAddr> {
     let bind = if dest.is_ipv4() {
         "0.0.0.0:0"
@@ -542,30 +435,17 @@ pub fn probe_local_addr(dest: SocketAddr) -> std::io::Result<SocketAddr> {
     probe.local_addr()
 }
 
-// ── Result of processing an inbound check ───────────────────────────
-
-/// What an inbound connectivity check produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckOutcome {
-    /// Index into [`IceAgent::pairs`] this check was matched to.
     pub pair: usize,
-    /// A `Binding Success` response, integrity-protected, ready to send to the
-    /// peer. `None` when the check was a response rather than a request.
     pub response: Option<Vec<u8>>,
-    /// The peer nominated this pair with this check.
     pub nominated: bool,
-    /// A role conflict was detected and this agent flipped role (§7.3.1.1).
     pub role_flipped: bool,
-    /// Set when the datagram was a response that completed one of *our* checks.
     pub completed_our_check: Option<Duration>,
 }
 
-// ── Agent ───────────────────────────────────────────────────────────
-
-/// An ICE agent: candidates, check list, and the authenticated check protocol.
 pub struct IceAgent {
     role: IceRole,
-    /// Random 64-bit tie-breaker (§6.1.1), fixed for the agent's lifetime.
     tie_breaker: u64,
     local_credentials: IceCredentials,
     remote_credentials: Option<IceCredentials>,
@@ -574,22 +454,8 @@ pub struct IceAgent {
     pairs: Vec<CandidatePair>,
     nominated: Option<usize>,
     retransmit_attempts: u32,
-    /// Peer-reflexive candidates discovered from inbound checks, so a check from
-    /// an address we did not know about can still establish a pair (§7.3.1.3).
     discovered_prflx: u32,
-    /// Transaction IDs of checks we sent, mapped to the pair they probed, the
-    /// local base address they left from, and when. This is what turns a success
-    /// response into a *measured* round-trip time — without it `CandidatePair::rtt`
-    /// could never be filled, and everything downstream (CGR latency, keepalive
-    /// pacing, path fitness) would have to guess.
-    ///
-    /// The local base is part of the record because a response identifies itself
-    /// only by its source address. Two of our candidates talking to the same peer
-    /// are two pairs, and matching on the peer alone would attribute the answer —
-    /// and its RTT — to whichever pair happened to be listed first.
     checks_sent: HashMap<TransactionId, (usize, SocketAddr, Instant)>,
-    /// Insertion order of `checks_sent`, so the oldest entry can be evicted once
-    /// the table is at [`MAX_TRACKED_CHECKS`].
     check_order: VecDeque<TransactionId>,
 }
 
@@ -611,7 +477,6 @@ impl IceAgent {
         }
     }
 
-    /// Override the per-pair retransmission bound (tests use small values).
     pub fn with_check_attempts(mut self, attempts: u32) -> Self {
         self.retransmit_attempts = attempts.max(1);
         self
@@ -633,26 +498,17 @@ impl IceAgent {
         self.remote_credentials.as_ref()
     }
 
-    /// Install the peer's credentials (from the beacon/offer).
     pub fn set_remote_credentials(&mut self, creds: IceCredentials) {
         self.remote_credentials = Some(creds);
     }
 
-    /// Adopt credentials we already advertised in an offer.
-    ///
-    /// This must be honoured: inbound checks are verified against our *local*
-    /// password, so generating fresh credentials here would silently reject every
-    /// check a peer sends from the offer it received.
     pub fn set_local_credentials(&mut self, creds: IceCredentials) {
         self.local_credentials = creds;
     }
 
-    /// Adopt the peer's role and credentials from a remote offer.
     pub fn set_remote_role(&mut self, role: IceRole) {
         self.role = role.other();
     }
-
-    // ── Gathering ───────────────────────────────────────────────────
 
     pub fn local_candidates(&self) -> &[Candidate] {
         &self.local_candidates
@@ -662,12 +518,10 @@ impl IceAgent {
         &self.remote_candidates
     }
 
-    /// Number of peer-reflexive candidates learned from inbound checks.
     pub fn discovered_prflx(&self) -> u32 {
         self.discovered_prflx
     }
 
-    /// Record a host candidate from an address we already know.
     pub fn add_host_candidate(&mut self, base: SocketAddr, advertised: SocketAddr) -> Candidate {
         let c = Candidate::new(
             CandidateType::Host,
@@ -680,8 +534,6 @@ impl IceAgent {
         c
     }
 
-    /// Gather a host candidate for `route_to`, resolving the outbound interface
-    /// when the socket is bound to a wildcard address.
     pub fn gather_host(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -698,12 +550,6 @@ impl IceAgent {
         Ok(self.add_host_candidate(local, advertised))
     }
 
-    /// Discover this agent's public mapping with a real STUN Binding request
-    /// (RFC 8489 §7.2.1) and record it as a server-reflexive candidate.
-    ///
-    /// Non-matching datagrams are skipped rather than treated as errors. Note
-    /// that they are **dropped** — if this socket also carries mesh traffic, use
-    /// [`Self::gather_reflexive_with`] so nothing is lost.
     pub async fn gather_reflexive(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -714,13 +560,6 @@ impl IceAgent {
             .await
     }
 
-    /// As [`Self::gather_reflexive`], but hands every datagram that is not the
-    /// response we are waiting for to `on_other`.
-    ///
-    /// This matters when the socket is shared with the mesh: silently dropping
-    /// those datagrams presents as unexplained packet loss under load, which is
-    /// hard to attribute later. A caller that can re-inject them should use this
-    /// form; a caller with a dedicated socket can use the simpler one.
     pub async fn gather_reflexive_with<F>(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -757,8 +596,6 @@ impl IceAgent {
         }
     }
 
-    /// Discover this agent's public mapping over a shared socket whose incoming
-    /// STUN datagrams are demuxed onto `rx` by the socket's receive loop.
     pub async fn gather_reflexive_mux(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -801,8 +638,6 @@ impl IceAgent {
         txid: TransactionId,
         base: SocketAddr,
     ) -> Option<Candidate> {
-        // Only the STUN server we asked may answer; anything else belongs
-        // to whoever else owns this socket.
         if from != server {
             return None;
         }
@@ -813,8 +648,6 @@ impl IceAgent {
         {
             return None;
         }
-        // Verify FINGERPRINT when present; public STUN servers often omit the
-        // optional FINGERPRINT attribute on plain Binding responses.
         match stun::verify_fingerprint(pkt) {
             Ok(()) | Err(stun::StunError::MissingFingerprint) => {}
             Err(_) => {
@@ -828,13 +661,6 @@ impl IceAgent {
         Some(c)
     }
 
-    /// Record a server-reflexive candidate whose address we already know.
-    ///
-    /// [`Self::gather_reflexive`] is the network path; this is for an address that
-    /// came from somewhere else — a STUN response gathered on another socket, a
-    /// cached mapping from an earlier session, or a test. `stun_server` only
-    /// affects the foundation, so candidates from different servers do not share
-    /// one and freeze each other (RFC 8445 §5.1.1.3).
     pub fn add_server_reflexive_candidate(
         &mut self,
         base: SocketAddr,
@@ -852,8 +678,6 @@ impl IceAgent {
         c
     }
 
-    /// Record a relay (TURN) candidate. The relay's own allocation lives in the
-    /// TURN client; this just makes the address usable by the check list.
     pub fn add_relay_candidate(&mut self, base: SocketAddr, relay_addr: SocketAddr) -> Candidate {
         let c = Candidate::new(
             CandidateType::Relay,
@@ -866,30 +690,20 @@ impl IceAgent {
         c
     }
 
-    /// Add a candidate advertised by the peer. Malformed input is rejected, not
-    /// silently accepted — a candidate we cannot parse is one we must not check.
     pub fn add_remote_candidate(&mut self, c: Candidate) {
         self.remote_candidates.push(c);
     }
 
-    /// Parse and add a peer candidate from its RFC 8445 attribute text.
     pub fn add_remote_candidate_attribute(&mut self, value: &str) -> Result<Candidate, IceError> {
         let c = Candidate::from_attribute(value)?;
         self.remote_candidates.push(c.clone());
         Ok(c)
     }
 
-    // ── Check list construction ─────────────────────────────────────
-
     pub fn pairs(&self) -> &[CandidatePair] {
         &self.pairs
     }
 
-    /// Build the check list: one pair per (component, local, remote) triple,
-    /// ordered by descending priority, with the top pair `Waiting` and the rest
-    /// `Frozen` (RFC 8445 §6.1.2.6). Pairs sharing a foundation with a
-    /// higher-priority pair stay frozen, which is what stops a single base
-    /// address from being checked many times in parallel.
     pub fn form_pairs(&mut self) {
         let mut pairs = Vec::new();
         for local in &self.local_candidates {
@@ -908,14 +722,12 @@ impl IceAgent {
                 });
             }
         }
-        // Highest priority first.
         pairs.sort_by(|a, b| {
             b.priority
                 .cmp(&a.priority)
                 .then_with(|| a.remote.addr.cmp(&b.remote.addr))
         });
 
-        // First pair per (foundation, component) is eligible; the rest freeze.
         let mut seen: Vec<(String, u16)> = Vec::new();
         for p in &mut pairs {
             let key = (p.local.foundation.clone(), p.local.component);
@@ -928,19 +740,11 @@ impl IceAgent {
         }
         self.pairs = pairs;
         self.nominated = None;
-        // Pair indices just changed, so every in-flight check now refers to a
-        // stale index; the RTT table must not outlive them.
         self.checks_sent.clear();
         self.check_order.clear();
     }
 
-    /// The next pair to check, moved to `InProgress`. Returns its index.
-    ///
-    /// Unfreezing happens here rather than in [`Self::form_pairs`]: when a pair's
-    /// foundation sibling fails, the next pair for that foundation becomes
-    /// eligible (§6.1.2.6).
     pub fn next_check(&mut self) -> Option<usize> {
-        // Any foundation whose pairs all failed frees its siblings.
         let failed_foundations: Vec<(String, u16)> = self
             .pairs
             .iter()
@@ -978,14 +782,12 @@ impl IceAgent {
         Some(idx)
     }
 
-    /// Give up on an in-progress pair (retransmissions exhausted).
     pub fn fail_pair(&mut self, idx: usize) {
         if let Some(p) = self.pairs.get_mut(idx) {
             p.state = PairState::Failed;
         }
     }
 
-    /// True when no pair can still succeed — the signal to fall back to a relay.
     pub fn is_exhausted(&self) -> bool {
         !self.pairs.is_empty()
             && self
@@ -1010,7 +812,6 @@ impl IceAgent {
         IceState::Checking
     }
 
-    /// The nominated, succeeded pair, if any.
     pub fn selected_pair(&self) -> Option<&CandidatePair> {
         let idx = self.nominated?;
         let p = self.pairs.get(idx)?;
@@ -1021,8 +822,6 @@ impl IceAgent {
         }
     }
 
-    /// Nominate a pair directly. Used by the controlled agent when the peer's
-    /// `USE-CANDIDATE` check arrives, and by tests.
     pub fn nominate(&mut self, idx: usize) -> bool {
         match self.pairs.get_mut(idx) {
             Some(p) if p.state == PairState::Succeeded => {
@@ -1035,10 +834,6 @@ impl IceAgent {
         }
     }
 
-    // ── Connectivity checks ─────────────────────────────────────────
-
-    /// Integrity key for a request we send: the *remote* password (the first
-    /// ufrag in `them:us`).
     fn outgoing_key(&self) -> Result<&str, IceError> {
         self.remote_credentials
             .as_ref()
@@ -1054,12 +849,6 @@ impl IceAgent {
         Ok(format!("{}:{}", remote.ufrag, self.local_credentials.ufrag))
     }
 
-    /// Build an authenticated Binding request for `pairs[idx]`.
-    ///
-    /// `nominate` sets `USE-CANDIDATE`, which only the controlling agent may do.
-    ///
-    /// The transaction is remembered against the instant it was built, so that a
-    /// matching success response yields a real round-trip time.
     pub fn build_check(&mut self, idx: usize, nominate: bool) -> Result<Vec<u8>, IceError> {
         let pair = self.pairs.get(idx).ok_or(IceError::NoCandidates)?;
         let key = self.outgoing_key()?;
@@ -1072,7 +861,6 @@ impl IceAgent {
         if nominate && self.role == IceRole::Controlling {
             msg.push(Attribute::UseCandidate);
         }
-        // Exactly one role attribute, never both (RFC 8445 §7.2.2).
         let role_attr = match self.role {
             IceRole::Controlling => Attribute::IceControlling(self.tie_breaker),
             IceRole::Controlled => Attribute::IceControlled(self.tie_breaker),
@@ -1084,12 +872,6 @@ impl IceAgent {
         Ok(encoded)
     }
 
-    /// Remember an outstanding check, evicting the oldest once the table is full.
-    ///
-    /// Bounding the table by *count* rather than by age keeps this deterministic
-    /// (no clock comparison) while still guaranteeing bounded memory: once
-    /// `MAX_TRACKED_CHECKS` newer checks exist, an older transaction can no
-    /// longer produce a meaningful RTT measurement anyway.
     fn track_check(&mut self, txid: TransactionId, idx: usize, base: SocketAddr) {
         self.checks_sent.insert(txid, (idx, base, Instant::now()));
         self.check_order.push_back(txid);
@@ -1100,20 +882,14 @@ impl IceAgent {
         }
     }
 
-    /// Round-trip time of the nominated pair, once a check has completed.
     pub fn selected_pair_rtt(&self) -> Option<Duration> {
         self.selected_pair().and_then(|p| p.rtt)
     }
 
-    /// A triggered check for a pair that just became interesting.
-    ///
-    /// Identical in content to [`Self::build_check`] — a triggered check is an
-    /// ordinary check sent immediately rather than queued behind the list order.
     pub fn build_triggered_check(&mut self, idx: usize) -> Result<Vec<u8>, IceError> {
         self.build_check(idx, false)
     }
 
-    /// Whether `pairs[idx]` has retransmissions left (RFC 8445 §14.3 `Nmax`).
     pub fn can_retransmit(&self, idx: usize) -> bool {
         self.pairs
             .get(idx)
@@ -1121,8 +897,6 @@ impl IceAgent {
             .unwrap_or(false)
     }
 
-    /// Re-arm an in-progress pair for another attempt. False when the pair has
-    /// exhausted `Nmax` and the caller should call [`Self::fail_pair`] instead.
     pub fn retransmit(&mut self, idx: usize) -> bool {
         if !self.can_retransmit(idx) {
             return false;
@@ -1133,10 +907,6 @@ impl IceAgent {
         true
     }
 
-    /// Process an inbound datagram from `from`.
-    ///
-    /// Returns `Ok(None)` when the datagram is not an ICE check we care about
-    /// (unrelated mesh traffic on the same socket).
     pub fn handle_check(
         &mut self,
         raw: &[u8],
@@ -1152,8 +922,6 @@ impl IceAgent {
 
         match msg.typ.class() {
             Class::Request => {
-                // On a shared muxed socket, multiple peer agents share our
-                // local credentials; ignore requests addressed to a different peer's ufrag.
                 if let (Some(Attribute::Username(u)), Some(expected)) =
                     (msg.get(0x0006), self.expected_incoming_username())
                 {
@@ -1174,14 +942,11 @@ impl IceAgent {
         msg: &Message,
         from: SocketAddr,
     ) -> Result<CheckOutcome, IceError> {
-        // We are the receiver, so we verify with our own password.
         if stun::verify_integrity(raw, self.local_credentials.password.as_bytes()).is_err() {
             warn!(from = %from, "ICE: dropping unauthenticated check");
             return Err(IceError::Stun(stun::StunError::BadIntegrity));
         }
 
-        // Role conflict (RFC 8445 §7.3.1.1): both agents claiming the same role
-        // is resolved by tie-breaker; the larger one wins and stays as it is.
         let mut role_flipped = false;
         let peer_says_controlling = matches!(msg.get(0x802A), Some(Attribute::IceControlling(_)));
         let peer_says_controlled = matches!(msg.get(0x8029), Some(Attribute::IceControlled(_)));
@@ -1201,13 +966,11 @@ impl IceAgent {
             );
             self.role = self.role.other();
             role_flipped = true;
-            // The check list ordering depends on the role.
             self.form_pairs();
         }
 
         let nominated_by_peer = msg.get(0x0025).is_some();
 
-        // Match to a pair, or learn a peer-reflexive candidate (§7.3.1.3).
         let pair_idx = match self.pairs.iter().position(|p| p.remote.addr == from) {
             Some(i) => i,
             None => {
@@ -1247,7 +1010,6 @@ impl IceAgent {
             }
         };
 
-        // An authenticated check from the peer proves the path works both ways.
         if let Some(p) = self.pairs.get_mut(pair_idx) {
             p.state = PairState::Succeeded;
         }
@@ -1255,8 +1017,6 @@ impl IceAgent {
             let _ = self.nominate(pair_idx);
         }
 
-        // Respond: same username, keyed by the same password that authenticated
-        // the request (ours).
         let mut resp = Message::binding_success(msg.txid, from);
         if let Some(Attribute::Username(u)) = msg.get(0x0006) {
             resp.push(Attribute::Username(u.clone()));
@@ -1288,23 +1048,12 @@ impl IceAgent {
             warn!(from = %from, "ICE: ignoring response that failed MESSAGE-INTEGRITY");
             return Err(IceError::Stun(stun::StunError::BadIntegrity));
         }
-        // This response is the other half of a check we sent, so the transaction
-        // ID names the pair that probed. That is the *only* unambiguous
-        // discriminator: two pairs may share a local base (a host and a
-        // server-reflexive candidate gathered from one socket) **and** a remote
-        // address, and matching on addresses alone then credits the round trip to
-        // the wrong pair — leaving the pair that actually measured it with no RTT
-        // while a pair that was never in flight reports success.
         let measured = self
             .checks_sent
             .remove(&msg.txid)
             .map(|(sent_idx, base, at)| (sent_idx, base, at.elapsed()));
         let idx = match measured {
             Some((sent_idx, _, _)) if sent_idx < self.pairs.len() => Some(sent_idx),
-            // A response we never asked for, or one whose check has aged out of
-            // the table. The peer address is then the best evidence available,
-            // but no timing may be recorded from it: an unsolicited response
-            // authenticates a path without measuring it.
             _ => self.pairs.iter().position(|p| p.remote.addr == from),
         };
         let Some(idx) = idx else {
@@ -1324,7 +1073,6 @@ impl IceAgent {
                 p.rtt = Some(rtt);
             }
         }
-        // The controlling agent nominates the pair it just proved.
         if self.role == IceRole::Controlling && self.nominated.is_none() {
             let _ = self.nominate(idx);
         }
@@ -1337,14 +1085,11 @@ impl IceAgent {
         })
     }
 
-    /// The username a peer will send us, for sanity-checking inbound checks.
     pub fn expected_incoming_username(&self) -> Option<String> {
         let remote = self.remote_credentials.as_ref()?;
         Some(format!("{}:{}", self.local_credentials.ufrag, remote.ufrag))
     }
 }
-
-// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1382,12 +1127,10 @@ mod tests {
 
     #[test]
     fn candidate_priority_formula_and_ordering() {
-        // 2^24·type + 2^8·local + (256 − component)
         let host = candidate_priority(CandidateType::Host, 65535, 1);
         assert_eq!(host, (126 << 24) + (65535 << 8) + 255);
         let srflx = candidate_priority(CandidateType::ServerReflexive, 65535, 1);
         let relay = candidate_priority(CandidateType::Relay, 65535, 1);
-        // A host candidate always beats a reflexive one, which beats a relay.
         assert!(host > srflx && srflx > relay);
     }
 
@@ -1401,7 +1144,6 @@ mod tests {
             DEFAULT_COMPONENT,
             Some(stun),
         );
-        // Same base + same STUN server, different mapping: same foundation.
         let b = Candidate::new(
             CandidateType::ServerReflexive,
             sock("192.168.1.10:5000"),
@@ -1411,8 +1153,6 @@ mod tests {
         );
         assert_eq!(a.foundation, b.foundation);
 
-        // A different base must not share a foundation, or we would serialise
-        // checks that could run in parallel.
         let c = Candidate::new(
             CandidateType::ServerReflexive,
             sock("192.168.1.11:5000"),
@@ -1425,16 +1165,12 @@ mod tests {
 
     #[test]
     fn pair_priority_formula_is_symmetric_under_role() {
-        // G = 100, D = 200 → 2^32·100 + 2·200 + 0
         assert_eq!(pair_priority_minmax(100, 200), (1u64 << 32) * 100 + 400);
-        // G = 200, D = 100 → same min/max, plus the G>D tie-break bit.
         assert_eq!(pair_priority_minmax(200, 100), (1u64 << 32) * 100 + 400 + 1);
     }
 
     #[test]
     fn controlling_and_controlled_agree_on_pair_priority() {
-        // Both agents must compute the same number for the same pair, or the
-        // check lists diverge and nomination deadlocks.
         let local = 0x7E00_00FF;
         let remote = 0x64_0000FF;
         let controlling_view = pair_priority_for(IceRole::Controlling, local, remote);
@@ -1450,7 +1186,6 @@ mod tests {
             password: "p".into(),
         });
         a.add_host_candidate(sock("192.168.1.10:5000"), sock("192.168.1.10:5000"));
-        // Two remote candidates on the same address family/type.
         for port in [6000u16, 6001] {
             a.add_remote_candidate(Candidate::new(
                 CandidateType::Host,
@@ -1462,9 +1197,7 @@ mod tests {
         }
         a.form_pairs();
         assert_eq!(a.pairs().len(), 2);
-        // Descending priority.
         assert!(a.pairs()[0].priority >= a.pairs()[1].priority);
-        // Exactly one eligible pair per foundation; the sibling stays frozen.
         assert_eq!(a.pairs()[0].state, PairState::Waiting);
         assert_eq!(a.pairs()[1].state, PairState::Frozen);
     }
@@ -1476,7 +1209,6 @@ mod tests {
         assert_eq!(a.pairs()[first].state, PairState::InProgress);
         assert_eq!(a.pairs()[first].attempts, 1);
 
-        // Only one foundation here, so nothing else is eligible yet.
         assert_eq!(a.next_check(), None);
 
         a.fail_pair(first);
@@ -1489,7 +1221,6 @@ mod tests {
         let mut a = agent_with_pairs(IceRole::Controlling);
         let idx = 0;
         let check = a.build_check(idx, true).unwrap();
-        // Authored by us, so it must verify with the remote password.
         stun::verify_integrity(&check, b"remote-password-0123456789").unwrap();
         stun::verify_fingerprint(&check).unwrap();
 
@@ -1504,7 +1235,6 @@ mod tests {
             }
             other => panic!("expected USERNAME, got {other:?}"),
         }
-        // The controlling agent advertises ICE-CONTROLLING, never both.
         assert!(parsed.get(0x802A).is_some());
         assert!(parsed.get(0x8029).is_none());
     }
@@ -1524,9 +1254,6 @@ mod tests {
         );
     }
 
-    /// End-to-end handshake between two agents with no sockets: the check list,
-    /// the authenticated check, nomination and role assignment all have to line
-    /// up, which is exactly what a hole punch depends on.
     #[test]
     fn two_agents_complete_an_authenticated_check_and_nomination() {
         let alice_addr = sock("192.168.1.10:5000");
@@ -1556,11 +1283,9 @@ mod tests {
         alice.form_pairs();
         bob.form_pairs();
 
-        // Alice (controlling) sends a nominating check.
         let idx = alice.next_check().unwrap();
         let check = alice.build_check(idx, true).unwrap();
 
-        // Bob receives it at the address he advertised.
         let outcome = bob
             .handle_check(&check, alice_addr)
             .unwrap()
@@ -1569,7 +1294,6 @@ mod tests {
         assert!(bob.selected_pair().is_some(), "bob must nominate the pair");
         let response = outcome.response.expect("a request is answered");
 
-        // Alice consumes the response.
         let reply = alice
             .handle_check(&response, bob_addr)
             .unwrap()
@@ -1579,15 +1303,10 @@ mod tests {
         assert_eq!(alice.state(), IceState::Connected);
         assert_eq!(bob.state(), IceState::Connected);
 
-        // Alice's check came back with the transaction ID she sent, so her round
-        // trip is a *measurement* — this is the number CGR latency and path
-        // fitness depend on.
         let rtt = alice
             .selected_pair_rtt()
             .expect("a completed check must yield a measured RTT");
         assert!(rtt < Duration::from_secs(5), "implausible RTT {rtt:?}");
-        // Bob only answered a request; he never sent a check of his own, so there
-        // is nothing for him to have measured.
         assert!(bob.selected_pair_rtt().is_none());
     }
 
@@ -1610,9 +1329,6 @@ mod tests {
         ));
         alice.form_pairs();
 
-        // A peer answers a *different* transaction, correctly authenticated (it
-        // is keyed by the remote password, which a real peer knows). It proves
-        // the path is up but says nothing about how long our check took.
         let mut stray = Message::binding_success(TransactionId::random(), alice_addr);
         stray.push(Attribute::Username(b"bobufrag:aliceufrag".to_vec()));
         let raw = stray
@@ -1645,7 +1361,6 @@ mod tests {
         ));
         bob.form_pairs();
 
-        // A request authenticated with the wrong password must not succeed.
         let mut msg = Message::binding_request(TransactionId::random());
         msg.push(Attribute::Username(
             format!("{}:{}", bob.local_credentials().ufrag, "aliceufrag").into_bytes(),
@@ -1659,8 +1374,6 @@ mod tests {
 
     #[test]
     fn role_conflict_is_resolved_by_tie_breaker() {
-        // Bob is controlled but Alice also claims to be controlled with a higher
-        // tie-breaker: Bob must flip to controlling.
         let mut bob = IceAgent::new(IceRole::Controlled);
         bob.set_remote_credentials(IceCredentials {
             ufrag: "aliceufrag".into(),
@@ -1690,7 +1403,6 @@ mod tests {
         assert!(outcome.role_flipped);
         assert_eq!(bob.role(), IceRole::Controlling);
 
-        // With a *lower* tie-breaker the peer must yield instead, leaving us put.
         let mut bob2 = IceAgent::new(IceRole::Controlled);
         bob2.set_remote_credentials(IceCredentials {
             ufrag: "aliceufrag".into(),
@@ -1750,7 +1462,6 @@ mod tests {
     #[test]
     fn unrelated_traffic_is_ignored_not_an_error() {
         let mut a = agent_with_pairs(IceRole::Controlling);
-        // Mesh data on the same socket must not be mistaken for ICE.
         assert!(a
             .handle_check(b"not a stun message at all", sock("1.2.3.4:5"))
             .unwrap()
@@ -1770,7 +1481,6 @@ mod tests {
         let text = c.to_attribute();
         assert!(text.starts_with("candidate:"));
         assert!(text.contains("typ srflx"), "{text}");
-        // The base address is carried explicitly, so it survives the round trip.
         assert!(text.contains("raddr 192.168.1.10 rport 5000"), "{text}");
         let parsed = Candidate::from_attribute(&text).unwrap();
         assert_eq!(
@@ -1778,7 +1488,6 @@ mod tests {
             "a candidate must survive the text form unchanged"
         );
 
-        // A host candidate's base *is* its address, so it needs no raddr.
         let host = Candidate::new(
             CandidateType::Host,
             sock("192.168.1.10:5000"),
@@ -1794,20 +1503,16 @@ mod tests {
     #[test]
     fn malformed_candidate_attributes_are_rejected() {
         assert!(Candidate::from_attribute("candidate:").is_err());
-        // Unknown transport (only UDP is supported).
         assert!(Candidate::from_attribute("candidate:x 1 bogus 1 1.2.3.4 5").is_err());
         assert!(Candidate::from_attribute("candidate:x 1 tcp 1 1.2.3.4 5 typ host").is_err());
-        // Bad priority, bad address, bad port.
         assert!(Candidate::from_attribute("candidate:x 1 UDP no 1.2.3.4 5 typ host").is_err());
         assert!(Candidate::from_attribute("candidate:x 1 UDP 1 nope 5 typ host").is_err());
         assert!(Candidate::from_attribute("candidate:x 1 UDP 1 1.2.3.4 99999 typ host").is_err());
-        // Missing or unknown type, and a trailing attribute we do not model.
         assert!(Candidate::from_attribute("candidate:x 1 UDP 1 1.2.3.4 5").is_err());
         assert!(Candidate::from_attribute("candidate:x 1 UDP 1 1.2.3.4 5 typ bogus").is_err());
         assert!(
             Candidate::from_attribute("candidate:x 1 UDP 1 1.2.3.4 5 typ host tcptype x").is_err()
         );
-        // raddr without rport must not half-parse.
         assert!(
             Candidate::from_attribute("candidate:x 1 UDP 1 1.2.3.4 5 typ host raddr 10.0.0.1")
                 .is_err()
@@ -1834,8 +1539,6 @@ mod tests {
         }
         a.form_pairs();
         assert_eq!(a.pairs().len(), 4);
-        // Every pair is ordered, and the relay pairs are at the bottom: a relay
-        // is only used once direct paths have failed.
         let last_two = &a.pairs()[2..];
         for p in last_two {
             assert_eq!(p.local.ctype, CandidateType::Relay);
@@ -1886,7 +1589,6 @@ mod tests {
             false,
         );
 
-        // Missing each required field in turn.
         let without_ufrag: Vec<String> = good
             .encode()
             .lines()
@@ -1903,21 +1605,17 @@ mod tests {
             .collect();
         assert!(IceOffer::decode(&without_role.join("\n")).is_err());
 
-        // A too-short password must not be accepted from the wire.
         let short_pwd = format!(
             "ice-ufrag:abcd\nice-pwd:tooshort\nrole:controlling\ncandidate:{} 1 UDP 1 10.0.0.1 5 typ host",
             good.candidates[0].foundation
         );
         assert!(IceOffer::decode(&short_pwd).is_err());
 
-        // Unknown role.
         let bad_role = good.encode().replace("role:controlled", "role:emperor");
         assert!(IceOffer::decode(&bad_role).is_err());
 
-        // Garbage line.
         assert!(IceOffer::decode("hello world").is_err());
 
-        // Candidate flood is refused rather than turned into pairs.
         let mut flood = good.encode();
         for i in 0..(MAX_CANDIDATES_IN_OFFER + 2) {
             flood.push_str(&format!(
@@ -1940,9 +1638,6 @@ mod tests {
 
     #[test]
     fn advertised_local_credentials_are_what_inbound_checks_are_verified_against() {
-        // The bug this guards: an agent that generates fresh credentials when it
-        // starts checking will reject every check from a peer that used the
-        // credentials we advertised.
         let advertised = IceCredentials {
             ufrag: "advertised-ufrag".into(),
             password: "advertised-password-0123456789".into(),
@@ -1966,7 +1661,6 @@ mod tests {
         ));
         bob.form_pairs();
 
-        // Alice authenticates with the password Bob advertised.
         let mut msg = Message::binding_request(TransactionId::random());
         msg.push(Attribute::Username(
             format!("{}:aliceufrag", advertised.ufrag).into_bytes(),
@@ -2040,12 +1734,7 @@ mod tests {
 
     #[test]
     fn probe_local_addr_resolves_a_usable_source() {
-        // Uses a route lookup only (no packet is sent), so this is safe offline
-        // as long as a default route exists.
         let dest = sock("192.0.2.1:3478");
-        // An isolated sandbox may have no default route. That is an I/O error,
-        // not a panic — which is the property under test, so a failure to
-        // resolve a source address is simply not asserted on.
         if let Ok(a) = probe_local_addr(dest) {
             assert!(!a.ip().is_unspecified());
         }
@@ -2061,7 +1750,6 @@ mod tests {
         assert_eq!(a.pairs()[idx].attempts, 2);
         assert!(a.retransmit(idx));
         assert_eq!(a.pairs()[idx].attempts, 3);
-        // Nmax reached: the caller must fail the pair rather than spin.
         assert!(!a.can_retransmit(idx));
         assert!(!a.retransmit(idx));
         assert_eq!(a.pairs()[idx].attempts, 3);

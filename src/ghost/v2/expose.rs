@@ -30,19 +30,14 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// Maximum request head accepted before the relay stops reading.
 pub const MAX_HEAD: usize = 32 * 1024;
 
-/// Header that can carry the token instead of the path prefix.
 pub const TOKEN_HEADER: &str = "x-vb-expose";
 
 #[derive(Debug, Clone)]
 pub struct ExposeConfig {
-    /// Where the relay listens. Bind loopback unless the mesh provides the path.
     pub listen: String,
-    /// The one target every connection is forwarded to, `host:port`.
     pub target: String,
-    /// Shared secret. Must not be empty.
     pub token: String,
 }
 
@@ -60,7 +55,6 @@ impl ExposeConfig {
         self
     }
 
-    /// Reject configurations that would silently do the wrong thing.
     pub fn validate(&self) -> Result<(), String> {
         if self.token.trim().len() < 16 {
             return Err("expose token must be at least 16 characters".into());
@@ -90,19 +84,12 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-/// The outcome of authorising and rewriting one request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
-    /// Forward this head to the target.
     Forward(Vec<u8>),
-    /// Answer 404 and close. Deliberately indistinguishable from "no such path".
     Deny,
 }
 
-/// Authorise one request head and strip the token prefix.
-///
-/// `head` is the raw request head (up to and including the blank line). Any
-/// already-read body bytes are preserved.
 pub fn route(head: &[u8], cfg: &ExposeConfig) -> Route {
     let text = match std::str::from_utf8(head) {
         Ok(t) => t,
@@ -139,8 +126,6 @@ pub fn route(head: &[u8], cfg: &ExposeConfig) -> Route {
         return Route::Deny;
     }
 
-    // Rebuild the head with the rewritten request line, dropping the relay's own
-    // header so the target never sees our secret.
     let mut out = Vec::with_capacity(head.len() + 16);
     out.extend_from_slice(format!("{method} {rewritten} {version}\r\n").as_bytes());
     for line in text[request_line.len() + 2..].lines() {
@@ -159,15 +144,12 @@ pub fn route(head: &[u8], cfg: &ExposeConfig) -> Route {
     Route::Forward(out)
 }
 
-/// Bind the listener, returning it with the address actually bound (so `:0`
-/// works in tests and in the CLI's "already in use" message).
 pub async fn bind(cfg: &ExposeConfig) -> std::io::Result<(SocketAddr, TcpListener)> {
     let listener = TcpListener::bind(&cfg.listen).await?;
     let addr = listener.local_addr()?;
     Ok((addr, listener))
 }
 
-/// Accept loop. One task per connection; no shared state.
 pub async fn serve(listener: TcpListener, cfg: Arc<ExposeConfig>) {
     loop {
         let Ok((stream, _peer)) = listener.accept().await else {
@@ -230,8 +212,6 @@ async fn handle(mut client: TcpStream, cfg: Arc<ExposeConfig>) -> std::io::Resul
     let (mut cr, mut cw) = client.into_split();
     let (mut ur, mut uw) = upstream.into_split();
 
-    // From here the relay is a byte pump in both directions, which is what makes
-    // WebSocket and streaming (SSE, chunked) work without special cases.
     let up = tokio::spawn(async move {
         let _ = tokio::io::copy(&mut cr, &mut uw).await;
         let _ = uw.shutdown().await;
@@ -245,7 +225,6 @@ async fn handle(mut client: TcpStream, cfg: Arc<ExposeConfig>) -> std::io::Resul
     Ok(())
 }
 
-/// `ggn expose <target> [--listen ADDR] [--token T]`
 pub async fn run_cli(cfg: ExposeConfig) -> anyhow::Result<()> {
     cfg.validate().map_err(|e| anyhow::anyhow!(e))?;
     let (addr, listener) = bind(&cfg).await?;
@@ -347,7 +326,6 @@ mod tests {
             ),
             Route::Deny
         );
-        // A token that is a prefix of the real one must not pass.
         assert_eq!(
             route(
                 &head(&format!("GET /{}/ HTTP/1.1\r\n\r\n", &c.token[..8])),
@@ -369,7 +347,6 @@ mod tests {
 
     #[tokio::test]
     async fn live_relay_forwards_and_denies() {
-        // A tiny upstream that answers any request with a fixed body.
         let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let up_addr = upstream.local_addr().unwrap();
         tokio::spawn(async move {
@@ -394,7 +371,6 @@ mod tests {
         let (addr, listener) = bind(&cfg).await.unwrap();
         tokio::spawn(serve(listener, Arc::clone(&cfg)));
 
-        // Authorised.
         let mut s = TcpStream::connect(addr).await.unwrap();
         s.write_all(format!("GET /{}/hello HTTP/1.1\r\nHost: x\r\n\r\n", cfg.token).as_bytes())
             .await
@@ -403,7 +379,6 @@ mod tests {
         s.read_to_end(&mut resp).await.unwrap();
         assert!(String::from_utf8_lossy(&resp).contains("upstream-ok"));
 
-        // Denied, with a 404 that says nothing else.
         let mut s = TcpStream::connect(addr).await.unwrap();
         s.write_all(b"GET /nope HTTP/1.1\r\nHost: x\r\n\r\n")
             .await

@@ -13,40 +13,28 @@
 use crate::ghost::layers::l4_rs;
 use std::time::{Duration, Instant};
 
-/// Maximum payload capacity of one coding group (2 data shards x 492 bytes).
 pub const COALESCE_TARGET_BYTES: usize = 984;
 
-/// Capacity of a single Reed-Solomon data or parity shard.
 pub const SHARD_PAYLOAD_BYTES: usize = 492;
 
-/// Default coalescing flush delay (200 microseconds).
 pub const DEFAULT_COALESCE_TIMEOUT: Duration = Duration::from_micros(200);
 
-/// Flag indicating that this packet must bypass the coalescing timer and flush immediately.
 pub const FLAG_IMMEDIATE: u8 = 0x01;
 
-/// Flag indicating that the payload contains padding bytes up to shard boundary.
 pub const FLAG_PADDED: u8 = 0x02;
 
-/// A self-contained RS(2,1) shard ready for onion wrapping and wire framing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoalescedShard {
-    /// Coding group sequence number.
     pub group_id: u64,
-    /// Shard index: 0 = D0 (data low), 1 = D1 (data high), 2 = P0 (parity).
     pub shard_idx: u8,
-    /// Control flags (e.g., FLAG_IMMEDIATE, FLAG_PADDED).
     pub flags: u8,
-    /// Actual unpadded user payload bytes contained across D0 + D1.
     pub payload_len: u16,
-    /// Fixed-size shard data buffer (492 bytes).
     pub data: [u8; SHARD_PAYLOAD_BYTES],
 }
 
 impl CoalescedShard {
     pub const HEADER_LEN: usize = 12; // group_id (8) + shard_idx (1) + flags (1) + payload_len (2)
 
-    /// Serialize shard header and payload into a byte buffer.
     pub fn serialize_into(&self, buf: &mut [u8]) -> Result<usize, &'static str> {
         let total = Self::HEADER_LEN + SHARD_PAYLOAD_BYTES;
         if buf.len() < total {
@@ -60,7 +48,6 @@ impl CoalescedShard {
         Ok(total)
     }
 
-    /// Deserialize shard from wire slice.
     pub fn deserialize(buf: &[u8]) -> Option<Self> {
         let total = Self::HEADER_LEN + SHARD_PAYLOAD_BYTES;
         if buf.len() < total {
@@ -83,7 +70,6 @@ impl CoalescedShard {
     }
 }
 
-/// Accumulating buffer for ingress streams before RS(2,1) encoding.
 #[derive(Debug)]
 pub struct CoalescingQueue {
     buffer: Vec<u8>,
@@ -100,7 +86,6 @@ impl Default for CoalescingQueue {
 }
 
 impl CoalescingQueue {
-    /// Create a new coalescing queue with custom target size and flush timeout.
     pub fn new(max_batch_size: usize, timeout: Duration) -> Self {
         let cap = max_batch_size.min(COALESCE_TARGET_BYTES);
         Self {
@@ -112,21 +97,14 @@ impl CoalescingQueue {
         }
     }
 
-    /// Current buffered byte count.
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
 
-    /// Whether the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
-    /// Ingest data into the queue.
-    ///
-    /// If `force_immediate` is set (e.g. TCP FIN/RST or real-time UDP), or if the
-    /// buffered data reaches `max_batch_size`, flushes immediately and returns the
-    /// generated 3-shard triplet [D0, D1, P0].
     pub fn push(&mut self, data: &[u8], force_immediate: bool) -> Vec<[CoalescedShard; 3]> {
         let mut results = Vec::new();
         let mut offset = 0;
@@ -151,7 +129,6 @@ impl CoalescingQueue {
         results
     }
 
-    /// Periodic tick to flush buffered data if the coalescing timeout has elapsed.
     pub fn tick(&mut self, now: Instant) -> Option<[CoalescedShard; 3]> {
         if self.buffer.is_empty() {
             self.last_flush = now;
@@ -165,7 +142,6 @@ impl CoalescingQueue {
         }
     }
 
-    /// Manually flush whatever is in the buffer right now into a coding group.
     pub fn flush(&mut self, flags: u8) -> Option<[CoalescedShard; 3]> {
         if self.buffer.is_empty() {
             None
@@ -196,7 +172,6 @@ impl CoalescingQueue {
             flags |= FLAG_PADDED;
         }
 
-        // Compute parity shard P0 in-place using SIMD RS(2,1)
         l4_rs::encode_parity_slice(&d0, &d1, &mut p0);
 
         let group_id = self.next_group_id;

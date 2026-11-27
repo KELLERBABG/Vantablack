@@ -35,10 +35,8 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-/// Why an exit refused to dial a target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Denied {
-    /// Short, operator-facing reason, safe to send back over the tunnel.
     pub reason: &'static str,
 }
 
@@ -54,8 +52,6 @@ impl std::fmt::Display for Denied {
     }
 }
 
-/// One exit's egress rules. Built from the environment by [`policy`], or directly
-/// in tests.
 #[derive(Debug, Clone, Default)]
 pub struct Policy {
     lan: bool,
@@ -64,24 +60,20 @@ pub struct Policy {
 }
 
 impl Policy {
-    /// Everything blocked that the default policy blocks.
     pub fn strict() -> Self {
         Self::default()
     }
 
-    /// Home-exit / LAN-over-WAN: permit loopback, RFC1918, ULA and CGNAT.
     pub fn with_lan(mut self, yes: bool) -> Self {
         self.lan = yes;
         self
     }
 
-    /// Permit TCP/25.
     pub fn with_smtp(mut self, yes: bool) -> Self {
         self.smtp = yes;
         self
     }
 
-    /// Exact `host:port` exception, e.g. `10.0.0.5:5432`.
     pub fn with_allow_entry(mut self, entry: &str) -> Self {
         let entry = normalize(entry);
         if !entry.is_empty() {
@@ -90,9 +82,6 @@ impl Policy {
         self
     }
 
-    /// Exact exceptions in bulk — the tunnel feeds its `GHOST_TUNNEL_ALLOW` entries
-    /// through here, so a forward an operator named explicitly is not then refused
-    /// for pointing at their own LAN.
     pub fn with_allow_entries(mut self, entries: impl IntoIterator<Item = String>) -> Self {
         for entry in entries {
             self = self.with_allow_entry(&entry);
@@ -100,27 +89,17 @@ impl Policy {
         self
     }
 
-    /// Whether `target` is named outright by an allow entry.
     fn is_named(&self, target: &str) -> bool {
         self.allow.contains(&normalize(target))
     }
 
-    /// Check a target as the peer wrote it (`host:port`), without resolving a name.
-    ///
-    /// IP literals are classified exactly; a hostname is only checked for the rules
-    /// that do not need an address (the SMTP port and `localhost`). [`Self::resolve`]
-    /// is the complete check.
     pub fn check(&self, target: &str) -> Result<(), Denied> {
         let target = normalize(target);
         if target.is_empty() {
             return Err(Denied::new("empty target"));
         }
         let (host, port) = split_host_port(&target).ok_or(Denied::new("malformed target"))?;
-        // The SMTP rule is a floor, not a range rule: naming a target does not lift
-        // it, because spam relaying is the abuse this exists to stop.
         self.check_port(port)?;
-        // An operator who wrote this exact target down has decided it is legitimate,
-        // including when it is their own loopback or LAN.
         if self.is_named(&target) {
             return Ok(());
         }
@@ -136,11 +115,6 @@ impl Policy {
         }
     }
 
-    /// Classify one resolved address.
-    ///
-    /// The SMTP rule comes before the allow entries, exactly as in [`Self::check`]:
-    /// naming a target never lifts the anti-spam floor, whether it was named as a
-    /// host or as a literal address.
     pub fn check_addr(&self, addr: SocketAddr) -> Result<(), Denied> {
         self.check_port(addr.port())?;
         if self.allow.contains(&normalize(&addr.to_string())) {
@@ -152,10 +126,6 @@ impl Policy {
         }
     }
 
-    /// Resolve `target` and return the first address the policy permits.
-    ///
-    /// Nothing is dialled here, but a name is resolved, so the caller connects to the
-    /// address this returns rather than re-resolving and racing the answer.
     pub async fn resolve(&self, target: &str) -> Result<SocketAddr, Denied> {
         self.check(target)?;
         let named = self.is_named(target);
@@ -166,9 +136,6 @@ impl Policy {
         if addrs.is_empty() {
             return Err(Denied::new("target does not resolve"));
         }
-        // A named target resolves wherever it resolves: the operator allowed the
-        // *name*, so filtering its answer by address would silently undo that for a
-        // LAN hostname such as `nas.local`.
         if named {
             return Ok(addrs[0]);
         }
@@ -197,7 +164,6 @@ impl Policy {
             return Err(Denied::new("unspecified address"));
         }
         if in_net([169, 254, 0, 0], 16) {
-            // Never relaxed, not even for a home exit: this is the metadata pivot.
             return Err(Denied::new("link-local target"));
         }
         if ip.is_loopback() {
@@ -223,7 +189,6 @@ impl Policy {
             return self.check_v4(v4);
         }
         let segments = ip.segments();
-        // fe80::/10 — the mask covers the two bits above fe80, hence 0xffc0.
         if (segments[0] & 0xffc0) == 0xfe80 {
             return Err(Denied::new("link-local target"));
         }
@@ -248,7 +213,6 @@ impl Policy {
     }
 }
 
-/// The exit's policy as configured right now.
 pub fn policy() -> Policy {
     Policy {
         lan: env_flag("GHOST_EXIT_EGRESS_LAN"),
@@ -273,13 +237,10 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Trim, lower-case and drop a trailing dot, so `Example.COM.` and `example.com`
-/// are the same entry.
 fn normalize(entry: &str) -> String {
     entry.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
-/// Split `host:port`, `[v6]:port`, or a bare IP into its two halves.
 fn split_host_port(target: &str) -> Option<(&str, u16)> {
     if let Some(rest) = target.strip_prefix('[') {
         let (host, tail) = rest.split_once(']')?;
@@ -319,7 +280,6 @@ mod tests {
             .with_smtp(true)
             .check("mail.example.com:25")
             .is_ok());
-        // Authority ports are fine.
         assert!(Policy::strict().check("mail.example.com:587").is_ok());
     }
 
@@ -383,15 +343,12 @@ mod tests {
 
     #[test]
     fn a_named_target_is_honoured_without_lan_mode() {
-        // The tunnel passes its own allowlist in as exact entries, so an existing
-        // home forward keeps working without `GHOST_EXIT_EGRESS_LAN`.
         let policy = Policy::strict().with_allow_entries(vec![
             "127.0.0.1:8080".to_string(),
             "192.168.1.10:445".to_string(),
         ]);
         assert!(policy.check("127.0.0.1:8080").is_ok());
         assert!(policy.check("192.168.1.10:445").is_ok());
-        // Everything the allowlist does *not* name stays under the strict default.
         assert_eq!(
             policy.check("127.0.0.1:8081").unwrap_err().reason,
             "loopback target"
@@ -408,8 +365,6 @@ mod tests {
 
     #[test]
     fn the_smtp_floor_applies_to_literal_addresses_too() {
-        // `check` and `check_addr` must agree: a resolved address is refused for SMTP
-        // even when the same address is an exact allow entry.
         let policy = Policy::strict().with_allow_entry("192.0.2.10:25");
         let addr: SocketAddr = "192.0.2.10:25".parse().expect("an address");
         assert_eq!(
@@ -420,7 +375,6 @@ mod tests {
             policy.check("192.0.2.10:25").unwrap_err().reason,
             "smtp port 25 is blocked on exits"
         );
-        // The same host on a normal port is still allowed.
         assert!(policy.check_addr("192.0.2.10:443".parse().unwrap()).is_ok());
     }
 

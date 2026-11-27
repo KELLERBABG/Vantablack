@@ -45,11 +45,6 @@ pub(crate) mod ratchet;
 #[cfg(feature = "reality-front")]
 pub(crate) mod reality_front;
 
-/// Carry one frame over a MASQUE stream to `peer`, when this build has the
-/// transport and a stream exists.
-///
-/// Always `false` without `quic`, so an unconditional call site keeps the UDP
-/// send it had instead of needing a `cfg` of its own.
 pub(crate) fn try_send_masque(peer: &std::net::SocketAddr, frame: &[u8]) -> bool {
     #[cfg(feature = "quic")]
     {
@@ -62,7 +57,6 @@ pub(crate) fn try_send_masque(peer: &std::net::SocketAddr, frame: &[u8]) -> bool
     }
 }
 
-/// Whether a MASQUE stream already reaches this peer. `false` without `quic`.
 pub(crate) fn masque_carries(dst: &std::net::SocketAddr, session: &[u8; 4]) -> bool {
     #[cfg(feature = "quic")]
     {

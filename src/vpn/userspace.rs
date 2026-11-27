@@ -13,15 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
-/// Default SOCKS5 proxy port in Zero-Admin mode.
 #[allow(dead_code)]
 pub const DEFAULT_ZERO_ADMIN_SOCKS_PORT: u16 = 1080;
 
-/// Default local DNS proxy port in Zero-Admin mode.
 #[allow(dead_code)]
 pub const DEFAULT_ZERO_ADMIN_DNS_PORT: u16 = 1053;
 
-/// Zero-Admin Userspace Controller.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ZeroAdminTunnel {
@@ -32,7 +29,6 @@ pub struct ZeroAdminTunnel {
 
 #[allow(dead_code)]
 impl ZeroAdminTunnel {
-    /// Create a new Zero-Admin Userspace Tunnel with specified SOCKS5 and DNS ports.
     pub fn new(socks_port: u16, dns_port: u16) -> Self {
         Self {
             socks_port,
@@ -41,7 +37,6 @@ impl ZeroAdminTunnel {
         }
     }
 
-    /// Check if Zero-Admin mode is explicitly requested via environment variable.
     #[allow(dead_code)]
     pub fn is_requested() -> bool {
         std::env::var("GHOST_ZERO_ADMIN")
@@ -49,10 +44,6 @@ impl ZeroAdminTunnel {
             .unwrap_or(false)
     }
 
-    /// Start the zero-admin transparent helper service.
-    ///
-    /// Spawns a background DNS loopback responder that forwards DNS lookups through
-    /// the mesh and instructs applications to use the local SOCKS5 port.
     pub fn start(&self) {
         let running = Arc::clone(&self.running);
         let dns_port = self.dns_port;
@@ -81,10 +72,8 @@ impl ZeroAdminTunnel {
                     res = socket.recv_from(&mut buf) => {
                         match res {
                             Ok((len, src)) => {
-                                // Basic loopback DNS echo/forward acknowledgment
                                 if len > 12 {
                                     let mut reply = buf[..len].to_vec();
-                                    // Set QR bit (response)
                                     reply[2] |= 0x80;
                                     let _ = socket.send_to(&reply, src).await;
                                 }
@@ -98,12 +87,10 @@ impl ZeroAdminTunnel {
         });
     }
 
-    /// Stop the zero-admin tunnel.
     pub fn shutdown(&self) {
         self.running.store(false, Ordering::Relaxed);
     }
 
-    /// Check if the zero-admin tunnel is currently active.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }

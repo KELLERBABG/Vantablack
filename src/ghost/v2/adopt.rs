@@ -27,7 +27,6 @@ use crate::ghost::net::vpn::tun::{open_fake_tun, open_tun, PlatformTun, TunDevic
 
 use super::{expose, party, portal, vbdns};
 
-/// One of the three shareable everyday surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RoomKind {
@@ -55,9 +54,6 @@ impl RoomKind {
     }
 }
 
-/// A shareable, expiring room code. The payload is surface-specific (a drop
-/// URL, an expose endpoint, a party address) and hex-encoded so a code survives
-/// chat apps and QR encoders without a second escaping layer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RoomCode {
     pub kind: RoomKind,
@@ -83,7 +79,6 @@ impl RoomCode {
         )
     }
 
-    /// Parse a code and reject wrong schemes, malformed hex and expired codes.
     pub fn parse(code: &str, now: u64) -> Result<Self, String> {
         let (scheme, rest) = code
             .split_once("://")
@@ -117,7 +112,6 @@ impl RoomCode {
     }
 }
 
-/// What this build can honestly offer from the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
     pub tun: bool,
@@ -138,7 +132,6 @@ pub fn capabilities() -> Capabilities {
     }
 }
 
-/// Where the machine's power is coming from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PowerState {
@@ -186,8 +179,6 @@ impl RelayDecision {
     }
 }
 
-/// The opt-in decision. `ac_only` is a promise, so an unmeasured or stale power
-/// source withholds the claim instead of assuming mains.
 pub fn relay_decision(
     policy: RelayPolicy,
     power: Option<PowerEvidence>,
@@ -227,12 +218,6 @@ pub fn relay_decision(
     }
 }
 
-/// One measurement cache for the whole process.
-///
-/// Status and settings are polled from the dashboard; on Windows each uncached
-/// probe spawns PowerShell, so the reading is held for [`POWER_TTL_SECS`] and
-/// every caller inside that window reads the same observation. A user-initiated
-/// opt-in calls [`probe_power_evidence`] to force a fresh reading.
 #[derive(Debug, Default)]
 pub struct PowerCache {
     cached: Mutex<Option<PowerEvidence>>,
@@ -245,8 +230,6 @@ impl PowerCache {
         }
     }
 
-    /// Cached reading, re-probing only when absent, expired, or timestamped in
-    /// the future (a backwards clock must not serve evidence).
     pub fn get(&self, now: u64, probe: &mut dyn FnMut() -> PowerState) -> PowerEvidence {
         let mut slot = self.cached.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(evidence) = *slot {
@@ -265,7 +248,6 @@ impl PowerCache {
         evidence
     }
 
-    /// Measure now and replace the cached reading.
     pub fn refresh(&self, now: u64, probe: &mut dyn FnMut() -> PowerState) -> PowerEvidence {
         let evidence = PowerEvidence {
             state: probe(),
@@ -280,16 +262,10 @@ static POWER_CACHE: PowerCache = PowerCache {
     cached: Mutex::new(None),
 };
 
-/// Read the platform power source, reusing a reading younger than the TTL.
-///
-/// `Unknown` is a first-class answer: a desktop without an AC entry must not be
-/// treated as mains just because it is plugged in, and a container has no power
-/// source at all.
 pub fn read_power_evidence() -> PowerEvidence {
     POWER_CACHE.get(super::now_secs(), &mut detect_power_state)
 }
 
-/// Force a real measurement (used when the user asks to opt in right now).
 pub fn probe_power_evidence() -> PowerEvidence {
     POWER_CACHE.refresh(super::now_secs(), &mut detect_power_state)
 }
@@ -330,9 +306,6 @@ fn detect_power_state() -> PowerState {
     }
     #[cfg(target_os = "windows")]
     {
-        // Win32_Battery.BatteryStatus 2 == "AC power" (the battery is charging
-        // or fully charged on mains). No battery at all means a desktop, which
-        // is not evidence of AC; report Unknown rather than guessing.
         let out = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -356,8 +329,6 @@ fn detect_power_state() -> PowerState {
     }
 }
 
-/// The four installer families Stage 5 promises. Signing evidence is per
-/// artifact; a release with one unsigned family does not get a signed claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InstallerKind {
@@ -401,9 +372,6 @@ pub struct InstallerClaim {
     pub reason: Option<String>,
 }
 
-/// A release may claim signed installers only when every family is present and
-/// every artifact carries a verification signature. This is deliberately strict:
-/// the repository can build artifacts, but signing keys live in CI/user hands.
 pub fn installer_claim(evidence: &[InstallerEvidence]) -> InstallerClaim {
     let mut signed = Vec::new();
     let mut missing = Vec::new();
@@ -444,12 +412,8 @@ pub fn installer_claim(evidence: &[InstallerEvidence]) -> InstallerClaim {
     }
 }
 
-/// How long a signed-release verification result is reused.
 pub const INSTALLER_EVIDENCE_TTL_SECS: u64 = 300;
 
-/// What the status document reports about the installer claim and where it came
-/// from. `ran = false` means no release has been verified here, which is not the
-/// same as a release that was checked and failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InstallerReport {
     pub ran: bool,
@@ -467,10 +431,6 @@ fn withheld_claim(reason: &str) -> InstallerClaim {
     }
 }
 
-/// Parse `packaging/verify_signed_release.sh --json`. The script's own verdict is
-/// authoritative: a withheld release is an error here even if it lists some
-/// artifacts, and the per-artifact evidence is still re-checked by
-/// [`installer_claim`].
 pub fn parse_installer_evidence(stdout: &str) -> Result<Vec<InstallerEvidence>, String> {
     let value: serde_json::Value = serde_json::from_str(stdout)
         .map_err(|e| format!("signed-release verifier did not emit JSON: {e}"))?;
@@ -515,8 +475,6 @@ pub fn parse_installer_evidence(stdout: &str) -> Result<Vec<InstallerEvidence>, 
     Ok(evidence)
 }
 
-/// Build a report from one verifier run. Injected here so the gate is testable
-/// without signing keys or platform signers.
 fn installer_report_from(
     now: u64,
     source: Option<String>,
@@ -537,11 +495,6 @@ fn installer_report_from(
     }
 }
 
-/// Where the verifier lives and which release directory it should inspect.
-///
-/// Opt-in is explicit: a release gate runs only when `GGN_SIGNED_DIST` names a
-/// dist directory (optionally with `GGN_SIGNED_RELEASE_VERIFIER` pointing at a
-/// copy of the script), so a plain status poll never executes a shell script.
 fn verifier_target() -> Option<(PathBuf, PathBuf)> {
     let explicit_script = std::env::var_os("GGN_SIGNED_RELEASE_VERIFIER");
     let script = explicit_script
@@ -570,15 +523,11 @@ fn run_verifier(script: &std::path::Path, dist: &std::path::Path) -> Result<Stri
             stderr.trim()
         ));
     }
-    // A withheld report exits non-zero but still prints its JSON verdict, so the
-    // document — not the exit status — is what gets parsed.
     Ok(stdout)
 }
 
 static INSTALLER_CACHE: OnceLock<Mutex<Option<InstallerReport>>> = OnceLock::new();
 
-/// The installer claim, re-verified at most once per
-/// [`INSTALLER_EVIDENCE_TTL_SECS`] instead of on every status request.
 pub fn installer_report(now: u64) -> InstallerReport {
     let mut slot = INSTALLER_CACHE
         .get_or_init(|| Mutex::new(None))
@@ -607,8 +556,6 @@ pub fn installer_report(now: u64) -> InstallerReport {
     report
 }
 
-/// How a one-click TUN start can fail. Every variant is a refusal that the
-/// caller must report as not-started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TunRefusal {
@@ -625,9 +572,6 @@ pub struct TunRefusalDetail {
     pub detail: String,
 }
 
-/// Map the OS error to the honest reason. `PermissionDenied` is the elevation
-/// refusal on both wintun and `/dev/net/tun`; `NotFound` is a missing driver or
-/// device node, not a privilege problem.
 pub fn classify_tun_error(kind: std::io::ErrorKind) -> TunRefusal {
     match kind {
         std::io::ErrorKind::PermissionDenied => TunRefusal::PrivilegeDenied,
@@ -670,7 +614,6 @@ struct TunSession {
     interface: String,
     real: bool,
     mtu: u16,
-    // Held only to keep the interface alive for the process lifetime.
     _device: PlatformTun,
 }
 
@@ -688,13 +631,6 @@ fn fake_tun_requested() -> bool {
         .unwrap_or(false)
 }
 
-/// Open the platform TUN device for the lifetime of this process. Idempotent:
-/// a second click reports the interface already held instead of opening a
-/// second one.
-///
-/// This starts the *device*, which is what the one-click control promises. It
-/// does not silently attach the daemon's VPN forwarding pump: a real tunnel still
-/// needs `GHOST_VPN=client` and the hub configuration at boot.
 pub fn start_tun() -> Result<TunStart, TunRefusalDetail> {
     start_tun_with(fake_tun_requested())
 }
@@ -751,7 +687,6 @@ fn start_tun_with(fake: bool) -> Result<TunStart, TunRefusalDetail> {
     }
 }
 
-/// Release the device held by this process. Returns whether one was held.
 pub fn stop_tun() -> bool {
     #[cfg(feature = "vpn")]
     {
@@ -781,8 +716,6 @@ pub fn tun_running() -> bool {
     }
 }
 
-/// The Docker deployment is a deliverable in itself: a one-line relay container
-/// that must run `ggn --relay-only` and never an exit or GUI mode.
 pub const RELAY_COMPOSE: &str = include_str!("../../../deploy/docker-compose.relay.yml");
 
 pub fn relay_container_is_one_line() -> bool {
@@ -790,8 +723,6 @@ pub fn relay_container_is_one_line() -> bool {
         && RELAY_COMPOSE.contains("GHOST_EXIT=0")
         && RELAY_COMPOSE.contains("GHOST_NO_GUI=1")
 }
-
-// ── Server launchers ───────────────────────────────────────────────────────
 
 pub struct DropStart {
     pub id: String,
@@ -862,7 +793,6 @@ pub struct PartyStart {
 
 pub async fn start_party(listen: &str) -> Result<PartyStart, String> {
     let cfg = party::PartyConfig::new(listen, None);
-    // Preflight both sockets so the one-click response is not a false success.
     let _local = tokio::net::UdpSocket::bind(&cfg.listen)
         .await
         .map_err(|e| format!("cannot bind party game port {}: {e}", cfg.listen))?;
@@ -908,8 +838,6 @@ pub async fn start_dns(bind: &str) -> Result<DnsStart, String> {
     })
 }
 
-// ── Status and HTTP surface ────────────────────────────────────────────────
-
 pub fn status_json() -> serde_json::Value {
     let caps = capabilities();
     let power = read_power_evidence();
@@ -948,8 +876,6 @@ fn json_body(req: &str) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
-/// Handle the adoption endpoints. Callers pass the raw request head/body; the
-/// return tuple matches the control plane's `(status, body, content_type)`.
 pub async fn handle_http(req: &str) -> (&'static str, String, &'static str) {
     let path = req
         .lines()
@@ -1213,7 +1139,6 @@ mod tests {
             .0,
             RelayDecision::Serving
         );
-        // Opting out of the AC promise is explicit and still opt-in.
         assert_eq!(
             relay_decision(
                 RelayPolicy {
@@ -1270,7 +1195,6 @@ mod tests {
         assert_eq!(started.interface, "fake0");
         assert!(started.mtu > 0);
         assert!(tun_running());
-        // A second click reports the held interface instead of opening another.
         let again = start_tun_with(true).expect("held TUN is reported");
         assert!(again.already_running);
         assert_eq!(again.interface, started.interface);
@@ -1333,7 +1257,6 @@ mod tests {
         let refreshed = cache.get(1_000 + POWER_TTL_SECS + 1, &mut probe);
         assert_eq!(refreshed.observed_at, 1_061);
         assert_eq!(calls.get(), 2);
-        // A clock that moves backwards must not serve a future reading.
         assert_eq!(cache.get(900, &mut probe).observed_at, 900);
         assert_eq!(calls.get(), 3);
     }

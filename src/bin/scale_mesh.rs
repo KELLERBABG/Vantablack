@@ -144,7 +144,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sock = UdpSocket::bind("127.0.0.1:0").await?;
         let port = sock.local_addr()?.port();
 
-        // Realistic heterogeneous network specs
         let rtt_ms = match i % 5 {
             0 => 12.0 + rng.gen_range(0.0..8.0),   // High speed fiber
             1 => 35.0 + rng.gen_range(0.0..15.0),  // Standard broadband
@@ -224,13 +223,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "================================================================================"
         );
 
-        // STEP 1: Dynamically update WAN metrics across the 5000-node topology
         println!("[STEP 1] ADAPTIVE SHARD ROUTER: EVALUATING 5000-NODE TOPOLOGY DRIFT");
         let router = AdaptiveShardRouter::new();
         let mut candidate_peers: Vec<(String, SocketAddr)> = Vec::with_capacity(nodes.len());
 
         for n in &nodes[1..exit_idx] {
-            // Real WAN network dynamics: bandwidth load, BGP route shifts, and latency jitter
             let jitter = rng.gen_range(-15.0..15.0);
             let current_rtt = (n.rtt_ms + jitter).max(4.0);
             let current_loss = rng.gen_range(0.0..1.0) < (1.0 - n.reliability);
@@ -246,7 +243,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             candidate_peers.push((n.fingerprint.clone(), addr));
         }
 
-        // Shuffle candidate peers slightly before sort so equal-fitness nodes rotate naturally
         use rand::seq::SliceRandom;
         candidate_peers.shuffle(&mut rng);
 
@@ -305,10 +301,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             carrier_c.bw_mbps
         );
 
-        // Randomize which shard is dropped by the simulated WAN failure
         let drop_shard_idx = rng.gen_range(0..3usize);
 
-        // STEP 2: Hybrid Post-Quantum KEM Handshake between Client and Exit Node
         println!("\n[STEP 2] HYBRID POST-QUANTUM KEM HANDSHAKE: CLIENT <--> EXIT NODE");
         let (c_x_sec, c_x_pub) = generate_x25519_keypair();
         let (c_ky_ek, c_ky_dk) = generate_kyber_keypair();
@@ -334,7 +328,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &ky_ct,
         );
 
-        // Derive Master Keys on both sides
         let exit_xs = e_x_sec.diffie_hellman(&x25519_dalek::PublicKey::from(parsed_hs.x25519_pub));
         let exit_master = derive_hybrid_master_key_with_psk(exit_xs.as_bytes(), &ky_ss, None);
 
@@ -352,7 +345,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             hex::encode(&client_master[..8])
         );
 
-        // STEP 3: Client Encrypts Google Target & Encodes into 3 RS Shards
         println!("\n[STEP 3] SOCKS5 CONNECT & REED-SOLOMON RS(2,1) ASYMMETRIC SHARDING");
         let target_dest = b"www.google.com:80";
         let tx_ctr = (cycle * 10 + 2) as u32;
@@ -364,7 +356,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             target_dest,
         );
 
-        // STEP 4: Live UDP Socket I/O Routing Shards via 3 Distinct Carrier Nodes
         println!("\n[STEP 4] MULTI-PATH CONCURRENT LIVE UDP ROUTING TO EXIT NODE");
         let exit_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), exit_node.port);
         let carrier_a_addr =
@@ -374,22 +365,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let carrier_c_addr =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), carrier_c.port);
 
-        // Client transmits Shard 0 over real UDP socket to Carrier A
         client.socket.send_to(&shards[0], carrier_a_addr).await?;
         let mut buf_a = vec![0u8; 1500];
         let (len_a, _) = carrier_a.socket.recv_from(&mut buf_a).await?;
 
-        // Client transmits Shard 1 over real UDP socket to Carrier B
         client.socket.send_to(&shards[1], carrier_b_addr).await?;
         let mut buf_b = vec![0u8; 1500];
         let (len_b, _) = carrier_b.socket.recv_from(&mut buf_b).await?;
 
-        // Client transmits Shard 2 over real UDP socket to Carrier C
         client.socket.send_to(&shards[2], carrier_c_addr).await?;
         let mut buf_c = vec![0u8; 1500];
         let (len_c, _) = carrier_c.socket.recv_from(&mut buf_c).await?;
 
-        // Carriers relay to Exit Node according to drop_shard_idx
         if drop_shard_idx != 0 {
             carrier_a.socket.send_to(&buf_a[..len_a], exit_addr).await?;
         }
@@ -409,13 +396,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             drop_shard_idx
         );
 
-        // Exit Node receives incoming live UDP frames
         let mut exit_rx_buf_0 = vec![0u8; 1500];
         let (exit_len_0, _) = exit_node.socket.recv_from(&mut exit_rx_buf_0).await?;
         let mut exit_rx_buf_1 = vec![0u8; 1500];
         let (exit_len_1, _) = exit_node.socket.recv_from(&mut exit_rx_buf_1).await?;
 
-        // STEP 5: Exit Node Reassembles from 2 Shards & Decrypts
         println!("\n[STEP 5] EXIT NODE RECONSTRUCTION & AUTHENTICATION");
         let mut exit_rx_pool = vec![None, None, None];
         match drop_shard_idx {
@@ -448,12 +433,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             exit_dest_str
         );
 
-        // STEP 6: Exit Node Egress IP Rotation (Round-Robin)
         println!("\n[STEP 6] EXIT NODE ROUND-ROBIN EGRESS IP ROTATION");
         let sock_addr = exit_rotator.get_next_socket_addr(80);
         println!("       Outbound interface selected: {}", sock_addr.ip());
 
-        // STEP 7: Public Real-World WAN Request to Google
         println!(
             "\n[STEP 7] PUBLIC STREAM INGESTION (LIVE OUTBOUND TCP) & CONCURRENT RETURN ROUTING"
         );
@@ -483,7 +466,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let client_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), client.port);
 
-        // Return Shard 0 via Carrier A to Client
         exit_node
             .socket
             .send_to(&return_shards[0], carrier_a_addr)
@@ -495,7 +477,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .send_to(&ret_buf_a[..ret_len_a], client_addr)
             .await?;
 
-        // Return Shard 2 via Carrier C to Client (Shard 1 simulated dropped on return path)
         exit_node
             .socket
             .send_to(&return_shards[2], carrier_c_addr)
@@ -507,7 +488,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .send_to(&ret_buf_c[..ret_len_c], client_addr)
             .await?;
 
-        // Client receives 2 return shards on its UDP socket
         let mut client_rx_buf_0 = vec![0u8; 1500];
         let (c_len_0, _) = client.socket.recv_from(&mut client_rx_buf_0).await?;
         let mut client_rx_buf_2 = vec![0u8; 1500];

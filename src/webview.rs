@@ -27,8 +27,6 @@ use vantablack::ghost::GhostNode;
 use vantablack::ghost::{icon, paths};
 use wry::{WebContext, WebViewBuilder};
 
-/// Block until the control-center HTTP listener answers. The node starts that
-/// listener on its own thread, so the window can otherwise race it.
 fn wait_for_control_center(port: u16) -> bool {
     let target = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     for _ in 0..30 {
@@ -40,7 +38,6 @@ fn wait_for_control_center(port: u16) -> bool {
     false
 }
 
-/// Open an arbitrary URL in the system's default browser.
 fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
     let _ = std::process::Command::new("cmd")
@@ -52,15 +49,10 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
-/// Last-resort fallback when no window can be created at all: open the control
-/// center in the user's normal browser, exactly like a headless build does.
 fn open_in_browser(port: u16) {
     open_url(&format!("http://127.0.0.1:{port}"));
 }
 
-/// Build the tray icon. Returns the menu items and channel receivers so the
-/// event loop can service them. Failure is never fatal — the window is the
-/// application, the tray is a convenience.
 #[allow(clippy::type_complexity)]
 fn build_tray(
     nc: &Option<Arc<GhostNode>>,
@@ -72,9 +64,6 @@ fn build_tray(
     use tray_icon::menu::{CheckMenuItem, Menu, MenuItem};
     use tray_icon::{Icon, TrayIconBuilder};
 
-    // The real application icon, at the size a tray actually asks for. The
-    // image is embedded, so there is no icon file to lose track of next to the
-    // executable.
     let Some(icon) =
         icon::ui_icon(32).and_then(|i| Icon::from_rgba(i.rgba, i.width, i.height).ok())
     else {
@@ -111,9 +100,6 @@ fn build_tray(
     Some((open_item, beacon_item, quit_item))
 }
 
-/// Run the desktop application. Never returns: every exit path goes through
-/// `std::process::exit` (tray "Quit", the in-page quit button, or a window
-/// that could not be created).
 pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
     if !wait_for_control_center(control_port) {
         tracing::warn!(
@@ -125,19 +111,10 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
     let menu_rx = tray_icon::menu::MenuEvent::receiver();
     let tray_rx = tray_icon::TrayIconEvent::receiver();
     let tray = build_tray(&nc); // The window icon below sets `WM_SETICON`/`ICON_SMALL`, which covers the
-                                // title bar and the Alt-Tab entry. The *taskbar button* reads a different
-                                // one — `ICON_BIG` — so a second `WM_SETICON` is issued after the window
-                                // exists (tao's builder has no equivalent). Without it Windows scales the
-                                // small icon up or falls back to the executable's resources.
-                                //
-                                // A decode failure is not fatal: the window opens without an icon rather
-                                // than not opening at all.
     let window_icon =
         icon::ui_icon(64).and_then(|i| Icon::from_rgba(i.rgba, i.width, i.height).ok());
 
     let event_loop = EventLoopBuilder::new().build();
-    // Visible from the start: this is the application, not a tray-only helper.
-    // Closing it later hides it back to the tray.
     let window = match WindowBuilder::new()
         .with_title("Vantablack")
         .with_window_icon(window_icon)
@@ -153,8 +130,6 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
             std::process::exit(1);
         }
     };
-    // Frameless windows need their own drag strip, which is why the page sends
-    // us `drag` over IPC. A soft shadow keeps it looking intentional.
     #[cfg(target_os = "windows")]
     {
         use tao::platform::windows::WindowExtWindows;
@@ -164,19 +139,11 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
         window.set_taskbar_icon(taskbar_icon);
     }
 
-    // The IPC handler and the event loop both need the window, and both run on
-    // this thread, so a plain Rc<RefCell<..>> is the right tool.
     let slot: Rc<RefCell<Option<Window>>> = Rc::new(RefCell::new(Some(window)));
     let ipc_slot = Rc::clone(&slot);
     let ipc_node = nc.clone();
     let url = format!("http://127.0.0.1:{control_port}/?native=1");
 
-    // Left to itself, WebView2 puts its user-data folder (cache, cookies, GPU
-    // shaders) next to the executable. Two reasons that is wrong here: the
-    // uninstaller knows nothing about a folder it did not create, and an install
-    // directory the user cannot write to — anything under `Program Files` —
-    // makes the window fail outright. Point it at the per-user cache directory
-    // instead, and fall back to the default rather than refusing to open.
     let webview_data_dir = paths::cache_dir().join("webview2");
     let webview_data = match paths::ensure_dir(&webview_data_dir) {
         Ok(()) => Some(webview_data_dir.clone()),
@@ -317,14 +284,11 @@ pub fn run_desktop(control_port: u16, nc: Option<Arc<GhostNode>>) -> ! {
         }
         let _ = tray_rx.try_recv(); // keep the channel drained
 
-        // tao only *reports* WM_CLOSE (it does not destroy the window), so
-        // ignoring the destroy is exactly how "minimize to tray" is done.
         if let Event::WindowEvent {
             event: WindowEvent::CloseRequested,
             ..
         } = event
         {
-            // "Close" means "get out of my way", not "stop my VPN".
             if let Some(win) = slot.borrow().as_ref() {
                 win.set_visible(false);
             }

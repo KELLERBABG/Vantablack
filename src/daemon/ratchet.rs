@@ -5,56 +5,18 @@
 
 use crate::*;
 
-/// How often the maintenance tick looks for sessions whose epoch is spent.
 pub(crate) const RATCHET_TICK: Duration = Duration::from_secs(5);
-/// How long one unanswered step may sit before it is abandoned and retried.
-///
-/// A step that is never answered costs a PDU and a retry — it must not wedge the
-/// session at the current epoch forever, which is why the bound exists at all.
 pub(crate) const RATCHET_STEP_STALL: Duration = Duration::from_secs(30);
 
-/// How long one unanswered quantum mix may sit before it is abandoned.
-///
-/// Much longer than a DH step's bound, because the round trip is not symmetric:
-/// the answering peer only has to fetch key material at a label, but the peer
-/// that *starts* a mix first derives a route, which is a python subprocess. An
-/// abandoned mix costs the epoch nothing — the live generation was never
-/// touched — so the only thing this bound buys is against a session that would
-/// otherwise hold the prepared-epoch slot forever.
 pub(crate) const QUANTUM_MIX_STALL: Duration = Duration::from_secs(90);
 
-/// How often one session may *try* to start a quantum mix.
-///
-/// Each attempt can spawn a python subprocess (seconds), so a peer whose route
-/// never resolves — a mesh that has not been exported, or a link below the BB84
-/// cutoff — must not be retried on every five-second tick. One attempt a minute
-/// is enough for an anchor that becomes available later, and cheap enough that a
-/// permanently unavailable one is unnoticeable.
 pub(crate) const QUANTUM_MIX_RETRY: Duration = Duration::from_secs(60);
 
-/// One pass of the ratchet maintenance tick.
-///
-/// This is what makes the ratchet real rather than dormant: an epoch holds at most
-/// `RATCHET_INTERVAL` datagrams, and when one is spent the session pays for a fresh
-/// hybrid exchange. The step is *started* here and *completed* in `handle_pkt` when
-/// the peer's signed answer arrives — or, on the answering side, when the
-/// initiator's first frame in the new epoch authenticates.
-///
-/// Nothing stalls on it: traffic keeps flowing on the current epoch until the step
-/// lands, and a lost step is abandoned after `RATCHET_STEP_STALL` and retried on the
-/// next tick.
-///
-/// Extracted from the tick loop so the initiation site is callable as a unit — the
-/// alternative was a body reachable only by waiting five seconds inside a spawned
-/// task, which is how it stayed untested while it was wrong (see the self-contained
-/// bit's history in `RxContext::ingest`).
 pub(crate) async fn ratchet_maintenance_once(
     nc: &Arc<GhostNode>,
     addrs: &Arc<DashMap<String, SocketAddr>>,
     fallback: &Arc<Fallback>,
 ) {
-    // Collect first: a DashMap guard must never be held across an await, and every
-    // send below is one.
     let mut work: Vec<(String, SocketAddr, Vec<u8>)> = Vec::new();
     for e in nc.sessions.iter() {
         if e.ratchet_step_stalled(RATCHET_STEP_STALL) {
@@ -68,10 +30,6 @@ pub(crate) async fn ratchet_maintenance_once(
             continue;
         }
         let fp = e.peer_fingerprint.clone();
-        // Reachability first. A step we cannot deliver would sit in flight for the
-        // whole stall window and block the next attempt, so a peer with neither a
-        // known address nor a fallback route is skipped rather than charged a
-        // round trip.
         let addr = addrs.get(&fp).map(|v| *v.value());
         if addr.is_none() && fallback.path(&fp).is_none() {
             continue;
@@ -83,8 +41,6 @@ pub(crate) async fn ratchet_maintenance_once(
         let Some(pdu) =
             build_ratchet_step_pdu(|d| nc.identity.sign(d).to_bytes(), &x_pub, &kem_pub)
         else {
-            // Our own freshly generated material failed to parse: a bug, but the
-            // step must not be left in flight over it.
             e.abandon_ratchet_step();
             continue;
         };
@@ -102,15 +58,6 @@ pub(crate) async fn ratchet_maintenance_once(
     }
 }
 
-/// Handle a ratchet-step PDU that arrived (decrypted) in `payload`.
-///
-/// Returns `true` when the payload *was* a step PDU — including when it was
-/// refused — so the caller stops interpreting it as application data.
-///
-/// Both directions live here because they are two halves of one exchange, and a
-/// step that is only half understood is worse than one that is not understood at
-/// all: a responder that acts on an unauthenticated step moves its epoch while the
-/// initiator does not, which breaks a working session.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_ratchet_pdu(
     node: &Arc<GhostNode>,
@@ -129,9 +76,6 @@ pub(crate) async fn handle_ratchet_pdu(
         tracing::debug!(peer = %peer_fp, "ratchet PDU for an unknown peer — dropped");
         return true;
     };
-    // Fail closed. The step is authenticated by the peer's *identity* key, which
-    // is the same key the handshake verified; without a pinned key there is
-    // nothing to check the step against, so it is refused rather than trusted.
     let Some(pk) = sess.peer_identity_pk() else {
         tracing::warn!(
             peer = %peer_fp,
@@ -150,12 +94,6 @@ pub(crate) async fn handle_ratchet_pdu(
             tracing::warn!(peer = %peer_fp, "ratchet step signature invalid — refused");
             return true;
         }
-        // A *crossed* pair of steps — both peers due in the same interval — is not a
-        // harmless duplicate: each side would complete its own step and install epoch
-        // `n+1` derived from its own secrets, so both would hold the same epoch number
-        // over different keys and nothing on the link would open again. The tie-break
-        // is the fingerprint order (see `Session::admit_peer_step`), applied before the
-        // step is answered so exactly one side advances.
         if !sess.admit_peer_step(&node.fingerprint()) {
             tracing::warn!(
                 peer = %peer_fp,
@@ -173,8 +111,6 @@ pub(crate) async fn handle_ratchet_pdu(
             &answer.kem_ct,
             &answer.confirm,
         );
-        // Sealed on the epoch the peer still holds — we have only *prepared* the
-        // new one, so a reply on it would be unopenable to the sender of the step.
         let ctx = SealCtx::from_session(&sess);
         drop(sess);
         let frame = seal_single(&ctx, &pdu);
@@ -213,33 +149,12 @@ pub(crate) async fn handle_ratchet_pdu(
     true
 }
 
-/// Where the mesh topology export lives: the operator's override, else the data
-/// directory.
-///
-/// One function so the manual `EXPORTTOPOLOGY` path, the control plane's route
-/// endpoint and the mix tick cannot drift onto three different files — they read
-/// the same graph, so a route computed for an operator and a route computed for
-/// a session are computed over the same thing.
 pub(crate) fn qel_topology_path() -> PathBuf {
     std::env::var("GHOST_QEL_TOPOLOGY")
         .map(PathBuf::from)
         .unwrap_or_else(|_| vantablack::ghost::paths::data_file("ghost-topology.json"))
 }
 
-/// Serialize the live mesh graph — real fingerprints, addresses and sessions —
-/// in the schema `quantumnet ghost-net --topology` reads.
-///
-/// Returns the pretty JSON plus the node and link counts, so the manual command
-/// can report what it wrote without re-parsing its own output.
-///
-/// Each link carries `length_km` where the daemon has **measured** the path. That
-/// field is what makes the export routable at all: the quantum layer derives a
-/// link's attenuation from its physical length, and a link with no length is not
-/// an optical link, so it is skipped. The daemon has a real length for any peer
-/// whose round trip it has timed (the contact plan's `range_km`, from the same
-/// measurement the DTN router routes on), and none for a peer it has not — no
-/// number is invented to fill the gap, because a fabricated length would decide
-/// the fidelity of a link nobody measured.
 pub(crate) fn mesh_topology_json(
     nc: &Arc<GhostNode>,
     addrs: &DashMap<String, SocketAddr>,
@@ -284,30 +199,6 @@ pub(crate) fn mesh_topology_json(
     (serde_json::to_string_pretty(&doc).unwrap_or_default(), n, l)
 }
 
-/// One pass of the quantum-anchor mix tick: start a mix for any session that
-/// should have one and does not.
-///
-/// This is what turns the L10 anchor from a tested primitive into a property of a
-/// live session. A session begins on its handshake's hybrid root key; this tick
-/// re-derives its *next* epoch from quantum-derived entropy as soon as the peer
-/// is reachable, so the key that protects later traffic was not solely a
-/// function of the classical handshake.
-///
-/// Three rules decide whether a given session is attempted, and each is
-/// deliberate:
-///
-/// * **The lower-fingerprint peer drives.** Only one side may start a mix, or two
-///   would prepare the same epoch from different inputs; the fingerprint order is
-///   the tie-break `admit_peer_step` already uses, and it costs no round trip. The
-///   other side answers, and needs neither a route nor a topology export to do it.
-/// * **Reachability first**, exactly as the ratchet step does: a mix we cannot
-///   deliver would hold the prepared-epoch slot for the whole stall window.
-/// * **At most one attempt per retry interval**, because an attempt may cost a
-///   python subprocess. See `QUANTUM_MIX_RETRY`.
-///
-/// Nothing here is fatal. Every failure — anchor degraded, no topology export, a
-/// route below the BB84 cutoff — leaves the session exactly as it was, on its
-/// current epoch, and is retried later.
 pub(crate) async fn quantum_mix_maintenance_once(
     nc: &Arc<GhostNode>,
     addrs: &Arc<DashMap<String, SocketAddr>>,
@@ -316,9 +207,6 @@ pub(crate) async fn quantum_mix_maintenance_once(
 ) {
     let our_fp = nc.fingerprint();
     let topology = qel_topology_path();
-    // Cheap pre-pass: the tick must not pay for a topology export — let alone a
-    // python subprocess — when no session is due. It also settles the stall and
-    // the tie-break before any work is queued.
     let mut due: Vec<String> = Vec::new();
     for e in nc.sessions.iter() {
         let peer_fp = e.peer_fingerprint.clone();
@@ -329,8 +217,6 @@ pub(crate) async fn quantum_mix_maintenance_once(
             );
             e.abandon_quantum_mix();
         }
-        // The peer whose fingerprint sorts higher never starts a mix; it answers
-        // ours. Without this the two sides race and cross.
         if e.quantum_mix_due(QUANTUM_MIX_RETRY) && our_fp < peer_fp {
             due.push(peer_fp);
         }
@@ -339,12 +225,6 @@ pub(crate) async fn quantum_mix_maintenance_once(
         return;
     }
 
-    // Refresh the export before routing: the graph is the thing the route is
-    // computed over, and a peer that connected since the last export would be
-    // missing from a stale one. Doing it here (rather than requiring the
-    // operator to run `EXPORTTOPOLOGY`) is what lets a live session use the
-    // anchor unattended; a failure is not fatal, because the route computation
-    // below refuses cleanly on a missing or unusable export.
     let (json, nodes, links) = {
         let plan = nc.contact_plan.read().await;
         mesh_topology_json(nc, addrs, &plan)
@@ -365,13 +245,9 @@ pub(crate) async fn quantum_mix_maintenance_once(
         ),
     }
 
-    // (peer, addr, PDU) collected first: a DashMap guard must never be held
-    // across an await, and deriving a key *is* one.
     let mut work: Vec<(String, SocketAddr, Vec<u8>)> = Vec::new();
     for peer_fp in due {
         let addr = addrs.get(&peer_fp).map(|v| *v.value());
-        // Reachability first, as for a DH step: a mix we cannot deliver would
-        // hold the prepared-epoch slot for the whole stall window.
         if addr.is_none() && fallback.path(&peer_fp).is_none() {
             continue;
         }
@@ -379,14 +255,9 @@ pub(crate) async fn quantum_mix_maintenance_once(
         let Some(sess) = nc.sessions.get(&peer_fp) else {
             continue;
         };
-        // Throttle before the derivation, not after: the point is to bound how
-        // often a subprocess can be spawned, including for a failed attempt.
         sess.note_quantum_mix_attempt();
         drop(sess);
 
-        // We already know we sort lower, so the ordered pair is (us, peer) — the
-        // same question both sides would ask, which is what makes the label
-        // identical for the two of them.
         let outcome = ctrl
             .establish_quantum_link(&topology, &our_fp, &peer_fp)
             .await;
@@ -402,9 +273,6 @@ pub(crate) async fn quantum_mix_maintenance_once(
             continue;
         };
         let Some(pending) = sess.begin_quantum_mix(&key, &label) else {
-            // A DH step or another mix owns the slot. The attempt is already
-            // recorded, so this session waits a retry interval rather than
-            // spinning on the tick.
             continue;
         };
         let pdu = build_qel_mix_pdu(
@@ -422,9 +290,6 @@ pub(crate) async fn quantum_mix_maintenance_once(
             key_label = %label,
             "qel: starting quantum mix (epoch prepared from quantum entropy)"
         );
-        // The PDU travels sealed on the *live* epoch: the peer can only open a
-        // frame it has a key for, and the new epoch's key is exactly what the
-        // exchange is negotiating.
         work.push((peer_fp, addr, seal_single(&ctx, &pdu)));
     }
     for (fp, addr, frame) in work {
@@ -432,16 +297,6 @@ pub(crate) async fn quantum_mix_maintenance_once(
     }
 }
 
-/// Handle a quantum-mix PDU that arrived (decrypted) in `payload`.
-///
-/// Returns `true` when the payload *was* a quantum-mix PDU — including when it
-/// was refused — so the caller stops interpreting it as application data.
-///
-/// Deliberately the same shape as [`handle_ratchet_pdu`]: both exchanges send
-/// signed parameters, prepare an epoch, and prove agreement with a tag over the
-/// new key before either side advances. That symmetry is the point — the two
-/// must be read together, because they share one hazard (a peer that advances an
-/// epoch its counterpart did not) and one resolution (prove the key first).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_qel_mix_pdu(
     node: &Arc<GhostNode>,
@@ -461,20 +316,11 @@ pub(crate) async fn handle_qel_mix_pdu(
             tracing::warn!(peer = %peer_fp, "malformed quantum mix PDU");
             return true;
         };
-        // Everything that needs the session, and nothing that awaits, in one
-        // scope: a `DashMap` guard held across the key fetch below would block
-        // every other task touching this shard — a session insert, an eviction —
-        // for as long as a python subprocess takes, which is up to 45 s. The
-        // ratchet step's handler gets this for free because it never awaits while
-        // holding a session; here the fetch is unavoidable.
         {
             let Some(sess) = node.sessions.get(peer_fp) else {
                 tracing::debug!(peer = %peer_fp, "quantum mix PDU for an unknown peer — dropped");
                 return true;
             };
-            // Fail closed, like the ratchet step: the mix is authenticated by the
-            // peer's *identity* key, and a session with no pinned key has nothing
-            // to check the parameters against.
             let Some(pk) = sess.peer_identity_pk() else {
                 tracing::warn!(
                     peer = %peer_fp,
@@ -496,10 +342,6 @@ pub(crate) async fn handle_qel_mix_pdu(
             }
         }
 
-        // Resolve the label into our copy of the same key. No key crosses the
-        // wire: the label is public, and the quantum channel's contribution is
-        // what it names — a simulated derivation label, or, on an appliance, the
-        // standard's `key_ID` redeemed with `dec_keys`.
         let ctrl = l10_qel::shared_controller();
         let outcome = ctrl.redeem_key(peer_fp, &blob.label).await;
         let Some(key) = outcome.key else {
@@ -512,8 +354,6 @@ pub(crate) async fn handle_qel_mix_pdu(
             return true;
         };
 
-        // Re-acquire: the peer may have gone while the key was being fetched, and
-        // the mix must be answered on the session as it is now, not as it was.
         let Some(sess) = node.sessions.get(peer_fp) else {
             tracing::debug!(peer = %peer_fp, "quantum mix: session closed during the key fetch");
             return true;
@@ -525,8 +365,6 @@ pub(crate) async fn handle_qel_mix_pdu(
         };
         let pdu =
             build_qel_mix_response_pdu(|d| node.identity.sign(d).to_bytes(), blob.epoch, &answer);
-        // Sealed on the epoch the peer still holds — we have only *prepared* the
-        // new one, so a reply on it would be unopenable to whoever sent the mix.
         let ctx = SealCtx::from_session(&sess);
         drop(sess);
         let frame = seal_single(&ctx, &pdu);
@@ -573,12 +411,6 @@ pub(crate) async fn handle_qel_mix_pdu(
     true
 }
 
-/// Route one already-built GTF datagram to a peer.
-///
-/// A ratchet step must travel by the same ladder as the data it protects: if the
-/// session exists because a relay or a TURN allocation made it possible, a direct
-/// reply to the source address would be filtered or unroutable, and the step would
-/// silently never complete.
 pub(crate) async fn send_frame_to_peer(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
@@ -651,23 +483,12 @@ mod ratchet_live_tests {
     //! interleaved shard by shard.
     use crate::*;
     use std::time::Instant as StdInstant;
-    // `PoissonReputationMatrix` and `RevocationList` come in through `super::*`, which
-    // is also what guarantees this test wires the pipeline with the same types `main`
-    // does rather than with lookalikes.
     use vantablack::ghost::net::is_v2_frame;
     use vantablack::ghost::session::ratchet::RATCHET_INTERVAL;
 
-    /// A real node, built by hand.
-    ///
-    /// Deliberately not `GhostNode::new`: that loads or **generates** an identity
-    /// file in the working directory and spawns four worker tasks, neither of which a
-    /// test should be doing to a developer's checkout. Everything else is the real
-    /// node type, driving the real code paths.
     pub(crate) async fn node(id: Arc<l0_identity::GhostIdentity>) -> Arc<GhostNode> {
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind loopback"));
         let local_addr = socket.local_addr().expect("local addr").to_string();
-        // `dispatch_packet` indexes `workers`, so there has to be at least one, and a
-        // drained channel keeps the dispatcher from filling up mid-test.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
         Arc::new(GhostNode {
@@ -687,7 +508,6 @@ mod ratchet_live_tests {
         })
     }
 
-    /// The receive pipeline for one node, wired the way `main` wires it.
     pub(crate) fn rx_for(
         node: &Arc<GhostNode>,
         peers: Arc<DashMap<String, SocketAddr>>,
@@ -724,7 +544,6 @@ mod ratchet_live_tests {
         })
     }
 
-    /// Take one datagram off a socket, as the receive loop does.
     pub(crate) async fn recv_one(sock: &UdpSocket) -> Vec<u8> {
         let mut buf = vec![0u8; GTF_BULK_SIZE + 64];
         let (amt, _src) = tokio::time::timeout(Duration::from_secs(5), sock.recv_from(&mut buf))
@@ -735,8 +554,6 @@ mod ratchet_live_tests {
         buf
     }
 
-    /// `handle_pkt` runs on a spawned task, so effects are waited for rather than
-    /// assumed to have landed when `ingest` returns.
     pub(crate) async fn wait_for(label: &str, mut cond: impl FnMut() -> bool) {
         let deadline = StdInstant::now() + Duration::from_secs(5);
         while StdInstant::now() < deadline {
@@ -760,8 +577,6 @@ mod ratchet_live_tests {
         let bob_fp = bob_id.fingerprint();
         assert_ne!(alice_addr, bob_addr);
 
-        // The two seats on one session, exactly as the handshake leaves them: one
-        // shared master key, complementary roles, and each peer's identity pinned.
         let master = [0x5Au8; 32];
         let a_sess = Session::new_with_role(master, bob_fp.clone(), SessionRole::Initiator);
         a_sess.pin_peer_identity(bob_id.public_key_bytes());
@@ -776,7 +591,6 @@ mod ratchet_live_tests {
             "both seats derive one session"
         );
 
-        // Address books, so the tick has a route to send the step down.
         let alice_addrs = Arc::new(DashMap::new());
         alice_addrs.insert(bob_fp.clone(), bob_addr);
         let bob_addrs = Arc::new(DashMap::new());
@@ -785,7 +599,6 @@ mod ratchet_live_tests {
         let alice_rx = rx_for(&alice, Arc::clone(&alice_addrs), Arc::clone(&alice_fb));
         let bob_rx = rx_for(&bob, Arc::clone(&bob_addrs), Arc::new(Fallback::new(None)));
 
-        // Spend a whole epoch: 1M datagrams is the trigger the interval names.
         {
             let s = alice.sessions.get(&bob_fp).expect("alice's session");
             for _ in 0..RATCHET_INTERVAL {
@@ -795,10 +608,7 @@ mod ratchet_live_tests {
             assert_eq!(s.epoch(), 0);
         }
 
-        // ── The real tick body, one pass, on the real socket ─────────────────────
         ratchet_maintenance_once(&alice, &alice_addrs, &alice_fb).await;
-        // The step goes alice → bob, so it is *bob's* socket that has it — reading
-        // it from alice's would only prove the send went nowhere.
         let step_frame = recv_one(&bob.socket).await;
         assert!(is_v2_frame(&step_frame), "the step is a v2 frame");
         assert_ne!(
@@ -814,7 +624,6 @@ mod ratchet_live_tests {
             "the step travels on the epoch that is still live"
         );
 
-        // ── Into bob's ingress, the way the socket loop feeds it ────────────────
         bob_rx.ingest(&step_frame, alice_addr).await; // src = alice, as recv_from reports
         wait_for("bob to prepare epoch 1", || {
             bob.sessions.get(&alice_fp).map(|s| s.prepared_epoch()) == Some(Some(1))
@@ -830,7 +639,6 @@ mod ratchet_live_tests {
             assert_eq!(s.ratchet_steps.load(Ordering::Relaxed), 0);
         }
 
-        // ── The answer comes back into alice's ingress ──────────────────────────
         let answer_frame = recv_one(&alice.socket).await;
         alice_rx.ingest(&answer_frame, bob_addr).await;
         wait_for("alice's epoch to rotate", || {
@@ -847,10 +655,6 @@ mod ratchet_live_tests {
             assert_eq!(s.epoch_capacity_left(), RATCHET_INTERVAL, "a fresh epoch");
         }
 
-        // ── A data frame in the new epoch makes bob install it ──────────────────
-        // Sent exactly the way the data path sends one: sealed once, Reed-Solomon
-        // split into three shards *without* the self-contained bit, so this also
-        // exercises the spool and the assembled branch of the ingress.
         let (ctx, shards, tag) = {
             let s = alice.sessions.get(&bob_fp).expect("alice's session");
             let ctx = SealCtx::from_session(&s);
@@ -873,7 +677,6 @@ mod ratchet_live_tests {
         })
         .await;
 
-        // ── And the two sides agree on the new epoch, one key per direction ─────
         let a = alice.sessions.get(&bob_fp).expect("alice's session");
         let b = bob.sessions.get(&alice_fp).expect("bob's session");
         assert_eq!(a.epoch(), b.epoch());
@@ -895,9 +698,6 @@ mod ratchet_live_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     pub(crate) async fn a_step_that_cannot_be_verified_never_moves_the_epoch() {
-        // The fail-closed half, through the same ingress: the step is authenticated
-        // by the identity pinned at handshake time, so a peer whose pin is absent
-        // gets a refusal and nothing else.
         let alice_id = Arc::new(l0_identity::GhostIdentity::generate_fresh());
         let bob_id = Arc::new(l0_identity::GhostIdentity::generate_fresh());
         let alice = node(Arc::clone(&alice_id)).await;
@@ -910,7 +710,6 @@ mod ratchet_live_tests {
         let master = [0x11u8; 32];
         let a_sess = Session::new_with_role(master, bob_fp.clone(), SessionRole::Initiator);
         a_sess.pin_peer_identity(bob_id.public_key_bytes());
-        // Bob deliberately has **no** pin: the session exists, the identity does not.
         let b_sess = Session::new_with_role(master, alice_fp.clone(), SessionRole::Responder);
         alice.sessions.insert(bob_fp.clone(), a_sess);
         bob.sessions.insert(alice_fp.clone(), b_sess);
@@ -936,12 +735,10 @@ mod ratchet_live_tests {
         let step_frame = recv_one(&bob.socket).await;
         bob_rx.ingest(&step_frame, alice_addr).await;
 
-        // Give it every chance to be acted on before concluding it was not.
         tokio::time::sleep(Duration::from_millis(200)).await;
         let b = bob.sessions.get(&alice_fp).expect("bob's session");
         assert_eq!(b.epoch(), 0, "an unverifiable step must not move the epoch");
         assert_eq!(b.prepared_epoch(), None, "nor prepare one");
-        // Bob answered nothing either, so alice is still waiting (and will retry).
         assert!(alice
             .sessions
             .get(&bob_fp)
@@ -950,9 +747,6 @@ mod ratchet_live_tests {
             .load(Ordering::Relaxed));
     }
 
-    /// One negotiated suite-list offer, framed exactly as `initiate_handshake`
-    /// sends it: three bulk v1 datagrams that share counter 0 and session hash
-    /// `[0, 0, 0, 0]`, because there is no session yet to number the message with.
     pub(crate) fn negotiated_offer_frames(id: &l0_identity::GhostIdentity) -> Vec<Vec<u8>> {
         let (_xs, xp) = generate_x25519_keypair();
         let (kp512, _ks512) = generate_kyber_keypair();
@@ -994,15 +788,6 @@ mod ratchet_live_tests {
             .collect()
     }
 
-    /// Two peers handshake at once: their shards must not share a bucket.
-    ///
-    /// This is the regression for the counter-keyed spool. Every handshake is
-    /// sent with session hash `[0, 0, 0, 0]` and counter `0`, so under the old
-    /// key both offers landed in one `spool[0]` bucket; interleaved arrivals then
-    /// reconstructed a single PDU out of two different messages and **neither**
-    /// peer got a session. Nothing downstream could see that — every shard was
-    /// authentic and the reassembly "succeeded" — so only a test that
-    /// deliberately interleaves two real handshakes catches it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     pub(crate) async fn interleaved_handshakes_from_two_peers_each_get_their_own_session() {
         let alice_id = l0_identity::GhostIdentity::generate_fresh();
@@ -1018,8 +803,6 @@ mod ratchet_live_tests {
             Arc::new(DashMap::new()),
             Arc::new(Fallback::new(None)),
         );
-        // Two sources with no session yet: the address is what separates the two
-        // conversations, because the header bytes are identical.
         let alice_from: SocketAddr = "127.0.0.1:41001".parse().expect("addr");
         let bob_from: SocketAddr = "127.0.0.1:41002".parse().expect("addr");
 
@@ -1027,15 +810,12 @@ mod ratchet_live_tests {
         let bob_frames = negotiated_offer_frames(&bob_id);
         assert_eq!(alice_frames.len(), 3);
         assert_eq!(bob_frames.len(), 3);
-        // Both offers really do look identical in the fields the old key used.
         for (i, frame) in alice_frames.iter().enumerate() {
             assert_eq!(net::parse_packet_counter_u64(frame), 0);
             assert_eq!(net::parse_session_hash(frame), [0, 0, 0, 0]);
             assert_eq!(frame[net::OFFSET_SHARD_INDEX] as usize, i);
         }
 
-        // Interleave shard-by-shard: the arrival order that used to interleave
-        // two messages into one bucket.
         for i in 0..3 {
             rx.ingest(&alice_frames[i], alice_from).await;
             rx.ingest(&bob_frames[i], bob_from).await;
@@ -1071,8 +851,6 @@ mod ratchet_transport_tests {
     use vantablack::ghost::net::{extract_payload, is_v2_frame, parse_gtf_v2_header};
     use vantablack::ghost::session::ratchet::RATCHET_INTERVAL;
 
-    /// A live session pair: real identities, pinned the way the handshake pins
-    /// them, and one shared master key — two seats on one session.
     pub(crate) fn session_pair() -> (
         Session,
         Session,
@@ -1089,7 +867,6 @@ mod ratchet_transport_tests {
         (alice, bob, alice_id, bob_id)
     }
 
-    /// Spend a whole epoch, which is what makes the tick act.
     pub(crate) fn spend_the_epoch(s: &Session) {
         for _ in 0..RATCHET_INTERVAL {
             s.note_sealed_frame();
@@ -1098,8 +875,6 @@ mod ratchet_transport_tests {
         assert_eq!(s.epoch_capacity_left(), 0);
     }
 
-    /// Open a frame the way the receive path does and hand back the payload the
-    /// ratchet handler sees.
     pub(crate) fn open_like_the_receive_path(
         opener: &Session,
         frame: &[u8],
@@ -1125,7 +900,6 @@ mod ratchet_transport_tests {
         assert_eq!(alice.epoch(), 0);
         spend_the_epoch(&alice);
 
-        // ── The maintenance tick's body, line for line ──────────────────────────
         let (x_pub, kem_pub) = alice
             .begin_ratchet_step()
             .expect("a due session starts a step");
@@ -1148,7 +922,6 @@ mod ratchet_transport_tests {
         assert!(is_v2_frame(&frame));
         assert_eq!(frame.len(), GTF_BULK_SIZE);
 
-        // ── The receive path's body ────────────────────────────────────────────
         let payload =
             open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
         let blob = parse_rekey_pdu(&payload).expect("a step PDU");
@@ -1160,8 +933,6 @@ mod ratchet_transport_tests {
             ),
             "the PDU is signed by the identity the session pinned"
         );
-        // The material that arrived is the material the session handed out — both
-        // halves, so the PQ half of the exchange is bound too.
         assert_eq!(blob.x25519_pub, x_pub);
         assert_eq!(blob.kyber_pub.as_slice(), kem_pub.as_slice());
 
@@ -1194,13 +965,10 @@ mod ratchet_transport_tests {
             "the answer is signed by the responder's pinned identity"
         );
 
-        // The reply is sealed on the epoch the peer still holds — bob has only
-        // *prepared* the new one, so a reply on it would be unopenable to alice.
         let reply_ctx = SealCtx::from_session(&bob);
         assert_eq!(reply_ctx.epoch, 0);
         let reply_frame = seal_single(&reply_ctx, &reply);
 
-        // ── Back on the initiating side ────────────────────────────────────────
         let reply_payload =
             open_like_the_receive_path(&alice, &reply_frame, NonceDirection::ResponderToInitiator);
         let rblob = parse_rekey_response_pdu(&reply_payload).expect("a step answer");
@@ -1220,7 +988,6 @@ mod ratchet_transport_tests {
             "a completed step leaves nothing in flight"
         );
 
-        // The responder installs it only when a frame of the new epoch opens.
         assert!(bob.activate_epoch(1));
         assert_eq!(alice.epoch(), bob.epoch());
         assert_eq!(
@@ -1233,9 +1000,6 @@ mod ratchet_transport_tests {
 
     #[test]
     pub(crate) fn a_step_pdu_that_does_not_verify_never_moves_the_epoch() {
-        // The fail-closed half of the handler: the step is authenticated by the
-        // pinned identity key, so a PDU signed by somebody else is refused before
-        // `answer_ratchet_step` is ever reached and the epoch stays put.
         let (alice, bob, _alice_id, _bob_id) = session_pair();
         let impostor = l0_identity::GhostIdentity::generate_fresh();
         spend_the_epoch(&alice);
@@ -1247,7 +1011,6 @@ mod ratchet_transport_tests {
             open_like_the_receive_path(&bob, &frame, NonceDirection::InitiatorToResponder);
         let blob = parse_rekey_pdu(&payload).expect("well-formed on the wire");
 
-        // What `handle_ratchet_pdu` checks before answering.
         let pinned = bob.peer_identity_pk().expect("the handshake pinned alice");
         assert!(
             !l0_identity::verify_peer_signature(
@@ -1280,14 +1043,7 @@ mod l10_quantum_mix_transport_tests {
     use vantablack::ghost::net::{extract_payload, is_v2_frame, parse_gtf_v2_header};
     use vantablack::ghost::session::ratchet::OpenPlan;
 
-    /// The 32 bytes the quantum channel produced. Both seats hold the *same* key
-    /// and neither sends it: that is the whole point of the exchange, and it is
-    /// why every test below can hand both sides one value.
     const QUANTUM_KEY: [u8; 32] = [0x11; 32];
-    /// The label the starter's backend gave its key, as the answering side
-    /// receives it (in the PDU) rather than as the starter computed it. A label
-    /// is opaque to the session layer — this one is the simulated backend's
-    /// format, and an appliance would put a key ID here instead.
     const KEY_LABEL: &str = "qkd-sim/1/f=3fedc00000000000/s=00000000000051ee";
 
     pub(crate) struct Pair {
@@ -1297,12 +1053,6 @@ mod l10_quantum_mix_transport_tests {
         pub(crate) answerer_id: l0_identity::GhostIdentity,
     }
 
-    /// Two seats on one session with real pinned identities.
-    ///
-    /// `starter_role` is the *sealing* role of whichever peer begins the mix. The
-    /// initiator rule is the fingerprint order, not the role, so the starter can
-    /// legitimately be either side — and both orderings must work, because the
-    /// epoch's two directional chains are derived from the role.
     pub(crate) fn pair_with_starter_role(starter_role: SessionRole) -> Pair {
         let a_id = l0_identity::GhostIdentity::generate_fresh();
         let b_id = l0_identity::GhostIdentity::generate_fresh();
@@ -1327,8 +1077,6 @@ mod l10_quantum_mix_transport_tests {
         }
     }
 
-    /// Open a frame the way the receive path does and hand back the payload the
-    /// mix handler sees.
     pub(crate) fn open_like_the_receive_path(
         opener: &Session,
         frame: &[u8],
@@ -1360,12 +1108,9 @@ mod l10_quantum_mix_transport_tests {
         frame_payload(opened).expect("a framed payload").to_vec()
     }
 
-    /// The half of the exchange both orderings share: the starter's PDU, the
-    /// answerer's reply, and the epoch both sides land on.
     pub(crate) fn run_mix(pair: &Pair) {
         let starter_dir = pair.starter.seal_direction();
 
-        // ── The maintenance tick's body, where the anchor is used ──────────────
         let pending = pair
             .starter
             .begin_quantum_mix(&QUANTUM_KEY, KEY_LABEL)
@@ -1388,16 +1133,12 @@ mod l10_quantum_mix_transport_tests {
             vantablack::ghost::session::QEL_MIX_BLOB_LEN,
             "the mix PDU is a privacy-frame payload"
         );
-        // The mix itself travels on the *live* epoch: the new epoch's key is
-        // exactly what the exchange is negotiating, so neither side could open a
-        // frame sealed with it yet.
         let ctx = SealCtx::from_session(&pair.starter);
         assert_eq!(ctx.epoch, 0);
         assert_eq!(ctx.direction, starter_dir);
         let frame = seal_single(&ctx, &pdu);
         assert!(is_v2_frame(&frame));
 
-        // ── The receive path's body, answering side ───────────────────────────
         let payload = open_like_the_receive_path(&pair.answerer, &frame, starter_dir);
         let blob = parse_qel_mix_pdu(&payload).expect("a mix PDU");
         assert_eq!(blob.epoch, 1);
@@ -1447,7 +1188,6 @@ mod l10_quantum_mix_transport_tests {
         let answerer_dir = pair.answerer.seal_direction();
         let reply_frame = seal_single(&SealCtx::from_session(&pair.answerer), &reply);
 
-        // ── Back on the starting side ─────────────────────────────────────────
         let reply_payload = open_like_the_receive_path(&pair.starter, &reply_frame, answerer_dir);
         let rblob = parse_qel_mix_response_pdu(&reply_payload).expect("a mix answer");
         assert_eq!(
@@ -1463,7 +1203,6 @@ mod l10_quantum_mix_transport_tests {
         );
         assert!(!pair.starter.quantum_mix_due(Duration::ZERO));
 
-        // The answering side installs it when a frame of the new epoch opens.
         assert!(pair.answerer.activate_epoch(1));
         assert!(pair.answerer.quantum_mixed());
         assert_eq!(pair.starter.epoch(), pair.answerer.epoch());
@@ -1483,20 +1222,11 @@ mod l10_quantum_mix_transport_tests {
 
     #[test]
     pub(crate) fn the_responder_can_be_the_one_that_starts_the_mix() {
-        // The initiator rule is the fingerprint order, so either role can drive.
-        // This is the case a role-based implementation would get wrong: the
-        // starter seals in *its* direction either way, and the answering side has
-        // to work out that direction from its own role, not from who spoke first.
         run_mix(&pair_with_starter_role(SessionRole::Responder));
     }
 
     #[test]
     pub(crate) fn divergent_quantum_keys_refuse_the_mix_and_move_nothing() {
-        // The failure the confirmation tag exists for: a route that resolves on
-        // one node and not the other, two quantumnet versions, a link that
-        // dropped below the cutoff between the two derivations. A side that
-        // advanced the epoch anyway would move alone and never open another
-        // frame, so this must refuse *before* preparing.
         let pair = pair_with_starter_role(SessionRole::Initiator);
         let pending = pair
             .starter
@@ -1516,9 +1246,6 @@ mod l10_quantum_mix_transport_tests {
         ))
         .expect("a mix PDU");
 
-        // The label is the *same* one — a correct derivation of the wrong key, as
-        // an appliance handing over a key that is not the one the ID names would
-        // be, or a peer whose route resolved differently.
         let other_key = [0x22u8; 32];
         assert!(
             pair.answerer
@@ -1532,16 +1259,12 @@ mod l10_quantum_mix_transport_tests {
             None,
             "and nothing was prepared — the refusal happens before the epoch slot is taken"
         );
-        // The starter is still waiting, and its own epoch is untouched.
         assert!(pair.starter.quantum_mix_in_progress());
         assert_eq!(pair.starter.epoch(), 0);
     }
 
     #[test]
     pub(crate) fn a_mix_pdu_signed_by_a_stranger_never_reaches_the_derivation() {
-        // The fail-closed half of the handler, as for the DH step: the mix is
-        // authenticated by the pinned identity key, so a PDU signed by anyone
-        // else is refused before `answer_quantum_mix` is reached.
         let pair = pair_with_starter_role(SessionRole::Initiator);
         let impostor = l0_identity::GhostIdentity::generate_fresh();
         let pending = pair

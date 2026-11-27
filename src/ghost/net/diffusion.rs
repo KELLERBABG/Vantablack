@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Whether experimental emergency broadcast routing is enabled (via settings or `GHOST_DIFFUSION=1`).
 pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
         || std::env::var("GHOST_DIFFUSION")
@@ -24,7 +23,6 @@ pub fn is_enabled() -> bool {
             .unwrap_or(false)
 }
 
-/// Enable or disable experimental emergency broadcast routing.
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
@@ -35,7 +33,6 @@ pub const DIFFUSION_MAGIC: &[u8; 4] = b"DIFF";
 pub const DEFAULT_MAX_DIFFUSION_HOPS: u8 = 4;
 pub const DEFAULT_DIFFUSION_FANOUT: usize = 3;
 
-/// Diffusion packet header and envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffusionPacket {
     pub diffusion_id: [u8; 16],
@@ -54,7 +51,6 @@ impl DiffusionPacket {
         }
     }
 
-    /// Serializes the diffusion envelope.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(4 + 16 + 1 + 1 + 2 + self.payload.len());
         out.extend_from_slice(DIFFUSION_MAGIC);
@@ -66,7 +62,6 @@ impl DiffusionPacket {
         out
     }
 
-    /// Deserializes a diffusion envelope.
     pub fn from_bytes(slice: &[u8]) -> Option<Self> {
         if slice.len() < 24 || &slice[0..4] != DIFFUSION_MAGIC {
             return None;
@@ -89,26 +84,19 @@ impl DiffusionPacket {
     }
 }
 
-/// Diffusion decision returned when processing an inbound packet.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DiffusionAction {
-    /// Ingested locally and forward copies to these peer endpoints.
     ForwardTo(Vec<SocketAddr>),
-    /// Dropped because it was already seen (loop prevention).
     DropAlreadySeen,
-    /// Dropped because hop count exceeded maximum bound.
     DropHopsExceeded,
-    /// Diffusion routing is disabled.
     Disabled,
 }
 
-/// Epidemic Gossip Diffusion Router.
 #[derive(Debug, Clone)]
 pub struct DiffusionRouter {
     pub enabled: bool,
     pub max_hops: u8,
     pub fanout: usize,
-    /// Duplicate suppression cache: diffusion_id -> timestamp when seen
     seen_cache: Arc<DashMap<[u8; 16], Instant>>,
 }
 
@@ -136,8 +124,6 @@ impl DiffusionRouter {
         }
     }
 
-    /// Process an inbound diffusion packet.
-    /// If valid and unseen, returns `DiffusionAction::ForwardTo(target_peers)`.
     pub fn process_inbound(
         &self,
         packet: &mut DiffusionPacket,
@@ -152,7 +138,6 @@ impl DiffusionRouter {
             return DiffusionAction::DropHopsExceeded;
         }
 
-        // Duplicate suppression
         if self.seen_cache.contains_key(&packet.diffusion_id) {
             return DiffusionAction::DropAlreadySeen;
         }
@@ -160,7 +145,6 @@ impl DiffusionRouter {
         self.seen_cache.insert(packet.diffusion_id, Instant::now());
         packet.hop_count += 1;
 
-        // Select up to `fanout` candidate peers, excluding the sender
         let mut candidates = Vec::new();
         for &neighbor in available_neighbors {
             if Some(neighbor) != from_peer {
@@ -174,7 +158,6 @@ impl DiffusionRouter {
         DiffusionAction::ForwardTo(candidates)
     }
 
-    /// Prune stale seen cache entries older than `ttl`.
     pub fn prune_seen_cache(&self, ttl: Duration) {
         let now = Instant::now();
         self.seen_cache
@@ -210,7 +193,6 @@ mod tests {
         let peer3: SocketAddr = "10.0.0.3:2270".parse().unwrap();
         let neighbors = vec![peer1, peer2, peer3];
 
-        // Step 1: Inbound from peer1 -> forwards to up to 2 other neighbors (peer2, peer3)
         let action1 = router.process_inbound(&mut pkt, Some(peer1), &neighbors);
         match action1 {
             DiffusionAction::ForwardTo(targets) => {
@@ -221,11 +203,9 @@ mod tests {
         }
         assert_eq!(pkt.hop_count, 1);
 
-        // Step 2: Duplicate packet arriving via another path is immediately dropped
         let action_dup = router.process_inbound(&mut pkt, Some(peer2), &neighbors);
         assert_eq!(action_dup, DiffusionAction::DropAlreadySeen);
 
-        // Step 3: Test hop count exceeding bound
         let mut expired_pkt = DiffusionPacket::new([0x55u8; 16], 3, b"data".to_vec());
         expired_pkt.hop_count = 3; // at max_hops
         let action_exp = router.process_inbound(&mut expired_pkt, None, &neighbors);

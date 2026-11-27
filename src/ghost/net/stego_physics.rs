@@ -17,33 +17,25 @@
 
 pub const PHYSICAL_STEGO_MAGIC: &[u8; 4] = b"PHYS";
 
-/// Physical medium options for covert shard carriage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhysicalStegoCarrier {
-    /// Inaudible / ultrasonic acoustic frequency-shift keying (18 kHz - 22 kHz tones)
     AcousticFsk,
-    /// Thermal CPU load-stepping duty cycle modulation
     ThermalModulation,
-    /// Optical status LED high-frequency pulse modulation
     OpticalBlink,
 }
 
-/// A physical modulation frame encoding a shard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalShardFrame {
     pub carrier: PhysicalStegoCarrier,
-    /// Modulated frequency or pulse interval symbols
     pub symbols: Vec<u16>,
 }
 
 pub struct PhysicalStegoCodec;
 
 impl PhysicalStegoCodec {
-    /// Modulate shard bytes into physical carrier symbols.
     pub fn modulate(shard_bytes: &[u8], carrier: PhysicalStegoCarrier) -> PhysicalShardFrame {
         let mut symbols = Vec::with_capacity(shard_bytes.len() * 2);
 
-        // Map nibbles (4 bits -> 16 symbol levels) based on carrier frequency baseline
         let base_symbol: u16 = match carrier {
             PhysicalStegoCarrier::AcousticFsk => 18_000, // 18 kHz baseline
             PhysicalStegoCarrier::ThermalModulation => 100, // 100 ms duty baseline
@@ -60,7 +52,6 @@ impl PhysicalStegoCodec {
         PhysicalShardFrame { carrier, symbols }
     }
 
-    /// Demodulate physical carrier symbols back into shard bytes.
     pub fn demodulate(frame: &PhysicalShardFrame) -> Result<Vec<u8>, &'static str> {
         if !frame.symbols.len().is_multiple_of(2) {
             return Err("invalid symbol length: must contain pairs of nibble symbols");

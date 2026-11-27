@@ -16,7 +16,6 @@ pub mod lagrange;
 use crate::ghost::layers::l4_rs;
 use sha2::{Digest, Sha256};
 
-/// A compute shard payload sent to a worker for execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComputeShardTask {
     pub job_id: u64,
@@ -25,7 +24,6 @@ pub struct ComputeShardTask {
     pub input_vector: Vec<u8>,
 }
 
-/// The result emitted by a compute worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComputeShardOutput {
     pub job_id: u64,
@@ -54,19 +52,15 @@ impl ComputeShardOutput {
     }
 }
 
-/// Sharded Compute Engine coordinating distributed execution, ASN isolation, and verification.
 pub struct ShardedComputeEngine;
 
 impl ShardedComputeEngine {
-    /// Verify that a proposed set of 3 compute workers satisfies
-    /// the non-overlapping ASN constraint (strict geographic/topological isolation).
     pub fn verify_asn_diversity(worker_asns: &[u32; 3]) -> bool {
         worker_asns[0] != worker_asns[1]
             && worker_asns[1] != worker_asns[2]
             && worker_asns[0] != worker_asns[2]
     }
 
-    /// Shard an inference activation/weight block into 3 Reed-Solomon shards.
     pub fn shard_compute_input(
         job_id: u64,
         input: &[u8],
@@ -91,7 +85,6 @@ impl ShardedComputeEngine {
             .collect()
     }
 
-    /// Reconstruct the combined inference result from any 2 of 3 worker outputs.
     pub fn reconstruct_compute_output(
         outputs: &[ComputeShardOutput],
     ) -> Result<Vec<u8>, &'static str> {
@@ -125,9 +118,6 @@ impl ShardedComputeEngine {
         Ok(combined[2..2 + original_len].to_vec())
     }
 
-    /// Verifiable Compute via Redundancy.
-    /// Compares commitments across two redundant workers executing the same shard task.
-    /// Returns Ok(()) if commitments match, or Err with the suspected worker if Byzantine divergence occurs.
     pub fn verify_redundant_outputs(
         primary: &ComputeShardOutput,
         redundant: &ComputeShardOutput,
@@ -153,17 +143,14 @@ mod tests {
         let job_id = 99881;
         let worker_asns = [13335, 15169, 16509]; // Cloudflare, Google, AWS
 
-        // Verify ASN diversity constraint
         assert!(ShardedComputeEngine::verify_asn_diversity(&worker_asns));
         assert!(!ShardedComputeEngine::verify_asn_diversity(&[
             13335, 13335, 16509
         ]));
 
-        // Shard input across 3 workers
         let tasks = ShardedComputeEngine::shard_compute_input(job_id, input_tensor, &worker_asns);
         assert_eq!(tasks.len(), 3);
 
-        // Simulate workers computing partial output
         let out0 = ComputeShardOutput::new(
             job_id,
             0,
@@ -183,19 +170,16 @@ mod tests {
             tasks[2].input_vector.clone(),
         );
 
-        // Reconstruct with any 2 of 3 (surviving worker_gamma crash)
         let recovered =
             ShardedComputeEngine::reconstruct_compute_output(&[out0.clone(), out1.clone()])
                 .expect("Reconstruction succeeds from 2 of 3");
         assert_eq!(recovered, input_tensor);
 
-        // Reconstruct from out1 and out2 (surviving worker_alpha crash)
         let recovered2 =
             ShardedComputeEngine::reconstruct_compute_output(&[out1.clone(), out2.clone()])
                 .expect("Reconstruction succeeds from 1 and 2");
         assert_eq!(recovered2, input_tensor);
 
-        // Single worker output fails
         assert!(
             ShardedComputeEngine::reconstruct_compute_output(std::slice::from_ref(&out0)).is_err()
         );
@@ -210,18 +194,15 @@ mod tests {
         let honest_redundant =
             ComputeShardOutput::new(job_id, 0, "worker_honest_2".into(), original_data.clone());
 
-        // Honest workers match
         assert!(
             ShardedComputeEngine::verify_redundant_outputs(&honest_primary, &honest_redundant)
                 .is_ok()
         );
 
-        // Byzantine worker tampered with data
         let byzantine_data = vec![1, 2, 3, 4, 99];
         let byzantine_redundant =
             ComputeShardOutput::new(job_id, 0, "worker_byzantine".into(), byzantine_data);
 
-        // Mismatch is caught and localized
         let check =
             ShardedComputeEngine::verify_redundant_outputs(&honest_primary, &byzantine_redundant);
         assert!(check.is_err());

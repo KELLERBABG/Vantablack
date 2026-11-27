@@ -15,12 +15,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Whether experimental serverless peer discovery is enabled.
 pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Enable or disable experimental serverless peer discovery.
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
@@ -29,10 +27,8 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// 256-bit Node Identifier in the Kademlia DHT space.
 pub type NodeId = [u8; 32];
 
-/// Compute Kademlia XOR metric distance between two 256-bit node IDs.
 pub fn xor_distance(a: &NodeId, b: &NodeId) -> NodeId {
     let mut dist = [0u8; 32];
     for i in 0..32 {
@@ -41,7 +37,6 @@ pub fn xor_distance(a: &NodeId, b: &NodeId) -> NodeId {
     dist
 }
 
-/// Compute leading zero bits in a distance metric to determine k-bucket index (0..=255).
 pub fn leading_zeros(dist: &NodeId) -> usize {
     let mut zeros = 0;
     for &byte in dist {
@@ -55,7 +50,6 @@ pub fn leading_zeros(dist: &NodeId) -> usize {
     zeros.min(255)
 }
 
-/// Contact record for a node in the decentralized DHT.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerContact {
     pub node_id: NodeId,
@@ -79,13 +73,10 @@ impl PeerContact {
     }
 }
 
-/// Maximum number of contacts stored per k-bucket (standard Kademlia k=20).
 pub const K_BUCKET_SIZE: usize = 20;
 
-/// Number of k-buckets in 256-bit DHT space.
 pub const NUM_BUCKETS: usize = 256;
 
-/// Kademlia DHT Routing Table partitioned into 256 k-buckets.
 #[derive(Debug, Clone)]
 pub struct DhtRoutingTable {
     pub local_id: NodeId,
@@ -101,13 +92,11 @@ impl DhtRoutingTable {
         }
     }
 
-    /// Calculate which k-bucket a given peer belongs to.
     pub fn bucket_index_for(&self, target: &NodeId) -> usize {
         let dist = xor_distance(&self.local_id, target);
         leading_zeros(&dist)
     }
 
-    /// Insert or update a contact in the routing table.
     pub fn insert(&self, contact: PeerContact) -> bool {
         if contact.node_id == self.local_id {
             return false;
@@ -115,19 +104,14 @@ impl DhtRoutingTable {
         let idx = self.bucket_index_for(&contact.node_id);
         let bucket = &self.buckets[idx];
 
-        // Both arms inserted and returned `true`, so the `contains_key` test
-        // was redundant: a known node is refreshed, a new node is admitted while
-        // there is room.
         if bucket.contains_key(&contact.node_id) || bucket.len() < K_BUCKET_SIZE {
             bucket.insert(contact.node_id, contact);
             true
         } else {
-            // Bucket full - could implement eviction check
             false
         }
     }
 
-    /// Find the closest N contacts to a given target node ID in XOR space.
     pub fn find_closest(&self, target: &NodeId, count: usize) -> Vec<PeerContact> {
         let mut candidates: Vec<(NodeId, PeerContact)> = Vec::new();
 
@@ -142,20 +126,14 @@ impl DhtRoutingTable {
         candidates.into_iter().take(count).map(|(_, c)| c).collect()
     }
 
-    /// Total number of active contacts across all buckets.
     pub fn total_contacts(&self) -> usize {
         self.buckets.iter().map(|b| b.len()).sum()
     }
 }
 
-// ── Dead-Drop Rendezvous Point Derivation ─────────────────────────────
-
-/// Represents a deterministic rendezvous slot for finding peers without DNS.
 pub struct RendezvousPoint;
 
 impl RendezvousPoint {
-    /// Derive a shared 32-byte slot commitment for the global public mesh swarm.
-    /// Rotates once every epoch duration (e.g. 3600 seconds = 1 hour).
     pub fn global_swarm_slot(epoch_secs: u64, epoch_duration: u64) -> [u8; 32] {
         let epoch = epoch_secs / epoch_duration.max(1);
         let mut hasher = Sha256::new();
@@ -164,7 +142,6 @@ impl RendezvousPoint {
         hasher.finalize().into()
     }
 
-    /// Derive a pairwise rendezvous slot known only to two mutual peers.
     pub fn pairwise_peer_slot(peer_a_pk: &[u8], peer_b_pk: &[u8], day_epoch: u64) -> [u8; 32] {
         let mut sorted = [peer_a_pk, peer_b_pk];
         sorted.sort();
@@ -177,21 +154,16 @@ impl RendezvousPoint {
     }
 }
 
-// ── Signed Presence Beacon ──────────────────────────────────────────
-
-/// Signed presence announcement published to censorship-resistant dead-drops or Nostr relays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresenceBeacon {
     pub fingerprint: String,
     pub endpoints: Vec<SocketAddr>,
     pub timestamp: u64,
     pub nonce: u64,
-    /// Hex-encoded Ed25519 signature over serialized body.
     pub signature_hex: String,
 }
 
 impl PresenceBeacon {
-    /// Canonical bytes used for signing or verifying the beacon.
     pub fn signing_bytes(
         fingerprint: &str,
         endpoints: &[SocketAddr],
@@ -209,7 +181,6 @@ impl PresenceBeacon {
         out
     }
 
-    /// Create a signed presence beacon using an Ed25519 signing closure or key.
     pub fn create<F>(fingerprint: String, endpoints: Vec<SocketAddr>, nonce: u64, signer: F) -> Self
     where
         F: FnOnce(&[u8]) -> [u8; 64],
@@ -229,7 +200,6 @@ impl PresenceBeacon {
         }
     }
 
-    /// Verify beacon signature against the declared public key.
     pub fn verify<V>(&self, verifier: V) -> bool
     where
         V: FnOnce(&[u8], &[u8; 64]) -> bool,
@@ -252,27 +222,18 @@ impl PresenceBeacon {
     }
 }
 
-// ── Nostr Protocol Bridge (NIP-01 Ephemeral Event Format) ─────────────
-
-/// Represents a standardized Nostr NIP-01 event used for censorship-resistant peer discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostrRendezvousEvent {
     pub id: String,
     pub pubkey: String,
     pub created_at: u64,
-    /// Kind 20000 = Ephemeral event (relays do not persist to disk, avoiding long-term footprints).
     pub kind: u16,
     pub tags: Vec<Vec<String>>,
-    /// Serialized JSON payload of the PresenceBeacon.
     pub content: String,
     pub sig: String,
 }
 
 impl NostrRendezvousEvent {
-    /// Format a presence beacon into a Nostr ephemeral rendezvous event.
-    ///
-    /// Strips plaintext `["fp", ...]` and `"vantablack_mesh"` identifying tags,
-    /// using an ephemeral per-epoch `["d", slot_hex]` tag instead.
     pub fn from_beacon(
         beacon: &PresenceBeacon,
         nostr_pubkey: String,
@@ -295,7 +256,6 @@ impl NostrRendezvousEvent {
         })
     }
 
-    /// Wrap an opaque share payload into an ephemeral Nostr event indexed by `["d", slot_hex]`.
     pub fn from_opaque_share(
         slot_hex: &str,
         share_bytes: &[u8],
@@ -321,7 +281,6 @@ impl NostrRendezvousEvent {
         }
     }
 
-    /// Return the ephemeral per-epoch `slot_hex` from the `["d", slot_hex]` tag, if present.
     pub fn slot_hex(&self) -> Option<&str> {
         self.tags
             .iter()
@@ -329,12 +288,10 @@ impl NostrRendezvousEvent {
             .map(|t| t[1].as_str())
     }
 
-    /// Decode an opaque share payload from `self.content`.
     pub fn extract_opaque_share(&self) -> Option<Vec<u8>> {
         hex::decode(&self.content).ok()
     }
 
-    /// Extract and decode the PresenceBeacon from a received Nostr rendezvous event.
     pub fn parse_beacon(&self) -> Result<PresenceBeacon, serde_json::Error> {
         serde_json::from_str(&self.content)
     }
@@ -362,7 +319,6 @@ mod tests {
         assert!(table.insert(c2.clone()));
         assert_eq!(table.total_contacts(), 2);
 
-        // Target close to peer 1
         let closest = table.find_closest(&peer1_id, 1);
         assert_eq!(closest.len(), 1);
         assert_eq!(closest[0].fingerprint, "peer1_fp");

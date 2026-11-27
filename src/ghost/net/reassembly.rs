@@ -48,7 +48,6 @@ impl ReassemblySlot {
     }
 }
 
-/// Ring buffer for reassembling incoming RS(2,1) shards at the egress/destination node.
 #[derive(Debug)]
 pub struct ReassemblyBuffer {
     slots: [ReassemblySlot; RING_SLOTS],
@@ -62,7 +61,6 @@ impl Default for ReassemblyBuffer {
 }
 
 impl ReassemblyBuffer {
-    /// Create a new 64-slot reassembly buffer.
     pub fn new() -> Self {
         Self {
             slots: [const { ReassemblySlot::empty() }; RING_SLOTS],
@@ -70,11 +68,6 @@ impl ReassemblyBuffer {
         }
     }
 
-    /// Process an incoming shard.
-    ///
-    /// Returns `Some(payload)` if this shard completes the coding group (either through
-    /// direct data shard receipt or through RS erasure recovery). Returns `None` if
-    /// more shards are needed or if the shard is a duplicate / late arrival.
     pub fn ingest_shard(&mut self, shard: &CoalescedShard) -> Option<Vec<u8>> {
         if shard.shard_idx > 2 {
             return None;
@@ -85,21 +78,16 @@ impl ReassemblyBuffer {
 
         if slot.group_id == shard.group_id {
             if slot.completed {
-                // Already reconstructed; drop duplicate/late shard
                 return None;
             }
         } else if slot.group_id != 0 {
-            // Different group occupied this slot
             if shard.group_id < slot.group_id
                 && (slot.group_id - shard.group_id) < (RING_SLOTS as u64)
             {
-                // Outdated shard from earlier ring cycle
                 return None;
             }
-            // Newer group; reuse slot
             slot.reset(shard.group_id, shard.payload_len);
         } else {
-            // First time use of slot
             slot.reset(shard.group_id, shard.payload_len);
         }
 
@@ -120,7 +108,6 @@ impl ReassemblyBuffer {
 
         let total_len = slot.payload_len as usize;
 
-        // Fast-path: Both D0 and D1 are present (no Galois math needed)
         if (slot.received_mask & 0b0000_0011) == 0b0000_0011 {
             let d0 = slot.shards.first()?.as_ref()?;
             let d1 = slot.shards.get(1)?.as_ref()?;
@@ -138,7 +125,6 @@ impl ReassemblyBuffer {
             return Some(out);
         }
 
-        // Erasure recovery path: One data shard + Parity (D0+P0 or D1+P0)
         let mut rs_input = vec![
             slot.shards[0].as_ref().map(|s| s.to_vec()),
             slot.shards[1].as_ref().map(|s| s.to_vec()),
@@ -181,14 +167,11 @@ mod tests {
 
         let [d0, d1, p0] = &groups[0];
 
-        // Receive D0 first
         assert!(rx.ingest_shard(d0).is_none());
 
-        // Receive D1 -> triggers fast-path reconstruction
         let reconstructed = rx.ingest_shard(d1).expect("fast-path failed");
         assert_eq!(&reconstructed, original);
 
-        // Receive late P0 -> dropped cleanly
         assert!(rx.ingest_shard(p0).is_none());
     }
 
@@ -201,10 +184,8 @@ mod tests {
         let groups = queue.push(&original, true);
         let [d0, _d1_dropped, p0] = &groups[0];
 
-        // Receive D0 first
         assert!(rx.ingest_shard(d0).is_none());
 
-        // Receive P0 -> triggers RS erasure recovery for missing D1
         let reconstructed = rx.ingest_shard(p0).expect("erasure recovery failed");
         assert_eq!(reconstructed, original);
     }

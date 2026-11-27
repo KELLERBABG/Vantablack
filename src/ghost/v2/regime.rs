@@ -25,19 +25,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// The environment variable that pins a regime for one process.
 pub const REGIME_ENV: &str = "GHOST_V2_REGIME";
 
-/// The persisted regime file inside [`crate::ghost::paths::data_dir`].
 pub const REGIME_FILE: &str = "ghost-regime.json";
 
-/// Rényi-2 collision-entropy effective population of a relay set grouped by
-/// administrative or routing domain (ASN, subnet cluster, operator).
-///
-/// `N_eff = (Σ wᵢ²)⁻¹` with `wᵢ = nᵢ / N`. A single VPS hosting two hundred
-/// addresses is one domain, so `N_eff = 1`, not 200: counting addresses is how a
-/// Sybil set buys an anonymity claim it does not have. Independent operators
-/// give `N_eff = N`.
 pub fn effective_population(groups: &[usize]) -> f64 {
     let total: usize = groups.iter().copied().sum();
     if total == 0 {
@@ -57,21 +48,12 @@ pub fn effective_population(groups: &[usize]) -> f64 {
     }
 }
 
-/// Number of active public relays below which no anonymity claim is honest.
-///
-/// Forty is the smallest population in which a three-hop circuit has any chance
-/// of hiding a user among other users; two hundred is where that stops being
-/// luck. The roadmap names 200 and this build refuses to claim anonymity below
-/// it, including in its own dashboard.
 pub const MIN_ANONYMITY_RELAYS: usize = 200;
 
-/// Which threat plane a regime runs in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Plane {
-    /// The sovereign private mesh: devices you own, no public exits, full MTU.
     Phantom,
-    /// The public anonymity overlay: public relays, strict circuits.
     Umbra,
 }
 
@@ -84,7 +66,6 @@ impl Plane {
     }
 }
 
-/// Hop count class, mapped onto the SOCKS5 listener policy by the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HopClass {
@@ -111,7 +92,6 @@ impl HopClass {
     }
 }
 
-/// The four regimes, in increasing order of cost and decreasing order of speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Regime {
@@ -163,10 +143,6 @@ impl Regime {
         }
     }
 
-    /// The SOCKS5 listener this regime uses, as an offset from the node's base
-    /// port. `fast` is `+1` and both strict regimes share `+3`: the port is
-    /// already policy, so keeping the mapping stable means an app configured
-    /// once keeps working when the operator changes regime.
     pub fn socks_offset(self) -> u16 {
         match self {
             Regime::Fast => 1,
@@ -179,30 +155,22 @@ impl Regime {
         matches!(self, Regime::Ghost | Regime::Vantablack)
     }
 
-    /// Whether this regime pays for timing/burst shaping. Strictly the two
-    /// anonymity planes: `fast` and `shielded` promise latency, not an
-    /// unlinkability property that shaping would support, so they must not be
-    /// slowed down for it.
     pub fn timing_hardened(self) -> bool {
         matches!(self, Regime::Ghost | Regime::Vantablack)
     }
 
-    /// Shaped-RACS applies only where the regime promises cover.
     pub fn shaping_required(self) -> bool {
         self.timing_hardened()
     }
 
-    /// Horizon-Chronos pacing applies only where the regime claims unlinkability.
     pub fn chronos_required(self) -> bool {
         self.timing_hardened()
     }
 
-    /// Whether a circuit must be built across distinct administrative domains.
     pub fn requires_asn_diversity(self) -> bool {
         matches!(self, Regime::Vantablack)
     }
 
-    /// Whether the regime may advertise "anonymous" when the population allows it.
     pub fn anonymity_claim_allowed(self) -> bool {
         matches!(self, Regime::Vantablack)
     }
@@ -227,7 +195,6 @@ impl std::fmt::Display for Regime {
     }
 }
 
-/// Everything mechanical that follows from a regime and the live swarm size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegimePolicy {
     pub regime: Regime,
@@ -236,10 +203,7 @@ pub struct RegimePolicy {
     pub socks_port: u16,
     pub cover_traffic: bool,
     pub asn_diversity: bool,
-    /// `Some(reason)` when the regime cannot be honoured right now. The daemon
-    /// treats this as fail-closed: it will not quietly run a weaker circuit.
     pub refuse_reason: Option<String>,
-    /// The most the node may claim in its UI, given the live population.
     pub claim: String,
 }
 
@@ -249,14 +213,10 @@ impl RegimePolicy {
     }
 }
 
-/// Derive the effective policy for `regime` with `relays` public relays live and
-/// `base_socks_port` as this node's first listener.
 pub fn effective_policy(regime: Regime, relays: usize, base_socks_port: u16) -> RegimePolicy {
     let hops = regime.hops();
     let mut refuse = None;
 
-    // A strict circuit with too few peers cannot be built, and silently
-    // degrading it to two hops is exactly the failure mode v1 refused.
     let needed = match hops {
         HopClass::Direct => 1usize,
         HopClass::TwoHop => 2,
@@ -293,10 +253,6 @@ pub fn effective_policy(regime: Regime, relays: usize, base_socks_port: u16) -> 
     }
 }
 
-/// `Some(regime)` when `GHOST_V2_REGIME` names one this build knows.
-///
-/// A misspelled value is surfaced by the caller rather than silently ignored: a
-/// typo in a privacy setting must not fall back to the weakest regime.
 pub fn from_env() -> Result<Option<Regime>, String> {
     match std::env::var(REGIME_ENV) {
         Ok(raw) if !raw.trim().is_empty() => Regime::parse(&raw)
@@ -310,7 +266,6 @@ pub fn config_path() -> PathBuf {
     crate::ghost::paths::data_dir().join(REGIME_FILE)
 }
 
-/// Read the persisted regime. A corrupt file is reported, never guessed at.
 pub fn load_persisted(path: &Path) -> Result<Option<Regime>, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -342,11 +297,6 @@ pub fn save_persisted(path: &Path, regime: Regime) -> std::io::Result<()> {
     std::fs::write(path, serde_json::to_vec_pretty(&body).unwrap_or_default())
 }
 
-/// The regime this process should run, in precedence order: explicit
-/// environment, then the saved choice, then [`Regime::Ghost`].
-///
-/// `Ghost` is the default because it is the weakest regime that still makes an
-/// unlinkability promise — and it still refuses to claim anonymity.
 pub fn active() -> Result<Regime, String> {
     if let Some(r) = from_env()? {
         return Ok(r);
@@ -393,7 +343,6 @@ mod tests {
         let large = effective_policy(Regime::Vantablack, MIN_ANONYMITY_RELAYS, 1080);
         assert!(large.claim.starts_with("anonymous among"));
 
-        // No other regime may ever use the word for itself.
         for r in [Regime::Fast, Regime::Shielded, Regime::Ghost] {
             assert!(!effective_policy(r, 10_000, 1080)
                 .claim
@@ -403,15 +352,10 @@ mod tests {
 
     #[test]
     fn effective_population_rejects_sybil_inflation() {
-        // 200 addresses on one host are one anonymity bucket.
         assert!((effective_population(&[200]) - 1.0).abs() < 1e-9);
-        // 200 independent operators are 200.
         let independent: Vec<usize> = std::iter::repeat_n(1, 200).collect();
         assert!((effective_population(&independent) - 200.0).abs() < 1e-6);
-        // Four equally weighted domains are an effective population of four,
-        // however many addresses each one holds.
         assert!((effective_population(&[50, 50, 50, 50]) - 4.0).abs() < 1e-9);
-        // Nothing measured is zero, never a flattering default.
         assert_eq!(effective_population(&[]), 0.0);
         assert_eq!(effective_population(&[0, 0]), 0.0);
     }
@@ -451,8 +395,6 @@ mod tests {
 
     #[test]
     fn timing_hardening_is_strictly_the_umbra_planes() {
-        // Fast and Shielded promise latency; they must not inherit the burst or
-        // clock machinery that exists for an unlinkability claim.
         for r in [Regime::Fast, Regime::Shielded] {
             assert!(!r.timing_hardened(), "{r:?}");
             assert!(!r.shaping_required(), "{r:?}");

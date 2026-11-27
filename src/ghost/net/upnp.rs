@@ -39,27 +39,20 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tracing::{debug, info};
 
-/// The SSDP multicast group and port every UPnP device listens on.
 pub const SSDP_MULTICAST: &str = "239.255.255.250:1900";
 
-/// The port a NAT-PMP gateway answers on.
 pub const NAT_PMP_PORT: u16 = 5351;
 
-/// Mapping lifetime requested by default, in seconds.
 pub const DEFAULT_LIFETIME_SECS: u32 = 3600;
 
-/// The search target that returns internet gateway devices.
 const SSDP_ST: &str = "urn:schemas-upnp-org:device:InternetGatewayDevice:1";
 
-/// UPnP service types we can drive, most specific first.
 const WAN_SERVICE_TYPES: [&str; 3] = [
     "urn:schemas-upnp-org:service:WANIPConnection:1",
     "urn:schemas-upnp-org:service:WANPPPConnection:1",
     "urn:schemas-upnp-org:service:WANIPConnection:2",
 ];
 
-/// Errors from a mapping attempt. Every one of them is recoverable — the caller
-/// carries on with ICE.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum UpnpError {
     #[error("no internet gateway answered on this network")]
@@ -76,33 +69,20 @@ pub enum UpnpError {
     Io(String),
 }
 
-/// Where to send a SOAP control call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IgdControl {
-    /// The service type the call is for (the SOAPAction namespace).
     pub service_type: String,
-    /// The absolute control URL, already resolved against the description URL.
     pub control_url: String,
-    /// The `Host:` header value for the call.
     pub host: String,
 }
 
-/// A mapping the gateway granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mapping {
-    /// The public address the gateway reports for us.
     pub external: SocketAddr,
-    /// The port it mapped.
     pub internal_port: u16,
-    /// Lifetime in seconds, as granted (may be shorter than requested).
     pub lifetime_secs: u32,
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// SSDP
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// The `M-SEARCH` datagram that asks for internet gateway devices.
 pub fn ssdp_search() -> String {
     format!(
         "M-SEARCH * HTTP/1.1\r\n\
@@ -114,11 +94,6 @@ pub fn ssdp_search() -> String {
     )
 }
 
-/// Pull the `LOCATION:` header out of an SSDP response.
-///
-/// Returns `None` for anything that is not a response carrying a location — a
-/// notification (`NOTIFY`) from a device we did not ask, or a response with no
-/// location, is not a gateway we can control.
 pub fn parse_ssdp_location(raw: &str) -> Option<String> {
     let mut lines = raw.lines();
     let status = lines.next()?;
@@ -138,15 +113,6 @@ pub fn parse_ssdp_location(raw: &str) -> Option<String> {
     None
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Device description
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// The text between the first `<tag>` and its closing tag, ignoring attributes.
-///
-/// Scans rather than parses, which is why it is this small — and why it is
-/// tested against a longer tag name that starts with the same characters: a
-/// lookup for `<serviceType>` must not be satisfied by `<serviceTypeX>`.
 fn element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{tag}");
     let close = format!("</{tag}>");
@@ -156,10 +122,6 @@ fn element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
         let gt = after_open.find('>')?;
         let attrs = &after_open[..gt];
         let inner = &after_open[gt + 1..];
-        // `<tag>` and `<tag attr=…>` are this element; `<tagOther>` is a
-        // different one that merely shares a prefix, so keep looking. Skipping
-        // the match rather than failing is the point: a document is full of
-        // near-misses, and giving up on the first one would miss the real field.
         let is_ours = attrs.is_empty() || attrs.starts_with([' ', '\t', '\n', '\r']);
         if is_ours && !attrs.ends_with('/') {
             if let Some(end) = inner.find(&close) {
@@ -171,13 +133,6 @@ fn element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     None
 }
 
-/// Resolve a `controlURL` from a device description against its `LOCATION`.
-///
-/// Descriptions in the wild use both relative (`/ctl/IPConn`) and absolute
-/// (`http://192.168.1.1:5000/ctl/IPConn`) forms, so both are handled; anything
-/// else — a different host, a scheme we cannot speak — is refused rather than
-/// guessed at, because a control URL pointing somewhere unexpected is exactly
-/// the kind of thing an attacker on the local link would like to supply.
 pub fn resolve_control_url(location: &str, control_url: &str) -> Option<(String, String)> {
     let location = location.trim();
     let origin_end = location
@@ -191,7 +146,6 @@ pub fn resolve_control_url(location: &str, control_url: &str) -> Option<(String,
     }
     let control_url = control_url.trim();
     let resolved = if control_url.starts_with("http://") || control_url.starts_with("https://") {
-        // Absolute: it must still point at the same origin we discovered.
         let c_origin_end = control_url
             .strip_prefix("http://")
             .map(|_| 7)
@@ -205,7 +159,6 @@ pub fn resolve_control_url(location: &str, control_url: &str) -> Option<(String,
     } else if let Some(path) = control_url.strip_prefix('/') {
         format!("http://{host}/{path}")
     } else {
-        // Relative to the description's directory.
         let dir = match location.rfind('/') {
             Some(i) if i > origin_end => &location[..i + 1],
             _ => return None,
@@ -215,12 +168,6 @@ pub fn resolve_control_url(location: &str, control_url: &str) -> Option<(String,
     Some((resolved, host.to_string()))
 }
 
-/// Find the WAN connection control endpoint in a device description.
-///
-/// Only services whose `serviceType` is a WAN connection type are considered —
-/// the description of an internet gateway device also contains LAN host
-/// configuration and layer-3 forwarding services, and mapping a port on one of
-/// those is not something that can work.
 pub fn find_wan_control(description: &str, location: &str) -> Option<IgdControl> {
     for service in description.split("<service>").skip(1) {
         let Some(service) = service.split("</service>").next() else {
@@ -247,11 +194,6 @@ pub fn find_wan_control(description: &str, location: &str) -> Option<IgdControl>
     None
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// SOAP
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// The `<soap:Body>` a WAN connection service expects, wrapped in an envelope.
 pub fn soap_envelope(service_type: &str, action: &str, args: &str) -> String {
     let ns = service_type
         .rsplit_once(':')
@@ -270,10 +212,6 @@ pub fn soap_envelope(service_type: &str, action: &str, args: &str) -> String {
     )
 }
 
-/// A complete HTTP/1.1 `POST` for a SOAP call.
-///
-/// `Connection: close` is deliberate: the reply is read to EOF, which makes this
-/// work whether or not the gateway bothers to send a `Content-Length`.
 pub fn soap_http_request(control: &IgdControl, action: &str, body: &str) -> String {
     let path = control
         .control_url
@@ -296,7 +234,6 @@ pub fn soap_http_request(control: &IgdControl, action: &str, body: &str) -> Stri
     )
 }
 
-/// The arguments for `AddPortMapping` for one internal port.
 pub fn add_port_mapping_args(
     external_port: u16,
     internal_ip: Ipv4Addr,
@@ -316,7 +253,6 @@ pub fn add_port_mapping_args(
     )
 }
 
-/// The arguments for `DeletePortMapping`.
 pub fn delete_port_mapping_args(external_port: u16) -> String {
     format!(
         "<NewRemoteHost></NewRemoteHost>\
@@ -325,7 +261,6 @@ pub fn delete_port_mapping_args(external_port: u16) -> String {
     )
 }
 
-/// Read the body out of an HTTP response.
 pub fn http_body(response: &str) -> &str {
     match response.find("\r\n\r\n") {
         Some(i) => &response[i + 4..],
@@ -333,12 +268,10 @@ pub fn http_body(response: &str) -> &str {
     }
 }
 
-/// Extract `NewExternalIPAddress` from a `GetExternalIPAddress` reply.
 pub fn parse_external_ip(body: &str) -> Option<Ipv4Addr> {
     element(body, "NewExternalIPAddress")?.parse().ok()
 }
 
-/// Extract the SOAP fault, if the reply carries one.
 pub fn parse_soap_fault(body: &str) -> Option<(String, String)> {
     let code = element(body, "errorCode").unwrap_or("").to_string();
     let description = element(body, "errorDescription").unwrap_or("").to_string();
@@ -349,17 +282,9 @@ pub fn parse_soap_fault(body: &str) -> Option<(String, String)> {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// NAT-PMP (RFC 6886)
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// NAT-PMP opcodes we use.
 pub const PMP_OP_EXTERNAL_ADDRESS: u8 = 0;
-/// Map a UDP port.
 pub const PMP_OP_MAP_UDP: u8 = 1;
 
-/// A NAT-PMP request is 12 bytes: version, opcode, reserved, internal port,
-/// requested external port, lifetime.
 pub fn pmp_request(
     opcode: u8,
     internal_port: u16,
@@ -369,14 +294,12 @@ pub fn pmp_request(
     let mut out = [0u8; 12];
     out[0] = 0; // version
     out[1] = opcode;
-    // out[2] reserved, zero
     out[4..6].copy_from_slice(&internal_port.to_be_bytes());
     out[6..8].copy_from_slice(&external_port.to_be_bytes());
     out[8..12].copy_from_slice(&lifetime_secs.to_be_bytes());
     out
 }
 
-/// A gateway's mapping result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PmpMapping {
     pub internal_port: u16,
@@ -384,18 +307,15 @@ pub struct PmpMapping {
     pub lifetime_secs: u32,
 }
 
-/// Parse a NAT-PMP external-address response (opcode 128).
 pub fn parse_pmp_external_address(resp: &[u8]) -> Result<SocketAddr, UpnpError> {
     check_pmp_header(resp, PMP_OP_EXTERNAL_ADDRESS + 128)?;
     if resp.len() < 12 {
         return Err(UpnpError::Malformed("short external-address reply"));
     }
     let ip = Ipv4Addr::new(resp[8], resp[9], resp[10], resp[11]);
-    // No port is carried: the caller pairs this with the port it mapped.
     Ok(SocketAddr::new(IpAddr::V4(ip), 0))
 }
 
-/// Parse a NAT-PMP map response (opcode 129).
 pub fn parse_pmp_map_response(resp: &[u8]) -> Result<PmpMapping, UpnpError> {
     check_pmp_header(resp, PMP_OP_MAP_UDP + 128)?;
     if resp.len() < 16 {
@@ -408,7 +328,6 @@ pub fn parse_pmp_map_response(resp: &[u8]) -> Result<PmpMapping, UpnpError> {
     })
 }
 
-/// The version, opcode and result code every NAT-PMP reply shares.
 fn check_pmp_header(resp: &[u8], expected_opcode: u8) -> Result<(), UpnpError> {
     if resp.len() < 4 {
         return Err(UpnpError::Malformed("truncated NAT-PMP reply"));
@@ -426,8 +345,6 @@ fn check_pmp_header(resp: &[u8], expected_opcode: u8) -> Result<(), UpnpError> {
         0
     };
     if result != 0 {
-        // A zero lifetime with a non-zero result means the port could not be
-        // mapped; the codes are the value in the result field (RFC 6886 §3.5).
         return Err(UpnpError::Refused(
             format!("result code {result}"),
             describe_pmp_code(result),
@@ -442,7 +359,6 @@ fn check_pmp_header(resp: &[u8], expected_opcode: u8) -> Result<(), UpnpError> {
     Ok(())
 }
 
-/// Human-readable NAT-PMP result codes (RFC 6886 §3.5).
 pub fn describe_pmp_code(code: u16) -> String {
     match code {
         0 => "success".to_string(),
@@ -455,11 +371,6 @@ pub fn describe_pmp_code(code: u16) -> String {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Network paths
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Ask the local link for an internet gateway and return its control endpoint.
 pub async fn discover_igd(timeout: Duration) -> Result<IgdControl, UpnpError> {
     let sock = UdpSocket::bind("0.0.0.0:0")
         .await
@@ -507,7 +418,6 @@ pub async fn discover_igd(timeout: Duration) -> Result<IgdControl, UpnpError> {
     }
 }
 
-/// `GET` a URL and return the body, reading to EOF.
 async fn http_get(url: &str, timeout: Duration) -> Result<String, UpnpError> {
     let (host, path) = split_url(url).ok_or(UpnpError::Malformed("unusable device URL"))?;
     let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
@@ -515,7 +425,6 @@ async fn http_get(url: &str, timeout: Duration) -> Result<String, UpnpError> {
     Ok(http_body(&response).to_string())
 }
 
-/// Send a raw HTTP request and read the whole response.
 async fn http_exchange(host: &str, request: &str, timeout: Duration) -> Result<String, UpnpError> {
     let stream = tokio::time::timeout(timeout, TcpStream::connect(host))
         .await
@@ -538,8 +447,6 @@ async fn http_exchange(host: &str, request: &str, timeout: Duration) -> Result<S
             break;
         }
         response.extend_from_slice(&chunk[..read]);
-        // Descriptions and SOAP replies are small; stop rather than grow without
-        // bound on a gateway that streams.
         if response.len() > 128 * 1024 {
             break;
         }
@@ -547,7 +454,6 @@ async fn http_exchange(host: &str, request: &str, timeout: Duration) -> Result<S
     Ok(String::from_utf8_lossy(&response).into_owned())
 }
 
-/// Split `http://host:port/path` into a `host:port` and a path.
 fn split_url(url: &str) -> Option<(String, String)> {
     let rest = url
         .strip_prefix("http://")
@@ -562,8 +468,6 @@ fn split_url(url: &str) -> Option<(String, String)> {
     Some((host.to_string(), path.to_string()))
 }
 
-/// Map `internal_port` for UDP through the discovered gateway and return the
-/// public address it granted.
 pub async fn map_udp_port_via_igd(
     control: &IgdControl,
     internal_ip: Ipv4Addr,
@@ -590,7 +494,6 @@ pub async fn map_udp_port_via_igd(
             "reply is not an AddPortMapping response",
         ));
     }
-    // The mapping succeeded; ask what address it is reachable at.
     let ip_args = "<NewRemoteHost></NewRemoteHost>";
     let ip_body = soap_envelope(&control.service_type, "GetExternalIPAddress", ip_args);
     let ip_request = soap_http_request(control, "GetExternalIPAddress", &ip_body);
@@ -605,7 +508,6 @@ pub async fn map_udp_port_via_igd(
     })
 }
 
-/// Remove a mapping we created.
 pub async fn delete_udp_mapping(
     control: &IgdControl,
     internal_port: u16,
@@ -622,12 +524,6 @@ pub async fn delete_udp_mapping(
     }
 }
 
-/// The default gateway, read from `/proc/net/route` where that exists.
-///
-/// NAT-PMP has no discovery step: the protocol is addressed to the default
-/// gateway, so the gateway address *is* the discovery. On platforms without
-/// `/proc` this returns `None` and UPnP-IGD is the only route — which is why the
-/// SSDP path is tried first.
 pub fn default_gateway_ipv4() -> Option<Ipv4Addr> {
     let route = std::fs::read_to_string("/proc/net/route").ok()?;
     for line in route.lines().skip(1) {
@@ -635,12 +531,10 @@ pub fn default_gateway_ipv4() -> Option<Ipv4Addr> {
         if fields.len() < 3 {
             continue;
         }
-        // Destination 00000000 is the default route.
         if fields[1] != "00000000" {
             continue;
         }
         let raw = u32::from_str_radix(fields[2], 16).ok()?;
-        // /proc writes the address little-endian as a u32.
         let bytes = raw.to_le_bytes();
         if bytes == [0, 0, 0, 0] {
             continue;
@@ -650,10 +544,6 @@ pub fn default_gateway_ipv4() -> Option<Ipv4Addr> {
     None
 }
 
-/// Ask a NAT-PMP gateway to map `internal_port` for UDP.
-///
-/// Retries follow RFC 6886 §3.3: three attempts, doubling the wait each time, and
-/// no retry once a response (including an error response) arrives.
 pub async fn nat_pmp_map_udp(
     gateway: Ipv4Addr,
     internal_port: u16,
@@ -680,7 +570,6 @@ pub async fn nat_pmp_map_udp(
         match tokio::time::timeout(wait.min(remaining), sock.recv_from(&mut buf)).await {
             Ok(Ok((n, from))) if from.ip() == IpAddr::V4(gateway) => {
                 let mapping = parse_pmp_map_response(&buf[..n])?;
-                // The external address comes from a separate rendezvous.
                 let addr_request = pmp_request(PMP_OP_EXTERNAL_ADDRESS, 0, 0, 0);
                 sock.send_to(&addr_request, dest)
                     .await
@@ -705,18 +594,9 @@ pub async fn nat_pmp_map_udp(
     Err(UpnpError::NoGateway)
 }
 
-/// Best effort: try UPnP-IGD, then NAT-PMP, and return the public address the
-/// gateway opened for `local_port`.
-///
-/// Nothing here is required for the tunnel to work. A failure is expected on most
-/// networks — upnp disabled, an enterprise gateway, a CGNAT — so the caller logs
-/// and carries on with STUN/ICE.
 pub async fn opportunistic_public_addr(local_ip: Ipv4Addr, local_port: u16) -> Option<SocketAddr> {
     let timeout = Duration::from_secs(2);
 
-    // The gateway's LAN address is where a NAT-PMP request goes, and it is also
-    // the most likely owner of the control URL; try IGD first because it needs
-    // no guess at all.
     match discover_igd(timeout).await {
         Ok(control) => {
             match map_udp_port_via_igd(
@@ -754,16 +634,9 @@ pub async fn opportunistic_public_addr(local_ip: Ipv4Addr, local_port: u16) -> O
     }
 }
 
-/// Keep a mapping alive for as long as the node runs.
-///
-/// A lease is not permanent: the gateway hands back however long it is willing to
-/// grant, and takes the mapping away when it expires. Renewing every half of the
-/// granted lifetime leaves room for one attempt to be lost before the mapping
-/// does — renewing at the deadline would mean a gap whenever a packet is dropped.
 pub async fn renew_udp_mapping(local_ip: Ipv4Addr, local_port: u16) {
     loop {
         let Some(public) = opportunistic_public_addr(local_ip, local_port).await else {
-            // Nothing to renew; try again later rather than spinning.
             tokio::time::sleep(Duration::from_secs(300)).await;
             continue;
         };
@@ -772,7 +645,6 @@ pub async fn renew_udp_mapping(local_ip: Ipv4Addr, local_port: u16) {
     }
 }
 
-/// Log the outcome of an opportunistic attempt in the terms an operator needs.
 pub fn describe_attempt(public: Option<SocketAddr>) -> String {
     match public {
         Some(addr) => format!("gateway mapping granted: {addr} (no hole punching needed)"),
@@ -827,16 +699,13 @@ mod tests {
             parse_ssdp_location(SSDP_REPLY).as_deref(),
             Some("http://192.168.1.1:5000/rootDesc.xml")
         );
-        // Header name case varies between stacks.
         let lower = SSDP_REPLY.replace("LOCATION:", "location:");
         assert!(
             parse_ssdp_location(&lower).is_some(),
             "headers are case-insensitive"
         );
-        // A `NOTIFY` is a device announcing itself unprompted: not our answer.
         let notify = SSDP_REPLY.replace("HTTP/1.1 200 OK", "NOTIFY * HTTP/1.1");
         assert_eq!(parse_ssdp_location(&notify), None);
-        // A 404 from a device that is not an IGD carries no location.
         assert_eq!(parse_ssdp_location("HTTP/1.1 404 Not Found\r\n\r\n"), None);
     }
 
@@ -850,10 +719,7 @@ mod tests {
         );
         assert_eq!(control.control_url, "http://192.168.1.1:5000/ctl/IPConn");
         assert_eq!(control.host, "192.168.1.1:5000");
-        // Layer3Forwarding is a service in the same description and must not be
-        // mistaken for one we can map a port on.
         assert!(!control.control_url.contains("L3F"));
-        // A description with no WAN service yields nothing rather than a guess.
         let no_wan = DESCRIPTION.replace("WANIPConnection", "WANIPv6FirewallControl");
         assert_eq!(
             find_wan_control(&no_wan, "http://192.168.1.1:5000/rootDesc.xml"),
@@ -863,8 +729,6 @@ mod tests {
 
     #[test]
     fn a_control_url_pointing_at_another_host_is_refused() {
-        // The description is on the gateway; a control URL on a different origin
-        // is not something to send a mapping request to.
         assert_eq!(
             resolve_control_url(
                 "http://192.168.1.1:5000/rootDesc.xml",
@@ -872,8 +736,6 @@ mod tests {
             ),
             None
         );
-        // Absolute URLs on the same origin are fine, and so are both relative
-        // forms — real devices use all three.
         assert!(resolve_control_url(
             "http://192.168.1.1:5000/d/x.xml",
             "http://192.168.1.1:5000/ctl"
@@ -886,7 +748,6 @@ mod tests {
                 "192.168.1.1:5000".to_string()
             ))
         );
-        // Not a URL at all.
         assert_eq!(resolve_control_url("192.168.1.1:5000/x.xml", "/ctl"), None);
     }
 
@@ -913,8 +774,6 @@ mod tests {
         assert!(request.contains(
             "SOAPAction: \"urn:schemas-upnp-org:service:WANIPConnection:1#AddPortMapping\""
         ));
-        // A wrong Content-Length makes the call hang or truncate; the framing is
-        // the part of a hand-rolled client that actually breaks.
         assert!(request.contains(&format!("Content-Length: {}\r\n", body.len())));
         assert!(request.contains("Connection: close\r\n"));
         assert_eq!(request.split("\r\n\r\n").nth(1), Some(body.as_str()));
@@ -942,7 +801,6 @@ mod tests {
             parse_soap_fault(body),
             Some(("718".to_string(), "ConflictInMappingEntry".to_string()))
         );
-        // A body with no address yields None rather than a zero address.
         assert_eq!(parse_external_ip(body), None);
     }
 
@@ -971,8 +829,6 @@ mod tests {
 
     #[test]
     fn nat_pmp_replies_are_parsed_and_refusals_are_not_successes() {
-        // A granted mapping: opcode 129, result 0, ports, lifetime, then the
-        // external address.
         let mut reply = vec![0u8, 129, 0, 0];
         reply.extend_from_slice(&2270u16.to_be_bytes());
         reply.extend_from_slice(&41000u16.to_be_bytes());
@@ -982,15 +838,12 @@ mod tests {
         assert_eq!(mapping.external_port, 41000);
         assert_eq!(mapping.lifetime_secs, 3600);
 
-        // The external address arrives in its own reply, with a zero port.
         let addr_reply = vec![0u8, 128, 0, 0, 0, 0, 0, 0, 203, 0, 113, 7];
         assert_eq!(
             parse_pmp_external_address(&addr_reply).map(|a| a.ip()),
             Ok(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
         );
 
-        // Result code 2 is "not authorized": granting a mapping here would be a
-        // lie, and the caller would advertise an address nobody can reach.
         let mut refused = reply.clone();
         refused[3] = 2;
         match parse_pmp_map_response(&refused) {
@@ -1001,7 +854,6 @@ mod tests {
             other => panic!("a refusal must not parse as a mapping: {other:?}"),
         }
 
-        // A lifetime of zero means the mapping is already gone.
         let mut expired = reply.clone();
         expired[8..12].copy_from_slice(&0u32.to_be_bytes());
         assert!(matches!(
@@ -1009,7 +861,6 @@ mod tests {
             Err(UpnpError::Refused(_, _))
         ));
 
-        // Version and opcode mismatches are rejected rather than reinterpreted.
         let bad_version = [1u8, 129, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         assert_eq!(
             parse_pmp_map_response(&bad_version),
@@ -1035,12 +886,10 @@ mod tests {
 
     #[test]
     fn elements_are_read_without_matching_a_longer_tag_name() {
-        // `<serviceType>` must not be found by looking for `<service`.
         let xml =
             "<service><serviceTypeX>nope</serviceTypeX><serviceType>yes</serviceType></service>";
         assert_eq!(element(xml, "serviceType"), Some("yes"));
         assert_eq!(element(xml, "missing"), None);
-        // A self-closing element carries no text.
         assert_eq!(element("<a/><b>1</b>", "a"), None);
     }
 }

@@ -29,16 +29,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
-/// Wire magic. A party frame on the wrong port is discarded, not guessed at.
 pub const PARTY_MAGIC: &[u8; 4] = b"GPY1";
-/// Header: magic + 8-byte sequence + 2-byte length.
 pub const PARTY_HEADER_LEN: usize = 14;
-/// Largest datagram this bridge will carry (keeps under a 1500-byte MTU).
 pub const PARTY_MAX_PAYLOAD: usize = 1400;
-/// Dedupe window, in sequences.
 pub const SEQ_WINDOW: u64 = 1024;
 
-/// One game datagram, sequenced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartyFrame {
     pub seq: u64,
@@ -74,7 +69,6 @@ impl PartyFrame {
     }
 }
 
-/// A sliding bitmap of recently seen sequences.
 #[derive(Debug, Clone)]
 pub struct SeqWindow {
     highest: u64,
@@ -100,18 +94,12 @@ impl SeqWindow {
         (slot / 64, 1u64 << (slot % 64))
     }
 
-    /// `true` when this sequence is new (and records it).
     pub fn accept(&mut self, seq: u64) -> bool {
         if seq > self.highest {
             let delta = seq - self.highest;
             if delta >= SEQ_WINDOW {
                 self.seen = [0u64; 16];
             } else {
-                // Bit positions are absolute (`seq % WINDOW`), so the window does
-                // not slide: each newly-covered position is cleared before it is
-                // used. Without this, the slot for seq N still held the bit for
-                // seq N-WINDOW and a fresh packet would be mistaken for a
-                // duplicate — or, worse, an old one would be let through.
                 for s in (self.highest + 1)..=seq {
                     let (w, m) = Self::bit(s);
                     self.seen[w] &= !m;
@@ -136,7 +124,6 @@ impl SeqWindow {
     }
 }
 
-/// Re-orders datagrams into a fixed small delay.
 #[derive(Debug)]
 pub struct JitterBuffer {
     next: Option<u64>,
@@ -153,14 +140,11 @@ impl JitterBuffer {
         }
     }
 
-    /// Insert a datagram. Returns anything now deliverable, in order.
     pub fn push(&mut self, seq: u64, payload: Vec<u8>, now: Instant) -> Vec<Vec<u8>> {
         let next = *self.next.get_or_insert(seq);
         if seq < next {
             return Vec::new();
         }
-        // Bound the buffer: a game cannot use more than a second of packets and a
-        // hostile peer could otherwise grow it without limit.
         if self.pending.len() >= 4096 {
             return Vec::new();
         }
@@ -168,9 +152,6 @@ impl JitterBuffer {
         self.drain(now, false)
     }
 
-    /// Release what the delay allows even if a gap remains: waiting longer than
-    /// the target for a packet that is not coming is exactly the lag this buffer
-    /// exists to prevent.
     pub fn tick(&mut self, now: Instant) -> Vec<Vec<u8>> {
         self.drain(now, true)
     }
@@ -188,7 +169,6 @@ impl JitterBuffer {
             };
             let waited = now.saturating_duration_since(*arrived);
             if force && waited >= self.target_delay {
-                // Skip the gap: deliver from the oldest pending sequence.
                 self.next = Some(first_seq);
                 continue;
             }
@@ -202,7 +182,6 @@ impl JitterBuffer {
     }
 }
 
-/// Counters exposed to the CLI and dashboard.
 #[derive(Debug, Default)]
 pub struct PartyStats {
     pub received: AtomicU64,
@@ -226,18 +205,10 @@ impl PartyStats {
 
 #[derive(Debug, Clone)]
 pub struct PartyConfig {
-    /// The address the game (or console) sends to.
     pub listen: String,
-    /// Where the peer's `ggn party` listens. `None` makes this a local echo
-    /// bridge, useful for checking a path without a second node.
     pub peer: Option<String>,
-    /// The address this bridge accepts peer frames on. Defaults to the game
-    /// port + 1 on the same host; a two-machine run must give this address to
-    /// the other player's `--peer`.
     pub peer_listen: Option<String>,
-    /// Number of copies per datagram. Clamped to 1..=3.
     pub copies: usize,
-    /// Jitter buffer delay in milliseconds.
     pub jitter_ms: u64,
 }
 
@@ -252,8 +223,6 @@ impl PartyConfig {
         }
     }
 
-    /// The peer-facing bind address. Derived from `listen` when unset so the
-    /// game side and the peer side never share a socket.
     pub fn peer_listen_addr(&self) -> String {
         if let Some(addr) = &self.peer_listen {
             return addr.clone();
@@ -272,7 +241,6 @@ impl PartyConfig {
     }
 }
 
-/// Run the bridge until the process exits.
 pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
     let local = UdpSocket::bind(&cfg.listen)
         .await
@@ -289,10 +257,6 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
         None => None,
     };
 
-    // The peer-facing socket is separate so the game's address is never used as
-    // the source for peer traffic (a NAT would rewrite it anyway). It binds a
-    // *known* address: an ephemeral port would leave the other machine with
-    // nothing to point `--peer` at.
     let peer_bind = cfg.peer_listen_addr();
     let uplink = Arc::new(
         UdpSocket::bind(&peer_bind)
@@ -319,7 +283,6 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
     );
     println!("Ctrl+C to stop.");
 
-    // ── Game → peer ────────────────────────────────────────────────────
     let up_local = Arc::clone(&local);
     let up_sock = Arc::clone(&uplink);
     let up_stats = Arc::clone(&stats);
@@ -332,8 +295,6 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
                 continue;
             };
             up_stats.received.fetch_add(1, Ordering::Relaxed);
-            // Remember the local game endpoint; peer frames are delivered here,
-            // never back to the other bridge.
             if let Ok(mut slot) = up_sender.lock() {
                 *slot = Some(from);
             }
@@ -353,15 +314,12 @@ pub async fn run(cfg: PartyConfig) -> anyhow::Result<()> {
                     }
                 }
                 None => {
-                    // Echo mode: hand it straight back so a single machine can
-                    // verify the path through the mesh.
                     let _ = up_local.send_to(&frame.payload, from).await;
                 }
             }
         }
     });
 
-    // ── Peer → game ────────────────────────────────────────────────────
     let down_sock = Arc::clone(&uplink);
     let down_local = Arc::clone(&local);
     let down_stats = Arc::clone(&stats);
@@ -464,11 +422,9 @@ mod tests {
         for seq in 0..200u64 {
             assert!(w.accept(seq), "seq {seq}");
         }
-        // Every one of them is still a duplicate.
         for seq in 0..200u64 {
             assert!(!w.accept(seq), "seq {seq} should be remembered");
         }
-        // A jump of exactly one word must not resurrect old entries.
         assert!(w.accept(200 + 64 - 1));
         assert!(!w.accept(200 + 64 - 1));
     }
@@ -477,8 +433,6 @@ mod tests {
     fn jitter_buffer_orders_within_a_stream() {
         let t0 = Instant::now();
         let mut b = JitterBuffer::new(Duration::from_millis(20));
-        // The first datagram of a stream is the baseline: there is no reason to
-        // wait for a sequence number that may pre-date the session.
         assert_eq!(b.push(0, b"zero".to_vec(), t0), vec![b"zero".to_vec()]);
         assert!(b.push(2, b"two".to_vec(), t0).is_empty(), "waiting for 1");
         assert_eq!(

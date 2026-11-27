@@ -17,13 +17,10 @@
 use std::collections::HashMap;
 use std::fmt;
 
-/// A physically distinct administrative / light-cone domain.
 pub type DomainId = [u8; 16];
 
-/// Why a metabolic clock could not be built.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetabolicError {
-    /// A half-life must be a positive number of seconds.
     BadHalfLife(f64),
 }
 
@@ -37,7 +34,6 @@ impl fmt::Display for MetabolicError {
 
 impl std::error::Error for MetabolicError {}
 
-/// Per-domain saturated decay state.
 #[derive(Debug, Clone)]
 pub struct MetabolicClock {
     half_life: f64,
@@ -63,8 +59,6 @@ impl MetabolicClock {
         self.pulses.len()
     }
 
-    /// Record a valid peer pulse. Only the freshest pulse in a domain matters,
-    /// which is what caps a Sybil flood at one unit.
     pub fn note_pulse(&mut self, domain: DomainId, at: u64) {
         let entry = self.pulses.entry(domain).or_insert(at);
         if at > *entry {
@@ -72,10 +66,6 @@ impl MetabolicClock {
         }
     }
 
-    /// Saturated weight of one domain: at most 1, halving every `half_life`.
-    ///
-    /// A pulse dated in the future is clamped to saturation rather than
-    /// rewarded: otherwise a peer with a fast clock could mint mass.
     pub fn weight(&self, domain: &DomainId, now: u64) -> f64 {
         let Some(&last) = self.pulses.get(domain) else {
             return 0.0;
@@ -87,7 +77,6 @@ impl MetabolicClock {
         2f64.powf(-elapsed / self.half_life)
     }
 
-    /// Total metabolic mass `M_u(t) = sum_a W_a(t)`.
     pub fn mass(&self, now: u64) -> f64 {
         self.pulses
             .keys()
@@ -99,11 +88,6 @@ impl MetabolicClock {
         self.mass(now) >= theta
     }
 
-    /// First whole second at which mass drops **below** `theta`.
-    ///
-    /// `None` only when `theta <= 0` (always authorized) or when the mass has
-    /// not fallen below `theta` even after 64 half-lives, which cannot happen
-    /// for a finite domain set.
     pub fn projected_death(&self, now: u64, theta: f64) -> Option<u64> {
         if !theta.is_finite() || theta <= 0.0 || self.pulses.is_empty() {
             return None;
@@ -129,12 +113,6 @@ impl MetabolicClock {
     }
 }
 
-/// The starvation deadline from the theorem, in seconds **after** `t0`:
-/// `half_life * log2(honest / (theta - adversary))`.
-///
-/// `None` when the adversary already controls `theta` or more domains — the
-/// theorem's hypothesis `k_adv < theta` is exactly the condition under which
-/// force-feeding cannot outrun decay.
 pub fn starvation_deadline(
     half_life: f64,
     honest_domains: usize,
@@ -182,7 +160,6 @@ mod tests {
         assert!((clock.mass(500) - 1.0).abs() < 1e-12);
         assert!((clock.mass(1_000) - 2f64.powi(-5)).abs() < 1e-12);
 
-        // A future-dated pulse cannot mint more than saturation.
         clock.note_pulse(domain(9), 10_000);
         assert_eq!(clock.mass(500), 1.0);
 
@@ -202,13 +179,10 @@ mod tests {
 
     #[test]
     fn an_infinitely_fed_adversary_still_dies_at_the_theorem_deadline() {
-        // Four honest domains go silent at t0 = 1000; two adversarial domains
-        // force-feed a Sybil every second. theta = 3, half-life = 100 s.
         let t0 = 1_000u64;
         let mut clock = nourished(100.0);
         let theta = 3.0;
 
-        // Griefing bulk: 250 Sybils per second in each of the two domains.
         for t in t0..(t0 + 400) {
             for sybil in 0..250u8 {
                 clock.note_pulse(domain(200 + sybil % 2), t);
@@ -227,8 +201,6 @@ mod tests {
         assert!(!clock.is_authorized(deadline + 1, theta));
         assert_eq!(clock.projected_death(t0, theta), Some(deadline + 1));
 
-        // The theorem's upper bound really is the death second, within one
-        // whole-second tick, and no amount of extra Sybils moved it.
         assert!(clock.projected_death(t0, theta).unwrap() <= deadline + 1);
     }
 
@@ -237,21 +209,15 @@ mod tests {
         let mut clock = MetabolicClock::new(100.0).unwrap();
         clock.note_pulse(domain(1), 0);
         clock.note_pulse(domain(2), 0);
-        // Two units of mass cannot meet a threshold of five.
         assert_eq!(clock.projected_death(0, 5.0), Some(0));
         assert_eq!(clock.projected_death(0, 0.0), None);
-        // 2 * 2^(-t/100) < 1.5 first holds at t = 42.
         assert_eq!(clock.projected_death(0, 1.5), Some(42));
     }
 
     #[test]
     fn collusion_at_the_threshold_has_no_finite_bound() {
-        // k_adv >= theta: the adversary alone can hold authority, so decay is
-        // not a guarantee. The function refuses to promise a deadline.
         assert_eq!(starvation_deadline(100.0, 4, 3, 3.0), None);
         assert_eq!(starvation_deadline(100.0, 4, 5, 3.0), None);
-        // Below the threshold the deadline is finite and tightens as the
-        // adversary gains domains.
         let two = starvation_deadline(100.0, 4, 1, 3.0).unwrap();
         let one = starvation_deadline(100.0, 4, 2, 3.0).unwrap();
         assert!(one > two);
@@ -262,14 +228,12 @@ mod tests {
         let mut clock = nourished(100.0);
         let theta = 3.0;
         assert!(clock.is_authorized(1_000, theta));
-        // Five hundred seconds of silence (five half-lives) leaves 4/32.
         assert!(!clock.is_authorized(1_500, theta));
 
         clock.note_pulse(domain(5), 1_500);
         clock.note_pulse(domain(6), 1_500);
         clock.note_pulse(domain(7), 1_500);
         assert!(clock.is_authorized(1_500, theta));
-        // 3.125 units: below 3 once 2^(-t/100) drops past 0.96, at t = 1506.
         assert_eq!(clock.projected_death(1_500, theta), Some(1_506));
     }
 

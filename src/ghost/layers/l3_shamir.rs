@@ -30,36 +30,25 @@
 use crate::ghost::layers::l4_rs;
 use gf256::shamir::shamir;
 
-/// Split a 32-byte secret into 3 shares using (2,3) Shamir SSS.
-/// Returns 3 shares, each approximately sizeof(secret) + overhead.
 pub fn split_secret(secret: &mut [u8; 32]) -> Vec<Vec<u8>> {
     shamir::generate(secret, 3, 2)
 }
 
-/// Split an immutable 32-byte secret slice into 3 shares using (2,3) Shamir SSS.
 pub fn split_secret_bytes(secret: &[u8; 32]) -> Vec<Vec<u8>> {
     let mut copy = *secret;
     let shares = shamir::generate(&copy, 3, 2);
-    // Zeroize copy
     copy.fill(0);
     shares
 }
 
-/// Reconstruct the original secret from any 2 valid shares.
-/// Returns the reconstructed bytes.
 pub fn join_shares(share0: &[u8], share1: &[u8]) -> Vec<u8> {
     shamir::reconstruct(&[share0.to_vec(), share1.to_vec()])
 }
 
-/// Reconstruct the secret from a slice of any number of shares (minimum 2 required).
 pub fn join_share_slice(shares: &[&[u8]]) -> Vec<u8> {
     let owned: Vec<Vec<u8>> = shares.iter().map(|s| s.to_vec()).collect();
     shamir::reconstruct(&owned)
 }
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Unified (c, r = 1, f) threshold sharing — the L4 ramp engine
-// ═════════════════════════════════════════════════════════════════════════════
 
 fn validate_threshold_params(params: &l4_rs::RampParams) -> Result<(), String> {
     if params.data != 1 {
@@ -80,16 +69,6 @@ fn validate_threshold_params(params: &l4_rs::RampParams) -> Result<(), String> {
     Ok(())
 }
 
-/// Split a 32-byte secret with the same GF(2^8) ramp engine as L4.
-///
-/// With `r = 1`, `c = threshold − 1` and `f = m − threshold`, this is Shamir's
-/// scheme expressed as a ramp code: any `c + 1` shares reconstruct, any `c`
-/// shares are independent of the secret, and `m ≥ c + f + 1` holds because
-/// `r ≥ 1`. Parameters with `r != 1`, `c = 0` (one share would reveal the
-/// secret) or `m < 3` are refused rather than silently downgraded.
-///
-/// Each share is self-describing: `[index, 4-byte frame + 32 shard bytes]`, so
-/// 37 bytes for a 32-byte secret (the frame is part of the coded message).
 pub fn split_secret_ramp(
     secret: &[u8; 32],
     params: &l4_rs::RampParams,
@@ -108,16 +87,8 @@ pub fn split_secret_ramp(
         .collect())
 }
 
-/// Reconstruct a 32-byte secret from `c + 1` or more self-describing shares.
-///
-/// Duplicate indices, indices outside `m`, wrong share lengths and fewer than
-/// `c + 1` shares are all typed errors. A corrupted share past the threshold
-/// decodes to different bytes; the caller's AEAD is what authenticates it (the
-/// same division of labour as L4).
 pub fn join_secret_ramp(shares: &[&[u8]], params: &l4_rs::RampParams) -> Result<[u8; 32], String> {
     validate_threshold_params(params)?;
-    // The ramp block carries a 4-byte little-endian length frame before the
-    // 32 secret bytes, so every share body is 36 bytes for a 32-byte secret.
     const EXPECTED_BODY: usize = 4 + 32;
     let mut parsed = Vec::with_capacity(shares.len());
     let mut seen = [false; 255];
@@ -162,41 +133,25 @@ pub fn join_secret_ramp(shares: &[&[u8]], params: &l4_rs::RampParams) -> Result<
     Ok(out)
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Group-as-Shards (Threshold Governance)
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Threshold group key and authority management.
-///
-/// Models group authority and authorization as a 3-of-5 threshold erasure-coded object:
-/// - 5 total shares are generated from a 32-byte group master secret
-/// - Any 3 of 5 members can cooperate to reconstruct the group authorization key
-/// - Any 2 members (or an adversary compromising up to 2 devices) learn mathematically
-///   ZERO information about the group secret
 #[derive(Debug, Clone)]
 pub struct ThresholdGroupKey {
     pub group_id: [u8; 16],
     pub threshold: usize,
     pub total_shares: usize,
     pub shares: Vec<Vec<u8>>,
-    /// The `(c, r = 1, f)` ramp parameters this group was split under.
     pub params: l4_rs::RampParams,
 }
 
 impl ThresholdGroupKey {
-    /// The fixed 3-of-5 policy: `c = 2`, `r = 1`, `f = 2`.
     fn three_of_five_params() -> l4_rs::RampParams {
         l4_rs::RampParams::new(2, 1, 2).expect("3-of-5 ramp parameters are valid")
     }
 
-    /// Generate a 3-of-5 threshold group key set from a 32-byte group master secret.
     pub fn new_3_of_5(group_id: [u8; 16], secret: &[u8; 32]) -> Self {
         Self::with_params(group_id, secret, Self::three_of_five_params())
             .expect("3-of-5 ramp parameters are valid")
     }
 
-    /// Generalized threshold group split: `threshold = c + 1` and
-    /// `total_shares = m = c + 1 + f`. Built on the same ramp engine as L4.
     pub fn with_params(
         group_id: [u8; 16],
         secret: &[u8; 32],
@@ -212,10 +167,6 @@ impl ThresholdGroupKey {
         })
     }
 
-    /// Reconstruct the 3-of-5 group master secret from at least 3 shares.
-    ///
-    /// Kept as an associated function for the fixed governance policy; for a
-    /// group created with [`Self::with_params`], use [`Self::reconstruct_with`].
     pub fn reconstruct(candidate_shares: &[&[u8]]) -> Result<[u8; 32], &'static str> {
         let params = Self::three_of_five_params();
         if candidate_shares.len() < params.required() {
@@ -225,12 +176,10 @@ impl ThresholdGroupKey {
             .map_err(|_| "shares do not reconstruct this group")
     }
 
-    /// Reconstruct this group's secret with the parameters it was created under.
     pub fn reconstruct_with(&self, candidate_shares: &[&[u8]]) -> Result<[u8; 32], String> {
         join_secret_ramp(candidate_shares, &self.params)
     }
 
-    /// Derives a deterministic epoch capability token for the group using the reconstructed secret.
     pub fn derive_group_capability(
         reconstructed_secret: &[u8; 32],
         epoch: u64,
@@ -259,8 +208,6 @@ mod tests {
         let shares = split_secret_bytes(&secret);
         assert_eq!(shares.len(), 3, "Must generate exactly 3 shares");
 
-        // Any 2-of-3 must reconstruct the secret:
-        // Combination (0, 1)
         let rec01 = join_shares(&shares[0], &shares[1]);
         assert_eq!(
             rec01,
@@ -268,7 +215,6 @@ mod tests {
             "Shares (0,1) must reconstruct secret"
         );
 
-        // Combination (0, 2)
         let rec02 = join_shares(&shares[0], &shares[2]);
         assert_eq!(
             rec02,
@@ -276,7 +222,6 @@ mod tests {
             "Shares (0,2) must reconstruct secret"
         );
 
-        // Combination (1, 2)
         let rec12 = join_shares(&shares[1], &shares[2]);
         assert_eq!(
             rec12,
@@ -284,7 +229,6 @@ mod tests {
             "Shares (1,2) must reconstruct secret"
         );
 
-        // All 3 shares together must also reconstruct secret
         let rec_all = join_share_slice(&[&shares[0], &shares[1], &shares[2]]);
         assert_eq!(
             rec_all,
@@ -334,20 +278,16 @@ mod tests {
         let group = ThresholdGroupKey::new_3_of_5(group_id, &master_secret);
         assert_eq!(group.shares.len(), 5, "Must generate exactly 5 shares");
 
-        // Any 3 shares out of 5 must successfully reconstruct:
-        // Combination (0, 1, 2)
         let rec012 =
             ThresholdGroupKey::reconstruct(&[&group.shares[0], &group.shares[1], &group.shares[2]])
                 .expect("3 shares must reconstruct");
         assert_eq!(rec012, master_secret);
 
-        // Combination (1, 3, 4)
         let rec134 =
             ThresholdGroupKey::reconstruct(&[&group.shares[1], &group.shares[3], &group.shares[4]])
                 .expect("3 shares must reconstruct");
         assert_eq!(rec134, master_secret);
 
-        // Capability token derivation matches
         let cap1 = ThresholdGroupKey::derive_group_capability(&rec012, 42, b"admin_scope");
         let cap2 = ThresholdGroupKey::derive_group_capability(&rec134, 42, b"admin_scope");
         assert_eq!(
@@ -355,7 +295,6 @@ mod tests {
             "Capability tokens derived from same secret must match"
         );
 
-        // Different epoch or scope produces different capability
         let cap_diff = ThresholdGroupKey::derive_group_capability(&rec012, 43, b"admin_scope");
         assert_ne!(cap1, cap_diff);
     }
@@ -366,13 +305,10 @@ mod tests {
         let master_secret = [0x55u8; 32];
         let group = ThresholdGroupKey::new_3_of_5(group_id, &master_secret);
 
-        // 2 shares must be rejected
         let res = ThresholdGroupKey::reconstruct(&[&group.shares[0], &group.shares[1]]);
         assert!(res.is_err(), "2 shares must not meet 3-of-5 threshold");
     }
 
-    /// L3 is the same construction as L4 with `r = 1`: every threshold subset
-    /// reconstructs and every smaller subset is refused, exhaustively.
     #[test]
     fn ramp_threshold_is_the_same_construction_as_l4() {
         let secret: [u8; 32] = std::array::from_fn(|i| (i as u8).wrapping_mul(7).wrapping_add(3));

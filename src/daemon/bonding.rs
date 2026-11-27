@@ -67,50 +67,33 @@ use tokio::sync::mpsc;
 
 use vantablack::ghost::v2::hpeb::{HandoverState, HpebScheduler, PhyPath};
 
-/// Magic prefix of a bonded shard.
 const BOND_MAGIC: &[u8; 4] = b"GBND";
-/// Envelope version. A future change to the header layout bumps this.
 const BOND_VERSION: u8 = 1;
-/// `[GBND 4][version 1][index 1][src_port 2]`.
 const BOND_HEADER_LEN: usize = 8;
-/// Default port a peer's bonded listener uses. Distinct from the mesh port
-/// (2270) and the QUIC carrier's port (2271), so one node can run all three.
 const DEFAULT_BOND_PORT: u16 = 2272;
-/// Fallback mesh port, used only when the socket cannot report its own address.
 const DEFAULT_MESH_PORT: u16 = 2270;
-/// Default handover cooldown, matching the `HandoverState` tests.
 const DEFAULT_COOLDOWN_MS: u64 = 500;
-/// How long a path that failed a send stays out before it is retried.
 const PATH_RETRY_AFTER: Duration = Duration::from_secs(30);
 
-/// One configured physical path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BondPath {
-    /// Interface name, as the Linux binder wants it.
     pub interface: String,
-    /// Interface index, as the Windows/macOS binders want it. Unused where the
-    /// platform binds by name, which is why it is allowed to be unread there.
     #[cfg_attr(any(target_os = "linux", target_os = "android"), allow(dead_code))]
     pub index: Option<u32>,
-    /// A local address on that interface.
     pub local: SocketAddr,
 }
 
 impl BondPath {
-    /// The `PhyPath` the scheduler sees: pinned, because a path we did not bind is
-    /// not a physical path.
     fn phy(&self) -> PhyPath {
         PhyPath::new(&self.interface).pinned(&self.local.to_string())
     }
 }
 
-/// Whether bonded sending and the bond listeners are enabled.
 pub(crate) fn enabled() -> bool {
     static RESOLVED: OnceLock<bool> = OnceLock::new();
     *RESOLVED.get_or_init(|| enabled_for(std::env::var("GHOST_BOND").ok().as_deref()))
 }
 
-/// The pure decision behind [`enabled`].
 fn enabled_for(value: Option<&str>) -> bool {
     match value {
         Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
@@ -118,7 +101,6 @@ fn enabled_for(value: Option<&str>) -> bool {
     }
 }
 
-/// The port a peer's bond listener is assumed to use.
 pub(crate) fn port() -> u16 {
     std::env::var("GHOST_BOND_PORT")
         .ok()
@@ -136,13 +118,6 @@ fn cooldown() -> Duration {
     )
 }
 
-/// Parse `GHOST_BOND_PATHS` (`name=ip[:port],...`) and the optional
-/// `GHOST_BOND_INDEX` (`name=index,...`) map.
-///
-/// Returns `(accepted, rejected)`. Anything that does not name an interface and a
-/// parseable address is reported by the caller, never silently skipped: a typo
-/// that quietly leaves one radio unused turns a bonded node into a degraded one
-/// without saying so.
 fn parse_paths(spec: &str, indexes: &str) -> (Vec<BondPath>, Vec<String>) {
     let mut map: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     for entry in indexes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -183,17 +158,11 @@ fn parse_paths(spec: &str, indexes: &str) -> (Vec<BondPath>, Vec<String>) {
     (accepted, rejected)
 }
 
-/// Bind `socket` to `path`'s interface.
-///
-/// One implementation per platform because these are four different socket
-/// options, not one portable one. A refusal carries the platform's own reason.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn bind_interface(socket: &Socket, path: &BondPath) -> std::io::Result<()> {
     socket.bind_device(Some(path.interface.as_bytes()))
 }
 
-/// `IP_BOUND_IF` takes an interface *index*, so a path without one cannot be
-/// pinned here.
 #[cfg(any(
     target_os = "macos",
     target_os = "ios",
@@ -205,13 +174,6 @@ fn bind_interface(socket: &Socket, path: &BondPath) -> std::io::Result<()> {
     socket.bind_device_by_index_v4(Some(index))
 }
 
-/// Windows `IP_UNICAST_IF`.
-///
-/// socket2 0.5 exposes no Windows binding for this option (its `bind_device*`
-/// family is Unix-only), so the call is made against Winsock directly. `ws2_32`
-/// is linked by std already, and this adds no dependency. The option value is the
-/// interface index in **network byte order**, and it selects the outgoing
-/// interface only — exactly the send-side pinning bonding needs.
 #[cfg(windows)]
 fn bind_interface(socket: &Socket, path: &BondPath) -> std::io::Result<()> {
     use std::os::windows::io::AsRawSocket;
@@ -242,7 +204,6 @@ fn bind_interface(socket: &Socket, path: &BondPath) -> std::io::Result<()> {
     }
 }
 
-/// The interface index a platform-indexed binder needs, with an actionable error.
 #[cfg(any(
     windows,
     target_os = "macos",
@@ -264,8 +225,6 @@ fn required_index(path: &BondPath) -> std::io::Result<std::num::NonZeroU32> {
         })
 }
 
-/// Any other target has no binder here. Explicit, so a caller never believes a
-/// path is pinned when it is not.
 #[cfg(not(any(
     target_os = "linux",
     target_os = "android",
@@ -285,19 +244,13 @@ fn bind_interface(_socket: &Socket, path: &BondPath) -> std::io::Result<()> {
     ))
 }
 
-/// A live path: its scheduler entry plus the socket bound to it.
 struct LivePath {
     path: BondPath,
     socket: Arc<UdpSocket>,
-    /// Set when a send through this path failed; the path is retried after
-    /// [`PATH_RETRY_AFTER`] rather than abandoned for the process lifetime.
     down_since: Option<Instant>,
 }
 
 impl LivePath {
-    /// Usable now. A path that failed recently is out, but not gone: interfaces
-    /// come back on their own schedule, and the daemon has no interface-change
-    /// notification without a platform binding it does not have.
     fn usable(&self, now: Instant) -> bool {
         match self.down_since {
             None => true,
@@ -310,8 +263,6 @@ struct BondState {
     scheduler: HpebScheduler,
     handover: HandoverState,
     paths: Vec<LivePath>,
-    /// Peers we have already logged as unbonded, so a single-radio peer does not
-    /// write a warning per shard.
     reported: std::collections::HashSet<SocketAddr>,
 }
 
@@ -330,8 +281,6 @@ fn state() -> &'static Mutex<Option<BondState>> {
     STATE.get_or_init(|| Mutex::new(None))
 }
 
-/// Build the socket set. Returns `None` when bonding is off or fewer than two
-/// pinned paths could be bound — in both cases the daemon keeps its UDP path.
 fn build(listener_port: u16) -> Option<BondState> {
     let raw = std::env::var("GHOST_BOND_PATHS").unwrap_or_default();
     let indexes = std::env::var("GHOST_BOND_INDEX").unwrap_or_default();
@@ -398,7 +347,6 @@ fn build(listener_port: u16) -> Option<BondState> {
     })
 }
 
-/// Bind one path's socket and pin it to the interface.
 fn bind_path(path: &BondPath, local: SocketAddr) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::for_address(local), Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
@@ -409,12 +357,6 @@ fn bind_path(path: &BondPath, local: SocketAddr) -> std::io::Result<UdpSocket> {
     UdpSocket::from_std(std_socket)
 }
 
-/// Install the bonded path set and start one receive loop per path.
-///
-/// Every recovered carrier is handed to `inbound`, which the node drains into
-/// `RxContext::ingest` — the same entry point a plain datagram takes. Returns
-/// `None` when bonding is off or could not be established, which is not an error:
-/// the node then keeps the UDP send it always had.
 pub(crate) fn spawn(
     inbound: mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>,
 ) -> Option<tokio::task::JoinHandle<()>> {
@@ -479,7 +421,6 @@ pub(crate) fn spawn(
     }))
 }
 
-/// Wrap one GTFv2 carrier for the bond socket.
 fn pack(index: u8, src_port: u16, carrier: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(BOND_HEADER_LEN + carrier.len());
     out.extend_from_slice(BOND_MAGIC);
@@ -490,11 +431,6 @@ fn pack(index: u8, src_port: u16, carrier: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Unwrap a bonded shard: the carrier and the peer's mesh address.
-///
-/// The source address is rebuilt from the datagram's own IP and the port the
-/// sender put in the header, because the socket this arrived on is the bond
-/// listener, not the peer's mesh socket.
 fn unpack(datagram: &[u8], from: SocketAddr) -> Option<(Vec<u8>, SocketAddr)> {
     if datagram.len() <= BOND_HEADER_LEN || &datagram[..4] != BOND_MAGIC {
         return None;
@@ -507,18 +443,10 @@ fn unpack(datagram: &[u8], from: SocketAddr) -> Option<(Vec<u8>, SocketAddr)> {
         return None;
     }
     let carrier = &datagram[BOND_HEADER_LEN..];
-    // Only a carrier that really parses as GTFv2 is handed on, so a stray datagram
-    // on the bond port can never be reinterpreted as mesh traffic.
     net::parse_gtf_v2_header(carrier)?;
     Some((carrier.to_vec(), SocketAddr::new(from.ip(), src_port)))
 }
 
-/// Send the three GTFv2 carriers of one message over separate physical paths.
-///
-/// Returns the interfaces that actually carried a shard, or `None` when this node
-/// is not bonded — the caller then keeps the ordinary single-socket send. A bond
-/// with one live path is not a bond, so it returns `None` rather than claiming
-/// redundancy it does not have.
 pub(crate) async fn send_carriers(
     peer_fp: &str,
     peer: SocketAddr,
@@ -537,12 +465,6 @@ pub(crate) async fn send_carriers(
     .await
 }
 
-/// The sending core, with the destination already resolved to the peer's bond
-/// listener.
-///
-/// Split from [`send_carriers`] so a test can aim it at a loopback receiver instead
-/// of going through the configured bond port — the framing, path selection and
-/// stamping are the production code either way.
 async fn dispatch(
     peer_fp: &str,
     dest: SocketAddr,
@@ -553,10 +475,6 @@ async fn dispatch(
         return None;
     }
     let now = Instant::now();
-    // Pick the assignment and clone the socket handles under the lock, then send
-    // outside it: a slow or failing interface must not hold up other peers.
-    // `live_count` is only read by the `research` polysemy probe below; the
-    // underscore keeps a default build warning-free without a second `cfg`.
     let (plan, _live_count): (Vec<(usize, String, Arc<UdpSocket>)>, usize) = {
         let mut guard = state().lock();
         let st = guard.as_mut()?;
@@ -590,8 +508,6 @@ async fn dispatch(
         }
         let mut plan = Vec::with_capacity(carriers.len());
         for (i, _) in carriers.iter().enumerate() {
-            // Cost-ordered, round-robin: the cheapest interface carries carrier 0,
-            // the next carrier 1, and the parity carrier continues the rotation.
             let index = i % live.len();
             let iface = live[index].to_string();
             let socket = st
@@ -605,10 +521,6 @@ async fn dispatch(
         (plan, live_count)
     };
 
-    // Poly­semy (`docs/DORMANT_MODULES.md` §1): the bonded link has three
-    // carriers. With three live physical paths, one causal probe per path lets
-    // the peer learn *which subset* of paths actually survived, from a message
-    // that only its own surviving subset can collapse.
     #[cfg(feature = "research")]
     let probe = if super::research_hooks::worlds::enabled() && _live_count >= 3 {
         super::research_hooks::worlds::encode_probe(3, b"PROB")
@@ -642,20 +554,12 @@ async fn dispatch(
             }
         }
     }
-    // Two carriers rebuild the message, so two interfaces carried it.
     if carried.len() < 2 {
         return None;
     }
     Some(carried)
 }
 
-/// The port this node's mesh socket is **actually bound to**, stamped into every
-/// bonded shard so the peer replies to the mesh socket and not to the bond listener.
-///
-/// Asked of the socket, never of `GHOST_PORT`: a dynamic or port-0 bind is assigned a
-/// port by the kernel that the environment never learns, and a shard naming the
-/// configured port would point the peer's reply at a port this node does not own.
-/// The fallback only covers a socket that cannot report an address at all.
 pub(crate) fn mesh_local_port(sock: &UdpSocket) -> u16 {
     match sock.local_addr() {
         Ok(addr) if addr.port() != 0 => addr.port(),
@@ -663,8 +567,6 @@ pub(crate) fn mesh_local_port(sock: &UdpSocket) -> u16 {
     }
 }
 
-/// Record a failed send: the path is out for [`PATH_RETRY_AFTER`], and the
-/// handover preference moves if it was the active one.
 pub(crate) fn note_loss(peer_fp: &str, interface: &str) {
     let now = Instant::now();
     let mut guard = state().lock();
@@ -726,12 +628,8 @@ mod tests {
         assert!(parse_paths("", "").0.is_empty());
     }
 
-    /// The daemon bond envelope: a carrier and the peer's mesh port survive the
-    /// round trip, and a datagram that is not a bonded shard is refused rather
-    /// than handed to `ingest` as if it were.
     #[test]
     fn the_bond_envelope_round_trips_and_rejects_foreign_datagrams() {
-        // A real GTFv2 frame, so the inner parse is what admits the shard.
         let carrier = {
             let header = vantablack::ghost::net::GtfV2Header {
                 session_hash: [1, 2, 3, 4],
@@ -769,13 +667,9 @@ mod tests {
         zero_port[6] = 0;
         zero_port[7] = 0;
         assert!(unpack(&zero_port, from).is_none());
-        // Right envelope, a carrier that is not a GTFv2 frame (no v2 marker):
-        // never reinterpreted as mesh traffic.
         assert!(unpack(&pack(0, 2270, &[0u8; 64]), from).is_none());
     }
 
-    /// The stamp is the socket's real port, so a dynamic or port-0 bind is
-    /// advertised correctly even though nothing in the environment knows the port.
     #[tokio::test]
     async fn the_stamped_port_comes_from_the_bound_socket() {
         let sock = UdpSocket::bind("127.0.0.1:0").await.expect("a socket");
@@ -783,8 +677,6 @@ mod tests {
         assert_ne!(real, 0, "a port-0 bind is given a real port by the kernel");
         assert_eq!(mesh_local_port(&sock), real);
 
-        // And that is the port a peer reads back out of a shard built with it. A
-        // real GTFv2 carrier, because that is what `unpack` admits.
         let header = vantablack::ghost::net::GtfV2Header {
             session_hash: [1, 2, 3, 4],
             counter: 1,
@@ -804,8 +696,6 @@ mod tests {
         assert_eq!(src.ip(), from.ip(), "the address half is the sender's");
     }
 
-    /// End to end over loopback: three real GTFv2 carriers leave by two distinct
-    /// sockets and every one of them arrives, whole and stamped with the mesh port.
     #[tokio::test]
     async fn three_carriers_cross_two_loopback_paths_and_arrive_whole() {
         let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("a peer");

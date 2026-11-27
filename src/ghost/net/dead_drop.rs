@@ -22,10 +22,8 @@ use sha2::{Digest, Sha256};
 pub const DEAD_DROP_MAGIC: &[u8; 4] = b"DROP";
 pub const DEAD_DROP_FRAME_LEN: usize = 576;
 
-/// 32-byte cryptographic commitment identifying a dead-drop storage slot.
 pub type DropCommitment = [u8; 32];
 
-/// A blind 576-byte GTF ciphertext blob held at rest by a vault host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlindDeadDropBlob {
     pub commitment: DropCommitment,
@@ -37,7 +35,6 @@ pub struct BlindDeadDropBlob {
 }
 
 impl BlindDeadDropBlob {
-    /// Compute a deterministic drop commitment from a recipient drop seed and epoch slot.
     pub fn derive_commitment(drop_seed: &[u8], slot_index: u64) -> DropCommitment {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_DEAD_DROP_COMMITMENT_V1");
@@ -46,7 +43,6 @@ impl BlindDeadDropBlob {
         hasher.finalize().into()
     }
 
-    /// Create a new blind dead-drop blob from an opaque 576-byte GTF frame.
     pub fn new(
         commitment: DropCommitment,
         frame: &[u8],
@@ -67,10 +63,8 @@ impl BlindDeadDropBlob {
     }
 }
 
-/// Serverless Tahoe-style Dead-Drop Vault with Adaptive Self-Eating Storage (§22, §33).
 #[derive(Debug, Clone, Default)]
 pub struct DeadDropVault {
-    /// In-memory blind storage keyed by drop commitment.
     slots: Arc<DashMap<DropCommitment, BlindDeadDropBlob>>,
 }
 
@@ -79,13 +73,10 @@ impl DeadDropVault {
         Self::default()
     }
 
-    /// Deposit an opaque 576-byte ciphertext blob into a commitment slot.
     pub fn deposit(&self, blob: BlindDeadDropBlob) {
         self.slots.insert(blob.commitment, blob);
     }
 
-    /// Sweep / retrieve a deposited blob using the exact commitment.
-    /// Increments access count and returns the blind ciphertext.
     pub fn sweep(&self, commitment: &DropCommitment) -> Option<BlindDeadDropBlob> {
         self.slots.get_mut(commitment).map(|mut entry| {
             entry.access_count = entry.access_count.saturating_add(1);
@@ -93,17 +84,14 @@ impl DeadDropVault {
         })
     }
 
-    /// Withdraw and delete the blob from the vault (single-use dead-drop sweep).
     pub fn sweep_and_consume(&self, commitment: &DropCommitment) -> Option<BlindDeadDropBlob> {
         self.slots.remove(commitment).map(|(_, blob)| blob)
     }
 
-    /// Number of active blind drop blobs stored.
     pub fn stored_count(&self) -> usize {
         self.slots.len()
     }
 
-    /// Keep-proof issued by a client to renew retention on a stored shard.
     pub fn prove_retention_interest(
         &self,
         commitment: &DropCommitment,
@@ -118,21 +106,11 @@ impl DeadDropVault {
         }
     }
 
-    /// Self-Eating Storage garbage collection loop.
-    ///
-    /// Reclaims cold/unrequested shards based on observed network error rate $\lambda_{\text{error}}$:
-    /// - Normal conditions ($\lambda_{\text{error}} \approx 0.0$): decay is swift, data minimization active.
-    /// - Crisis/partition conditions ($\lambda_{\text{error}} > 0.05$): decay multiplier shrinks,
-    ///   extending object life so partitions do not cause premature data loss.
-    ///
-    /// Returns the number of reclaimed cold shards.
     pub fn collect_self_eating_decay(
         &self,
         current_timestamp: u64,
         observed_error_rate: f64,
     ) -> usize {
-        // Compute adaptive retention multiplier:
-        // High error rate -> higher multiplier (e.g. 1.0 up to 5.0x retention)
         let error_clamped = observed_error_rate.clamp(0.0, 1.0);
         let retention_multiplier = 1.0 + (error_clamped * 4.0);
 
@@ -155,7 +133,6 @@ impl DeadDropVault {
         removed_count
     }
 
-    /// Host audit inspection helper: proves stored data contains zero metadata or plaintext keys.
     pub fn host_audit_inspect_raw(&self) -> Vec<u8> {
         let mut raw = Vec::new();
         for entry in self.slots.iter() {
@@ -183,12 +160,10 @@ mod tests {
         vault.deposit(blob);
         assert_eq!(vault.stored_count(), 1);
 
-        // Sweep by commitment
         let swept = vault.sweep(&commitment).expect("sweep deposited blob");
         assert_eq!(&swept.opaque_ciphertext[..payload.len()], payload);
         assert_eq!(swept.access_count, 1);
 
-        // Sweep and consume deletes from vault
         let consumed = vault
             .sweep_and_consume(&commitment)
             .expect("sweep and consume");
@@ -201,17 +176,13 @@ mod tests {
         let vault = DeadDropVault::new();
         let commitment = [0x77u8; 32];
         let payload = [0x55u8; 576];
-        // Base TTL of 100 seconds, deposited at timestamp 1000
         let blob = BlindDeadDropBlob::new(commitment, &payload, 1000, 100);
         vault.deposit(blob);
 
-        // At timestamp 1050 (under normal low error 0.0): not expired yet (expires at 1100)
         let reclaimed = vault.collect_self_eating_decay(1050, 0.0);
         assert_eq!(reclaimed, 0);
         assert_eq!(vault.stored_count(), 1);
 
-        // At timestamp 1150 with high network error (partition 0.8):
-        // Retention multiplier is 1.0 + (0.8 * 4.0) = 4.2x -> effective TTL = 420s -> expires at 1420!
         let reclaimed_during_partition = vault.collect_self_eating_decay(1150, 0.8);
         assert_eq!(
             reclaimed_during_partition, 0,
@@ -219,7 +190,6 @@ mod tests {
         );
         assert_eq!(vault.stored_count(), 1);
 
-        // Under peaceful network (error 0.0), at timestamp 1150 (past 1100), cold shard decays!
         let reclaimed_peace = vault.collect_self_eating_decay(1150, 0.0);
         assert_eq!(
             reclaimed_peace, 1,
@@ -237,7 +207,6 @@ mod tests {
         vault.deposit(blob);
 
         let raw = vault.host_audit_inspect_raw();
-        // Plaintext usernames, node IDs, or IP addresses are strictly absent
         assert!(!raw
             .windows(4)
             .any(|w| w == b"user" || w == b"node" || w == b"ip4"));

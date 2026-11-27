@@ -5,25 +5,8 @@
 
 use crate::*;
 
-/// Whether ShardSec (per-shard AEAD) is enabled for outbound frames.
-///
-/// **Default-on since 0.7.7.** Each Reed-Solomon shard is sealed under its own
-/// HKDF-derived key, so a tampered shard fails its own Poly1305 tag and is
-/// discarded *before* reconstruction — the property the documentation's
-/// Byzantine-tamper-isolation claim describes. Legacy frames (message-level
-/// AEAD only) remain fully supported on receive in both modes: the per-frame
-/// `FLAG_SHARDSEC` bit decides how a frame is opened, so mixed fleets of old
-/// and new builds interoperate.
-///
-/// Set `GHOST_SHARDSEC=off` (or `0`/`false`, case-insensitive) to emit legacy
-/// frames — for example to diagnose against a pre-ShardSec peer. Any other
-/// value, or an unset variable, means enabled.
-/// The pure ShardSec decision for one env value, so every env shape is
-/// unit-testable without mutating the process environment (the process-wide
-/// answer is cached once in [`shardsec_default_enabled`]).
 pub(crate) fn shardsec_enabled_for(env_value: Option<&str>) -> bool {
     match env_value {
-        // Unset: per-shard AEAD is the default.
         None => true,
         Some(v) => !(v.eq_ignore_ascii_case("off") || v == "0" || v.eq_ignore_ascii_case("false")),
     }
@@ -46,53 +29,19 @@ pub(crate) enum PendingHandshake {
 
 pub(crate) type PendingHandshakes = Arc<DashMap<String, PendingHandshake>>;
 
-/// Identity of one in-flight shard group in the reassembly spool.
-///
-/// The wire counter alone is **not** a message identity, and the two ways it
-/// fails are both silent:
-///
-/// * **Two sessions.** A counter is a per-session sequence number, so session A's
-///   counter 5 and session B's counter 5 are different messages. Keyed by the
-///   counter alone they share a bucket, and whichever shards arrive interleaved
-///   reconstruct one PDU out of two.
-/// * **No session at all.** Every handshake is sent with session hash
-///   `[0, 0, 0, 0]` and counter `0` (offer) or `1` (response), because there is
-///   no session yet to number the message with. A boot LAN sweep that reaches
-///   several seeds at once — or a retry issued while an earlier attempt is still
-///   in flight — then drops every peer's shards into one bucket.
-///
-/// Either way the result is an outage no tag and no signature can catch: every
-/// shard was authentic, only the grouping was wrong.
-///
-/// So the bucket is keyed by the frame's own **generation** — the session it
-/// belongs to, the ratchet epoch that sealed it, and the counter — which is what
-/// the shards of one message share and what no two messages do. For a frame
-/// that has no session hash yet there is no generation to name, so the sender's
-/// address stands in for it (see [`SpoolKey::of`]).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct SpoolKey {
     pub(crate) session_hash: [u8; 4],
     pub(crate) epoch: u64,
     pub(crate) counter: u64,
-    /// The sender, recorded **only for a frame that has no session hash yet**.
-    ///
-    /// Deliberately not part of the key for a session frame: the multi-hop shard
-    /// router sends the three shards of one message through *different* peers, so
-    /// they arrive from different addresses, and a key that named one address
-    /// would never reassemble them. It is also unnecessary there — the session
-    /// hash and the counter already separate every message. A handshake has
-    /// neither, so the address it came from is its only identity.
     pub(crate) pre_session_src: Option<SocketAddr>,
 }
 
 impl SpoolKey {
-    /// The bucket a received datagram belongs to, read entirely from the wire.
     pub(crate) fn of(src: SocketAddr, datagram: &[u8], v2: Option<V2FrameMeta>) -> Self {
         let session_hash = net::parse_session_hash(datagram);
         Self {
             session_hash,
-            // `None` is a v1 frame: the handshake and the legacy inner layers
-            // carry no epoch, so their generation is the session hash alone.
             epoch: v2.map_or(0, |meta| meta.epoch),
             counter: net::parse_packet_counter_u64(datagram),
             pre_session_src: (session_hash == [0, 0, 0, 0]).then_some(src),
@@ -100,21 +49,12 @@ impl SpoolKey {
     }
 }
 
-/// The per-node shard-reassembly spool: one bucket per in-flight message.
-///
-/// Entries with fewer than two shards are pruned when the cap is exceeded
-/// (anti-memory-DoS) — see [`MAX_SPOOL_ENTRIES`].
 pub(crate) type SpoolPool = DashMap<SpoolKey, Vec<Option<Vec<u8>>>>;
 
-/// Hard cap on the shard-reassembly spool (per-node). Entries with fewer than
-/// two shards are pruned when the cap is exceeded (anti-memory-DoS).
 pub(crate) const MAX_SPOOL_ENTRIES: usize = 8192;
 
-/// Hard cap on concurrent sessions (anti-flood: attackers can mint unlimited
-/// self-signed identities, so the session table must be bounded).
 pub(crate) const MAX_SESSIONS: usize = 512;
 
-/// Hard cap on in-flight pending handshakes per node.
 pub(crate) const MAX_PENDING_HANDSHAKES: usize = 512;
 
 pub(crate) async fn assemble(
@@ -123,15 +63,9 @@ pub(crate) async fn assemble(
     idx: usize,
     data: Vec<u8>,
 ) -> Option<Vec<u8>> {
-    // Cap the spool so a remote sender cannot grow it without bound with
-    // single-shard garbage (entries with <2 shards are unrecoverable).
     if pool.len() > MAX_SPOOL_ENTRIES {
         pool.retain(|_, v| v.iter().filter(|s| s.is_some()).count() >= 2);
     }
-    // Atomic claim: the shard-write happens under the bucket's write lock, so
-    // exactly one task can observe count>=2 with len==3 and append a claim
-    // marker (4th slot). All other tasks then drop out; only the claimant
-    // removes the bucket — no unwrap() race, no frame dropped by double-remove.
     let should_assemble = {
         let mut entry = pool.entry(key).or_insert_with(|| vec![None, None, None]);
         let e = entry.value_mut();
@@ -166,14 +100,6 @@ pub(crate) async fn assemble(
     None
 }
 
-// `frame_shard` / `unframe` live in `ghost::net` (canonical) and are
-// imported below.
-
-/// Everything one outgoing v2 message is sealed with.
-///
-/// Taken as one snapshot from the session so the epoch key and the epoch number
-/// cannot straddle a ratchet step: sealing under one epoch's key with another
-/// epoch's number produces a frame no receiver can open.
 #[derive(Clone)]
 pub(crate) struct SealCtx {
     pub(crate) key: [u8; 32],
@@ -182,14 +108,7 @@ pub(crate) struct SealCtx {
     pub(crate) nonce: [u8; 12],
     pub(crate) direction: NonceDirection,
     pub(crate) session_hash: [u8; 4],
-    /// The 64-byte jitter tail for this message, drawn once.
-    ///
-    /// It has to be one value for the whole message: every shard's frame carries
-    /// it and the single AEAD tag authenticates it as associated data. Drawing it
-    /// here (rather than recomputing it from the key) is what makes the tail
-    /// unrecomputable to an auditor who is later handed the decoy key.
     pub(crate) tail: [u8; net::JITTER_MAX],
-    /// This message filled its epoch: the caller should start a ratchet step.
     pub(crate) ratchet_due: bool,
 }
 
@@ -208,12 +127,6 @@ impl SealCtx {
         }
     }
 
-    /// The v2 header for one shard of this message. All shards of a message share
-    /// counter, epoch and nonce — they are pieces of one AEAD ciphertext.
-    ///
-    /// This is also the single place the jitter tail is attached. It comes from
-    /// [`SealCtx::tail`], drawn once when the context was built, so every shard
-    /// of the message carries the same bytes the sealer authenticated.
     pub(crate) fn header(&self, shard_index: u8, bulk: bool, flags: u8) -> net::GtfV2Header {
         net::GtfV2Header {
             session_hash: self.session_hash,
@@ -237,23 +150,16 @@ impl SealCtx {
     }
 }
 
-/// What a v2 frame header tells the receiver beyond the payload region: which
-/// ratchet epoch sealed it, with which nonce, and the jitter tail it carries.
 #[derive(Clone, Copy)]
 pub(crate) struct V2FrameMeta {
     pub(crate) epoch: u64,
     pub(crate) nonce: [u8; 12],
-    /// Whether this is an MTU-sized bulk frame, which carries no tail at all.
     pub(crate) bulk: bool,
-    /// The jitter tail **exactly as it arrived on the wire**.
     pub(crate) tail: [u8; net::JITTER_MAX],
-    /// ShardSec frames authenticate each RS shard independently and are opened
-    /// before reconstruction; they do not use the legacy message-level AEAD.
     pub(crate) shardsec: bool,
 }
 
 impl V2FrameMeta {
-    /// Read the seal metadata out of a raw datagram, if it is a v2 frame.
     pub(crate) fn of(frame: &[u8]) -> Option<Self> {
         net::parse_gtf_v2_header(frame).map(|h| Self {
             epoch: h.epoch,
@@ -265,12 +171,6 @@ impl V2FrameMeta {
     }
 }
 
-/// A lock-free snapshot of everything needed to *open* frames from one session.
-///
-/// Snapshotted before the DashMap iterator is dropped for the same reason the old
-/// code snapshotted the master key: taking a `get_mut` (for the replay guard) while
-/// an iterator is alive deadlocks the task. The epoch keys are copied rather than
-/// borrowed, so the ratchet's lock is never held across the receive path.
 pub(crate) struct OpenCtx {
     pub(crate) peer_fp: String,
     pub(crate) master_key: [u8; 32],
@@ -295,8 +195,6 @@ impl OpenCtx {
     }
 }
 
-/// Open the ciphertext carried by one received frame, for one session, whichever
-/// wire version it arrived in.
 pub(crate) fn open_received_frame(
     ctx: &OpenCtx,
     sess: &Session,
@@ -330,9 +228,6 @@ pub(crate) fn open_received_frame(
             None
         }
         None => {
-            // v1: the nonce is derived from the counter and the key is the seed.
-            // The counter is 32-bit on that wire, so a v2-only value cannot be
-            // mistaken for it.
             let Ok(ctr32) = u32::try_from(ctr) else {
                 return None;
             };
@@ -387,8 +282,6 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
                 frame_shard(&wire)
             })
             .collect();
-        // ShardSec authenticates inside each shard. The legacy GTF tag field is
-        // intentionally zero for this versioned mode and is never trusted.
         return (frames, [0u8; 16]);
     }
     let pay_len = pay.len() as u16;
@@ -398,10 +291,6 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
     if framed.len() % 2 != 0 {
         framed.push(0);
     }
-    // The privacy frame's jitter tail is authenticated as AEAD
-    // associated data, so the sealer covers the exact bytes the frame will carry.
-    // The tail was drawn once on the context, so the frame builder and the sealer
-    // agree without either recomputing it from the (coercible) session key.
     xchacha_seal_in_place_with_aad(
         &ctx.key,
         &ctx.nonce,
@@ -422,7 +311,6 @@ pub(crate) fn enc_split(ctx: &SealCtx, pay: &[u8]) -> (Vec<Vec<u8>>, [u8; 16]) {
     (raw.iter().map(|s| frame_shard(s)).collect(), t)
 }
 
-/// One opaque frame waiting in the bounded cross-message mix batch.
 pub(crate) struct MixWireFrame {
     pub(crate) socket: Arc<UdpSocket>,
     pub(crate) destination: SocketAddr,
@@ -430,10 +318,6 @@ pub(crate) struct MixWireFrame {
     pub(crate) done: oneshot::Sender<std::io::Result<()>>,
 }
 
-/// The mix is deliberately process-local and bounded: at most three messages
-/// (nine frames) wait for the same flush. A 20 ms deadline prevents a quiet link
-/// from turning mixing into an outage, while a full batch gives the observer no
-/// stable relation between application-message order and wire order.
 pub(crate) static MIX_WIRE_QUEUE: OnceLock<Arc<std::sync::Mutex<MixBatch<MixWireFrame>>>> =
     OnceLock::new();
 
@@ -518,18 +402,12 @@ pub(crate) async fn send3(
     f: &[Vec<u8>],
     tag: &[u8; 16],
 ) {
-    // Borrowed-socket callers (notably the relay ingress) stay on the direct
-    // path because their socket lifetime is owned by the receive task.
     for (i, shard) in f.iter().take(3).enumerate() {
-        // `send_v2` is `send_gtf_v2` until the SRTP carrier is opted into, in
-        // which case the same frame goes out inside an RTP header.
         let _ =
             super::srtp::send_v2(sock, dst, &ctx.data_header(i as u8, false, 0), shard, tag).await;
     }
 }
 
-/// Mixed variant for long-lived node-owned sockets. The queue holds only fully
-/// framed opaque datagrams, so batching cannot change authentication or routing.
 pub(crate) async fn send3_mixed(
     sock: Arc<UdpSocket>,
     dst: &SocketAddr,
@@ -558,19 +436,6 @@ pub(crate) async fn send3_mixed(
     }
 }
 
-/// Seal `payload` as ONE self-contained GTF datagram.
-///
-/// This is the single-datagram form the receive path already knows: a bulk frame
-/// with the self-contained bit (0x02) set, whose payload region holds
-/// `frame_shard(ciphertext)` — exactly what `unframe()` consumes. That bit is what
-/// stops the receiver waiting for Reed-Solomon siblings that will never arrive,
-/// which is the point: a relay hop carries one datagram at a time, and a control
-/// PDU is a whole message rather than a shard of one.
-///
-/// The bypass that honours the bit is **not** VPN-gated (`RxContext::ingest`): for
-/// a while it was, which meant a default build spooled these frames as a single
-/// unrecoverable shard and dropped them. Any new caller of this function depends
-/// on that bypass staying unconditional.
 pub(crate) fn seal_single(ctx: &SealCtx, payload: &[u8]) -> Vec<u8> {
     let mut framed = Vec::with_capacity(2 + payload.len() + 1 + 16);
     framed.extend_from_slice(&(payload.len() as u16).to_be_bytes());
@@ -582,30 +447,22 @@ pub(crate) fn seal_single(ctx: &SealCtx, payload: &[u8]) -> Vec<u8> {
         .expect("sealing an owned buffer cannot fail");
     let tag: [u8; 16] = framed[framed.len() - 16..].try_into().unwrap_or([0u8; 16]);
     let carrier = frame_shard(&framed);
-    // The tunnel bit (0x02) rides in the v2 header's flags byte, which is the same
-    // byte v1 used — so a v2 frame's flags stay readable by the same helper, and
-    // the v2 marker is what tells the receiver the rest of the header moved.
     net::build_gtf_v2_frame(&ctx.header(0, true, net::FLAG_TUNNEL), &carrier, &tag)
 }
 
-/// ShardSec default-on: the send side, the receive side, and the round trip.
 #[cfg(test)]
 mod shardsec_default_tests {
     use crate::*;
 
     #[test]
     pub(crate) fn the_env_switch_has_the_documented_semantics() {
-        // Unset => enabled (the 0.7.7 default).
         assert!(shardsec_enabled_for(None));
-        // The explicit opt-out spellings.
         assert!(!shardsec_enabled_for(Some("off")));
         assert!(!shardsec_enabled_for(Some("OFF")));
         assert!(!shardsec_enabled_for(Some("Off")));
         assert!(!shardsec_enabled_for(Some("0")));
         assert!(!shardsec_enabled_for(Some("false")));
         assert!(!shardsec_enabled_for(Some("FALSE")));
-        // Anything else — including legacy truthy spellings and an empty
-        // value — means enabled, exactly like the old any-set-value rule.
         assert!(shardsec_enabled_for(Some("on")));
         assert!(shardsec_enabled_for(Some("1")));
         assert!(shardsec_enabled_for(Some("true")));
@@ -632,26 +489,18 @@ mod shardsec_default_tests {
         let (carriers, tag) = enc_split(&ctx, payload);
         assert_eq!(carriers.len(), 3);
         if shardsec_default_enabled() {
-            // ShardSec authenticates inside each shard; the legacy message tag
-            // field is intentionally zero and never trusted in this mode.
             assert_eq!(tag, [0u8; 16]);
-            // Every carrier unframes to a sealed shard: ciphertext + 16-byte tag.
             for carrier in &carriers {
                 let sd = unframe(carrier).expect("frame_shard carrier");
                 assert!(sd.len() > 16, "sealed shard = ciphertext + 16-byte tag");
             }
         } else {
-            // Legacy mode: the real message-level Poly1305 tag is returned.
             assert_ne!(tag, [0u8; 16]);
         }
     }
 
     #[test]
     pub(crate) fn shardsec_datagrams_open_the_way_ingest_opens_them() {
-        // Regression guard for the 0.7.7 default-on flip: build the datagrams
-        // exactly as `send3_mixed` builds them, then run the exact steps
-        // `RxContext::ingest` runs for a ShardSec frame. Any divergence between
-        // the send and receive sides of the ShardSec path fails here.
         if !shardsec_default_enabled() {
             return;
         }
@@ -666,7 +515,6 @@ mod shardsec_default_tests {
             assert_eq!(meta.epoch, ctx.epoch);
             assert_eq!(meta.nonce, ctx.nonce);
 
-            // ingest: unframe the payload region into the sealed shard.
             let sd = unframe(net::extract_payload(&datagram)).expect("carrier unframes");
             let sealed = vantablack::ghost::net::shardsec::SealedShard {
                 index: index as u8,
@@ -675,8 +523,6 @@ mod shardsec_default_tests {
                 is_honey: false,
             };
 
-            // ingest: the AEAD key comes from plan_open for the counter on the
-            // wire, not from the seal context — verify both agree.
             let wire_ctr = net::parse_packet_counter_u64(&datagram);
             let planned = ctx
                 .key /* a receiver would use plan_open's key; seal key must equal it */;
@@ -697,9 +543,6 @@ mod shardsec_default_tests {
 
     #[test]
     pub(crate) fn shardsec_round_trip_recovers_the_message_from_two_shards() {
-        // Only meaningful when the node resolves ShardSec on; with the env
-        // inherited as `off` the frames are legacy and the legacy path covers
-        // them (the enc_split test above pins the flag consistency).
         if !shardsec_default_enabled() {
             return;
         }
@@ -709,9 +552,6 @@ mod shardsec_default_tests {
 
         let mut opened: Vec<Vec<u8>> = Vec::with_capacity(3);
         for (index, carrier) in carriers.iter().enumerate() {
-            // Receiver side, exactly as `ingest` does per shard: the carrier
-            // rides inside a v2 datagram's payload region (which the test
-            // starts from), then `unframe` splits off the 16-byte tag.
             let sd = unframe(carrier).expect("frame_shard carrier");
             assert!(sd.len() > 16);
             let sealed = vantablack::ghost::net::shardsec::SealedShard {
@@ -733,8 +573,6 @@ mod shardsec_default_tests {
             opened.push(plain);
         }
 
-        // The full receive pipeline, shard 2 "lost" in transit: any two
-        // pristine shards reconstruct the message (mirrors `assemble()`).
         let mut work: Vec<Option<Vec<u8>>> =
             vec![Some(opened[0].clone()), Some(opened[1].clone()), None];
         l4_rs::reconstruct(&mut work).expect("2 of 3 shards suffice");
@@ -748,7 +586,6 @@ mod shardsec_default_tests {
             "the reconstructed plaintext must be the original payload"
         );
 
-        // A tampered shard must fail its own tag instead of poisoning the pair.
         let sd = unframe(&carriers[1]).expect("carrier");
         let mut corrupted = sd.clone();
         let last = corrupted.len() - 1;
@@ -775,7 +612,6 @@ mod shardsec_default_tests {
     }
 }
 
-// The reassembly spool's key, on its own.
 #[cfg(test)]
 mod spool_key_tests {
     //! The spool used to bucket by packet counter alone, which is not a message
@@ -785,8 +621,6 @@ mod spool_key_tests {
     //! pinned where it lives rather than only inferred from a live run.
     use crate::*;
 
-    /// `l4_rs::encode` pads an odd payload with one zero byte before splitting it
-    /// into two halves, so a reassembled message is the *padded* input.
     pub(crate) fn padded(mut v: Vec<u8>) -> Vec<u8> {
         if !v.len().is_multiple_of(2) {
             v.push(0);
@@ -794,8 +628,6 @@ mod spool_key_tests {
         v
     }
 
-    /// The bucket of a handshake-shaped frame: no session hash yet, so the
-    /// sender's address is what identifies it.
     pub(crate) fn key(src: &str, counter: u64) -> SpoolKey {
         SpoolKey {
             session_hash: [0, 0, 0, 0],
@@ -805,8 +637,6 @@ mod spool_key_tests {
         }
     }
 
-    /// The bucket of a frame that names a session: identified by the session, its
-    /// ratchet epoch and the counter — deliberately *not* by an address.
     pub(crate) fn session_key(counter: u64, epoch: u64) -> SpoolKey {
         SpoolKey {
             session_hash: [0xDE, 0xAD, 0xBE, 0xEF],
@@ -818,10 +648,6 @@ mod spool_key_tests {
 
     #[test]
     pub(crate) fn the_key_reads_the_generation_out_of_the_wire_header() {
-        // A session frame and a handshake frame with the same counter: the key
-        // must come out of the header, and the handshake must carry an address
-        // while the session frame must not — that is the difference that keeps
-        // the multi-hop shard router working (see `SpoolKey::pre_session_src`).
         let session_frame =
             net::build_gtf_frame([0xAB, 0xCD, 0x01, 0x02], 9, 0, &[], &[0u8; 16], false);
         let handshake_frame = net::build_gtf_frame([0, 0, 0, 0], 0, 0, &[], &[0u8; 16], false);
@@ -850,19 +676,14 @@ mod spool_key_tests {
     #[tokio::test]
     pub(crate) async fn two_sources_offering_at_one_counter_never_share_a_bucket() {
         let pool: SpoolPool = DashMap::new();
-        // Two handshake-shaped messages: same counter, same zero session hash, no
-        // epoch. The *only* thing that tells them apart is who sent them.
         let alice_key = key("127.0.0.1:40001", 0);
         let bob_key = key("127.0.0.1:40002", 0);
-        // Equal-length messages, so nothing about the mixing is visible in a
-        // length either — the two offers are indistinguishable on the wire.
         let alice = padded(b"alice's handshake offer".to_vec());
         let bob = padded(b"bob's handshake offer!!!".to_vec());
         assert_eq!(alice.len(), bob.len(), "a colliding pair is the point");
         let alice_shards = l4_rs::encode(&mut alice.clone());
         let bob_shards = l4_rs::encode(&mut bob.clone());
 
-        // The arrival order that broke the counter-keyed spool: a0, b0, a1, b1.
         assert!(assemble(&pool, alice_key, 0, alice_shards[0].clone())
             .await
             .is_none());
@@ -878,15 +699,11 @@ mod spool_key_tests {
 
         assert_eq!(got_alice, alice, "alice must reassemble her own shards");
         assert_eq!(got_bob, bob, "bob must reassemble his own shards");
-        // Both buckets are gone: neither message was left half-assembled for a
-        // later arrival to join.
         assert!(pool.is_empty());
     }
 
     #[tokio::test]
     pub(crate) async fn shards_of_one_message_still_share_a_bucket() {
-        // The positive control: the property the (2,1) code depends on is intact,
-        // including when the shard that was lost is the first one.
         let pool: SpoolPool = DashMap::new();
         let k = key("127.0.0.1:40003", 7);
         let msg = padded(b"a message whose first shard never arrived".to_vec());
@@ -900,9 +717,6 @@ mod spool_key_tests {
 
     #[tokio::test]
     pub(crate) async fn two_sessions_at_one_counter_never_share_a_bucket() {
-        // The other half of the counter problem, and the one that hits ordinary
-        // traffic: the counter is a *per-session* sequence number, so two sessions
-        // running at the same counter used to share a bucket.
         let pool: SpoolPool = DashMap::new();
         let alice_key = session_key(5, 0);
         let bob_key = SpoolKey {
@@ -934,9 +748,6 @@ mod spool_key_tests {
 
     #[tokio::test]
     pub(crate) async fn a_newer_generation_is_a_different_message() {
-        // A counter and a session can be the same while the message is not: a
-        // retransmit sealed under the next ratchet epoch shares both. Those must
-        // not merge either.
         let pool: SpoolPool = DashMap::new();
         let older = session_key(5, 0);
         let newer = SpoolKey { epoch: 1, ..older };

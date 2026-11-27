@@ -37,66 +37,38 @@ pub mod tun;
 
 use crate::ghost::layers::l6_session;
 
-/// Overlay IPv4 prefix for the VPN (10.66.0.0/24).
 pub const OVERLAY_PREFIX: u8 = 10;
 pub const OVERLAY_SECOND_OCTET: u8 = 66;
-/// Hub is always .1; clients get .10.. .254.
 pub const OVERLAY_HUB_HOST: u8 = 1;
 pub const OVERLAY_FIRST_CLIENT_HOST: u8 = 10;
 pub const OVERLAY_LAST_CLIENT_HOST: u8 = 254;
 
-/// Client TUN MTU. Fits every IP packet into one 1472-byte GTF bulk frame
-/// (1446-byte payload). 1280 = IPv6 minimum MTU.
 pub const TUN_MTU: u16 = 1280;
-/// TCP MSS advertised on every proxied TCP flow inside the overlay: the
-/// tunnel MTU minus IP (20) + TCP (20) headers. The netstack clamps the
-/// MSS option on client SYNs and hub SYN-ACKs to this value so no inner
-/// segment can exceed one tunnel datagram (PMTUD blackhole guard — LTE
-/// paths commonly drop "fragmentation needed" ICMP).
 pub const OVERLAY_MSS: u16 = TUN_MTU - 40;
 
-/// UDP flow TTL for DNS-classified flows (destination port 53).
 pub const UDP_DNS_TTL: Duration = Duration::from_secs(10);
-/// UDP flow TTL for all other flows.
 pub const UDP_GENERAL_TTL: Duration = Duration::from_secs(45);
-/// Max concurrent UDP flows per client fingerprint.
 pub const UDP_FLOWS_PER_FP: usize = 64;
-/// Max concurrent UDP flows globally.
 pub const UDP_FLOWS_GLOBAL: usize = 1024;
 
-/// Silence window for the re-anchor fallback (route flapping).
 pub const SILENCE_REANCHOR: Duration = Duration::from_secs(15);
 
-/// Default TTL before an unrefreshed tunnel epoch self-destructs (§4 Harvest-Then-Decay).
 pub const DEFAULT_EPOCH_TTL: Duration = Duration::from_secs(15 + 60);
 
-/// Which role this node plays in the VPN.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VpnRole {
-    /// Hub: sits in the home LAN, terminates flows, leases overlay IPs.
     Hub,
-    /// Client: road warrior, tunnels LAN-bound packets to the hub.
     Client,
 }
 
-/// Static VPN configuration (env-driven in main.rs).
 #[derive(Debug, Clone)]
 pub struct VpnConfig {
     pub role: VpnRole,
-    /// Hub overlay IP as seen by clients (default 10.66.0.1).
     pub hub_overlay: Ipv4Addr,
-    /// Home-LAN subnet served by the hub (advertised to clients).
     pub lan_subnet: (Ipv4Addr, u8),
-    /// DNS server handed to clients (usually the router).
     pub dns_server: Ipv4Addr,
-    /// DNS search domain handed to clients (e.g. "fritz.box"). Never ".local" —
-    /// unicast DNS cannot resolve mDNS names (v2 adds a relay).
     pub search_domain: Option<String>,
-    /// Explicit client allowlist (fingerprint hex). Empty = deny all
-    /// (authorization is an operator decision, not a mesh property).
     pub allowed_fingerprints: Vec<String>,
-    /// Bind OS flow sockets to this address (the hub's LAN IP), never
-    /// 0.0.0.0 (audit: predictable egress on multi-homed hosts).
     pub lan_bind_addr: IpAddr,
 }
 
@@ -114,43 +86,25 @@ impl Default for VpnConfig {
     }
 }
 
-// ── LeaseTable ──────────────────────────────────────────────────────
-
-/// One client lease: overlay IP + live endpoint + epoch.
 #[derive(Debug, Clone)]
 pub struct Lease {
     pub fingerprint: String,
     pub overlay_ip: Ipv4Addr,
-    /// Current best-known wire address for return traffic.
     pub endpoint: SocketAddr,
-    /// Session epoch. Rotates on every fresh handshake; invalidates all
-    /// per-epoch tunnel state (counters, replay windows).
     pub epoch: u32,
-    /// Last authenticated packet from the CURRENT endpoint.
     pub last_seen: Instant,
-    /// Highest tunnel counter accepted from this client in this epoch.
-    /// Governs the monotonic re-anchor rule.
     pub tunnel_v_max: u32,
-    /// Timestamp when this epoch expires and self-destructs (§4 Harvest-Then-Decay).
     pub epoch_ttl: Instant,
 }
 
-/// Why a re-anchor (or its refusal) happened — for tests and console output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnchorEvent {
-    /// Fresh handshake rotated the epoch and re-anchored unconditionally.
     HandshakeRotation,
-    /// Packet advanced the replay window (N > V_MAX) — monotonic re-anchor.
     WindowAdvance,
-    /// Silence fallback: endpoint silent >= SILENCE_REANCHOR, valid in-window
-    /// packet from a new address.
     SilenceFallback,
-    /// Packet was fine but the endpoint did NOT move (the migration-race
-    /// protection: late packet from a dead address).
     NoChange,
 }
 
-/// Leases keyed by fingerprint.
 #[derive(Default)]
 pub struct LeaseTable {
     by_fp: Mutex<HashMap<String, Lease>>,
@@ -167,8 +121,6 @@ impl LeaseTable {
         }
     }
 
-    /// Allocate (or return) the overlay IP for a fingerprint.
-    /// Caller MUST have verified `cfg.allowed_fingerprints` first.
     pub fn lease_for(&self, fingerprint: &str) -> Option<Ipv4Addr> {
         let mut fps = self.by_fp.lock();
         if let Some(l) = fps.get(fingerprint) {
@@ -205,7 +157,6 @@ impl LeaseTable {
         None // pool exhausted
     }
 
-    /// Is `ip` a well-formed client overlay address (10.66.0.host)?
     fn is_valid_overlay(ip: Ipv4Addr) -> bool {
         let o = ip.octets();
         o[0] == OVERLAY_PREFIX
@@ -215,11 +166,6 @@ impl LeaseTable {
             && o[3] <= OVERLAY_LAST_CLIENT_HOST
     }
 
-    /// Lease honoring a client-provided overlay IP hint. The client
-    /// configures its own TUN, so it self-selects its address; the hub
-    /// adopts the hint when free (never the hub host, never one claimed by
-    /// another fingerprint), otherwise auto-assigns. Returns
-    /// `(overlay_ip, hint_was_overridden)`.
     pub fn lease_for_hint(&self, fingerprint: &str, hint: Option<Ipv4Addr>) -> (Ipv4Addr, bool) {
         if let Some(h) = hint {
             if Self::is_valid_overlay(h) {
@@ -256,14 +202,11 @@ impl LeaseTable {
                             epoch_ttl: Instant::now() + DEFAULT_EPOCH_TTL,
                         },
                     );
-                    // Advance the allocator past the hinted host so it is
-                    // never reissued to an auto-assigned client.
                     if h.octets()[3] + 1 > OVERLAY_FIRST_CLIENT_HOST {
                         *next = (*next).max(h.octets()[3] + 1);
                     }
                     return (h, false);
                 }
-                // hint claimed by another fingerprint → auto-assign below
             }
         }
         (
@@ -272,14 +215,10 @@ impl LeaseTable {
         )
     }
 
-    /// Fresh handshake from a known fingerprint: rotate epoch, zero the
-    /// tunnel window, re-anchor unconditionally (precedence 1). Never
-    /// consults V_MAX. Returns the event for logging/tests.
     pub fn rotate_epoch(&self, fingerprint: &str, endpoint: SocketAddr) -> Option<AnchorEvent> {
         self.rotate_epoch_with_ttl(fingerprint, endpoint, DEFAULT_EPOCH_TTL)
     }
 
-    /// Fresh handshake with explicit epoch TTL (§4 Harvest-Then-Decay).
     pub fn rotate_epoch_with_ttl(
         &self,
         fingerprint: &str,
@@ -296,14 +235,10 @@ impl LeaseTable {
         Some(AnchorEvent::HandshakeRotation)
     }
 
-    /// Adopt an authenticated tunnel epoch exactly, without assuming epochs
-    /// advance by one. This is used for loss-tolerant mobility where a client
-    /// may complete several re-anchors before the hub sees the next packet.
     pub fn adopt_epoch(&self, fingerprint: &str, epoch: u32, endpoint: SocketAddr) -> bool {
         self.adopt_epoch_with_ttl(fingerprint, epoch, endpoint, DEFAULT_EPOCH_TTL)
     }
 
-    /// Adopt an authenticated tunnel epoch with explicit TTL (§4 Harvest-Then-Decay).
     pub fn adopt_epoch_with_ttl(
         &self,
         fingerprint: &str,
@@ -323,7 +258,6 @@ impl LeaseTable {
         true
     }
 
-    /// Check if the client's current epoch has expired and self-destructed (§4 Harvest-Then-Decay).
     pub fn is_epoch_expired(&self, fingerprint: &str) -> bool {
         let fps = self.by_fp.lock();
         fps.get(fingerprint)
@@ -331,7 +265,6 @@ impl LeaseTable {
             .unwrap_or(true)
     }
 
-    /// Force immediate self-destruction/expiration of an epoch (§4 Harvest-Then-Decay).
     pub fn expire_epoch_now(&self, fingerprint: &str) -> bool {
         let mut fps = self.by_fp.lock();
         let Some(l) = fps.get_mut(fingerprint) else {
@@ -342,17 +275,10 @@ impl LeaseTable {
         true
     }
 
-    /// Current epoch for a fingerprint (0 if unleased).
     pub fn epoch_of(&self, fingerprint: &str) -> Option<u32> {
         self.by_fp.lock().get(fingerprint).map(|l| l.epoch)
     }
 
-    /// A tunnel packet from `from` with counter `ctr` was authenticated.
-    /// Applies the re-anchor precedence ladder:
-    ///   1. (handled by `rotate_epoch` — never here)
-    ///   2. ctr > tunnel_v_max  → accept + re-anchor (monotonic rule)
-    ///   3. in-window + silent endpoint >= SILENCE_REANCHOR → re-anchor
-    ///      else: accept as data, endpoint unchanged (late-packet race guard).
     pub fn observe_tunnel_packet(
         &self,
         fingerprint: &str,
@@ -365,12 +291,9 @@ impl LeaseTable {
             return (false, AnchorEvent::NoChange);
         };
         if l.epoch != epoch {
-            // stale epoch packet — authenticated but from a dead session era
             return (false, AnchorEvent::NoChange);
         }
         if Instant::now() >= l.epoch_ttl {
-            // §4 Harvest-Then-Decay: epoch self-destructed.
-            // Reset tunnel_v_max to u32::MAX so any historical packet from this epoch is dead.
             l.tunnel_v_max = u32::MAX;
             return (false, AnchorEvent::NoChange);
         }
@@ -389,8 +312,6 @@ impl LeaseTable {
                 l.last_seen = Instant::now();
                 return (true, AnchorEvent::SilenceFallback);
             }
-            // The migration-race guard: valid data from a dead address does
-            // NOT move the endpoint.
             return (true, AnchorEvent::NoChange);
         }
         l.last_seen = Instant::now();
@@ -404,7 +325,6 @@ impl LeaseTable {
         )
     }
 
-    /// Where return traffic goes for an overlay IP. O(1) lookup via secondary by_ip index.
     pub fn endpoint_for_ip(&self, overlay_ip: Ipv4Addr) -> Option<SocketAddr> {
         let fp = self.fingerprint_for_ip(overlay_ip)?;
         let fps = self.by_fp.lock();
@@ -416,8 +336,6 @@ impl LeaseTable {
         }
     }
 
-    /// Fingerprint owning an overlay IP. O(1) lookup via secondary by_ip index,
-    /// with fallback to by_fp scanning or single active lease.
     pub fn fingerprint_for_ip(&self, overlay_ip: Ipv4Addr) -> Option<String> {
         if let Some(fp) = self.by_ip.lock().get(&overlay_ip).cloned() {
             return Some(fp);
@@ -443,7 +361,6 @@ impl LeaseTable {
         self.by_fp.lock().len()
     }
 
-    /// Evict a client's lease when it sends an authenticated disconnect (GHOST_BYE).
     pub fn evict(&self, fingerprint: &str) -> bool {
         let mut fps = self.by_fp.lock();
         if let Some(lease) = fps.remove(fingerprint) {
@@ -454,13 +371,11 @@ impl LeaseTable {
         }
     }
 
-    /// Clear all leases (used when the hub itself deactivates).
     pub fn clear(&self) {
         self.by_fp.lock().clear();
         self.by_ip.lock().clear();
     }
 
-    /// Console snapshot for `LEASES`.
     pub fn snapshot(&self) -> Vec<Lease> {
         let mut v: Vec<Lease> = self.by_fp.lock().values().cloned().collect();
         v.sort_by_key(|l| l.overlay_ip);
@@ -468,9 +383,6 @@ impl LeaseTable {
     }
 }
 
-// ── UdpFlowTable ────────────────────────────────────────────────────
-
-/// Key of one userspace UDP flow on the hub.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FlowKey {
     pub fp: String,
@@ -479,12 +391,9 @@ pub struct FlowKey {
     pub dst: SocketAddr,
 }
 
-/// A live UDP flow: the bound OS socket (demux key) + metadata.
 #[derive(Clone)]
 pub struct UdpFlow {
     pub key: FlowKey,
-    /// The bound OS socket. Return packets from the LAN arrive here and are
-    /// demuxed back into the tunnel by `local_port`.
     pub socket: Arc<std::net::UdpSocket>,
     pub last_seen: Instant,
     pub is_dns: bool,
@@ -496,15 +405,12 @@ impl UdpFlow {
     }
 }
 
-/// Bounded UDP flow table (audit rule 3): TTLs, per-fp cap, global cap, LRU.
 pub struct UdpFlowTable {
     flows: Mutex<HashMap<FlowKey, Arc<UdpFlow>>>,
     by_port: Mutex<HashMap<u16, FlowKey>>,
     lan_bind: IpAddr,
-    /// Flow TTLs (production defaults; injectable for churn-gate timing).
     dns_ttl: Duration,
     general_ttl: Duration,
-    /// Injected factory so tests run without binding real LAN addresses.
     bind_socket: Box<dyn Fn(IpAddr) -> std::io::Result<Arc<std::net::UdpSocket>> + Send + Sync>,
 }
 
@@ -528,7 +434,6 @@ impl UdpFlowTable {
         Self::with_timing(lan_bind, UDP_DNS_TTL, UDP_GENERAL_TTL)
     }
 
-    /// Constructor with injected flow TTLs (test timing; production via `new`).
     pub fn with_timing(lan_bind: IpAddr, dns_ttl: Duration, general_ttl: Duration) -> Self {
         Self {
             flows: Mutex::new(HashMap::new()),
@@ -540,7 +445,6 @@ impl UdpFlowTable {
         }
     }
 
-    /// Test constructor: inject a fake binder.
     pub fn with_binder(
         lan_bind: IpAddr,
         f: Box<dyn Fn(IpAddr) -> std::io::Result<Arc<std::net::UdpSocket>> + Send + Sync>,
@@ -555,13 +459,9 @@ impl UdpFlowTable {
         }
     }
 
-    /// Get-or-create the OS binding for a flow, enforcing caps. Returns the
-    /// flow (socket included). On cap breach the LRU flow is evicted; if
-    /// still over, the new flow is refused (drop — v1). Bounded, no EMFILE.
     pub fn get_or_create(&self, key: FlowKey) -> Option<Arc<UdpFlow>> {
         let mut flows = self.flows.lock();
         if let Some(f) = flows.get(&key) {
-            // cheap refresh: bump last_seen by reinserting a fresh Arc copy
             let refreshed = Arc::new(UdpFlow {
                 key: f.key.clone(),
                 socket: Arc::clone(&f.socket),
@@ -613,7 +513,6 @@ impl UdpFlowTable {
         }
     }
 
-    /// Lazy expiry: drop flows silent past their TTL.
     pub fn sweep(&self) -> usize {
         let mut flows = self.flows.lock();
         let mut by_port = self.by_port.lock();
@@ -631,8 +530,6 @@ impl UdpFlowTable {
         before - flows.len()
     }
 
-    /// Demux: which flow does a packet arriving on local port `port` belong to?
-    /// O(1) lookup via secondary by_port index.
     pub fn flow_for_local_port(&self, port: u16) -> Option<FlowKey> {
         self.by_port.lock().get(&port).cloned()
     }
@@ -641,12 +538,10 @@ impl UdpFlowTable {
         self.flows.lock().len()
     }
 
-    /// How many live flows belong to one fingerprint (`VPN STATUS`).
     pub fn count_for(&self, fp: &str) -> usize {
         self.flows.lock().keys().filter(|k| k.fp == fp).count()
     }
 
-    /// Immediately evict all UDP flows owned by `fp` on peer disconnect.
     pub fn evict_for(&self, fp: &str) -> usize {
         let mut flows = self.flows.lock();
         let mut by_port = self.by_port.lock();
@@ -661,7 +556,6 @@ impl UdpFlowTable {
         before - flows.len()
     }
 
-    /// Clear all UDP flows (used when the hub itself deactivates).
     pub fn clear(&self) {
         self.flows.lock().clear();
         self.by_port.lock().clear();
@@ -672,25 +566,12 @@ impl UdpFlowTable {
     }
 }
 
-// ── Tunnel datagram crypto ──────────────────────────────────────────
-
-/// Wire layout of a VPN tunnel datagram (before mesh framing):
-/// `[4B epoch][8B ctr][8B rand][XChaCha20-Poly1305(payload + tag)]`
-///
-/// Widened from `[4B epoch][4B ctr][ChaCha20-Poly1305(…)]` (HDR=8) to
-/// eliminate 32-bit counter exhaustion. The random segment makes the 24-byte
-/// XChaCha nonce unique even if (epoch, ctr) repeats across sessions, and the
-/// u64 counter space is effectively inexhaustible.
 pub const TUNNEL_HDR_LEN: usize = 20; // 4 + 8 + 8
 
-/// Max inner IP packet we carry (TUN_MTU) + AEAD tag.
 pub const TUNNEL_MAX_PAYLOAD: usize = TUN_MTU as usize + 16;
 
-/// Context bytes mixed into the XChaCha nonce.
 const TUNNEL_CONTEXT: [u8; 4] = *b"GTun";
 
-/// Build a 24-byte XChaCha nonce from the tunnel context, epoch, counter
-/// and a random segment: `[4B "GTun" | 4B epoch | 8B ctr | 8B rand]`.
 fn tunnel_xnonce(epoch: u32, ctr: u64, rand_seg: &[u8; 8]) -> [u8; 24] {
     let mut nonce = [0u8; 24];
     nonce[0..4].copy_from_slice(&TUNNEL_CONTEXT);
@@ -700,17 +581,12 @@ fn tunnel_xnonce(epoch: u32, ctr: u64, rand_seg: &[u8; 8]) -> [u8; 24] {
     nonce
 }
 
-/// Generate a fresh 8-byte random segment for the tunnel nonce.
 fn tunnel_rand_seg() -> [u8; 8] {
     let mut r = [0u8; 8];
     rand::Rng::fill(&mut rand::thread_rng(), &mut r[..]);
     r
 }
 
-/// Seal a raw IP packet into a tunnel datagram. Pure function.
-///
-/// Uses XChaCha20-Poly1305 with a u64 counter and an 8-byte random
-/// nonce segment transmitted on the wire, so the nonce space cannot exhaust.
 pub fn seal_datagram(key: &[u8; 32], epoch: u32, ctr: u64, ip_packet: &[u8]) -> Vec<u8> {
     use chacha20poly1305::aead::AeadInPlace;
     let mut body = ip_packet.to_vec();
@@ -729,8 +605,6 @@ pub fn seal_datagram(key: &[u8; 32], epoch: u32, ctr: u64, ip_packet: &[u8]) -> 
     out
 }
 
-/// Frame an IP packet for single-AEAD `GVPN2` transport inside an already-authenticated
-/// session frame: `[epoch u32][ctr u64][ip_packet]`. Eliminates redundant inner AEAD.
 pub fn seal_datagram_v2(epoch: u32, ctr: u64, ip_packet: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(12 + ip_packet.len());
     out.extend_from_slice(&epoch.to_be_bytes());
@@ -739,27 +613,18 @@ pub fn seal_datagram_v2(epoch: u32, ctr: u64, ip_packet: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Result of opening a tunnel datagram.
 pub enum OpenOutcome {
-    /// Authenticated + fresh; payload is the inner IP packet. `advanced` is
-    /// true when the replay window moved (drives re-anchor permission).
     Accepted { ip_packet: Vec<u8>, advanced: bool },
-    /// Authenticated but duplicate/ancient counter (replay) — drop.
     Replay,
-    /// Authentication failed or stale epoch — hostile/corrupt; drop.
     AuthFail,
 }
 
-/// Replay-window state per (fingerprint, epoch).
 #[derive(Default)]
 struct TunnelRx {
     guard: l6_session::SessionGuardU64,
     v_max: u64,
 }
 
-/// Ingress engine: owns per-epoch replay state and opens datagrams.
-/// This is the ONLY path tunnel packets take — structurally disconnected
-/// from AckEngine/RxState (audited M1 invariant).
 pub struct VpnIngress {
     rx: Mutex<HashMap<(String, u32), TunnelRx>>,
 }
@@ -777,11 +642,6 @@ impl VpnIngress {
         Self::default()
     }
 
-    /// Open a tunnel datagram. `expected_epoch` comes from the LeaseTable
-    /// (set by rotate_epoch). Returns the outcome; never blocks.
-    ///
-    /// Reads the widened `[4B epoch][8B ctr][8B rand][ct+tag]` format
-    /// and uses XChaCha20-Poly1305 to open.
     pub fn open(
         &self,
         key: &[u8; 32],
@@ -840,8 +700,6 @@ impl VpnIngress {
         }
     }
 
-    /// Open a single-AEAD `GVPN2` datagram (`[epoch u32][ctr u64][ip_packet]`) that was
-    /// already authenticated by the outer session frame.
     pub fn open_v2(&self, fingerprint: &str, expected_epoch: u32, wire: &[u8]) -> OpenOutcome {
         if wire.len() < 12 {
             return OpenOutcome::AuthFail;
@@ -868,25 +726,16 @@ impl VpnIngress {
         }
     }
 
-    /// Evict all state for a fingerprint (epoch rotation cleanup).
     pub fn evict(&self, fingerprint: &str) {
         self.rx.lock().retain(|(fp, _), _| fp != fingerprint);
     }
 
-    /// Retain only the authenticated current epoch for a fingerprint.
-    ///
-    /// Mobility can advance an inner tunnel epoch before the outer mesh
-    /// session is rebuilt. The candidate epoch must be authenticated first;
-    /// only then is older replay state removed. Keeping this operation separate
-    /// prevents an unauthenticated packet from forcing a destructive reset.
     pub fn retain_epoch(&self, fingerprint: &str, epoch: u32) {
         self.rx
             .lock()
             .retain(|(fp, e), _| fp != fingerprint || *e == epoch);
     }
 }
-
-// ── Tests (module-level invariants, no OS/LAN needed) ───────────────
 
 #[cfg(test)]
 mod tests {
@@ -914,10 +763,8 @@ mod tests {
         let ip_a: SocketAddr = "198.51.100.10:40000".parse().unwrap();
         let ip_b: SocketAddr = "203.0.113.99:51000".parse().unwrap();
         t.rotate_epoch(&f, ip_a);
-        // N+1 from the new address advances the window and re-anchors
         let (ok, ev) = t.observe_tunnel_packet(&f, 1, 151, ip_b);
         assert!(ok && ev == AnchorEvent::WindowAdvance);
-        // late N from the dead address: accepted as data, endpoint unchanged
         let (_ok, ev2) = t.observe_tunnel_packet(&f, 1, 150, ip_a);
         assert_eq!(ev2, AnchorEvent::NoChange);
         assert_eq!(t.endpoint_for_ip(t.lease_for(&f).unwrap()).unwrap(), ip_b);
@@ -930,14 +777,12 @@ mod tests {
         t.lease_for(&f).unwrap();
         let ip_a: SocketAddr = "198.51.100.10:40000".parse().unwrap();
         t.rotate_epoch(&f, ip_a);
-        // backdate last_seen beyond the silence window
         {
             let mut m = t.by_fp.lock();
             m.get_mut(&f).unwrap().last_seen =
                 Instant::now() - SILENCE_REANCHOR - Duration::from_secs(1);
         }
         let ip_c: SocketAddr = "203.0.113.5:52000".parse().unwrap();
-        // in-window counter (not advancing) from a fresh address
         t.observe_tunnel_packet(&f, 1, 1, ip_c);
         assert_eq!(t.endpoint_for_ip(t.lease_for(&f).unwrap()).unwrap(), ip_c);
     }
@@ -979,7 +824,6 @@ mod tests {
             ing.open(&key, "aa", 3, &tampered),
             OpenOutcome::AuthFail
         ));
-        // wrong epoch never opens
         assert!(matches!(
             ing.open(&key, "aa", 4, &wire),
             OpenOutcome::AuthFail
@@ -996,7 +840,6 @@ mod tests {
             OpenOutcome::Accepted { .. }
         ));
         ing.evict("bb");
-        // after eviction the replay window is gone: same wire opens again
         assert!(matches!(
             ing.open(&key, "bb", 1, &wire),
             OpenOutcome::Accepted { .. }
@@ -1049,7 +892,6 @@ mod tests {
         assert_eq!(t.len(), 0);
         assert_eq!(t.flow_for_local_port(port), None); // by_port secondary index cleaned up
 
-        // Test D11: refreshed Arc is returned with fresh last_seen
         let flow1 = t.get_or_create(key.clone()).unwrap();
         let old_seen = flow1.last_seen;
         std::thread::sleep(Duration::from_millis(5));
@@ -1060,7 +902,6 @@ mod tests {
         );
     }
 
-    /// Regression: a counter beyond u32::MAX roundtrips correctly.
     #[test]
     fn test_tunnel_u64_counter_beyond_u32_max() {
         let key = [0xABu8; 32];
@@ -1083,30 +924,23 @@ mod tests {
         }
     }
 
-    /// Regression: same (epoch, ctr) with different random segments produces
-    /// different ciphertexts — the random nonce segment provides uniqueness.
     #[test]
     fn test_tunnel_xnonce_uniqueness() {
         let key = [0xCDu8; 32];
         let packet = vec![0x60u8; 80];
         let w1 = seal_datagram(&key, 2, 99, &packet);
         let w2 = seal_datagram(&key, 2, 99, &packet);
-        // The random segments (bytes 12..20) must differ with overwhelming probability
         assert_ne!(
             &w1[12..20],
             &w2[12..20],
             "two seals must use different random nonce segments"
         );
-        // And therefore the ciphertexts differ
         assert_ne!(w1, w2);
-        // But both must open correctly
         let ing = VpnIngress::new();
         assert!(matches!(
             ing.open(&key, "uniq", 2, &w1),
             OpenOutcome::Accepted { .. }
         ));
-        // Second one has same counter — replay, which is expected since the
-        // replay window only tracks the counter, not the random segment.
         assert!(matches!(
             ing.open(&key, "uniq", 2, &w2),
             OpenOutcome::Replay
@@ -1115,28 +949,21 @@ mod tests {
 
     #[test]
     fn test_self_destructing_epoch_decay_and_auth_fail() {
-        // §4 Harvest-Then-Decay Proof:
-        // Intercepted wire datagram accepted at T0 is permanently rejected with AuthFail
-        // after the epoch decays/self-destructs, rather than Replay.
         let t = LeaseTable::new();
         let f = fp(44);
         t.lease_for(&f).unwrap();
         let ep: SocketAddr = "198.51.100.1:40000".parse().unwrap();
 
-        // 1. Rotate with short 40ms TTL for deterministic local test
         t.rotate_epoch_with_ttl(&f, ep, Duration::from_millis(40));
         assert!(!t.is_epoch_expired(&f));
 
-        // Packet accepted during active epoch lifetime
         let (ok, ev) = t.observe_tunnel_packet(&f, 1, 10, ep);
         assert!(ok);
         assert_eq!(ev, AnchorEvent::WindowAdvance);
 
-        // 2. Wait for epoch decay (> 40ms)
         std::thread::sleep(Duration::from_millis(50));
         assert!(t.is_epoch_expired(&f));
 
-        // 3. Replay of old counter or new counter from decayed epoch fails
         let (ok_replay, ev_replay) = t.observe_tunnel_packet(&f, 1, 10, ep);
         assert!(
             !ok_replay,
@@ -1147,22 +974,17 @@ mod tests {
         let (ok_new, _) = t.observe_tunnel_packet(&f, 1, 11, ep);
         assert!(!ok_new, "New packet from decayed epoch must be rejected");
 
-        // 4. Ingress level: when epoch decays and client re-handshakes to epoch 2,
-        // captured wire datagram from epoch 1 replayed against post-decay session returns AuthFail
         let ingress = VpnIngress::new();
         let key = [0x77u8; 32];
         let packet = vec![0x33u8; 64];
         let wire = seal_datagram(&key, 1, 10, &packet);
 
-        // Valid while expected_epoch == 1
         let outcome1 = ingress.open(&key, "decay_test", 1, &wire);
         assert!(matches!(outcome1, OpenOutcome::Accepted { .. }));
 
-        // Replay in same epoch -> Replay
         let outcome_rep = ingress.open(&key, "decay_test", 1, &wire);
         assert!(matches!(outcome_rep, OpenOutcome::Replay));
 
-        // After decay & session advance to epoch 2: old wire packet -> AuthFail!
         ingress.evict("decay_test");
         let outcome_post_decay = ingress.open(&key, "decay_test", 2, &wire);
         assert!(

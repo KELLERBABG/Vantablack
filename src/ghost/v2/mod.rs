@@ -49,17 +49,6 @@ pub mod regime;
 pub mod vbdns;
 pub mod xray;
 
-/// The v2 surfaces this build actually contains.
-///
-/// Used by `ggn --help`, the control center and the status document so that a
-/// build can state its capabilities without a hand-maintained list drifting from
-/// the code. Each entry is a module that is compiled in and unit-tested.
-/// Wall-clock seconds since the Unix epoch.
-///
-/// v2 state is timestamped rather than counter-based because it is shared
-/// between processes (CLI, daemon, dashboard) and survives restarts. `0` on a
-/// clock that predates the epoch, which keeps a broken clock from panicking the
-/// daemon over a display field.
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

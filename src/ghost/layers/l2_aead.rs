@@ -23,17 +23,13 @@ use chacha20poly1305::KeyInit;
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, XChaCha20Poly1305, XNonce};
 use rand::Rng;
 
-/// Direction indicator — XOR'd into the nonce to prevent directional nonce collisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonceDirection {
-    /// Packets sent from session initiator to responder.
     InitiatorToResponder = 0x00,
-    /// Packets sent from session responder to initiator.
     ResponderToInitiator = 0x01,
 }
 
 impl NonceDirection {
-    /// The other direction — what the *peer* seals in, given what we seal in.
     pub fn peer_direction(self) -> Self {
         match self {
             Self::InitiatorToResponder => Self::ResponderToInitiator,
@@ -42,13 +38,6 @@ impl NonceDirection {
     }
 }
 
-/// Build a 12-byte nonce from a 64-bit counter value, session hash, and direction.
-///
-/// Layout: [session_hash[0..2]:2 | direction:1 | reserved:1 | counter:8 BE]
-///
-/// This design guarantees uniqueness across sessions (via session hash prefix),
-/// across directions (via direction byte), and across time (via full 64-bit monotonic counter).
-/// Spanning the full remaining 8 bytes eliminates counter exhaustion on high-throughput links.
 pub fn nonce_from_counter_u64(
     counter: u64,
     session_hash: &[u8; 4],
@@ -62,12 +51,6 @@ pub fn nonce_from_counter_u64(
     nonce
 }
 
-/// Build a 12-byte nonce from the counter value, session hash, and direction.
-///
-/// Layout: [session_hash[0..2]:2 | direction:1 | reserved:1 | counter:4 BE | zero:4]
-///
-/// This design guarantees uniqueness across sessions (via session hash prefix),
-/// across directions (via direction byte), and across time (via monotonic counter).
 pub fn nonce_from_counter(
     counter: u32,
     session_hash: &[u8; 4],
@@ -81,14 +64,8 @@ pub fn nonce_from_counter(
     nonce
 }
 
-/// Encrypt data in-place and append the 16-byte Poly1305 authentication tag.
-///
-/// Uses the v2 nonce scheme incorporating session hash and direction for
-/// uniqueness guarantees across sessions and directions.
 pub fn encrypt_in_place(key: &[u8; 32], counter: u32, data: &mut Vec<u8>) {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    // Use session_hash = [0u8; 4] and direction = Initiator as fallback
-    // (backward-compatible callers should use the full-param version)
     let sh = [0u8; 4];
     cipher
         .encrypt_in_place(
@@ -103,7 +80,6 @@ pub fn encrypt_in_place(key: &[u8; 32], counter: u32, data: &mut Vec<u8>) {
         .unwrap();
 }
 
-/// Encrypt data with explicit session hash and direction for guaranteed nonce uniqueness.
 pub fn encrypt_in_place_with_context(
     key: &[u8; 32],
     counter: u32,
@@ -122,10 +98,6 @@ pub fn encrypt_in_place_with_context(
         .unwrap();
 }
 
-/// Decrypt data in-place. The 16-byte authentication tag must be appended
-/// to `data` (as produced by encrypt_in_place). Returns the plaintext slice.
-///
-/// Uses the v2 nonce scheme with session hash and direction.
 #[allow(clippy::needless_lifetimes)]
 pub fn decrypt_in_place<'a>(
     key: &[u8; 32],
@@ -133,7 +105,6 @@ pub fn decrypt_in_place<'a>(
     data: &'a mut Vec<u8>,
 ) -> Result<&'a [u8], AeadError> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
-    // Use session_hash = [0u8; 4] and direction = Initiator as fallback
     let sh = [0u8; 4];
     cipher.decrypt_in_place(
         Nonce::from_slice(&nonce_from_counter(
@@ -147,7 +118,6 @@ pub fn decrypt_in_place<'a>(
     Ok(data as &[u8])
 }
 
-/// Decrypt data with explicit session hash and direction.
 #[allow(clippy::needless_lifetimes)]
 pub fn decrypt_in_place_with_context<'a>(
     key: &[u8; 32],
@@ -165,34 +135,10 @@ pub fn decrypt_in_place_with_context<'a>(
     Ok(data as &[u8])
 }
 
-// ── P2-2: XChaCha20-Poly1305 with a transmitted 96-bit nonce ────────
-//
-// The v1 scheme derives its nonce (`session_hash ‖ direction ‖ counter`), so
-// nonce uniqueness is a *consequence* of the counter, and the counter's width is
-// therefore a security parameter: exhaust 2³² counters under one key and the
-// nonce repeats, which in ChaCha20-Poly1305 is catastrophic (the keystream XOR
-// recovers plaintext and the Poly1305 one-time key becomes recoverable). The v2
-// scheme moves uniqueness onto a random 96-bit nonce that travels with the frame,
-// so the counter is free to be a pure sequence number (8 bytes of anti-replay
-// space) and the key is bound by the ratchet's epoch instead.
-
-/// Length of the random nonce carried on the wire, in bytes (96 bits).
 pub const WIRE_NONCE_LEN: usize = 12;
 
-/// Length of the nonce XChaCha20-Poly1305 actually takes (192 bits).
 pub const XCHACHA_NONCE_LEN: usize = 24;
 
-/// Assemble the 24-byte XChaCha nonce: `[12 transmitted random | 8 epoch BE | 1 direction | 3 reserved]`.
-///
-/// The transmitted half is what makes nonces unique within an epoch; the derived
-/// half is what makes them unique *across* epochs and directions without depending
-/// on the random half at all. Binding the epoch this way means a frame's epoch
-/// field cannot be rewritten by an intermediary into another epoch's namespace
-/// and still authenticate — the nonce would change with it.
-///
-/// XChaCha20 is chosen because HChaCha20 mixes the first 16 nonce bytes into the
-/// key, so a random nonce is safe here in a way the 12-byte-nonce ChaCha20-Poly1305
-/// is not (RFC 8439 §4 wants a *guaranteed*-unique 96-bit nonce, not a random one).
 pub fn xnonce(
     wire: &[u8; WIRE_NONCE_LEN],
     epoch: u64,
@@ -202,22 +148,15 @@ pub fn xnonce(
     nonce[0..12].copy_from_slice(wire);
     nonce[12..20].copy_from_slice(&epoch.to_be_bytes());
     nonce[20] = direction as u8;
-    // nonce[21..24] stays reserved (zero) for a future key-generation field.
     nonce
 }
 
-/// Draw a fresh 96-bit nonce from the OS CSPRNG.
-///
-/// This is the only source of nonce uniqueness in v2, so it must be a real CSPRNG
-/// (`getrandom`), not a counter and not a seeded PRNG: a repeated or predictable
-/// nonce under one key destroys both confidentiality and authenticity.
 pub fn random_xnonce() -> [u8; WIRE_NONCE_LEN] {
     let mut n = [0u8; WIRE_NONCE_LEN];
     rand::thread_rng().fill(&mut n[..]);
     n
 }
 
-/// Seal `plaintext`, returning `ciphertext ‖ 16-byte tag`.
 pub fn xchacha_seal(
     key: &[u8; 32],
     wire: &[u8; WIRE_NONCE_LEN],
@@ -228,7 +167,6 @@ pub fn xchacha_seal(
     xchacha_seal_with_aad(key, wire, epoch, direction, plaintext, &[])
 }
 
-/// Seal `plaintext` with associated data, returning `ciphertext ‖ 16-byte tag`.
 pub fn xchacha_seal_with_aad(
     key: &[u8; 32],
     wire: &[u8; WIRE_NONCE_LEN],
@@ -242,7 +180,6 @@ pub fn xchacha_seal_with_aad(
     Ok(out)
 }
 
-/// Seal in place, appending the 16-byte tag.
 pub fn xchacha_seal_in_place(
     key: &[u8; 32],
     wire: &[u8; WIRE_NONCE_LEN],
@@ -253,16 +190,6 @@ pub fn xchacha_seal_in_place(
     xchacha_seal_in_place_with_aad(key, wire, epoch, direction, data, &[])
 }
 
-/// `xchacha_seal_in_place` with associated data.
-///
-/// The GTF privacy frame's 64-byte jitter tail sits *outside* the payload region
-/// and so was outside the tag: an on-path attacker could rewrite it — and, before
-/// the frame size was pinned, vary its length — with no AEAD failure to show for
-/// it. It now rides as **associated data**, which Poly1305 authenticates without
-/// encrypting, which is exactly what a padding region that no one ever reads
-/// needs. Nothing else about the frame moves: it is still 576 B and every offset
-/// is unchanged, so this changes the tag's *input*, not the layout, and needs no
-/// new version marker.
 pub fn xchacha_seal_in_place_with_aad(
     key: &[u8; 32],
     wire: &[u8; WIRE_NONCE_LEN],
@@ -282,11 +209,6 @@ pub fn xchacha_seal_in_place_with_aad(
         .map_err(|_| AeadError)
 }
 
-/// Open in place: verifies the tag and truncates `data` to the plaintext.
-///
-/// The epoch and direction are inputs rather than derivable from `data` on
-/// purpose — they must come from the authenticated frame header, so a frame can
-/// only ever be attributed to the epoch the sender sealed it under.
 #[allow(clippy::needless_lifetimes)]
 pub fn xchacha_open<'a>(
     key: &[u8; 32],
@@ -298,12 +220,6 @@ pub fn xchacha_open<'a>(
     xchacha_open_with_aad(key, wire, epoch, direction, data, &[])
 }
 
-/// `xchacha_open` with associated data — the receiving half of
-/// [`xchacha_seal_in_place_with_aad`].
-///
-/// A frame whose jitter tail was altered fails here, because the tag was
-/// computed over it. That is the property the tail lacked: it is still
-/// unread filler, but it is no longer a field an attacker can move.
 #[allow(clippy::needless_lifetimes)]
 pub fn xchacha_open_with_aad<'a>(
     key: &[u8; 32],
@@ -322,27 +238,9 @@ pub fn xchacha_open_with_aad<'a>(
     Ok(data as &[u8])
 }
 
-// ── Vanta-Subliminal Tail (dual-plane hidden channel) ────────────────────────
-//
-// The GTF privacy frame ends in a 64-byte tail that the decoy AEAD authenticates
-// as opaque associated data. Because the tail is authenticated but not
-// *interpreted* by the decoy key, those 64 bytes are a second plane: a node that
-// shares `K_true` out of band can read 48 bytes per frame from them while the
-// outer frame keeps decrypting to perfectly ordinary traffic under `K_decoy`.
-//
-// Deniability rests on the tail being **uniform random** when unused. If the
-// sender derived it from `K_decoy` (a keyed PRF), an auditor holding the coerced
-// key could recompute the expected tail, notice it was replaced, and learn that a
-// second plane exists. A random tail and an XChaCha20-Poly1305 ciphertext are the
-// same 64 bytes to anyone without `K_true`.
-
-/// Bytes a frame's jitter tail occupies.
 pub const SUBLIMINAL_TAIL_LEN: usize = 64;
-/// Secret payload bytes one tail can carry (64 − 16-byte Poly1305 tag).
 pub const SUBLIMINAL_PAYLOAD_LEN: usize = SUBLIMINAL_TAIL_LEN - 16;
 
-/// Nonce for the hidden plane, domain-separated from the outer frame nonce so the
-/// two planes never share a (key, nonce) pair even if an operator reuses a key.
 fn subliminal_xnonce(
     wire: &[u8; WIRE_NONCE_LEN],
     epoch: u64,
@@ -360,10 +258,6 @@ fn subliminal_xnonce(
     nonce
 }
 
-/// Seal a 48-byte hidden payload into the 64-byte tail of one frame.
-///
-/// The result is exactly the tail length, so the frame stays 576 bytes and an
-/// observer without `K_true` sees the same uniform field an innocent node emits.
 pub fn subliminal_tail_seal(
     k_true: &[u8; 32],
     wire: &[u8; WIRE_NONCE_LEN],
@@ -386,9 +280,6 @@ pub fn subliminal_tail_seal(
     out
 }
 
-/// Open the hidden plane of a received tail. `None` when the frame carries no
-/// hidden plane for this key — which is exactly what a random innocent tail looks
-/// like, so a failed open proves nothing to an observer.
 pub fn subliminal_tail_open(
     k_true: &[u8; 32],
     wire: &[u8; WIRE_NONCE_LEN],
@@ -413,13 +304,8 @@ pub fn subliminal_tail_open(
     Some(out)
 }
 
-/// Maximum safe counter value before forced session re-keying.
-/// We force re-key at u32::MAX - 1000 to leave a safety margin.
 pub const MAX_SAFE_COUNTER: u32 = u32::MAX - 1000;
 
-/// Check if a session counter is approaching the wraparound threshold.
-/// Returns true if the counter is within 1000 of u32::MAX, indicating
-/// that session re-keying should be triggered.
 pub fn needs_rekey(counter: u32) -> bool {
     counter >= MAX_SAFE_COUNTER
 }
@@ -433,7 +319,6 @@ mod tests {
         let sh = [0xDE, 0xAD, 0xBE, 0xEF];
         let nonce_init = nonce_from_counter(42, &sh, NonceDirection::InitiatorToResponder);
         let nonce_resp = nonce_from_counter(42, &sh, NonceDirection::ResponderToInitiator);
-        // Nonces should differ in the direction byte
         assert_ne!(
             nonce_init, nonce_resp,
             "Direction should produce different nonces"
@@ -467,8 +352,6 @@ mod tests {
 
     #[test]
     fn test_nonce_full_uniqueness() {
-        // Even if counters match across different sessions and directions,
-        // the nonces should be unique due to session_hash + direction mixing
         let sh_a = [0xAA, 0xBB, 0xCC, 0xDD];
         let sh_b = [0x11, 0x22, 0x33, 0x44];
         let counter: u32 = 5;
@@ -524,7 +407,6 @@ mod tests {
             NonceDirection::InitiatorToResponder,
             &mut data,
         );
-        // Decrypt with wrong direction — should fail
         let result = decrypt_in_place_with_context(
             &key,
             0,
@@ -554,11 +436,8 @@ mod tests {
         assert_eq!(&a[0..12], &wire[..], "the wire half must ride verbatim");
         assert_eq!(&a[12..20], &0u64.to_be_bytes());
 
-        // Same wire nonce, different epoch or direction: different nonce. This is
-        // the property that stops a replayed frame from being re-attributed.
         assert_ne!(a, xnonce(&wire, 1, NonceDirection::InitiatorToResponder));
         assert_ne!(a, xnonce(&wire, 0, NonceDirection::ResponderToInitiator));
-        // And it is a pure function of its inputs.
         assert_eq!(a, xnonce(&wire, 0, NonceDirection::InitiatorToResponder));
     }
 
@@ -602,17 +481,14 @@ mod tests {
         )
         .expect("seal");
 
-        // Wrong epoch: same key, different nonce.
         let mut b = ct.clone();
         assert!(
             xchacha_open(&key, &wire, 4, NonceDirection::InitiatorToResponder, &mut b).is_err()
         );
-        // Wrong direction.
         let mut b = ct.clone();
         assert!(
             xchacha_open(&key, &wire, 3, NonceDirection::ResponderToInitiator, &mut b).is_err()
         );
-        // Wrong wire nonce.
         let mut b = ct.clone();
         let mut other = wire;
         other[0] ^= 0x01;
@@ -624,7 +500,6 @@ mod tests {
             &mut b
         )
         .is_err());
-        // Wrong key.
         let mut b = ct.clone();
         assert!(xchacha_open(
             &[0x43u8; 32],
@@ -634,13 +509,11 @@ mod tests {
             &mut b
         )
         .is_err());
-        // Tampered ciphertext.
         let mut b = ct.clone();
         b[0] ^= 0x80;
         assert!(
             xchacha_open(&key, &wire, 3, NonceDirection::InitiatorToResponder, &mut b).is_err()
         );
-        // Tampered tag.
         let mut b = ct;
         let last = b.len() - 1;
         b[last] ^= 0x01;
@@ -651,7 +524,6 @@ mod tests {
 
     #[test]
     fn test_random_xnonces_do_not_repeat() {
-        // 96 random bits: a repeat in 4096 draws would mean the RNG, not luck.
         let set: std::collections::HashSet<[u8; WIRE_NONCE_LEN]> =
             (0..4096).map(|_| random_xnonce()).collect();
         assert_eq!(set.len(), 4096);
@@ -659,9 +531,6 @@ mod tests {
 
     #[test]
     fn test_same_plaintext_seals_differently_under_distinct_nonces() {
-        // With a random nonce, two frames carrying identical plaintext must not
-        // look identical on the wire: that is the traffic-analysis property the
-        // nonce change buys on top of the security one.
         let key = [0x42u8; 32];
         let a = xchacha_seal(
             &key,
@@ -684,8 +553,6 @@ mod tests {
 
     #[test]
     fn test_v2_and_v1_layers_are_not_interchangeable() {
-        // A v1 frame opened as v2 (or the reverse) must fail rather than produce
-        // plaintext: the two schemes must not silently interoperate.
         let key = [0x42u8; 32];
         let sh = [0xDE, 0xAD, 0xBE, 0xEF];
         let mut v1 = b"GHOST v1".to_vec();
@@ -701,10 +568,6 @@ mod tests {
         .is_err());
     }
 
-    // The VPN tunnel types (and `net::vpn` itself) only exist under the `vpn`
-    // feature. Without this gate the test target fails to compile under
-    // `--no-default-features --all-targets`, which is the headless/server build
-    // the release pipeline and CI both exercise.
     #[cfg(feature = "vpn")]
     #[test]
     fn test_vpn_egress_and_receiver_open_roundtrip() {
@@ -725,7 +588,6 @@ mod tests {
         let tunnel_wire = seal_datagram(&key, epoch, slot, &ip_packet);
         let magic = crate::ghost::net::vpn::hub::VPN_PAYLOAD_MAGIC;
 
-        // Host side (send_tunnel_frame):
         let mut payload = magic.to_vec();
         payload.extend_from_slice(&tunnel_wire);
         let mut framed = Vec::with_capacity(2 + payload.len() + 1 + 16);
@@ -740,7 +602,6 @@ mod tests {
         let mut frame = build_gtf_frame(sh, ctr, 0, &framed, &tag, true);
         frame[crate::ghost::net::OFFSET_FLAGS] |= 0x02;
 
-        // Client side (receiver_open):
         let amt = frame.len();
         let pe = BULK_OFFSET_AUTH_TAG_START.min(amt);
         assert!(pe > BULK_OFFSET_PAYLOAD_START);
@@ -772,7 +633,6 @@ mod tests {
         let wire = &decrypted_payload[magic.len()..];
         assert_eq!(wire, tunnel_wire.as_slice());
 
-        // Client side (open_to_tun):
         let phone_state = ClientState::new("client_fp", key);
         let new_epoch = phone_state.rotate_epoch();
         assert_eq!(new_epoch, 2);

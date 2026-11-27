@@ -9,7 +9,6 @@ pub const PQ_AUTH_CHUNK_MAGIC: &[u8; 14] = b"PQ_AUTH_CHUNK:";
 pub const PQ_AUTH_ACK_MAGIC: &[u8; 14] = b"PQ_AUTH_ACK__:";
 pub const PQ_AUTH_CHUNK_PAYLOAD_SIZE: usize = 500;
 
-/// Transmit this node's 5,358-byte hybrid identity proof in encrypted chunks over the session.
 pub(crate) async fn send_pq_auth_proof(
     nc: &Arc<GhostNode>,
     sock: &UdpSocket,
@@ -45,7 +44,6 @@ pub(crate) async fn send_pq_auth_proof(
     }
 }
 
-/// Handle incoming chunked PQ authentication control messages.
 pub(crate) async fn handle_pq_auth_pdu(
     node: &Arc<GhostNode>,
     sock: &UdpSocket,
@@ -102,7 +100,6 @@ pub(crate) async fn handle_pq_auth_pdu(
         };
         drop(sess);
 
-        // Send ACK back to peer
         let mut ack_pdu = Vec::with_capacity(PQ_AUTH_ACK_MAGIC.len() + 1);
         ack_pdu.extend_from_slice(PQ_AUTH_ACK_MAGIC);
         ack_pdu.push(chunk_idx);
@@ -130,17 +127,9 @@ pub(crate) async fn handle_pq_auth_pdu(
                             peer = %peer_fp,
                             "Post-quantum hybrid authentication SUCCEEDED (ML-DSA-65) — session elevated to active"
                         );
-                        // The responder's initial PQ-auth burst leaves at ctr=0 immediately
-                        // after RESPONSE_NEGOTIATION_MAGIC (ctr=1), so on a fast carrier or
-                        // multi-core host its self-contained chunks can reach the initiator
-                        // before the initiator finishes ML-KEM-768 decapsulation and inserts
-                        // the session. Once the initiator's own proof authenticates here, the
-                        // initiator's session is guaranteed to be installed.
                         if role == SessionRole::Responder {
                             send_pq_auth_proof(node, sock, src, fallback, peer_fp).await;
                         }
-                        // Tier 1 wiring: advertise the braid tip this session
-                        // just produced, and present a relay bandwidth voucher.
                         #[cfg(feature = "research")]
                         super::research_hooks::session_established(node, sock, src, fallback, peer_fp)
                             .await;
@@ -174,9 +163,6 @@ pub(crate) async fn handle_pq_auth_pdu(
     false
 }
 
-/// Initiate a mesh handshake to `t` (PEER command and the VPN client
-/// watchdog share this path). Inserts into `pending_hs`; the response
-/// completes asynchronously in handle_pkt.
 pub(crate) async fn initiate_handshake(
     nc: &GhostNode,
     sock: &UdpSocket,
@@ -185,9 +171,6 @@ pub(crate) async fn initiate_handshake(
 ) {
     let (xs, xp) = generate_x25519_keypair();
 
-    // Flood shield (`exp_pow_shield`): pay for admission before the responder does
-    // any KEM work. The challenge is derived from the port being dialed and the
-    // current epoch, so this is one extra datagram and no round trip.
     if vantablack::ghost::net::pow::is_enabled() {
         let payload = super::experimental::pow_token_payload(
             t.port(),
@@ -212,10 +195,6 @@ pub(crate) async fn initiate_handshake(
         }
     }
 
-    // §2 spike: opt-in uniform mode intentionally uses the existing legacy
-    // ML-KEM-512 payload sizes so it can be compared on the wire without
-    // changing the transport fragmentation contract. It also avoids the
-    // explicit suite-list magic, which would defeat the experiment.
     if uniform_handshake_enabled() {
         let (kp, ks) = generate_kyber_keypair();
         let pdu = build_uniform_handshake_pdu(
@@ -248,9 +227,6 @@ pub(crate) async fn initiate_handshake(
         tracing::info!(target = %t, "Uniform handshake sent");
         return;
     }
-    // Advertise both suites with a public KEM key for each. The responder can
-    // therefore select the strongest common suite rather than trusting a clear
-    // preference byte or being forced to use the initiator's first choice.
     let (kp512, ks512) = generate_kyber_keypair();
     let (kp768, ks768) = generate_kyber768_keypair();
     let supported = vec![
@@ -295,10 +271,6 @@ pub(crate) async fn initiate_handshake(
         )
         .await;
     }
-    // Prune stale entries aggressively: if the table is more than half-full,
-    // clear it entirely so subnet sweeps never permanently block new handshakes.
-    // Entries that were answered are already removed; only unanswered (dead host)
-    // entries accumulate, so clearing them is safe.
     if pending_hs.len() >= MAX_PENDING_HANDSHAKES / 2 {
         pending_hs.clear();
         tracing::debug!("Pending-handshake table pruned to make room");
@@ -315,8 +287,6 @@ pub(crate) async fn initiate_handshake(
     tracing::info!(target = %t, "Handshake sent");
 }
 
-/// Insert a received frame into the reorder buffer; return frames that
-/// can be flushed in sequence order (duplicates/old frames are dropped).
 pub(crate) fn uniform_handshake_enabled() -> bool {
     std::env::var("GHOST_HANDSHAKE_UNIFORM")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))

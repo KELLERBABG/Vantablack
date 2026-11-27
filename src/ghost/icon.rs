@@ -13,18 +13,12 @@
 //! half-parsed: an icon that silently renders as garbage is worse than one that
 //! logs why it did not load.
 
-/// The icon embedded for the window and the system tray: 32 px and 64 px
-/// entries, which is all the desktop UI needs. The full multi-resolution file
-/// (`assets/icon.ico`) belongs to the executable's Windows resources instead of
-/// the binary's data section.
 pub const UI_ICON: &[u8] = include_bytes!("../../assets/icon-ui.ico");
 
-/// A decoded, straight-alpha RGBA icon bitmap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IconRgba {
     pub width: u32,
     pub height: u32,
-    /// `width * height * 4` bytes, row-major, top-down, RGBA.
     pub rgba: Vec<u8>,
 }
 
@@ -43,8 +37,6 @@ fn i32le(data: &[u8], off: usize) -> Option<i32> {
     Some(i32::from_le_bytes(data.get(off..end)?.try_into().ok()?))
 }
 
-/// Decode one DIB-form ICO entry into RGBA, or `None` if it uses a form this
-/// module does not implement.
 fn decode_dib(data: &[u8], offset: usize) -> Option<IconRgba> {
     let png_end = offset.checked_add(8)?;
     if data.get(offset..png_end) == Some(b"\x89PNG\r\n\x1a\n") {
@@ -56,8 +48,6 @@ fn decode_dib(data: &[u8], offset: usize) -> Option<IconRgba> {
         return None;
     }
     let width = i32le(data, offset.checked_add(4)?)?;
-    // An ICO's BITMAPINFOHEADER declares twice the real height: the XOR bitmap
-    // and the AND mask are stacked.
     let doubled_height = i32le(data, offset.checked_add(8)?)?;
     let bit_count = u16le(data, offset.checked_add(14)?)?;
     let compression = u32le(data, offset.checked_add(16)?)?;
@@ -84,7 +74,6 @@ fn decode_dib(data: &[u8], offset: usize) -> Option<IconRgba> {
     let pixels = data.get(pixel_start..pixel_end)?;
     let mut rgba = vec![0u8; pixel_bytes];
     for y in 0..height {
-        // DIB rows are stored bottom-up.
         let inv_y = (height.saturating_sub(1).saturating_sub(y)) as usize;
         let src_row = inv_y.checked_mul(width as usize)?.checked_mul(4)?;
         let dst_row = (y as usize).checked_mul(width as usize)?.checked_mul(4)?;
@@ -107,7 +96,6 @@ fn decode_dib(data: &[u8], offset: usize) -> Option<IconRgba> {
     })
 }
 
-/// Decode every entry of an ICO file, skipping any it cannot read.
 pub fn decode_ico(data: &[u8]) -> Vec<IconRgba> {
     let count = match u16le(data, 4) {
         Some(n) => n as usize,
@@ -130,8 +118,6 @@ pub fn decode_ico(data: &[u8]) -> Vec<IconRgba> {
     out
 }
 
-/// Choose the best entry for a requested pixel size: the smallest one that is
-/// at least `wanted`, or the largest available if none is.
 pub fn best_for(images: &[IconRgba], wanted: u32) -> Option<&IconRgba> {
     images
         .iter()
@@ -140,8 +126,6 @@ pub fn best_for(images: &[IconRgba], wanted: u32) -> Option<&IconRgba> {
         .or_else(|| images.iter().max_by_key(|i| i.width))
 }
 
-/// The embedded UI icon scaled for `wanted` pixels, ready to hand to the
-/// window/tray constructor.
 pub fn ui_icon(wanted: u32) -> Option<IconRgba> {
     let images = decode_ico(UI_ICON);
     match best_for(&images, wanted) {
@@ -182,10 +166,8 @@ mod tests {
     fn decoded_pixels_look_like_the_mark() {
         let icon = ui_icon(64).expect("64 px entry");
         assert_eq!((icon.width, icon.height), (64, 64));
-        // The corners are outside the rounded tile, so nothing is painted there.
         assert_eq!(pixel(&icon, 0, 0), [0, 0, 0, 0]);
         assert_eq!(pixel(&icon, 63, 0)[3], 0);
-        // The tile is opaque and dark.
         let centre = pixel(&icon, 32, 32);
         assert_eq!(centre[3], 255, "tile centre should be opaque");
         assert!(
@@ -193,8 +175,6 @@ mod tests {
             "tile should be dark, got {centre:?}"
         );
 
-        // Walking outwards from the centre has to cross a bright cyan ring at
-        // the radius the brand mark puts it (23.95 of 128 => ~12 px at 64 px).
         let (mut ring_at, mut brightest) = (0u32, [0u8; 4]);
         for x in 32..64 {
             let p = pixel(&icon, x, 32);
@@ -223,19 +203,14 @@ mod tests {
         assert_eq!(best_for(&images, 512).unwrap().width, 64);
     }
 
-    // ── the Windows resource script (assets/app.rc) ─────────────────────────
-
-    /// The whole text of the resource script, compiled by `build.rs`.
     const APP_RC: &str = include_str!("../../assets/app.rc");
 
-    /// The rest of the line that starts with `name` (after `VALUE`-style keys).
     fn rc_directive(rc: &str, name: &str) -> Option<String> {
         rc.lines()
             .map(str::trim)
             .find_map(|line| Some(line.strip_prefix(name)?.trim().to_string()))
     }
 
-    /// The value of a `VALUE "key", ...` line, unquoted.
     fn rc_value(rc: &str, key: &str) -> Option<String> {
         rc.lines().map(str::trim).find_map(|line| {
             let rest = line.strip_prefix("VALUE")?.trim();
@@ -244,13 +219,6 @@ mod tests {
         })
     }
 
-    /// The resource *id* matters as much as the contents: Windows fetches the
-    /// version block with `FindResourceW(h, MAKEINTRESOURCE(1), RT_VERSION)`.
-    /// Writing the symbol `VS_VERSION_INFO` instead of the literal `1` (which is
-    /// what happens without `windows.h`) compiles the block under a string name
-    /// that no shell API ever looks up, so Explorer's Details tab and the
-    /// installer both see an unversioned file. This test is why that cannot
-    /// come back unnoticed.
     #[test]
     fn version_resource_is_readable_by_the_shell() {
         let version = env!("CARGO_PKG_VERSION");
@@ -263,7 +231,6 @@ mod tests {
             "`VS_VERSION_INFO` is undefined without windows.h, so rc.exe would treat it as a name"
         );
 
-        // FILEVERSION / PRODUCTVERSION are four comma-separated u16s.
         let mut quad: Vec<&str> = version.split('.').collect();
         while quad.len() < 4 {
             quad.push("0");
@@ -284,7 +251,6 @@ mod tests {
             );
         }
 
-        // The strings the installer and the shell show for the product.
         assert_eq!(
             rc_value(APP_RC, "ProductName").as_deref(),
             Some("Vantablack")
@@ -307,7 +273,6 @@ mod tests {
     fn malformed_input_is_rejected_instead_of_panicking() {
         assert!(decode_ico(&[]).is_empty());
         assert!(decode_ico(b"not an icon at all").is_empty());
-        // Valid header claiming an entry that points past the end of the file.
         let mut bogus = vec![0u8, 0, 1, 0, 1, 0];
         bogus.extend_from_slice(&[64, 64, 0, 0, 1, 0, 32, 0]);
         bogus.extend_from_slice(&100u32.to_le_bytes());

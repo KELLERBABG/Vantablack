@@ -12,12 +12,7 @@ pub(crate) async fn handle_pkt(
     sock: &UdpSocket,
     ctr: u64,
     data: &[u8],
-    // The v2 header's seal metadata, when the frame has one.
-    // `None` means a v1 frame: counter-derived nonce, seed key.
     v2: Option<V2FrameMeta>,
-    // The session hash parsed from the raw datagram by `ingest`, before any
-    // decryption. `handle_pkt` receives already-opened plaintext as `data`, so
-    // the ShardSec branch must match candidates against the *wire* hash.
     wire_session_hash: Option<[u8; 4]>,
     src: &SocketAddr,
     revocation_list: Option<&RevocationList>,
@@ -41,7 +36,6 @@ pub(crate) async fn handle_pkt(
 ) {
     #[cfg(not(feature = "vpn"))]
     let _ = vpn_mode;
-    // C4: Rate-limit ctr == 0 handshakes and unauthenticated beacons when pending_hs >= 50%.
     if ctr == 0
         && (data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC)
             || data.starts_with(HANDSHAKE_V3_MAGIC)
@@ -52,9 +46,6 @@ pub(crate) async fn handle_pkt(
         tracing::debug!(peer = %src, "C4: rate-limited ctr==0 handshake/beacon");
         return;
     }
-    // Flood shield (`exp_pow_shield`): a token frame redeemed *before* the
-    // handshake it pays for. Handled here, ahead of every handshake branch, so no
-    // handshake variant can bypass the gate by using a different magic.
     if ctr == 0 && data.len() >= 12 && &data[..4] == super::experimental::POW_TOKEN_MAGIC {
         let our_port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
         super::experimental::pow_redeem(
@@ -66,7 +57,6 @@ pub(crate) async fn handle_pkt(
         return;
     }
 
-    // Explicit suite-list negotiation handshake (counter == 0).
     if ctr == 0 && data.starts_with(HANDSHAKE_NEGOTIATION_MAGIC) {
         if !super::experimental::pow_admit(*src) {
             tracing::debug!(peer = %src, "PoW shield: suite-list handshake without a token — dropped");
@@ -111,9 +101,6 @@ pub(crate) async fn handle_pkt(
         let responder_public = x25519_dalek::PublicKey::from(&responder_secret);
         let x_shared =
             responder_secret.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
-        // Bind the transcript into the KDF. The initiator's public key comes
-        // from the offer, ours is the ephemeral just generated, and the ciphertext is
-        // the one about to be sent back — both peers hash identical bytes and both PQ commitments.
         let master = derive_hybrid_master_key_with_transcript(
             selected,
             x_shared.as_bytes(),
@@ -161,15 +148,10 @@ pub(crate) async fn handle_pkt(
         session.pin_peer_pq_commitment(hs.pq_commitment);
         register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, suite = selected.wire_id(), "Explicit suite-negotiated session established");
-        // Immediately transmit local post-quantum authentication chunks
         send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
         return;
     }
 
-    // Versioned suite-negotiation handshake (counter == 0).
-    // The suite byte is authenticated as part of the handshake transcript.
-    // Both ML-KEM variants are accepted here; the response echoes the selected
-    // suite, so an initiator cannot be downgraded by rewriting cleartext.
     if ctr == 0 && data.starts_with(HANDSHAKE_V3_MAGIC) {
         let Some(hs) = parse_handshake_pdu_suite(data) else {
             tracing::warn!(peer = %src, "Invalid suite-negotiation handshake");
@@ -243,9 +225,6 @@ pub(crate) async fn handle_pkt(
         return;
     }
 
-    // Opt-in §2 uniform handshake. Its random prefix means it must be
-    // identified by the reserved handshake counter and exact legacy payload
-    // length, never by a magic string.
     if uniform_handshake_enabled()
         && ctr == 0
         && data.len() >= vantablack::ghost::layers::l1_kem::UNIFORM_HANDSHAKE_BLOB_LEN
@@ -309,17 +288,12 @@ pub(crate) async fn handle_pkt(
         return;
     }
 
-    // Inbound LAN / WAN discovery beacon on main mesh socket
     if data.len() >= 112 && &data[..16] == BEACON_PREFIX {
         let mut pk = [0u8; 32];
         pk.copy_from_slice(&data[16..48]);
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&data[48..112]);
         if l0_identity::verify_peer_signature(&pk, &data[16..48], &sig) {
-            // Collective defense (`exp_collective_defense`): the beacon's coarse
-            // observation is the *only* thing shared, and only when both ends have
-            // the toggle on. A region is reported once, when the k-anonymity
-            // threshold is first met.
             if let Some(sections) = super::beacon::parse_beacon_sections(data, data.len()) {
                 if let Some(cdef) = sections.cdef {
                     if super::experimental::note_observable(cdef, *src) {
@@ -346,7 +320,6 @@ pub(crate) async fn handle_pkt(
         return;
     }
 
-    // Handshake (counter == 0)
     if ctr == 0 && data.len() >= 16 && &data[..16] == b"GHOST_HANDSHAKE_" {
         if !super::experimental::pow_admit(*src) {
             tracing::debug!(peer = %src, "PoW shield: handshake without a token — dropped");
@@ -358,9 +331,6 @@ pub(crate) async fn handle_pkt(
         }
         let mut b = data.to_vec();
         b.truncate(HANDSHAKE_BLOB_LEN);
-        // Anti-replay / anti-flood: refuse to re-handshake an identity we
-        // already hold a session for, and bound total sessions (an attacker
-        // can mint unlimited self-signed identities).
         if node.sessions.len() >= MAX_SESSIONS {
             tracing::warn!(peer = %src, "Session table full — handshake rejected");
             return;
@@ -377,17 +347,11 @@ pub(crate) async fn handle_pkt(
             tracing::debug!(peer = %src, "Handshake from self ignored");
             return;
         }
-        // Allow re-handshake: if a peer reconnects or rescans, evict the stale
-        // session so the fresh handshake can complete cleanly.
         if node.sessions.contains_key(&fp) {
             tracing::info!(peer = %src, fingerprint = %fp, "Re-handshake from known peer — evicting stale session");
             node.sessions.remove(&fp);
         }
 
-        // VPN hub: gate the MESH session the same way the VPN tunnel already is.
-        // Tunnel traffic from an unlisted peer was rejected, but the mesh session
-        // itself was not — so a WAN-exposed hub accumulated session state from
-        // strangers (PROTOTYPE.md flaw #5). No-op unless this node is a hub.
         #[cfg(feature = "vpn")]
         if let Some(VpnMode::Hub(hub)) = vpn_mode {
             if !hub.authorized(&fp) {
@@ -402,7 +366,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // WIRED: Byzantine isolation check — drop handshakes from Byzantine-flagged peers
         if let Some(rep) = reputation_matrix {
             if rep.is_byzantine(&node.fingerprint(), &fp) {
                 tracing::warn!(peer = %src, fingerprint = %fp, "Handshake rejected — peer flagged Byzantine");
@@ -410,7 +373,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // WIRED: RevocationList check — reject known-compromised identities
         if let Some(rl) = revocation_list {
             if rl.reject_handshake(&fp) {
                 tracing::warn!(peer = %src, fingerprint = %fp, "Handshake rejected — identity revoked");
@@ -446,11 +408,8 @@ pub(crate) async fn handle_pkt(
         let xs = bs.diffie_hellman(&x25519_dalek::PublicKey::from(hs.x25519_pub));
         let d = derive_hybrid_master_key_with_psk(xs.as_bytes(), &ks, psk.as_ref());
 
-        // WIRED: Pin key to physical RAM via LockedMemory (mlock / VirtualLock)
-        // to prevent sensitive cryptographic material from leaking to swap/pagefile.
         if let Some(mut locked) = LockedMemory::allocate(32) {
             locked.as_mut_slice()[..32].copy_from_slice(&d);
-            // Ephemeral locked buffer validated and pinned in RAM
         }
 
         let mut bp_arr = [0u8; 32];
@@ -481,18 +440,11 @@ pub(crate) async fn handle_pkt(
         let responder_session = Session::new_with_role(d, fp.clone(), SessionRole::Responder);
         responder_session.set_v1_wire(true);
         responder_session.set_pq_authenticated(true);
-        // Pin the initiator's identity key: it is what a later ratchet step is
-        // verified against, and without it a step is refused rather than trusted.
         responder_session.pin_peer_identity(hs.identity_pk);
         register_peer_session(&node, peers, &fp, *src, responder_session, vpn_mode);
-        // Keep the relay's address book current: a session is also the strongest
-        // statement that this peer is who it says it is, and its address may have
-        // moved since the beacon that first authorized it.
         if let Some(relay) = relay_role {
             relay.authorize(&fp, *src);
         }
-        // VPN: a fresh handshake re-anchors the client's lease (precedence 1)
-        // and evicts all per-epoch tunnel state.
         #[cfg(feature = "vpn")]
         if let Some(VpnMode::Hub(hub)) = vpn_mode {
             hub.on_handshake(&fp, *src);
@@ -503,23 +455,17 @@ pub(crate) async fn handle_pkt(
             tracing::info!(peer = %src, "Session established");
         }
 
-        // WIRED: Record successful interaction in reputation
         if let Some(rep) = reputation_matrix {
             rep.record_interaction(&node.fingerprint(), &fp, true);
         }
         return;
     }
 
-    // Explicit suite-list negotiation response (counter == 1).
     if ctr == 1 && data.starts_with(RESPONSE_NEGOTIATION_MAGIC) {
         let Some(resp) = parse_negotiated_response_pdu(data) else {
             tracing::warn!(peer = %src, bytes = data.len(), "Invalid suite-list response");
             return;
         };
-        // The signature covers the PDU, which is *not* always the whole
-        // datagram: the shard transport pads an odd-length payload, and the
-        // ML-KEM-768 response is odd. Slicing 64 bytes off the datagram would
-        // include that pad and verify nothing.
         let Some(material) = data.get(..negotiated_response_len(resp.suite) - 64) else {
             return;
         };
@@ -575,8 +521,6 @@ pub(crate) async fn handle_pkt(
                 ss
             }
         };
-        // Our own public key has to be captured *before* `diffie_hellman` consumes the
-        // secret, and it is part of the transcript.
         let initiator_public = x25519_dalek::PublicKey::from(&x_secret);
         let x_shared = x_secret.diffie_hellman(&x25519_dalek::PublicKey::from(resp.x25519_pub));
         let master = derive_hybrid_master_key_with_transcript(
@@ -597,12 +541,10 @@ pub(crate) async fn handle_pkt(
         session.pin_peer_pq_commitment(resp.pq_commitment);
         register_peer_session(&node, peers, &fp, *src, session, vpn_mode);
         tracing::info!(peer = %src, suite = resp.suite.wire_id(), "Explicit suite-negotiated session established (initiator)");
-        // Immediately transmit local post-quantum authentication chunks
         send_pq_auth_proof(&node, sock, src, fallback_state, &fp).await;
         return;
     }
 
-    // Versioned suite-negotiation response (counter == 1).
     if ctr == 1 && data.starts_with(RESPONSE_V3_MAGIC) {
         let Some(resp) = parse_response_pdu_suite(data) else {
             tracing::warn!(peer = %src, "Invalid suite-negotiation response");
@@ -643,8 +585,6 @@ pub(crate) async fn handle_pkt(
         return;
     }
 
-    // Opt-in §2 uniform response. Exact length and reserved response counter
-    // keep this separate from ordinary application frames.
     if uniform_handshake_enabled()
         && ctr == 1
         && data.len() >= vantablack::ghost::layers::l1_kem::UNIFORM_RESPONSE_BLOB_LEN
@@ -678,7 +618,6 @@ pub(crate) async fn handle_pkt(
         return;
     }
 
-    // Handshake response (counter == 1)
     if ctr == 1 && data.len() >= 16 && &data[..16] == b"GHOST_RESPONSE__" {
         let mut rd = data.to_vec();
         if rd.len() < RESPONSE_BLOB_LEN {
@@ -706,14 +645,12 @@ pub(crate) async fn handle_pkt(
 
         let ct = Ciphertext::<MlKem512>::from(resp.kyber_ct);
         let fp = hex::encode(&resp.identity_pk[..8]);
-        // WIRED: Byzantine isolation check for initiator
         if let Some(rep) = reputation_matrix {
             if rep.is_byzantine(&node.fingerprint(), &fp) {
                 tracing::warn!(peer = %src, fingerprint = %fp, "Response from peer flagged Byzantine — dropped");
                 return;
             }
         }
-        // WIRED: RevocationList check for initiator too
         if let Some(rl) = revocation_list {
             if rl.reject_handshake(&fp) {
                 tracing::warn!(peer = %src, fingerprint = %fp, "Response from revoked identity");
@@ -731,7 +668,6 @@ pub(crate) async fn handle_pkt(
                 psk.as_ref(),
             );
 
-            // WIRED: Pin key to physical RAM via LockedMemory (mlock / VirtualLock)
             if let Some(mut locked) = LockedMemory::allocate(32) {
                 locked.as_mut_slice()[..32].copy_from_slice(&d);
             }
@@ -739,14 +675,11 @@ pub(crate) async fn handle_pkt(
             let initiator_session = Session::new(d, fp.clone());
             initiator_session.set_v1_wire(true);
             initiator_session.set_pq_authenticated(true);
-            // Same pin on this side: the answer to a ratchet step is verified
-            // against the responder's identity key.
             initiator_session.pin_peer_identity(resp.identity_pk);
             register_peer_session(&node, peers, &fp, *src, initiator_session, vpn_mode);
             if let Some(relay) = relay_role {
                 relay.authorize(&fp, *src);
             }
-            // VPN: adopt key for client or register lease for hub
             #[cfg(feature = "vpn")]
             match vpn_mode {
                 Some(VpnMode::Client(client, _)) => {
@@ -766,12 +699,6 @@ pub(crate) async fn handle_pkt(
         return;
     }
 
-    // Data (counter >= 2) — try to decrypt with existing sessions.
-    // Frames may arrive in either AEAD direction (we don't know our role
-    // for sure here), so try both; the correct one authenticates.
-    //
-    // Collect candidate sessions FIRST: taking a write lock (get_mut for the
-    // replay guard) while a DashMap iterator is alive deadlocks the task.
     let candidates = OpenCtx::snapshot_of(&node.sessions);
     for cand in &candidates {
         let peer_fp = cand.peer_fp.clone();
@@ -779,16 +706,8 @@ pub(crate) async fn handle_pkt(
         let sh = cand.session_hash;
         let role = cand.role;
         let plain = if v2.is_some_and(|meta| meta.shardsec) {
-            // ShardSec frames arrived as *already-opened* shards assembled by
-            // the spool: `data` here is plaintext, not a datagram, so the
-            // session must be named by the hash parsed off the raw wire
-            // header (`wire_session_hash`), never re-parsed from `data`.
             let wire_matches = wire_session_hash.is_some_and(|wire| wire == cand.session_hash);
             if wire_matches {
-                // The one commit per message: shards were opened (not committed)
-                // in `ingest`, so the chain position for this counter is
-                // advanced exactly here, mirroring the legacy path's single
-                // `commit_open` per message.
                 if let Some(sess) = node.sessions.get(&cand.peer_fp) {
                     let epoch = v2.map(|m| m.epoch).unwrap_or(0);
                     let ours = cand.role.seal_direction();
@@ -815,18 +734,6 @@ pub(crate) async fn handle_pkt(
         };
         let pt: &[u8] = &plain;
 
-        // ── Cover traffic ──
-        //
-        // A placeholder frame exists only to keep the *rate* constant, so it must
-        // have no effect at all: no dispatch, no ratchet bookkeeping, and not even
-        // a replay-window slot — which is the plan's "does not disturb the replay
-        // window". Dropping it here also keeps it from installing a prepared epoch.
-        //
-        // The decision is taken on the decrypted marker, never on the header's
-        // `FLAG_DUMMY` bit: header flags sit outside the AEAD, so anyone on the
-        // path can flip them, and a receiver that trusted the bit could be made
-        // either to discard a real frame or to dispatch a placeholder. The marker
-        // is inside the ciphertext, so it is unforgeable and cannot be stripped.
         if frame_payload(pt).is_some_and(net::is_dummy_payload) {
             node.stats
                 .cover_recv
@@ -835,11 +742,6 @@ pub(crate) async fn handle_pkt(
             return;
         }
 
-        // A frame that authenticated under a *prepared* epoch installs it. This is
-        // the responder's half of the step: it answers immediately but keeps
-        // sealing on the old epoch until the initiator demonstrably committed, so
-        // only a frame that actually opens under the new key moves it. A forged
-        // frame cannot: it has no key, so it never reaches here.
         if let Some(meta) = v2 {
             if let Some(s) = node.sessions.get(&peer_fp) {
                 if meta.epoch > s.epoch() {
@@ -848,10 +750,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // Replay protection: the per-session 64-bit sliding window must accept
-        // the counter for the current epoch (or v1); retired epochs already enforce
-        // single-use keys cryptographically in MsgChain and must not disturb the
-        // current epoch's replay window.
         let is_retired = v2.is_some_and(|meta| {
             node.sessions
                 .get(&peer_fp)
@@ -869,56 +767,33 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // ── Tier 1 revocation gate (braid clone-suicide proof) ──
-        //
-        // A peer that signed two different rotations from one key has proven it
-        // is a clone. Nothing it sends afterwards is attributable to one device,
-        // so the packet path stops here rather than carrying traffic for it.
         #[cfg(feature = "research")]
         if super::research_hooks::braid::peer_revoked(&peer_fp) {
             tracing::warn!(peer = %peer_fp, "braid: payload from a revoked identity dropped");
             return;
         }
 
-        // ── Ratchet step ──
-        //
-        // Before any data handling, and before the tunnel check: these two magics
-        // are control PDUs for the ratchet, they are distinct from every other
-        // magic in the stack, and neither is ever a message for an application.
         if let Some(payload) = frame_payload(pt) {
             if handle_ratchet_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
                 return;
             }
         }
 
-        // ── Quantum-anchor mix (L10) ──
-        //
-        // The same shape as the ratchet step above and for the same reason: this
-        // is a key-agreement control PDU, it has its own magics, and it must be
-        // consumed before anything treats the bytes as application data.
         if let Some(payload) = frame_payload(pt) {
             if handle_qel_mix_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
                 return;
             }
         }
 
-        // ── Post-Quantum Identity Authentication ──
         if let Some(payload) = frame_payload(pt) {
             if handle_pq_auth_pdu(&node, sock, src, fallback_state, &peer_fp, payload).await {
                 return;
             }
         }
 
-        // ── Tier 1 research control PDUs ──
-        //
-        // Braid transitions, entropy-beacon shares and bandwidth vouchers all
-        // have their own magics and are consumed here, ahead of the tunnel and
-        // relay branches, so none of them can be read as application data.
         #[cfg(feature = "research")]
         if let Some(payload) = frame_payload(pt) {
             if let Some(replies) = super::research_hooks::handle_control(&peer_fp, payload) {
-                // A vault fetch is answered on the session it arrived on; the
-                // handler cannot await a send, so it hands the replies back.
                 for reply in replies {
                     super::research_hooks::deliver(
                         &node,
@@ -934,11 +809,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // ── Authenticated Peer Disconnect / Reroute Notification (GHOST_BYE) ──
-        // Checked before the VPN payload handler and before the post-quantum
-        // 2nd-stage auth gate so both desktop (v2) and mobile (v1 1-RTT) peers
-        // can cleanly announce they are going offline and trigger immediate
-        // session/lease eviction and failover.
         if let Some(framed) = frame_payload(pt) {
             let is_bye = framed.starts_with(GHOST_BYE_MAGIC)
                 || (framed.len() > 5
@@ -968,10 +838,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // ── VPN tunnel payload: [len][GVPN1][epoch u32][ctr u32][ct][tag] ──
-        // Hub: ingest client datagrams. Client: write hub replies into TUN.
-        // Checked BEFORE all control-channel handling; tunnel traffic has its own
-        // inner AEAD and lease authorization and never touches SOCKS5/CHAT/relay logic.
         #[cfg(feature = "vpn")]
         if let Some(framed) = frame_payload(pt) {
             let is_v1 = framed.len() > VPN_PAYLOAD_MAGIC.len()
@@ -1007,7 +873,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // Gate other application traffic on post-quantum identity verification.
         let is_pq_auth = node
             .sessions
             .get(&peer_fp)
@@ -1025,7 +890,6 @@ pub(crate) async fn handle_pkt(
         let trimmed = text.trim_end_matches('\0').to_string();
         tracing::info!(peer = %peer_fp, counter = ctr, "Decrypted: {trimmed}");
 
-        // Peer Exchange gossip: learn new peers from connected nodes (v2 signed descriptors + v1 fallback)
         if let Some(payload) = frame_payload(pt) {
             if let Some(body) = payload.strip_prefix(GHOST_BTCR_GOSSIP_MAGIC) {
                 let merged = vantablack::ghost::v2::btcr::ingest_gossip_batch(body);
@@ -1112,7 +976,6 @@ pub(crate) async fn handle_pkt(
                             .trim_end_matches('\0')
                             .to_string();
                         pos += 16;
-                        // Read null-terminated addr string
                         let nul = body[pos..].iter().position(|&b| b == 0);
                         let addr_end = pos + nul.unwrap_or(body.len() - pos);
                         if addr_end > body.len() {
@@ -1120,7 +983,6 @@ pub(crate) async fn handle_pkt(
                         }
                         let addr_str = String::from_utf8_lossy(&body[pos..addr_end]).to_string();
                         pos = addr_end + 1;
-                        // Skip self and already-known peers
                         if fp == node.fingerprint() {
                             continue;
                         }
@@ -1142,9 +1004,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // Direct chat message (CHAT command): [CHAT!][message]
-        // Must run before relay/CONNECT dispatch so a message like
-        // "CHAT!1.2.3.4:80" is never mistaken for a SOCKS5 destination.
         if let Some(payload) = frame_payload(pt) {
             if let Some(rest) = payload.strip_prefix(b"CHAT!") {
                 let msg = String::from_utf8_lossy(rest)
@@ -1203,14 +1062,6 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // Blind relay (B22): a decrypted payload may carry a
-        // single-hop envelope addressed to another peer. We hold no key for the
-        // region it carries and must not touch it — the forward is byte-for-byte
-        // by construction, which is the whole security property of the relay.
-        //
-        // The envelope magic is distinct from the onion's (`BLND!` vs `RLY!`), so
-        // the two paths cannot be confused even though the onion's *last* hop also
-        // arrives with a hop count of zero.
         if let Some(payload) = frame_payload(pt) {
             if let Some(blind) = relay::parse_blind_frame(payload) {
                 let Some(relay) = relay_role else {
@@ -1221,17 +1072,12 @@ pub(crate) async fn handle_pkt(
                     );
                     return;
                 };
-                // Tier 1 wiring: relay transit is charged against the sender's
-                // banked voucher. With `GHOST_RELAY_VOUCHERS` off this is a
-                // no-op that always admits.
                 #[cfg(feature = "research")]
                 if !super::research_hooks::voucher::admit_transit(&peer_fp, payload.len()) {
                     return;
                 }
                 match fallback::relay_hop(relay, &peer_fp, payload) {
                     Ok(hop) => {
-                        // Length only, never contents: enough to show the relay
-                        // forwarded the frame it was handed, and nothing about it.
                         tracing::debug!(
                             from = %peer_fp,
                             target = %blind.target_fingerprint,
@@ -1242,8 +1088,6 @@ pub(crate) async fn handle_pkt(
                         if let Err(e) = sock.send_to(&hop.bytes, hop.dest).await {
                             tracing::debug!(dest = %hop.dest, "Relay: forward failed: {e}");
                         }
-                        // Transit is the relay's side of the tit-for-tat ledger: a
-                        // peer that uses us as a relay owes us the reciprocal.
                         if let Some(enforcer) = tft {
                             enforcer.forwarded_for(&peer_fp, hop.bytes.len() as u64);
                         }
@@ -1259,12 +1103,7 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // Multi-hop relay: a decrypted payload may carry a relay header.
-        // (parse the UNFRAMED payload — the length prefix precedes the header)
         if let Some(payload) = frame_payload(pt) {
-            // A middle relay receives its downstream layer sealed by the
-            // originator under the key the two of them share. Try our session
-            // keys to open it before parsing the `RLY!` header inside.
             let mut unsealed: Option<Vec<u8>> = None;
             if payload.starts_with(vantablack::ghost::net::relay::ONION_SEAL_MAGIC) {
                 for entry in node.sessions.iter() {
@@ -1284,9 +1123,6 @@ pub(crate) async fn handle_pkt(
             let payload = unsealed.as_deref().unwrap_or(payload);
             if let Some(relay) = parse_relay_header(payload) {
                 if relay.remaining_hops > 0 {
-                    // Tier 1 wiring: a multi-hop onion hop draws on the same
-                    // voucher bank as blind (`BLND!`) transit. With
-                    // `GHOST_RELAY_VOUCHERS` off this is a no-op.
                     #[cfg(feature = "research")]
                     if !super::research_hooks::voucher::admit_transit_onion(
                         &peer_fp,
@@ -1294,7 +1130,6 @@ pub(crate) async fn handle_pkt(
                     ) {
                         return;
                     }
-                    // WIRED: Tit-for-Tat enforcer - drop forwarding for evicted leechers
                     if let Some(enforcer) = tft {
                         if enforcer.is_evicted(&peer_fp) {
                             tracing::warn!(peer = %peer_fp, "TFT: relay request dropped — peer evicted for leeching");
@@ -1302,10 +1137,7 @@ pub(crate) async fn handle_pkt(
                         }
                     }
 
-                    // Forward: re-wrap the inner payload for the next hop and send
-                    // it through our own session with that hop.
                     let next = &relay.next_hop_fingerprint;
-                    // WIRED: Byzantine isolation check for relay path
                     if let Some(rep) = reputation_matrix {
                         if rep.is_byzantine(&node.fingerprint(), next) {
                             tracing::warn!(hop = %next, "Relay: next hop flagged Byzantine — dropping packet");
@@ -1332,20 +1164,6 @@ pub(crate) async fn handle_pkt(
                         .get(next)
                         .map(|s| s.next_tx_counter())
                         .unwrap_or(2);
-                    // For a nested onion, the payload already contains the
-                    // next hop's authenticated routing header. Preserve that
-                    // header while changing only the transport encryption; if
-                    // this is the final relay layer, create the zero-hop form
-                    // consumed by the destination. Re-wrapping with `next`
-                    // again would make a three-hop route point back at the
-                    // middle relay and loop forever.
-                    // For a nested onion, forward the inner payload unchanged.
-                    // It is either the next plaintext `RLY!` header (legacy
-                    // onion) or a *sealed* layer that the next hop opens with
-                    // its own session key. Re-wrapping it with `next` would
-                    // prepend a header naming the very relay being sent to, so
-                    // that relay would look itself up as the next hop and drop
-                    // the packet — which is exactly what broke three-hop routes.
                     let rewrap = if relay.remaining_hops > 1 {
                         relay.inner_payload.clone()
                     } else {
@@ -1368,7 +1186,6 @@ pub(crate) async fn handle_pkt(
                     let (f, tag) = enc_split(&hop_ctx, &rewrap);
                     send3(sock, &tgt, &hop_ctx, &f, &tag).await;
 
-                    // WIRED: Record bytes forwarded for this peer in TFT enforcer
                     if let Some(enforcer) = tft {
                         enforcer.forwarded_for(&peer_fp, relay.inner_payload.len() as u64);
                     }
@@ -1376,11 +1193,8 @@ pub(crate) async fn handle_pkt(
                     tracing::info!(via = %src, hop = %next, "Relay packet forwarded");
                     return;
                 }
-                // Final hop: the inner payload is [counter u64 BE (8B)][wire_nonce (12B)][initiator→us
-                // encrypted blob + tag]. Try each of our sessions to unwrap it using XChaCha20-Poly1305.
                 let inner = &relay.inner_payload;
                 if inner.len() >= 20 + 16 {
-                    // WIRED: Record bytes forwarded by relay peer for us
                     if let Some(enforcer) = tft {
                         enforcer.forwarded_by(&peer_fp, inner.len() as u64);
                     }
@@ -1405,10 +1219,6 @@ pub(crate) async fn handle_pkt(
                         })
                         .collect();
                     for (fp2, key, sh, role) in candidates {
-                        // The onion's inner layer now uses XChaCha20-Poly1305 with a
-                        // 64-bit counter and transmitted 12-byte random nonce.
-                        // Each direction gets a fresh ciphertext copy: an AEAD
-                        // attempt may mutate its buffer before returning an error.
                         let pt2 = {
                             let mut first = blob.clone();
                             match xchacha_open(
@@ -1502,7 +1312,6 @@ pub(crate) async fn handle_pkt(
                                     }
                                     return;
                                 }
-                                // Relay unwrapped data frame dispatch
                                 let (stream_id, inner_data) =
                                     if payload.len() >= 4 && !looks_like_dest(payload) {
                                         let sid = u32::from_be_bytes([
@@ -1549,14 +1358,11 @@ pub(crate) async fn handle_pkt(
             }
         }
 
-        // WIRED: Record successful data decryption in reputation
         if let Some(rep) = reputation_matrix {
             rep.record_interaction(&node.fingerprint(), &peer_fp, true);
         }
 
-        // ── Tunnel traffic (framed payloads) ──
         if let Some(payload) = frame_payload(pt) {
-            // CONNECT acknowledgement from the exit (supports OK!{stream_id}! and legacy OK)
             if payload == b"OK" || payload.starts_with(b"OK!") {
                 let stream_id = if payload.starts_with(b"OK!") {
                     let s = String::from_utf8_lossy(payload);
@@ -1573,7 +1379,6 @@ pub(crate) async fn handle_pkt(
                 return;
             }
 
-            // Explicit stream closure notification
             if payload.starts_with(b"CLOSE!") {
                 let s = String::from_utf8_lossy(payload);
                 if let Some(id_str) = s.strip_prefix("CLOSE!").and_then(|r| r.strip_suffix('!')) {
@@ -1595,7 +1400,6 @@ pub(crate) async fn handle_pkt(
             };
 
             let tkey = exit_tunnel_key(src, &sh, stream_id);
-            // Existing tunnel → relay data into the remote TCP connection.
             if let Some(mut t_guard) = exit_tunnels.get_mut(&tkey) {
                 let flush = rx_push(&mut t_guard.rx, ctr, inner_data.to_vec());
                 let out_tx = t_guard.out_tx.clone();
@@ -1605,20 +1409,9 @@ pub(crate) async fn handle_pkt(
                 }
                 return;
             }
-            // We are the exit for this session and this frame is a CONNECT
-            // request → open the destination and answer "OK".
-            //
-            // `STREAM!` is the client's explicit CONNECT marker, so a session
-            // role of initiator does not disqualify the request: two peers that
-            // handshake each other simultaneously can both hold the initiator
-            // role for the surviving session, and refusing the marked CONNECT
-            // there would leave a selected home exit silently unusable. The
-            // relay branch above already relies on the same marker.
             let is_connect_request = looks_like_dest(payload)
                 && (role == SessionRole::Responder || payload.starts_with(b"STREAM!"));
             if is_connect_request {
-                // Exit authorization: closed by default; the peer's fingerprint
-                // must be allowlisted (or the operator set "any").
                 let allowed = trusted_exits
                     .read()
                     .map(|s| s.contains("any") || s.contains(&peer_fp))
@@ -1645,14 +1438,9 @@ pub(crate) async fn handle_pkt(
                 .await;
                 return;
             }
-            // We are the initiator: relayed remote data (counter >= 3).
             if ctr >= 3 {
                 if let Some(tx) = sessions_rx.get(&(sh, stream_id)).map(|v| v.value().clone()) {
                     let mut st = rx_state_map.entry((sh, stream_id)).or_default();
-                    // Anchor the reorder window at (OK counter + 1): the exit's
-                    // first data frame. This keeps out-of-order frames buffered
-                    // instead of anchoring on whichever frame's task wins the
-                    // race and dropping the lower counters.
                     if st.next.is_none() {
                         if let Some(ok) = connect_ok_ctrs.get(&(sh, stream_id)) {
                             st.next = Some(ok.value() + 1);
@@ -1672,8 +1460,6 @@ pub(crate) async fn handle_pkt(
     }
 }
 
-/// Exit node: accept a SOCKS5 CONNECT, open the destination TCP connection,
-/// reply "OK" over the mesh, and relay bytes in both directions.
 pub(crate) async fn handle_exit_connect(
     node: Arc<GhostNode>,
     peers: &DashMap<String, SocketAddr>,
@@ -1700,9 +1486,6 @@ pub(crate) async fn handle_exit_connect(
     } else {
         (0u32, raw_request)
     };
-    // Voucher-bearing requests use `EXITAUTH!<hex-voucher>!<host>:<port>`.
-    // The outer GHOST session still authenticates the sender; the voucher adds
-    // an explicit, signed capability when the exit requires one.
     let (voucher, dest) = if let Some(rest) = request.strip_prefix("EXITAUTH!") {
         match rest.split_once('!') {
             Some((encoded, target)) => (hex::decode(encoded).ok(), target.to_string()),
@@ -1719,9 +1502,6 @@ pub(crate) async fn handle_exit_connect(
         None => return,
     };
 
-    // Exit policy is evaluated before DNS resolution and before any socket is
-    // opened. This prevents a denied hostname from becoming a DNS oracle and
-    // keeps the allowlist enforcement on every exit path (rotated or default).
     let exit_policy = vantablack::ghost::net::relay::ExitPolicy::from_env();
     if !exit_policy.allows(&host) {
         tracing::warn!(peer = %peer_fp, host = %host, "Exit: destination rejected by policy");
@@ -1831,8 +1611,6 @@ pub(crate) async fn handle_exit_connect(
         }
     };
 
-    // Seal the OK under the session's current epoch; the counter, epoch and nonce
-    // come from one snapshot so they cannot straddle a ratchet step.
     let ok_ctx = node
         .sessions
         .get(peer_fp)
@@ -1899,9 +1677,6 @@ pub(crate) async fn handle_exit_connect(
         }
     } else {
         let (f, tag) = enc_split(&ok_ctx, &ok_payload);
-        // The initiator may have reached us *through* a relay, in which case `src` is
-        // the relay's address and a direct reply would go nowhere. Route it the same
-        // way the data path is routed.
         match fallback_state.and_then(|f| f.path(peer_fp)) {
             Some(path) => {
                 let _ = send3_via_fallback(
@@ -1922,9 +1697,6 @@ pub(crate) async fn handle_exit_connect(
 
     let tkey = exit_tunnel_key(src, sh, stream_id);
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    // Anchor the tunnel's reorder window at (CONNECT counter + 1): the first
-    // data frame the initiator sends. Out-of-order frames are buffered, never
-    // dropped on a task-scheduling race.
     let rx = RxState {
         next: Some(connect_ctr + 1),
         ..Default::default()
@@ -1939,11 +1711,6 @@ pub(crate) async fn handle_exit_connect(
     );
     tracing::info!(dest = %dest, peer = %peer_fp, stream_id = stream_id, "Exit tunnel established");
 
-    // Outbound relay: remote TCP → mesh (responder direction), and
-    // inbound channel → remote TCP. Idle for 30s tears the tunnel down.
-    // Data-frame counters come from the session's shared tx_counter so a later
-    // CHAT / keepalive / CONNECT can never reuse a counter the initiator saw
-    // (replay-window collision).
     let sock2 = Arc::clone(&node.socket);
     let sessions2 = Arc::clone(&node.sessions);
     let fp2 = peer_fp.to_string();
@@ -1952,8 +1719,6 @@ pub(crate) async fn handle_exit_connect(
     let key2 = *key;
     let addr2 = *src;
     let tkey2 = tkey.clone();
-    // Replies take the same route the request did, resolved once: a peer that
-    // reached us through a relay cannot be answered directly.
     let node3 = Arc::clone(&node);
     let route2 = fallback_state.and_then(|f| f.path(peer_fp));
     let turn2 = fallback_state.and_then(|f| f.turn().cloned());

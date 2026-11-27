@@ -18,24 +18,11 @@ use aes::cipher::KeyInit;
 use aes::Aes256;
 use xts_mode::Xts128;
 
-// ── 1. AES-XTS Memory Encryption ─────────────────────────────────────
-
-/// Simplified AES-XTS memory encryption for active RAM state protection.
-///
-/// Uses AES-256 in XTS-like mode where:
-/// - Key1 is used for encrypting plaintext blocks
-/// - Key2 is used for generating the tweak value
-/// - Each 16-byte block is encrypted with the tweak derived from its byte offset
-///
-/// This prevents cold-boot attacks: an attacker who dumps RAM cannot recover
-/// session keys or plaintext without the XTS key.
 pub struct XtsMemoryEncryptor {
-    /// Real AES-256-XTS (IEEE 1619) encryptor: key1 encrypts data blocks, key2 derives tweaks.
     xts: Xts128<Aes256>,
 }
 
 impl XtsMemoryEncryptor {
-    /// Create a new XTS memory encryptor from a 64-byte key (32 for encryption, 32 for tweak).
     pub fn new(key1: &[u8; 32], key2: &[u8; 32]) -> Self {
         let enc_cipher = Aes256::new(GenericArray::from_slice(key1));
         let tweak_cipher = Aes256::new(GenericArray::from_slice(key2));
@@ -44,11 +31,6 @@ impl XtsMemoryEncryptor {
         }
     }
 
-    /// Encrypt a buffer in-place using XTS mode.
-    ///
-    /// Each 16-byte data unit is encrypted under a tweak derived from the
-    /// data-unit index (sector_offset). The same plaintext at different
-    /// addresses therefore produces different ciphertext.
     pub fn encrypt_buffer(&self, buffer: &mut [u8], sector_offset: u64) {
         if buffer.is_empty() {
             return;
@@ -58,7 +40,6 @@ impl XtsMemoryEncryptor {
         self.xts.encrypt_sector(buffer, tweak);
     }
 
-    /// Decrypt a buffer in-place using XTS mode.
     pub fn decrypt_buffer(&self, buffer: &mut [u8], sector_offset: u64) {
         if buffer.is_empty() {
             return;
@@ -69,7 +50,6 @@ impl XtsMemoryEncryptor {
     }
 }
 
-/// A memory region protected by XTS encryption when not in active use.
 pub struct EncryptedMemoryRegion {
     data: Vec<u8>,
     encryptor: Arc<XtsMemoryEncryptor>,
@@ -87,7 +67,6 @@ impl EncryptedMemoryRegion {
         }
     }
 
-    /// Decrypt the region for access. Call this before reading/writing.
     pub fn unlock(&mut self) -> &mut [u8] {
         if !self.is_decrypted {
             self.encryptor
@@ -97,7 +76,6 @@ impl EncryptedMemoryRegion {
         &mut self.data
     }
 
-    /// Encrypt the region after access. Call this to protect against cold-boot.
     pub fn lock(&mut self) {
         if self.is_decrypted {
             self.encryptor
@@ -114,17 +92,7 @@ impl Drop for EncryptedMemoryRegion {
     }
 }
 
-// ── 2. Verified IPC Ring Buffer ──────────────────────────────────────
-
-/// A bounded, lock-free single-producer single-consumer ring buffer
-/// for verified inter-process communication.
-///
-/// Provides mathematical guarantees against:
-/// - Buffer overflows (capacity is fixed at creation)
-/// - Cross-stream contamination (type-safe slots)
-/// - Data races (atomic indices)
 pub struct VerifiedRingBuffer<T: Send + Clone> {
-    /// Ring buffer slots wrapped in UnsafeCell for sound interior mutability.
     slots: Vec<std::cell::UnsafeCell<Option<T>>>,
     capacity: usize,
     write_idx: AtomicUsize,
@@ -216,12 +184,6 @@ impl<T: Send + Clone> VerifiedRingBuffer<T> {
     }
 }
 
-// ── 3. Zero-Copy Packet Path Abstraction ─────────────────────────────
-
-/// Represents a raw network packet in a zero-copy path.
-///
-/// Models the eBPF/XDP approach where the NIC can perform the 4-byte
-/// session hash lookup directly without copying data to userspace.
 pub struct ZeroCopyPacket<'a> {
     pub data: &'a [u8],
     pub session_hash: [u8; 4],
@@ -230,8 +192,6 @@ pub struct ZeroCopyPacket<'a> {
     pub iface_index: u32,
 }
 
-/// A zero-copy XDP-like dispatcher that performs the session hash lookup
-/// without copying the packet payload.
 pub struct XdpDispatcher {
     dispatch_table: Vec<AtomicUsize>,
     num_workers: usize,
@@ -248,10 +208,6 @@ impl XdpDispatcher {
         }
     }
 
-    /// Perform wire-speed session hash lookup and route to worker.
-    ///
-    /// In a real eBPF/XDP implementation, this would run on the NIC.
-    /// Here we simulate the same logic in software.
     pub fn route_packet<'a>(&self, packet: &ZeroCopyPacket<'a>) -> usize {
         if self.num_workers == 0 || self.dispatch_table.is_empty() {
             return 0;
@@ -269,12 +225,6 @@ impl XdpDispatcher {
     }
 }
 
-// ── 4. Bundle Protocol / IPN Routing Header ──────────────────────────
-
-/// A Bundle Protocol (BPv7 / RFC 9171) compatible routing header.
-///
-/// Allows GhostNet packets to interface with existing Delay/Disruption
-/// Tolerant Networking (DTN) infrastructure.
 #[derive(Debug, Clone)]
 pub struct BundleProtocolHeader {
     pub version: u8,
@@ -312,12 +262,10 @@ impl BundleProtocolHeader {
         }
     }
 
-    /// Serialize the BP header into a byte buffer.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.push(self.version);
         buf.push(self.crc_type);
-        // Encode EIDs as CBOR-like length-prefixed strings (simplified)
         let src_bytes = self.source_eid.as_bytes();
         let dst_bytes = self.destination_eid.as_bytes();
         buf.push(src_bytes.len() as u8);
@@ -330,7 +278,6 @@ impl BundleProtocolHeader {
         buf
     }
 
-    /// Parse a BP header from bytes.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < 3 {
             return None;
@@ -377,13 +324,6 @@ impl BundleProtocolHeader {
     }
 }
 
-// ── 5. Doppler-Shifted Plasma Wake Handshake Simulator ───────────────
-
-/// Simulates Doppler-shifted inter-satellite communications.
-///
-/// Injects frequency shifts into the virtual transport layer so the
-/// decoder can be tested against LEO satellite velocities (~7500 m/s)
-/// before real deployment.
 #[derive(Debug, Clone)]
 pub struct DopplerShiftSimulator {
     pub relative_velocity_ms: f64,
@@ -402,9 +342,7 @@ impl Default for DopplerShiftSimulator {
 }
 
 impl DopplerShiftSimulator {
-    /// Create a new Doppler simulator for LEO velocities.
     pub fn leo_typical() -> Self {
-        // LEO relative velocity between two satellites: up to ~7.5 km/s
         Self {
             relative_velocity_ms: 7500.0,
             carrier_freq_hz: 193.0e12,
@@ -412,28 +350,22 @@ impl DopplerShiftSimulator {
         }
     }
 
-    /// Compute the Doppler shift: Δf = f₀ × v/c
     pub fn doppler_shift_hz(&self) -> f64 {
         self.carrier_freq_hz * self.relative_velocity_ms / self.c
     }
 
-    /// Compute the Doppler shift as a fraction of the carrier frequency.
     pub fn doppler_fraction(&self) -> f64 {
         self.relative_velocity_ms / self.c
     }
 
-    /// Apply Doppler shift to a byte stream by simulating bit errors
-    /// proportional to the frequency offset (simplified model).
     pub fn apply_doppler_noise(&self, data: &mut [u8]) -> usize {
         let shift_frac = self.doppler_fraction().abs();
-        // Simulate bit errors: at 7500 m/s, ~0.0025% of bits may flip
         let error_rate = shift_frac * 0.1; // Simplified model
         let total_bits = data.len().saturating_mul(8);
         let _expected_errors = (total_bits as f64 * error_rate) as usize;
         let mut errors: usize = 0;
 
         for (i, byte) in data.iter_mut().enumerate() {
-            // Flip some bits based on the shift
             if (i as f64 * error_rate).fract() < error_rate {
                 *byte ^= 0x01;
                 errors = errors.saturating_add(1);
@@ -442,7 +374,6 @@ impl DopplerShiftSimulator {
         errors
     }
 
-    /// Simulate a plasma wake effect: burst of errors at the leading edge.
     pub fn apply_plasma_wake(&self, data: &mut [u8]) -> usize {
         let wake_length = (data.len() / 10).max(1); // First 10% of packet
         let mut errors: usize = 0;
@@ -455,26 +386,10 @@ impl DopplerShiftSimulator {
         errors
     }
 
-    /// Update the relative velocity (e.g., as satellites approach/separate).
     pub fn update_velocity(&mut self, new_velocity_ms: f64) {
         self.relative_velocity_ms = new_velocity_ms;
     }
 }
-
-// ══════════════════════════════════════════════════════════════════
-// Hardware-Bound Ghost — TPM 2.0 PCR Quote & SecureMemGuard
-//
-// Traditional mesh node keys are vulnerable to cold-boot extraction, physical host
-// seizure, and OS tampering.
-//
-// HardwareRootedIdentity binds the node identity and ephemeral secrets to:
-// 1. Hardware TPM 2.0 Platform Configuration Registers (PCRs 0-7: firmware & boot state)
-// 2. Cryptographic quotes over `node_fp || session_epoch` signed by the TPM Attestation Key (AK)
-// 3. LockedMemory / SecureMemGuard: RAM pages locked against swap, preventing disk leakage.
-//
-// A seized storage drive or tampered kernel cannot boot the identity key without
-// producing valid TPM PCR measurements.
-// ══════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpmPcrMeasurement {
@@ -505,8 +420,6 @@ impl HardwareRootedIdentity {
         }
     }
 
-    /// Construct a hardware-rooted identity that enforces Ed25519 signature verification
-    /// over `(pcr_digest || nonce)` on every attested [`TpmQuote`].
     pub fn with_verifying_key(
         expected_pcr_digest: [u8; 32],
         verifying_key: [u8; 32],
@@ -519,7 +432,6 @@ impl HardwareRootedIdentity {
         }
     }
 
-    /// Compute cumulative PCR composite digest across measured registers
     pub fn compute_pcr_composite(measurements: &[TpmPcrMeasurement]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -530,8 +442,6 @@ impl HardwareRootedIdentity {
         hasher.finalize().into()
     }
 
-    /// Attest hardware quote against current session epoch, expected boot integrity,
-    /// and (when configured) the Ed25519 hardware quote signature.
     pub fn attest_quote(&self, quote: &TpmQuote, expected_nonce: &[u8; 32]) -> bool {
         if !self.tpm_enabled {
             return true; // Virtual / soft-attested mode
@@ -556,8 +466,6 @@ impl HardwareRootedIdentity {
     }
 }
 
-// ── Comprehensive integration test ─────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,13 +476,11 @@ mod tests {
         let key2 = [0xCDu8; 32];
         let encryptor = Arc::new(XtsMemoryEncryptor::new(&key1, &key2));
 
-        // Raw XTS: encryption must change the data, decryption must restore it
         let mut buf = [0u8; 64];
         buf[..8].copy_from_slice(b"SECRET!!");
         let plain = buf;
         encryptor.encrypt_buffer(&mut buf, 0);
         assert_ne!(buf, plain, "XTS encryption must change the buffer");
-        // Same plaintext at a different sector offset must produce different ciphertext
         let mut buf2 = [0u8; 64];
         buf2[..8].copy_from_slice(b"SECRET!!");
         encryptor.encrypt_buffer(&mut buf2, 7);
@@ -585,8 +491,6 @@ mod tests {
         encryptor.decrypt_buffer(&mut buf, 0);
         assert_eq!(buf, plain, "XTS roundtrip must recover the original");
 
-        // Region-level lock/unlock lifecycle: lock encrypts at rest,
-        // unlock transparently returns the plaintext again
         let mut region = EncryptedMemoryRegion::new(64, Arc::clone(&encryptor));
         {
             let data = region.unlock();
@@ -625,7 +529,6 @@ mod tests {
         assert!(buf.try_push(2));
         assert!(buf.try_push(3));
         assert!(buf.try_push(4));
-        // Should be full
         assert!(!buf.try_push(5));
         assert!(buf.is_full());
     }
@@ -660,7 +563,6 @@ mod tests {
     fn test_doppler_simulator() {
         let sim = DopplerShiftSimulator::leo_typical();
         let shift_hz = sim.doppler_shift_hz();
-        // At 7500 m/s and 193 THz: Δf ≈ 4.83 GHz
         assert!(
             shift_hz > 1e9,
             "Doppler shift should be GHz, got {} Hz",
@@ -677,7 +579,6 @@ mod tests {
 
     #[test]
     fn test_hardware_rooted_identity_tpm_quote_verification() {
-        // Construct baseline PCR measurements (e.g. PCR 0 = UEFI, PCR 2 = Option ROM, PCR 7 = Secure Boot)
         let measurements = vec![
             TpmPcrMeasurement {
                 pcr_index: 0,
@@ -698,7 +599,6 @@ mod tests {
 
         let session_epoch_nonce = [0x5Au8; 32];
 
-        // 1. Valid Quote signed by hardware TPM matches baseline and epoch nonce
         let valid_quote = TpmQuote {
             pcr_digest: trusted_composite,
             nonce: session_epoch_nonce,
@@ -706,7 +606,6 @@ mod tests {
         };
         assert!(hw_identity.attest_quote(&valid_quote, &session_epoch_nonce));
 
-        // 2. Tampered Boot / Compromised Kernel: PCR digest changes
         let tampered_measurements = vec![
             TpmPcrMeasurement {
                 pcr_index: 0,
@@ -733,7 +632,6 @@ mod tests {
             "Tampered PCR must fail hardware attestation"
         );
 
-        // 3. Replay Attack: Old quote with stale nonce
         let stale_nonce = [0x01u8; 32];
         assert!(
             !hw_identity.attest_quote(&valid_quote, &stale_nonce),

@@ -28,18 +28,11 @@ use rand::RngCore;
 use sha2::Sha256;
 use x25519_dalek::{EphemeralSecret, PublicKey as XPublicKey};
 
-/// The total size of the handshake PDU before sharding.
 pub const HANDSHAKE_BLOB_LEN: usize = 944;
 
-/// Hybrid KEM suite identifiers. The suite is part of HKDF domain separation,
-/// so two implementations cannot accidentally derive the same session key from
-/// different KEM parameter sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HybridCipherSuite {
-    /// Existing wire-compatible X25519 + ML-KEM-512 construction.
     X25519MlKem512V2,
-    /// Agility slot for X25519 + ML-KEM-768. The caller supplies the shared
-    /// secret produced by the negotiated implementation.
     X25519MlKem768V3,
 }
 
@@ -67,9 +60,6 @@ impl HybridCipherSuite {
     }
 }
 
-/// Select the strongest suite supported by both peers. The ordering is explicit
-/// and deterministic; callers must authenticate the resulting selection in the
-/// handshake transcript to prevent downgrade attacks.
 pub fn negotiate_cipher_suite(
     local: &[HybridCipherSuite],
     remote_wire_ids: &[u8],
@@ -82,23 +72,10 @@ pub fn negotiate_cipher_suite(
     .find(|suite| local.contains(suite) && remote_wire_ids.contains(&suite.wire_id()))
 }
 
-/// Derive the hybrid master key from both shared secrets via HKDF-SHA256.
-///
-/// If a PSK is provided (Some), it is mixed into the HKDF salt as an
-/// additional entropy source for defense-in-depth against Kyber cryptanalysis.
-/// If None, a zero salt is used for backward compatibility.
 pub fn derive_hybrid_master_key(x25519_shared: &[u8; 32], kyber_shared: &[u8]) -> [u8; 32] {
     derive_hybrid_master_key_with_psk(x25519_shared, kyber_shared, None)
 }
 
-/// Derive the hybrid master key with optional PSK mixing.
-///
-/// The PSK is mixed into the HKDF salt phase:
-///   salt = PSK || zeros_padding (32 bytes total)
-///   master_key = HKDF-SHA256(salt, ikm = x25519_ss || kyber_ss)
-///
-/// This ensures that even if both X25519 and Kyber-512 are cryptographically
-/// broken, an attacker without the PSK cannot derive the session key.
 pub fn derive_hybrid_master_key_with_psk(
     x25519_shared: &[u8; 32],
     kyber_shared: &[u8],
@@ -112,9 +89,6 @@ pub fn derive_hybrid_master_key_with_psk(
     )
 }
 
-/// Suite-aware HKDF derivation. Existing callers retain the v2 suite through
-/// `derive_hybrid_master_key_with_psk`; new negotiation code can select v3
-/// without reusing the v2 domain.
 pub fn derive_hybrid_master_key_with_suite(
     suite: HybridCipherSuite,
     x25519_shared: &[u8; 32],
@@ -123,7 +97,6 @@ pub fn derive_hybrid_master_key_with_suite(
 ) -> [u8; 32] {
     let salt = match psk {
         Some(key) => {
-            // Use PSK as the HKDF salt
             *key
         }
         None => [0u8; 32],
@@ -137,21 +110,9 @@ pub fn derive_hybrid_master_key_with_suite(
     master_key
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Present-Tense Mesh — Cryptographic Presence Claim
-// ══════════════════════════════════════════════════════════════════
-
-/// Cryptographic presence claim proving physical presence in the live beacon epoch.
-///
-/// Nodes bind recent beacon entropy (observed from local broadcast / Poisson beacons)
-/// into the session handshake. A replay from a past epoch, a captured wire transcript,
-/// or a faraway adversary outside the local broadcast horizon cannot provide
-/// matching beacon entropy for the current window and is rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresenceProof {
-    /// Hash of recent local beacon entropy.
     pub beacon_entropy_hash: [u8; 32],
-    /// Beacon grid or local epoch window index.
     pub epoch_window: u64,
 }
 
@@ -173,8 +134,6 @@ impl PresenceProof {
         }
     }
 
-    /// Verifies whether the claimed presence matches the local beacon entropy window.
-    /// Returns Ok(()) if valid, or an Err with reason if out of window or entropy mismatch.
     pub fn verify(
         &self,
         expected_entropy: &[u8],
@@ -193,7 +152,6 @@ impl PresenceProof {
     }
 }
 
-/// Derives master key binding cryptographic presence into the session transcript.
 pub fn derive_hybrid_master_key_with_presence(
     suite: HybridCipherSuite,
     x25519_shared: &[u8; 32],
@@ -220,30 +178,8 @@ pub fn derive_hybrid_master_key_with_presence(
     master_key
 }
 
-/// Domain-separation label for the transcript-bound hybrid KDF.
 pub const HYBRID_BIND_LABEL: &[u8] = b"GHOST_NET_HYBRID_BIND_v2";
 
-/// Hybrid KDF **with transcript binding**.
-///
-/// The unbound form above ties the session key to two shared secrets and to nothing
-/// else — not to the public keys that produced them, not to the ciphertext, not to
-/// the exchange the two peers actually had. Two handshakes that somehow landed on
-/// the same pair of shared secrets would derive the same session key, and neither
-/// side has anything to check the other against beyond the secrets themselves.
-///
-/// X-Wing and NIST's dual-PRF guidance both bind the transcript for exactly this
-/// reason, so this folds `x25519_pub_initiator ‖ x25519_pub_responder ‖ kyber_ct ‖ initiator_pq_commitment ‖ responder_pq_commitment`
-/// into the IKM under a domain-separation label. The order is **canonical** — the
-/// *initiator's* public key and commitment first — because both sides must build identical bytes
-/// from the same handshake and only the roles are common between them: each peer
-/// knows which of the two keys is the other's, not the byte order in which the
-/// other happened to hash them.
-///
-/// This is a *session-key* change, so it is a wire-format change: a peer running the
-/// old derivation would compute a different key from the same handshake and every
-/// frame would fail to open. The negotiated handshake's magic is therefore bumped
-/// with it (V6 -> V7), so the mismatch surfaces as "no such handshake" rather than as traffic
-/// that silently never decrypts.
 pub fn derive_hybrid_master_key_with_transcript(
     suite: HybridCipherSuite,
     x25519_shared: &[u8; 32],
@@ -283,26 +219,22 @@ pub fn derive_hybrid_master_key_with_transcript(
     master_key
 }
 
-/// Generate an X25519 ephemeral keypair.
 pub fn generate_x25519_keypair() -> (EphemeralSecret, XPublicKey) {
     let secret = EphemeralSecret::random_from_rng(rand::thread_rng());
     let public = XPublicKey::from(&secret);
     (secret, public)
 }
 
-/// Generate a Kyber-512 (ML-KEM-512) keypair.
 pub fn generate_kyber_keypair() -> (EncapsulationKey512, DecapsulationKey512) {
     let (dk, ek) = MlKem512::generate_keypair();
     (ek, dk)
 }
 
-/// Generate an ML-KEM-768 keypair for the negotiated v3 suite.
 pub fn generate_kyber768_keypair() -> (EncapsulationKey768, DecapsulationKey768) {
     let (dk, ek) = MlKem768::generate_keypair();
     (ek, dk)
 }
 
-/// Encapsulate against an ML-KEM-768 public key.
 pub fn kyber768_encapsulate(peer_pk: &[u8]) -> Result<(Vec<u8>, Vec<u8>), &'static str> {
     let ek = EncapsulationKey::<MlKem768>::new_from_slice(peer_pk)
         .map_err(|_| "Invalid ML-KEM-768 public key")?;
@@ -310,7 +242,6 @@ pub fn kyber768_encapsulate(peer_pk: &[u8]) -> Result<(Vec<u8>, Vec<u8>), &'stat
     Ok((ct.as_slice().to_vec(), ss.as_slice().to_vec()))
 }
 
-/// Decapsulate an ML-KEM-768 ciphertext with the negotiated v3 suite.
 pub fn kyber768_decapsulate(
     secret_key: &DecapsulationKey768,
     ciphertext: &[u8],
@@ -320,7 +251,6 @@ pub fn kyber768_decapsulate(
     Ok(secret_key.decapsulate(&ct).as_slice().to_vec())
 }
 
-/// Encapsulate a shared secret with Kyber-512 (Bob side).
 pub fn kyber_encapsulate(peer_pk: &[u8]) -> Result<([u8; 768], Vec<u8>), &'static str> {
     let ek = EncapsulationKey::<MlKem512>::new_from_slice(peer_pk)
         .map_err(|_| "Invalid Kyber public key")?;
@@ -329,8 +259,6 @@ pub fn kyber_encapsulate(peer_pk: &[u8]) -> Result<([u8; 768], Vec<u8>), &'stati
     Ok((ct_bytes, ss.as_slice().to_vec()))
 }
 
-/// Compute a truncated session hash (4 bytes) from the master key.
-/// Used in the GTF header to link packets to their session.
 pub fn compute_session_hash(key: &[u8; 32]) -> [u8; 4] {
     use sha2::{Digest, Sha256};
     let d = Sha256::digest(key);
@@ -340,16 +268,9 @@ pub fn compute_session_hash(key: &[u8; 32]) -> [u8; 4] {
     hash
 }
 
-/// Uniform-random envelope sizes for the opt-in handshake experiment.
-///
-/// These deliberately keep the legacy ML-KEM-512 payload sizes so the existing
-/// RS/GTF transport can carry them without a second fragmentation format. The
-/// first 16 bytes are random per handshake and are authenticated as part of the
-/// signature transcript; they are not a protocol magic value.
 pub const UNIFORM_HANDSHAKE_BLOB_LEN: usize = HANDSHAKE_BLOB_LEN;
 pub const UNIFORM_RESPONSE_BLOB_LEN: usize = RESPONSE_BLOB_LEN;
 
-/// Build the 944-byte PQ-Exchange Handshake PDU.
 pub fn build_handshake_pdu(
     identity_pk: &[u8; 32],
     identity_sign: impl Fn(&[u8]) -> [u8; 64],
@@ -371,7 +292,6 @@ pub fn build_handshake_pdu(
     pdu
 }
 
-/// Parse a received handshake PDU into its components.
 pub struct HandshakeBlob {
     pub x25519_pub: [u8; 32],
     pub kyber_pub: [u8; 800],
@@ -379,13 +299,9 @@ pub struct HandshakeBlob {
     pub signature: [u8; 64],
 }
 
-/// Versioned handshake magic. The legacy magic remains accepted below.
 pub const HANDSHAKE_V3_MAGIC: &[u8; 16] = b"GHOST_HS_V3_____";
 pub const RESPONSE_V3_MAGIC: &[u8; 16] = b"GHOST_RSP_V3____";
 
-/// Parsed suite-negotiation handshake. The suite identifier and KEM material
-/// are included in the signed transcript, preventing a downgrade by rewriting
-/// the clear suite byte.
 #[derive(Debug, Clone)]
 pub struct SuiteHandshakeBlob {
     pub suite: HybridCipherSuite,
@@ -454,12 +370,6 @@ pub fn parse_handshake_pdu_suite(data: &[u8]) -> Option<SuiteHandshakeBlob> {
     })
 }
 
-/// Build a legacy-sized handshake with a random, authenticated prefix.
-///
-/// This is the first §2 spike, not a claim of complete protocol deniability:
-/// the cryptographic fields remain the existing ML-KEM-512 layout. It removes
-/// the fixed handshake magic from the wire and gives the classifier a fixed-size
-/// random prefix to measure.
 pub fn build_uniform_handshake_pdu(
     identity_pk: &[u8; 32],
     identity_sign: impl Fn(&[u8]) -> [u8; 64],
@@ -478,9 +388,6 @@ pub fn build_uniform_handshake_pdu(
     pdu
 }
 
-/// Parse a uniform-mode handshake. The exact length is checked by the caller
-/// after RS reassembly; accepting a longer buffer here keeps this helper safe
-/// for transports that append alignment bytes.
 pub fn parse_uniform_handshake_pdu(data: &[u8]) -> Option<HandshakeBlob> {
     if data.len() < UNIFORM_HANDSHAKE_BLOB_LEN {
         return None;
@@ -501,8 +408,6 @@ pub fn parse_uniform_handshake_pdu(data: &[u8]) -> Option<HandshakeBlob> {
     })
 }
 
-/// The signed transcript for a uniform-mode handshake includes its random
-/// prefix, unlike the legacy transcript which intentionally remains unchanged.
 pub fn uniform_handshake_signed_material(data: &[u8]) -> Option<Vec<u8>> {
     if data.len() < UNIFORM_HANDSHAKE_BLOB_LEN {
         return None;
@@ -510,7 +415,6 @@ pub fn uniform_handshake_signed_material(data: &[u8]) -> Option<Vec<u8>> {
     Some(data[..880].to_vec())
 }
 
-/// Compute standard normal complementary CDF: P(N(0,1) > z)
 fn normal_ccdf(z: f64) -> f64 {
     if z < -8.0 {
         return 1.0;
@@ -532,8 +436,6 @@ fn normal_ccdf(z: f64) -> f64 {
     }
 }
 
-/// Calculate Shannon entropy (bits per byte) over a byte slice (§2 Ghost Handshake).
-/// Maximum entropy for 8-bit uniform data is 8.0.
 pub fn calculate_shannon_entropy(data: &[u8]) -> f64 {
     if data.is_empty() {
         return 0.0;
@@ -553,13 +455,6 @@ pub fn calculate_shannon_entropy(data: &[u8]) -> f64 {
     entropy
 }
 
-/// Calculate Pearson's Chi-Square statistic and p-value for uniformity across 256 byte values (§2 Ghost Handshake).
-/// Returns (chi_square_stat, p_value).
-///
-/// Under the null hypothesis of uniform randomness:
-/// - Degrees of freedom = 255.
-/// - p-value > 0.05 indicates statistical uniformity (cannot be rejected as random noise).
-/// - p-value < 0.001 indicates detectable non-random bias (such as cleartext protocol magic).
 pub fn calculate_chi_square_uniformity(data: &[u8]) -> (f64, f64) {
     if data.is_empty() {
         return (0.0, 1.0);
@@ -586,7 +481,6 @@ pub fn calculate_chi_square_uniformity(data: &[u8]) -> (f64, f64) {
     (chi_square, p_value)
 }
 
-/// Parse the 944-byte handshake blob.
 pub fn parse_handshake_pdu(data: &[u8]) -> Option<HandshakeBlob> {
     if data.len() < HANDSHAKE_BLOB_LEN || !data.starts_with(b"GHOST_HANDSHAKE_") {
         return None;
@@ -614,12 +508,6 @@ pub fn parse_handshake_pdu(data: &[u8]) -> Option<HandshakeBlob> {
 
 pub const RESPONSE_BLOB_LEN: usize = 912; // 16 magic + 32 X25519 pub + 768 ct + 32 identity + 64 sig
 
-/// Build a signed response PDU. Layout:
-///   [0..16]   "GHOST_RESPONSE__"
-///   [16..48]  Responder's X25519 public key
-///   [48..816] Kyber-512 ciphertext (768 bytes)
-///   [816..848] Responder's Ed25519 identity public key
-///   [848..912] Ed25519 signature over (x_pub || ct)
 pub fn build_response_pdu(
     responder_identity_pk: &[u8; 32],
     responder_sign: impl Fn(&[u8]) -> [u8; 64],
@@ -714,7 +602,6 @@ pub fn parse_response_pdu_suite(data: &[u8]) -> Option<SuiteResponseBlob> {
     })
 }
 
-/// Build a legacy-sized response with a random, authenticated prefix.
 pub fn build_uniform_response_pdu(
     responder_identity_pk: &[u8; 32],
     responder_sign: impl Fn(&[u8]) -> [u8; 64],
@@ -780,19 +667,6 @@ pub fn parse_response_pdu(data: &[u8]) -> Option<ResponseBlob> {
     })
 }
 
-/// Explicit suite-list negotiation wire format.
-///
-/// Unlike the original V3 offer, this carries a public KEM key for every suite
-/// the sender advertises. The responder can therefore choose the strongest
-/// mutual suite without relying on an unauthenticated preference byte.
-///
-/// **V5 vs V4.** V5 derives the session key with
-/// [`derive_hybrid_master_key_with_transcript`], which binds
-/// `x25519_pub_initiator ‖ x25519_pub_responder ‖ kyber_ct` into the KDF; V4 used
-/// the unbound form. The two produce *different* keys from the same handshake, so
-/// they cannot be told apart by trying them — hence the separate magic. A V5 build
-/// no longer answers a V4 offer (and vice versa); the versions are separate
-/// protocols rather than one protocol with an optional hardening.
 pub const HANDSHAKE_NEGOTIATION_MAGIC: &[u8; 16] = b"GHOST_HS_NEG_V7_";
 pub const RESPONSE_NEGOTIATION_MAGIC: &[u8; 16] = b"GHOST_RSP_NEG_V7";
 
@@ -856,9 +730,6 @@ fn negotiation_material(
     }
     out.extend_from_slice(identity_pk);
     out.extend_from_slice(pq_commitment);
-    // Reserved byte: ensures the PDU length before signing is even, so
-    // l4_rs::encode does not append a parity pad that the parser would then
-    // reject. Covered by the signature and must be 0x00.
     out.push(0x00);
     Some(out)
 }
@@ -928,8 +799,6 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
         at = at.checked_add(32)?;
         let pq_commitment: [u8; 32] = data.get(at..at.checked_add(32)?)?.try_into().ok()?;
         at = at.checked_add(32)?;
-        // New PDUs include a reserved 0x00 byte before the signature; old PDUs
-        // do not. Accept both.
         if at < len && data[at] == 0x00 {
             if !allow_reserved || len != at.checked_add(1)?.checked_add(64)? {
                 return None;
@@ -963,8 +832,6 @@ pub fn parse_negotiated_handshake_pdu(data: &[u8]) -> Option<NegotiatedHandshake
         return Some(blob);
     }
 
-    // Tolerate a single trailing 0x00 parity pad from l4_rs::encode on legacy
-    // odd-length PDUs (which become even-length after RS padding).
     if data.len().is_multiple_of(2) && data.last() == Some(&0x00) && data.len() > 1 {
         if let Some(blob) = try_parse(data.len() - 1, false) {
             return Some(blob);
@@ -1007,14 +874,6 @@ pub fn build_negotiated_response_pdu(
     Some(out)
 }
 
-/// How long a negotiated response PDU is for `suite`, as
-/// [`build_negotiated_response_pdu`] writes it — before the shard transport
-/// pads it.
-///
-/// Named and public because the *signature* covers exactly this many bytes: a
-/// receiver that assumes the last 64 bytes of the datagram are the signature
-/// verifies the wrong thing whenever the transport added its pad, and the
-/// ML-KEM-768 response is an odd length, so it always does.
 pub fn negotiated_response_len(suite: HybridCipherSuite) -> usize {
     let ct_len = suite_ct_len(suite);
     16 + 1 + 32 + ct_len + 32 + 32 + 64
@@ -1030,12 +889,6 @@ pub fn parse_negotiated_response_pdu(data: &[u8]) -> Option<NegotiatedResponseBl
     let identity_start = ct_start + ct_len;
     let pq_start = identity_start + 32;
     let total = negotiated_response_len(suite);
-    // The shard transport splits a payload into two equal halves, so it pads an
-    // odd one with a single zero byte (see `l4_rs::encode`). A datagram that
-    // arrived through it is therefore the PDU, or the PDU plus that pad, and
-    // both have to parse: whether the pad is there is decided by the suite's
-    // ciphertext length, not by anything the sender chose. Only the PDU itself
-    // is read — the trailing pad is ignored, never parsed as content.
     if data.len() < total || data.len() > total + 1 {
         return None;
     }
@@ -1043,8 +896,6 @@ pub fn parse_negotiated_response_pdu(data: &[u8]) -> Option<NegotiatedResponseBl
     let kyber_ct = data[ct_start..identity_start].to_vec();
     let identity_pk: [u8; 32] = data[identity_start..pq_start].try_into().ok()?;
     let pq_commitment: [u8; 32] = data[pq_start..pq_start + 32].try_into().ok()?;
-    // Exactly 64 bytes, not "everything left": the transport's pad follows the
-    // signature, and taking the tail would make a 65-byte slice.
     let signature: [u8; 64] = data[pq_start + 32..pq_start + 32 + 64].try_into().ok()?;
     Some(NegotiatedResponseBlob {
         suite,
@@ -1056,49 +907,19 @@ pub fn parse_negotiated_response_pdu(data: &[u8]) -> Option<NegotiatedResponseBl
     })
 }
 
-// ── P2-2 Double-Ratchet KDFs ────────────────────────────────────────
-//
-// The session ratchet needs two different one-way functions, and they must be
-// domain-separated from each other and from the initial handshake KDF: the DH
-// ratchet mixes a *fresh* hybrid shared secret into the root key, while the
-// symmetric ratchet advances a chain key once per epoch. Reusing one info string
-// for both would let an epoch key and a root key coincide.
-
-/// HKDF info for the hybrid DH-ratchet root KDF.
 pub const RATCHET_ROOT_INFO: &[u8] = b"GHOST_NET_RATCHET_ROOT_v2";
 
-/// HKDF info that seeds the two directional chain keys from the handshake key.
 pub const RATCHET_INIT_INFO: &[u8] = b"GHOST_NET_RATCHET_INIT_v2";
 
-/// HKDF info for the per-epoch AEAD key derived from a chain key.
 pub const RATCHET_EPOCH_INFO: &[u8] = b"GHOST_NET_EPOCH_KEY_v2";
 
-/// Domain separator for the `kdf_ck` chain steps (RFC 5869-style split).
 pub const CHAIN_STEP_NEXT: u8 = 0x01;
-/// Domain separator for the message/epoch key produced by a `kdf_ck` step.
 pub const CHAIN_STEP_KEY: u8 = 0x02;
 
-/// HKDF info for mixing out-of-band (QEL/QKD) entropy into the ratchet root.
-/// Domain-separated from every other KDF use so a quantum key can never stand
-/// in for a ratchet root or an epoch key.
 pub const RATCHET_QUANTUM_MIX_INFO: &[u8] = b"GHOST_NET_RATCHET_QEL_ENTROPY_v1";
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// DH-ratchet step: mix a fresh hybrid shared secret into the root key
-/// and reseed **both directional chain keys**.
-///
-/// Returns `(next_root_key, chain_initiator_to_responder, chain_responder_to_initiator)`.
-///
-/// This is the KDF that gives the ratchet its **break-in recovery**: an attacker
-/// who learns the current state still cannot compute the next one, because the
-/// next one also depends on an ephemeral X25519 secret and an ML-KEM-512
-/// encapsulation secret that did not exist when the compromise happened. That
-/// property is why the ratchet mixes *both* halves rather than only the classical
-/// one — a quantum adversary who recorded the DH exchange must still break ML-KEM.
-///
-/// Two separate chains, not one, so the two directions of a session never share an
-/// AEAD key: a keystream known to one direction can then never decrypt the other.
 pub fn kdf_rk_hybrid(
     root_key: &[u8; 32],
     x25519_shared: &[u8; 32],
@@ -1108,8 +929,6 @@ pub fn kdf_rk_hybrid(
     ikm.extend_from_slice(x25519_shared);
     ikm.extend_from_slice(kem_shared);
 
-    // The *old root key* is the HKDF salt, so the new root key is a function of
-    // both the previous root and the new secret: neither alone recovers it.
     let hk = Hkdf::<Sha256>::new(Some(&root_key[..]), &ikm);
     let mut out = [0u8; 96];
     hk.expand(RATCHET_ROOT_INFO, &mut out)
@@ -1124,18 +943,6 @@ pub fn kdf_rk_hybrid(
     (new_root, chain_to_resp, chain_to_init)
 }
 
-/// Mix out-of-band entropy (a QEL/QKD-derived key) into a ratchet root key.
-///
-/// Returns `(next_root_key, chain_initiator_to_responder, chain_responder_to_initiator)`
-/// in the same shape as [`kdf_rk_hybrid`], so the caller reseeds the chains
-/// exactly as a DH step would. The mixing is one-way: learning the *output*
-/// reveals nothing about the quantum key, and learning the quantum key alone
-/// recovers nothing without the prior root.
-///
-/// This is the L10 anchor's contribution to a session: extra entropy whose
-/// provenance is a channel whose noise model the peer cannot cheaply bias. It
-/// is *additive* — a session without it is exactly as secure as before; one
-/// with it is at least as secure as the stronger of the two inputs.
 pub fn kdf_rk_quantum_mix(
     root_key: &[u8; 32],
     quantum_key: &[u8; 32],
@@ -1154,10 +961,6 @@ pub fn kdf_rk_quantum_mix(
     (new_root, chain_to_resp, chain_to_init)
 }
 
-/// Seed the two directional chain keys from the initial handshake master key.
-///
-/// The first epoch is *not* special-cased: it walks the same `kdf_ck` chains as
-/// every later epoch, so there is exactly one code path that produces epoch keys.
 pub fn seed_ratchet_chains(master_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let hk = Hkdf::<Sha256>::new(Some(&master_key[..]), &[]);
     let mut out = [0u8; 64];
@@ -1170,34 +973,16 @@ pub fn seed_ratchet_chains(master_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     (to_resp, to_init)
 }
 
-/// Symmetric-ratchet step: `(next_chain_key, step_key)` from one chain key.
-///
-/// Both outputs are HMAC-SHA256 over a distinct one-byte constant, so knowing
-/// `step_key` does not yield `next_chain_key` (and therefore cannot yield any
-/// later key). That is the forward-secrecy property of the symmetric ratchet:
-/// the key actually used to encrypt is discarded, and the chain key that
-/// produced it cannot be recovered from it.
 pub fn kdf_ck(chain_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let next = hmac_sha256(chain_key, &[CHAIN_STEP_NEXT]);
     let step_key = hmac_sha256(chain_key, &[CHAIN_STEP_KEY]);
     (next, step_key)
 }
 
-/// Confirmation tag for a completed ratchet step.
-///
-/// The step has no in-band way for the initiator to tell "we agreed" from "I just
-/// derived a key you do not have": X25519 returns a shared secret for an all-zero
-/// or wrong public key rather than an error, so a step can complete with divergent
-/// keys and only fail later, as unopenable traffic that looks like packet loss. A
-/// tag derived from the new epoch key turns that into an immediate, local failure.
-///
-/// It must be a *derivation* of the key, never the key: sending an epoch key to
-/// confirm it would hand an eavesdropper the key the step just created.
 pub fn ratchet_confirm(epoch_key: &[u8; 32]) -> [u8; 32] {
     hmac_sha256(epoch_key, b"GHOST_RATCHET_CONFIRM_v2")
 }
 
-/// HMAC-SHA256 with `key` — the primitive both chain steps are built from.
 fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
     let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a key of any length");
     mac.update(data);
@@ -1207,10 +992,6 @@ fn hmac_sha256(key: &[u8; 32], data: &[u8]) -> [u8; 32] {
     key
 }
 
-/// Derive the AEAD key for one ratchet epoch's chain from a chain key.
-///
-/// `epoch` is the ratchet generation, so even if two chains were ever seeded
-/// identically they would not produce the same key for different generations.
 pub fn derive_epoch_key(chain_key: &[u8; 32], epoch: u64) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(&chain_key[..]), &epoch.to_be_bytes());
     let mut key = [0u8; 32];
@@ -1230,8 +1011,6 @@ mod tests {
         let kem = vec![0x33u8; 32];
 
         let (r0, c0a, c0b) = kdf_rk_hybrid(&root, &dh, &kem);
-        // Changing either half must change the root and both chains: this is what
-        // makes the ratchet hybrid, and what a quantum adversary must defeat twice.
         let (r1, c1a, c1b) = kdf_rk_hybrid(&root, &[0x44u8; 32], &kem);
         let (r2, c2a, c2b) = kdf_rk_hybrid(&root, &dh, &[0x55u8; 32]);
         assert_ne!(r0, r1);
@@ -1241,12 +1020,9 @@ mod tests {
         assert_ne!(c0a, c2a);
         assert_ne!(c0b, c2b);
 
-        // And it is a function of the previous root key, which is what makes
-        // each step a link in a chain rather than an independent derivation.
         let (r3, _, _) = kdf_rk_hybrid(&[0xEEu8; 32], &dh, &kem);
         assert_ne!(r0, r3);
 
-        // The two directional chains must never coincide.
         assert_ne!(c0a, c0b);
     }
 
@@ -1275,7 +1051,6 @@ mod tests {
         assert_ne!(next, key, "the two outputs must be domain-separated");
         assert_ne!(next, ck, "a chain step must advance");
 
-        // Walk the chain: no two step keys may collide over many steps.
         let mut seen = std::collections::HashSet::new();
         let mut cur = ck;
         for _ in 0..64 {
@@ -1299,8 +1074,6 @@ mod tests {
 
     #[test]
     fn test_ratchet_kdf_is_domain_separated_from_handshake() {
-        // A ratchet step whose inputs are the handshake's must not reproduce the
-        // handshake master key, or an epoch key could equal the session key.
         let root = [0x01u8; 32];
         let dh = [0x02u8; 32];
         let kem = vec![0x03u8; 32];
@@ -1320,7 +1093,6 @@ mod tests {
         let key_no_psk = derive_hybrid_master_key(&x25519_ss, &kyber_ss);
         let key_with_psk = derive_hybrid_master_key_with_psk(&x25519_ss, &kyber_ss, Some(&psk));
 
-        // Keys should be different with PSK vs without
         assert_ne!(
             key_no_psk, key_with_psk,
             "PSK mixing should produce different keys"
@@ -1555,10 +1327,6 @@ mod tests {
 
     #[test]
     fn test_uniform_handshake_chi_square_and_entropy_proof() {
-        // §2 Spike Proof: Demonstrate that uniform handshakes and response PDUs
-        // exhibit high Shannon entropy (> 7.90 bits/byte) and uniform response PDUs
-        // pass Pearson's Chi-Square uniformity test (p > 0.05), completely eliminating
-        // fixed magic headers ('GHOST_HANDSHAKE_', 'GHOST_RESPONSE__') from the wire.
         let mut uniform_hs_stream = Vec::new();
         let mut uniform_resp_stream = Vec::new();
         let mut legacy_stream = Vec::new();
@@ -1575,11 +1343,9 @@ mod tests {
             let mut mock_sig = [0u8; 64];
             rng.fill_bytes(&mut mock_sig);
 
-            // 1. Uniform Handshake PDU
             let u_hs = build_uniform_handshake_pdu(&identity, |_| mock_sig, &x_public, &kem_public);
             uniform_hs_stream.extend_from_slice(&u_hs);
 
-            // 2. Uniform Response PDU (carries compressed power-of-two ML-KEM ciphertext)
             let ct_fixed: &[u8; 768] = ct
                 .as_slice()
                 .try_into()
@@ -1588,17 +1354,14 @@ mod tests {
                 build_uniform_response_pdu(&identity, |_| mock_sig, x_public.as_bytes(), ct_fixed);
             uniform_resp_stream.extend_from_slice(&u_resp);
 
-            // 3. Legacy Handshake PDU with ASCII magic header
             let leg_pdu = build_handshake_pdu(&identity, |_| mock_sig, &x_public, &kem_public);
             legacy_stream.extend_from_slice(&leg_pdu);
         }
 
-        // 1. Shannon Entropy Analysis
         let hs_entropy = calculate_shannon_entropy(&uniform_hs_stream);
         let resp_entropy = calculate_shannon_entropy(&uniform_resp_stream);
         let leg_entropy = calculate_shannon_entropy(&legacy_stream);
 
-        // Both uniform PDUs achieve exceptionally high cryptographic entropy
         assert!(
             hs_entropy > 7.90,
             "Uniform handshake entropy should exceed 7.90: got {}",
@@ -1610,11 +1373,9 @@ mod tests {
             resp_entropy
         );
 
-        // 2. Pearson's Chi-Square Goodness-of-Fit Test on Response PDU (ML-KEM ciphertext)
         let (resp_chi, resp_p) = calculate_chi_square_uniformity(&uniform_resp_stream);
         let (leg_chi, leg_p) = calculate_chi_square_uniformity(&legacy_stream);
 
-        // The uniform response PDU passes the null hypothesis of uniform randomness (p > 0.01)
         assert!(
             resp_p > 0.01,
             "Uniform response PDU failed chi-square test: chi2={}, p={}",
@@ -1622,7 +1383,6 @@ mod tests {
             resp_p
         );
 
-        // Legacy handshake exhibits massive chi-square deviation due to ASCII magic
         assert!(
             leg_chi > resp_chi,
             "Legacy handshake should exhibit higher chi-square deviation than uniform: legacy={}, resp={}",
@@ -1643,15 +1403,12 @@ mod tests {
         let current_entropy = b"live_poisson_beacon_entropy_pool_data";
         let live_epoch = 50u64;
 
-        // Honest peer mints presence proof for the current epoch
         let proof = PresenceProof::new(current_entropy, live_epoch);
         assert!(proof.verify(current_entropy, live_epoch, 1).is_ok());
 
-        // Slight window jitter (+/- 1 epoch) is accepted
         assert!(proof.verify(current_entropy, live_epoch + 1, 1).is_ok());
         assert!(proof.verify(current_entropy, live_epoch - 1, 1).is_ok());
 
-        // Replay from distant past epoch (e.g. epoch 10 vs live 50) is rejected
         let stale_proof = PresenceProof::new(current_entropy, 10);
         let stale_res = stale_proof.verify(current_entropy, live_epoch, 1);
         assert!(
@@ -1659,7 +1416,6 @@ mod tests {
             "Replay from past epoch must be rejected"
         );
 
-        // Proof with mismatched entropy (attacker outside the beacon zone) is rejected
         let fake_entropy = b"attacker_forged_or_remote_entropy_data";
         let mismatched_proof = PresenceProof::new(fake_entropy, live_epoch);
         let mismatch_res = mismatched_proof.verify(current_entropy, live_epoch, 1);
@@ -1668,7 +1424,6 @@ mod tests {
             "Mismatched beacon entropy must be rejected"
         );
 
-        // Key derivation with presence proof binds the presence claim
         let x_ss = [0x11u8; 32];
         let kyber_ss = [0x22u8; 32];
         let key1 = derive_hybrid_master_key_with_presence(
@@ -1687,7 +1442,6 @@ mod tests {
         );
         assert_eq!(key1, key2);
 
-        // Mismatched presence proof derives completely different master key
         let key_other = derive_hybrid_master_key_with_presence(
             HybridCipherSuite::X25519MlKem512V2,
             &x_ss,

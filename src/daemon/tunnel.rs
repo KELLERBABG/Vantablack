@@ -69,37 +69,24 @@ use vantablack::ghost::net::universal_tunnel::{
     UniversalTunnelChunker, UniversalTunnelReassembler,
 };
 
-/// Envelope magic. Four bytes, like every other control payload the peer loop sees.
 pub(crate) const TUNNEL_MAGIC: &[u8; 4] = b"UTUN";
 const KIND_OPEN: u8 = 1;
 const KIND_DATA: u8 = 2;
 const KIND_CLOSE: u8 = 3;
 const KIND_OK: u8 = 4;
 const KIND_FAIL: u8 = 5;
-/// Wire markers for the sender's role on a stream.
 const ROLE_LOCAL: u8 = 0;
 const ROLE_REMOTE: u8 = 1;
-/// How long the exit may take to connect to a target before the stream is refused.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The egress policy as this exit applies it: the operator's environment, plus the
-/// exact targets named in `GHOST_TUNNEL_ALLOW` — the list that already decides what
-/// this node may dial at all.
 fn exit_policy() -> egress::Policy {
     egress::policy().with_allow_entries(allowed_targets())
 }
 
-/// Whether the toggle is on.
 pub(crate) fn enabled() -> bool {
     vantablack::ghost::net::universal_tunnel::is_enabled()
 }
 
-/// `[UTUN][kind][role][stream id][body]`.
-///
-/// `role` is the *sender's* role for the stream. It is what makes a stream id
-/// unambiguous: both endpoints allocate ids from their own counter, so "stream 3"
-/// can name a stream the sender opened (`Local`) or one it is serving (`Remote`),
-/// and the receiver looks it up under the complementary role.
 fn encode(kind: u8, role: StreamRole, stream: u32, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(10 + body.len());
     out.extend_from_slice(TUNNEL_MAGIC);
@@ -113,8 +100,6 @@ fn encode(kind: u8, role: StreamRole, stream: u32, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Parse an envelope body. `None` for anything that is not one, so a payload is
-/// never reinterpreted.
 fn decode(payload: &[u8]) -> Option<(u8, StreamRole, u32, &[u8])> {
     if payload.len() < 10 || &payload[..4] != TUNNEL_MAGIC {
         return None;
@@ -129,24 +114,16 @@ fn decode(payload: &[u8]) -> Option<(u8, StreamRole, u32, &[u8])> {
     Some((kind, role, stream, &payload[10..]))
 }
 
-/// Whether `payload` is a tunnel envelope.
 pub(crate) fn looks_like(payload: &[u8]) -> bool {
     payload.len() >= 10 && &payload[..4] == TUNNEL_MAGIC
 }
 
-// ── Configuration ─────────────────────────────────────────────────────────
-
-/// One published local port and the target it forwards to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Forward {
     pub local: SocketAddr,
     pub target: String,
 }
 
-/// Parse `GHOST_TUNNEL_PORTS` (`local=target,...`).
-///
-/// A `local` of just a port means `127.0.0.1:<port>`: binding every interface
-/// would publish a forward to the LAN, which is not what a local tunnel is for.
 pub(crate) fn parse_ports(spec: &str) -> (Vec<Forward>, Vec<String>) {
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
@@ -176,7 +153,6 @@ pub(crate) fn parse_ports(spec: &str) -> (Vec<Forward>, Vec<String>) {
     (accepted, rejected)
 }
 
-/// Split an allowlist into normalised entries.
 fn allow_entries(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|s| s.trim().to_ascii_lowercase())
@@ -184,35 +160,28 @@ fn allow_entries(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// The targets this node will dial on behalf of peers.
 fn allowed_targets() -> Vec<String> {
     allow_entries(&std::env::var("GHOST_TUNNEL_ALLOW").unwrap_or_default())
 }
 
-/// The peers allowed to use this node as an exit.
 fn allowed_peers() -> Vec<String> {
     allow_entries(&std::env::var("GHOST_TUNNEL_PEERS").unwrap_or_default())
 }
 
-/// Whether the exit role is configured at all.
 pub(crate) fn exit_enabled() -> bool {
     !allowed_targets().is_empty() && !allowed_peers().is_empty()
 }
 
-/// Exact-match target admission. No prefix or wildcard: a forward that could reach
-/// any host is a proxy.
 fn target_allowed(target: &str) -> bool {
     let target = target.trim().to_ascii_lowercase();
     allowed_targets().contains(&target)
 }
 
-/// Exact-match peer admission.
 fn peer_allowed(fingerprint: &str) -> bool {
     let fingerprint = fingerprint.trim().to_ascii_lowercase();
     allowed_peers().contains(&fingerprint)
 }
 
-/// The fingerprint of the peer that runs the exit side for our forwards.
 fn exit_peer() -> Option<String> {
     std::env::var("GHOST_TUNNEL_EXIT")
         .ok()
@@ -220,14 +189,6 @@ fn exit_peer() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-// ── Stream state ──────────────────────────────────────────────────────────
-
-/// Which side of a stream owns the state: the forwarder (`Local`, the TCP connection
-/// we accepted) or the exit (`Remote`, the stream a peer asked us to open).
-///
-/// The role is part of the key because one node can do both at once, and because the
-/// peer fingerprint alone cannot distinguish "the stream I opened to this peer" from
-/// "the stream this peer opened with me".
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum StreamRole {
     Local,
@@ -236,20 +197,16 @@ enum StreamRole {
 
 type StreamKey = (StreamRole, String, u32);
 
-/// Where reassembled bytes for one stream go, keyed by role, peer and stream id.
 fn streams() -> &'static DashMap<StreamKey, mpsc::UnboundedSender<Vec<u8>>> {
     static MAP: OnceLock<DashMap<StreamKey, mpsc::UnboundedSender<Vec<u8>>>> = OnceLock::new();
     MAP.get_or_init(DashMap::new)
 }
 
-/// Per-stream reassembly state, same key as [`streams`].
 fn reassemblers() -> &'static DashMap<StreamKey, UniversalTunnelReassembler> {
     static MAP: OnceLock<DashMap<StreamKey, UniversalTunnelReassembler>> = OnceLock::new();
     MAP.get_or_init(DashMap::new)
 }
 
-/// Start the local listeners. `None` when the toggle is off or nothing is
-/// configured — the ordinary send path is untouched in that case.
 pub(crate) fn spawn(
     nc: Arc<GhostNode>,
     peers: Arc<DashMap<String, SocketAddr>>,
@@ -332,7 +289,6 @@ pub(crate) fn spawn(
     }))
 }
 
-/// Pump one accepted local connection: TCP in, `DATA` out; `DATA` in, TCP out.
 async fn serve_local(
     nc: Arc<GhostNode>,
     peers: Arc<DashMap<String, SocketAddr>>,
@@ -355,8 +311,6 @@ async fn serve_local(
     }
     let (mut read, mut write) = socket.into_split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    // The reply stream is keyed by the exit, so an incoming `DATA` from the exit
-    // finds it — the same lookup the exit performs in the other direction.
     streams().insert((StreamRole::Local, exit_fp.clone(), stream_id), tx);
     reassemblers().insert(
         (StreamRole::Local, exit_fp.clone(), stream_id),
@@ -413,7 +367,6 @@ fn next_stream_id() -> u32 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Handle one tunnel envelope. Returns `true` when the payload was one.
 pub(crate) async fn handle(rx: &RxContext, payload: &[u8], from: SocketAddr) -> bool {
     if !looks_like(payload) {
         return false;
@@ -421,11 +374,6 @@ pub(crate) async fn handle(rx: &RxContext, payload: &[u8], from: SocketAddr) -> 
     handle_frame(&rx.node, &rx.peers, payload, from).await
 }
 
-/// The handler proper, once the frame's origin is known.
-///
-/// Split from [`handle`] so the end-to-end test can drive the real forwarding and
-/// exit code over a loopback session without constructing a whole receive context;
-/// `ingress` calls it through [`handle`] with exactly these arguments.
 pub(crate) async fn handle_frame(
     node: &Arc<GhostNode>,
     peers: &Arc<DashMap<String, SocketAddr>>,
@@ -438,7 +386,6 @@ pub(crate) async fn handle_frame(
     let Some((kind, role, stream, body)) = decode(payload) else {
         return false;
     };
-    // The sender's role names the stream; ours is the other one.
     let role = match role {
         StreamRole::Local => StreamRole::Remote,
         StreamRole::Remote => StreamRole::Local,
@@ -447,8 +394,6 @@ pub(crate) async fn handle_frame(
         tracing::debug!(peer = %from, "Tunnel: envelope ignored — the toggle is off");
         return true;
     }
-    // Only a peer we hold a session with can be named: `from` is the address the
-    // frame arrived from, and the fingerprint is resolved through that address.
     let Some(peer_fp) = peers
         .iter()
         .find(|entry| *entry.value() == from)
@@ -489,10 +434,6 @@ pub(crate) async fn handle_frame(
                 .await;
                 return true;
             }
-            // The allowlist says what the operator trusts; the egress policy says what
-            // an exit may reach. A target named in the allowlist is honoured as-is, so
-            // existing home forwards to loopback and the LAN keep working; everything
-            // unnamed is held to the strict default.
             if let Err(denied) = exit_policy().check(&target) {
                 tracing::warn!(
                     peer = %peer_fp,
@@ -510,10 +451,6 @@ pub(crate) async fn handle_frame(
                 .await;
                 return true;
             }
-            // The stream's queue and reassembler are installed *now*, before the
-            // exit dials: a client that writes immediately sends DATA before the
-            // target connection exists, and those frames would otherwise be dropped
-            // for want of anywhere to reassemble them.
             let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
             streams().insert((StreamRole::Remote, peer_fp.clone(), stream), tx);
             reassemblers().insert(
@@ -528,8 +465,6 @@ pub(crate) async fn handle_frame(
             true
         }
         KIND_DATA => {
-            // The stream this belongs to is whichever one this node registered for
-            // that peer: its own forward (`Local`) or the one it serves (`Remote`).
             {
                 let key = (role, peer_fp.clone(), stream);
                 if let Some(mut state) = reassemblers().get_mut(&key) {
@@ -551,8 +486,6 @@ pub(crate) async fn handle_frame(
             reassemblers().remove(&(role, peer_fp, stream));
             true
         }
-        // OK/FAIL are informational: the data path is one-way-addressed, so a
-        // refusal simply means no bytes arrive and the local connection closes.
         KIND_OK | KIND_FAIL => {
             if kind == KIND_FAIL {
                 tracing::warn!(
@@ -568,7 +501,6 @@ pub(crate) async fn handle_frame(
     }
 }
 
-/// Splice one remote stream to its target on the exit side.
 async fn serve_exit(
     nc: Arc<GhostNode>,
     peers: Arc<DashMap<String, SocketAddr>>,
@@ -577,9 +509,6 @@ async fn serve_exit(
     target: String,
     mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
 ) {
-    // Resolve through the policy so the address we dial is the one that passed: a
-    // name the peer controls cannot resolve into a blocked range between check and
-    // connect.
     let resolved = match exit_policy().resolve(&target).await {
         Ok(addr) => addr,
         Err(denied) => {
@@ -680,11 +609,6 @@ async fn serve_exit(
     writer.abort();
 }
 
-/// Send one tunnel envelope to `peer_fp` over the session we hold with it.
-///
-/// Single self-contained frame when it fits, RS carriers when it does not — the
-/// same framing every other payload takes, so the tunnel needs no second wire
-/// format.
 pub(crate) async fn send_payload(
     nc: &Arc<GhostNode>,
     peers: &DashMap<String, SocketAddr>,
@@ -732,8 +656,6 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use vantablack::ghost::net::universal_tunnel::FLAG_FIN;
 
-    /// Serialises the tests that set the tunnel's allowlists: the environment is
-    /// process-global and the harness runs test functions in parallel.
     async fn env_lock() -> tokio::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -778,20 +700,14 @@ mod tests {
 
     #[test]
     fn admission_is_an_exact_match_on_both_lists() {
-        // The helpers read the environment; assert the matching rule directly.
         assert!(allow_entries(" 10.0.0.5:5432 , AABB ").contains(&"10.0.0.5:5432".to_string()));
         assert_eq!(allow_entries(""), Vec::<String>::new());
-        // A prefix, a wildcard or a bare host is not the same entry.
         let entries = allow_entries("10.0.0.5:5432");
         assert!(entries.iter().any(|e| e == "10.0.0.5:5432"));
         assert!(!entries.iter().any(|e| e == "10.0.0.5"));
         assert!(!entries.iter().any(|e| e == "*"));
     }
 
-    /// One direction of a sealed loopback mesh: every datagram the sender writes is
-    /// opened with the receiver's own session and handed to the receiver's tunnel
-    /// handler — the step `RxContext::ingest` performs after decryption, isolated so
-    /// a test can stand two real nodes next to each other.
     fn relay(
         from: Arc<UdpSocket>,
         to_node: Arc<GhostNode>,
@@ -836,8 +752,6 @@ mod tests {
                 let Some(payload) = frame_payload(opened) else {
                     continue;
                 };
-                // A copy for the test, before the handler consumes the frame: this is
-                // the only place an envelope such as `FAIL` is visible on the wire.
                 if let Some(observed) = &observed {
                     let _ = observed.send(payload.to_vec());
                 }
@@ -846,15 +760,10 @@ mod tests {
         });
     }
 
-    /// Two real nodes with one sealed loopback session between them, a target
-    /// listener the exit may or may not be allowed to dial, and a window onto the
-    /// frames the initiator receives.
     struct Harness {
         initiator: Arc<GhostNode>,
         exit: Arc<GhostNode>,
         init_peers: Arc<DashMap<String, SocketAddr>>,
-        /// Envelopes that arrived at the initiator, decoded by the test rather than
-        /// consumed: this is where a refusal is observable.
         inbound: mpsc::UnboundedReceiver<Vec<u8>>,
         target: Option<TcpListener>,
         target_addr: SocketAddr,
@@ -883,7 +792,6 @@ mod tests {
             init_peers.insert(exit.fingerprint(), exit_addr);
             exit_peers.insert(initiator.fingerprint(), init_addr);
 
-            // What the exit sends arrives on the initiator's socket, and vice versa.
             let (inbound_tx, inbound) = mpsc::unbounded_channel();
             relay(
                 Arc::clone(&initiator.socket),
@@ -916,7 +824,6 @@ mod tests {
             self.target.take().expect("the target listener")
         }
 
-        /// Publish a local port that forwards to `target` through the exit.
         async fn forwarder(&self, target: &str) -> (SocketAddr, tokio::task::JoinHandle<()>) {
             let local = TcpListener::bind("127.0.0.1:0")
                 .await
@@ -933,7 +840,6 @@ mod tests {
             (addr, task)
         }
 
-        /// The next envelope of `want` that reached the initiator, with its body.
         async fn next_kind(&mut self, want: u8) -> Vec<u8> {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
             while tokio::time::Instant::now() < deadline {
@@ -956,9 +862,6 @@ mod tests {
         }
     }
 
-    /// End to end: a TCP client talks to the local forwarder, the frames cross a
-    /// sealed loopback session, the exit checks both allowlists, dials the target and
-    /// splices the reply back.
     #[tokio::test]
     async fn a_local_tcp_client_reaches_an_allowlisted_target_through_the_exit() {
         let _guard = env_lock().await;
@@ -975,9 +878,6 @@ mod tests {
             n
         });
 
-        // The allowlists an operator would set, and the toggle. The loopback target is
-        // named exactly in `GHOST_TUNNEL_ALLOW`, which is what keeps an existing home
-        // forward working without `GHOST_EXIT_EGRESS_LAN`.
         std::env::set_var("GHOST_TUNNEL_ALLOW", target_addr.to_string());
         std::env::set_var("GHOST_TUNNEL_PEERS", harness.initiator.fingerprint());
         std::env::remove_var("GHOST_EXIT_EGRESS_LAN");
@@ -991,7 +891,6 @@ mod tests {
         client.write_all(request).await.expect("write the request");
         client.flush().await.expect("flush the request");
 
-        // The echo plus the tail, however many reads it takes.
         let expected: Vec<u8> = [request.as_slice(), b"|ack"].concat();
         let mut reply = Vec::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -1017,8 +916,6 @@ mod tests {
         vantablack::ghost::net::universal_tunnel::set_enabled(false);
     }
 
-    /// A peer outside `GHOST_TUNNEL_PEERS`: the exit answers `FAIL` over the session,
-    /// and the target is never dialled.
     #[tokio::test]
     async fn a_peer_outside_the_allowlist_is_refused_and_the_target_is_never_dialled() {
         let _guard = env_lock().await;
@@ -1026,7 +923,6 @@ mod tests {
         let target = harness.take_target();
         let target_addr = harness.target_addr;
 
-        // The target is allowed; the *peer* is not.
         std::env::set_var("GHOST_TUNNEL_ALLOW", target_addr.to_string());
         std::env::set_var("GHOST_TUNNEL_PEERS", "0000000000000000");
         vantablack::ghost::net::universal_tunnel::set_enabled(true);
@@ -1055,9 +951,6 @@ mod tests {
         vantablack::ghost::net::universal_tunnel::set_enabled(false);
     }
 
-    /// A target the allowlist permits and the egress policy still refuses: SMTP. The
-    /// `FAIL` names the rule, and nothing is dialled — naming a target lifts the
-    /// range rules, never the anti-spam floor.
     #[tokio::test]
     async fn an_explicitly_allowed_smtp_target_is_still_refused_by_the_egress_floor() {
         let _guard = env_lock().await;
@@ -1089,8 +982,6 @@ mod tests {
         vantablack::ghost::net::universal_tunnel::set_enabled(false);
     }
 
-    /// A target outside `GHOST_TUNNEL_ALLOW`: the exit answers `FAIL` over the session,
-    /// and the target is never dialled.
     #[tokio::test]
     async fn a_target_outside_the_allowlist_is_refused_and_never_dialled() {
         let _guard = env_lock().await;
@@ -1098,8 +989,6 @@ mod tests {
         let target = harness.take_target();
         let target_addr = harness.target_addr;
 
-        // The peer is allowed; the *target* is not — the allowlist names another
-        // address, which is what a typo or an over-broad policy would look like.
         std::env::set_var("GHOST_TUNNEL_ALLOW", "10.255.255.1:9");
         std::env::set_var("GHOST_TUNNEL_PEERS", harness.initiator.fingerprint());
         vantablack::ghost::net::universal_tunnel::set_enabled(true);
@@ -1128,8 +1017,6 @@ mod tests {
         vantablack::ghost::net::universal_tunnel::set_enabled(false);
     }
 
-    /// The transport half: a chunker frame survives the envelope and the peer's
-    /// reassembler yields the original bytes.
     #[test]
     fn chunked_data_survives_the_envelope_and_reassembly() {
         let payload: Vec<u8> = (0..1500u32).map(|i| (i % 251) as u8).collect();
@@ -1155,7 +1042,6 @@ mod tests {
             reassembler.is_finished,
             "the FIN flag survives the envelope"
         );
-        // The chunker's FIN flag is what the reassembler reports, not the envelope.
         assert_ne!(FLAG_FIN, 0);
     }
 }

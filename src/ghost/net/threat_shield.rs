@@ -40,27 +40,19 @@ use std::sync::{OnceLock, RwLock};
 static SHIELD_ENABLED: AtomicBool = AtomicBool::new(false);
 static BLOCKED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-/// How many blocked indicators the ring buffer keeps before overwriting.
 pub const RECENT_CAPACITY: usize = 256;
 
-/// Which kind of indicator matched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Indicator {
     Domain,
     Ip,
 }
 
-/// Why an indicator is on a list. Kept coarse: an operator needs to know whether to
-/// trust the block, not the feed's internal taxonomy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreatKind {
-    /// Phishing / credential harvesting.
     Phishing,
-    /// Malware distribution.
     Malware,
-    /// Botnet command-and-control.
     CommandAndControl,
-    /// Hijacked or criminal-controlled netblock.
     HijackedNetblock,
 }
 
@@ -75,28 +67,21 @@ impl ThreatKind {
     }
 }
 
-/// A match returned by [`blocked`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verdict {
     pub indicator: Indicator,
-    /// The list entry that matched, not the thing that was looked up: for
-    /// `a.b.example.com` that is `example.com`.
     pub matched: String,
     pub kind: ThreatKind,
 }
 
-/// One entry of the recent-blocks ring buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockEvent {
-    /// The indicator as it was looked up.
     pub value: String,
     pub indicator: Indicator,
     pub kind: ThreatKind,
-    /// Unix seconds when the block happened.
     pub at: u64,
 }
 
-/// Suffix index over domains.
 #[derive(Debug, Default)]
 pub struct HostIndex {
     exact: HashMap<String, ThreatKind>,
@@ -115,7 +100,6 @@ impl HostIndex {
         self.exact.is_empty()
     }
 
-    /// Insert (or re-classify) one domain.
     pub fn insert(&mut self, domain: &str, kind: ThreatKind) {
         let domain = normalize_domain(domain);
         if !domain.is_empty() {
@@ -123,7 +107,6 @@ impl HostIndex {
         }
     }
 
-    /// Insert a whole feed.
     pub fn extend<I, S>(&mut self, domains: I, kind: ThreatKind)
     where
         I: IntoIterator<Item = S>,
@@ -134,7 +117,6 @@ impl HostIndex {
         }
     }
 
-    /// Longest matching entry for `domain`, walking label boundaries.
     pub fn lookup(&self, domain: &str) -> Option<(String, ThreatKind)> {
         let domain = normalize_domain(domain);
         if domain.is_empty() || self.exact.is_empty() {
@@ -157,23 +139,16 @@ impl HostIndex {
     }
 }
 
-/// One row of the sorted prefix table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CidrEntry {
     network: IpAddr,
     prefix: u8,
     kind: ThreatKind,
-    /// Unix seconds after which this rule stops applying. Botnet C2 hosts rotate
-    /// quickly, so a snapshot that stops refreshing must stop blocking rather than
-    /// pin a reassigned address forever.
     expires_at: Option<u64>,
 }
 
-/// Sorted CIDR index for netblock rules.
 #[derive(Debug, Default)]
 pub struct CidrIndex {
-    /// Sorted by (network, prefix): the layout a binary search needs, and the order
-    /// that keeps a dump of the table readable.
     entries: Vec<CidrEntry>,
 }
 
@@ -190,13 +165,10 @@ impl CidrIndex {
         self.entries.is_empty()
     }
 
-    /// Insert one netblock that never expires. A repeated (network, prefix)
-    /// re-classifies in place.
     pub fn insert(&mut self, network: IpAddr, prefix: u8, kind: ThreatKind) {
         self.insert_expiring(network, prefix, kind, None);
     }
 
-    /// Insert one netblock that stops applying after `expires_at` (unix seconds).
     pub fn insert_expiring(
         &mut self,
         network: IpAddr,
@@ -223,7 +195,6 @@ impl CidrIndex {
         }
     }
 
-    /// Insert a whole feed, e.g. `("203.0.113.0".parse().unwrap(), 24)`.
     pub fn extend<I>(&mut self, nets: I, kind: ThreatKind)
     where
         I: IntoIterator<Item = (IpAddr, u8)>,
@@ -233,7 +204,6 @@ impl CidrIndex {
         }
     }
 
-    /// Insert a whole feed whose entries all expire at `expires_at`.
     pub fn extend_expiring<I>(&mut self, nets: I, kind: ThreatKind, expires_at: Option<u64>)
     where
         I: IntoIterator<Item = (IpAddr, u8)>,
@@ -243,7 +213,6 @@ impl CidrIndex {
         }
     }
 
-    /// Removes every entry whose expiry has passed, returning how many went.
     pub fn prune_expired(&mut self, now: u64) -> usize {
         let before = self.entries.len();
         self.entries
@@ -251,16 +220,10 @@ impl CidrIndex {
         before - self.entries.len()
     }
 
-    /// The **most specific** matching block for `ip`.
-    ///
-    /// Prefix lengths are walked from longest to shortest, so a /32 report about one
-    /// host is preferred over the /8 that happens to contain it.
     pub fn lookup(&self, ip: IpAddr) -> Option<(String, ThreatKind)> {
         self.lookup_at(ip, now_secs())
     }
 
-    /// The most specific block for `ip` that is still live at `now`. An expired
-    /// entry is skipped, so a stale C2 /32 does not hide a live /24 around it.
     pub fn lookup_at(&self, ip: IpAddr, now: u64) -> Option<(String, ThreatKind)> {
         if self.entries.is_empty() {
             return None;
@@ -293,7 +256,6 @@ impl CidrIndex {
     }
 }
 
-/// The loaded shield: both indexes and the operator's local allowlist.
 #[derive(Debug, Default)]
 pub struct Shield {
     hosts: HostIndex,
@@ -303,8 +265,6 @@ pub struct Shield {
 }
 
 impl Shield {
-    /// Whether any list is loaded. The toggle is independent, but a shield with no
-    /// lists blocks nothing and says so.
     pub fn is_loaded(&self) -> bool {
         !self.hosts.is_empty() || !self.cidrs.is_empty()
     }
@@ -324,7 +284,6 @@ impl Shield {
         self.cidrs.extend(nets, kind);
     }
 
-    /// Insert one domain with its own classification — what a feed entry carries.
     pub fn insert_domain(&mut self, domain: &str, kind: ThreatKind) {
         self.hosts.insert(domain, kind);
     }
@@ -337,7 +296,6 @@ impl Shield {
         self.cidrs.clear();
     }
 
-    /// The netblock index, for a loader installing per-entry expiries.
     pub fn cidrs_mut(&mut self) -> &mut CidrIndex {
         &mut self.cidrs
     }
@@ -350,12 +308,10 @@ impl Shield {
         self.cidrs.len()
     }
 
-    /// Drop netblock entries whose expiry has passed; returns how many went.
     pub fn prune_expired(&mut self, now: u64) -> usize {
         self.cidrs.prune_expired(now)
     }
 
-    /// Replace the stored lists entirely — what a feed refresh does.
     pub fn replace_domains<I, S>(&mut self, domains: I, kind: ThreatKind)
     where
         I: IntoIterator<Item = S>,
@@ -365,7 +321,6 @@ impl Shield {
         self.load_domains(domains, kind);
     }
 
-    /// Replace the stored netblocks entirely.
     pub fn replace_cidrs<I>(&mut self, nets: I, kind: ThreatKind)
     where
         I: IntoIterator<Item = (IpAddr, u8)>,
@@ -374,7 +329,6 @@ impl Shield {
         self.load_cidrs(nets, kind);
     }
 
-    /// Replace the netblocks, with every entry carrying the same expiry.
     pub fn replace_cidrs_expiring<I>(&mut self, nets: I, kind: ThreatKind, expires_at: Option<u64>)
     where
         I: IntoIterator<Item = (IpAddr, u8)>,
@@ -383,7 +337,6 @@ impl Shield {
         self.cidrs.extend_expiring(nets, kind, expires_at);
     }
 
-    /// The operator's allowlist: a false positive they have accepted as safe.
     pub fn allow_domain(&mut self, domain: &str) {
         let domain = normalize_domain(domain);
         if !domain.is_empty() {
@@ -395,7 +348,6 @@ impl Shield {
         self.allow.insert(ip.to_string());
     }
 
-    /// Remove every allowlist entry.
     pub fn clear_allowlist(&mut self) {
         self.allow.clear();
     }
@@ -404,9 +356,6 @@ impl Shield {
         self.allow.len()
     }
 
-    /// Whether `domain` is exempted by the allowlist, directly or through a suffix:
-    /// allowing `example.com` also clears `cdn.example.com`, because a site the
-    /// operator trusts is fetched from its own subdomains.
     pub fn is_allowed_domain(&self, domain: &str) -> bool {
         let domain = normalize_domain(domain);
         if domain.is_empty() {
@@ -428,8 +377,6 @@ impl Shield {
         self.allow.contains(&ip.to_string())
     }
 
-    /// Classify a domain, honouring the allowlist. No recording: this is the pure
-    /// question, so callers that only need a yes/no do not perturb the ring buffer.
     pub fn classify_domain(&self, domain: &str) -> Option<Verdict> {
         if self.is_allowed_domain(domain) {
             return None;
@@ -441,13 +388,10 @@ impl Shield {
         })
     }
 
-    /// Classify an address as of now, honouring the allowlist and entry expiry.
     pub fn classify_ip(&self, ip: IpAddr) -> Option<Verdict> {
         self.classify_ip_at(ip, now_secs())
     }
 
-    /// Classify an address at an explicit time — the deterministic form the tests
-    /// and the feed loader use.
     pub fn classify_ip_at(&self, ip: IpAddr, now: u64) -> Option<Verdict> {
         if self.is_allowed_ip(ip) {
             return None;
@@ -473,7 +417,6 @@ impl Shield {
         });
     }
 
-    /// The most recent blocks, oldest first.
     pub fn recent(&self, limit: usize) -> Vec<BlockEvent> {
         let skip = self.recent.len().saturating_sub(limit);
         self.recent.iter().skip(skip).cloned().collect()
@@ -485,7 +428,6 @@ fn shield() -> &'static RwLock<Shield> {
     SHIELD.get_or_init(|| RwLock::new(Shield::default()))
 }
 
-/// Serialises the tests that touch the process-global shield.
 #[cfg(test)]
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -494,38 +436,28 @@ pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Whether the shield is switched on. Off by default, independent of ad blocking.
 pub fn is_enabled() -> bool {
     SHIELD_ENABLED.load(Ordering::Relaxed)
 }
 
-/// Switch the shield on or off.
 pub fn set_enabled(enabled: bool) {
     SHIELD_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// How many indicators this shield has blocked since the process started.
 pub fn blocked_total() -> u64 {
     BLOCKED_TOTAL.load(Ordering::Relaxed)
 }
 
-/// Run `f` against the loaded shield, exclusively — for loading and allowlisting.
 pub fn with_shield<R>(f: impl FnOnce(&mut Shield) -> R) -> R {
     let mut guard = shield().write().unwrap_or_else(|e| e.into_inner());
     f(&mut guard)
 }
 
-/// Run a read-only query against the loaded shield.
-///
-/// Classification is a pure question, so it takes a shared guard: DNS queries and
-/// `ClientHello` SNI checks in the datapath run concurrently with each other, and
-/// only a *match* escalates to the write guard to append to the ring buffer.
 pub fn with_shield_read<R>(f: impl FnOnce(&Shield) -> R) -> R {
     let guard = shield().read().unwrap_or_else(|e| e.into_inner());
     f(&guard)
 }
 
-/// Load domain rules into the process-global shield.
 pub fn load_domains<I, S>(domains: I, kind: ThreatKind)
 where
     I: IntoIterator<Item = S>,
@@ -534,7 +466,6 @@ where
     with_shield(|shield| shield.load_domains(domains, kind));
 }
 
-/// Load netblock rules into the process-global shield.
 pub fn load_cidrs<I>(nets: I, kind: ThreatKind)
 where
     I: IntoIterator<Item = (IpAddr, u8)>,
@@ -542,12 +473,10 @@ where
     with_shield(|shield| shield.load_cidrs(nets, kind));
 }
 
-/// Exempt one domain for this process.
 pub fn allow_domain(domain: &str) {
     with_shield(|shield| shield.allow_domain(domain));
 }
 
-/// Drop every loaded rule and allowlist entry — what a test does between cases.
 pub fn reset() {
     with_shield(|shield| {
         shield.replace_domains(Vec::<String>::new(), ThreatKind::Malware);
@@ -556,16 +485,10 @@ pub fn reset() {
     });
 }
 
-/// Is `domain` blocked, recording the block when it is?
-///
-/// Returns `false` whenever the shield is off, so the toggle is the only thing a
-/// caller has to check.
 pub fn blocks_domain(domain: &str) -> bool {
     if !is_enabled() {
         return false;
     }
-    // Shared guard for the lookup; the write guard is taken only for a hit, so an
-    // ordinary page load does not serialise the whole datapath on this lock.
     let verdict = with_shield_read(|shield| shield.classify_domain(domain));
     if let Some(verdict) = &verdict {
         record_block(domain, verdict);
@@ -585,7 +508,6 @@ pub fn blocks_domain(domain: &str) -> bool {
     }
 }
 
-/// Is `ip` blocked, recording the block when it is?
 pub fn blocks_ip(ip: IpAddr) -> bool {
     if !is_enabled() {
         return false;
@@ -609,12 +531,10 @@ pub fn blocks_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// Append one block to the ring buffer. The only write a datapath hit performs.
 fn record_block(value: &str, verdict: &Verdict) {
     with_shield(|shield| shield.record(value, verdict));
 }
 
-/// The most recent blocks, oldest first. In memory only, never persisted.
 pub fn recent_blocks(limit: usize) -> Vec<BlockEvent> {
     with_shield_read(|shield| shield.recent(limit))
 }
@@ -677,7 +597,6 @@ mod tests {
             index.lookup("cdn.malware.example.com."),
             Some(("malware.example.com".to_string(), ThreatKind::Malware))
         );
-        // A suffix match must land on a label boundary.
         assert_eq!(index.lookup("notmalware.example.com"), None);
         assert_eq!(index.lookup("example.com"), None);
         assert_eq!(index.lookup(""), None);
@@ -722,7 +641,6 @@ mod tests {
         index.insert(ip("2001:db8::1"), 32, ThreatKind::Malware);
         assert!(index.lookup(ip("2001:db8:1::1")).is_some());
         assert!(index.lookup(ip("2001:db9::1")).is_none());
-        // Out-of-range prefixes are ignored rather than silently clamped.
         index.insert(ip("192.0.2.0"), 33, ThreatKind::Malware);
         assert_eq!(index.len(), 2);
     }
@@ -793,7 +711,6 @@ mod tests {
         assert_eq!(recent[0].kind, ThreatKind::CommandAndControl);
         assert_eq!(recent[0].indicator, Indicator::Domain);
 
-        // The shield keeps its own count, separate from the ad blocker's.
         assert!(blocked_total() >= 1);
         set_enabled(false);
         reset();

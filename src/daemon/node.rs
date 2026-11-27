@@ -5,12 +5,6 @@
 
 use crate::*;
 
-/// Resolve whether this node serves as an exit and its initial `trusted_exits` allowlist.
-///
-/// Security invariant (C1): in `GHOST_MODE=public`, exit service fails CLOSED when
-/// neither `GHOST_EXIT=1` (or `GHOST_EXIT_NODE=1` / `GHOST_VPN=hub` / `--exit`) nor
-/// `GHOST_EXIT_ALLOWLIST` is explicitly set — `"any"` is NOT inserted automatically.
-/// Private/LAN modes preserve legacy open-exit defaults unless explicitly disabled.
 pub(crate) fn resolve_trusted_exits(
     ghost_mode: &str,
     exit_explicitly_on: bool,
@@ -42,7 +36,6 @@ pub(crate) fn resolve_trusted_exits(
     (is_exit_node, set)
 }
 
-/// Boot the node inside its own tokio runtime.
 pub(crate) fn run_daemon(
     suppress_browser: bool,
     node_tx: Option<std::sync::mpsc::Sender<Arc<GhostNode>>>,
@@ -60,10 +53,6 @@ pub(crate) async fn run_node(
 ) -> anyhow::Result<()> {
     let env_filter =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    // stderr is still unbuffered: line-flushed logs survive hard process kills,
-    // which matters for supervised/diagnostic runs and tests that parse the log
-    // tail. The desktop build additionally appends to a file, because a Windows
-    // GUI-subsystem process has no console to show it in.
     #[cfg(feature = "webview")]
     {
         let configured = std::env::var("GHOST_LOG")
@@ -93,25 +82,14 @@ pub(crate) async fn run_node(
             .init();
     }
 
-    // WIRED: Initialize subsystem state
     let revocation_list = Arc::new(RevocationList::new());
     let reputation_matrix = Arc::new(PoissonReputationMatrix::new());
     let bundle_buffer = Arc::new(BundleBuffer::new());
     let shard_router = Arc::new(vantablack::ghost::net::mesh::AdaptiveShardRouter::new());
 
-    // WIRED: Category B - Verified SPSC Ring Buffer for packet staging
     let verified_ring = Arc::new(VerifiedRingBuffer::<Vec<u8>>::new(1024));
 
-    // SecureTimeKeeper and BuildInfo were constructed here and immediately
-    // discarded (_time_keeper, _build_info — neither was ever read). Removed
-    // rather than wired: the library primitives remain available in l9_infra
-    // for future use when a real consumer exists.
-
     let ba = std::env::var("GHOST_BIND").unwrap_or_else(|_| "0.0.0.0:55225".to_string());
-    // A configured regime is the human-facing replacement for the four SOCKS
-    // ports and their env vars: it selects one listener, one hop policy, and
-    // cover traffic. `GHOST_V2_REGIME` wins over the persisted choice; a typo is
-    // reported instead of silently falling back to the weakest regime.
     let regime = match vantablack::ghost::v2::regime::from_env() {
         Ok(Some(r)) => Some(r),
         Ok(None) => vantablack::ghost::v2::regime::load_persisted(
@@ -128,9 +106,6 @@ pub(crate) async fn run_node(
     };
     let regime_policy = regime.inspect(|r| {
         if r.cover_traffic() && std::env::var("GHOST_RACS").is_err() {
-            // Cover traffic is what `ghost`/`vantablack` promise; the RACS gate
-            // already exists, so a regime turns it on rather than adding a
-            // second switch.
             std::env::set_var("GHOST_RACS", "1");
         }
     });
@@ -153,15 +128,10 @@ pub(crate) async fn run_node(
         .and_then(|v| v.parse().ok())
         .unwrap_or(100);
     let psk_hex = std::env::var("GHOST_PSK").ok().filter(|s| !s.is_empty());
-    // GHOST_PSK is mixed into the HKDF salt of the hybrid master key, so only
-    // nodes sharing the same 32-byte pre-shared key can establish a working
-    // session (defense-in-depth against rogue nodes with valid identities).
     let psk: Option<[u8; 32]> = psk_hex
         .as_ref()
         .and_then(|h| hex::decode(h).ok())
         .and_then(|b| b.try_into().ok());
-    // Exit-node determination (C1): fail closed in GHOST_MODE=public unless
-    // explicitly enabled via GHOST_EXIT=1 / GHOST_EXIT_ALLOWLIST / --exit / GHOST_VPN=hub.
     let vpn_env_mode = std::env::var("GHOST_VPN")
         .unwrap_or_default()
         .trim()
@@ -234,12 +204,9 @@ pub(crate) async fn run_node(
         None
     };
 
-    // Exit-node authorization: peers allowed to use THIS node as a SOCKS5
-    // exit. Closed by default in public mode — "any" opens it, or list fingerprints.
     let trusted_exits: Arc<std::sync::RwLock<std::collections::HashSet<String>>> =
         Arc::new(std::sync::RwLock::new(initial_trusted_exits));
 
-    // ── VPN (LAN-over-WAN / Exit Node) configuration ──
     let vpn_mode = init_vpn_mode_with_rotator(exit_rotator.clone())?;
 
     tracing::info!(
@@ -270,26 +237,11 @@ pub(crate) async fn run_node(
         }
     };
 
-    // ── Braid identity restore ─────────────────────────────────────────
-    // The per-peer braid seed is deterministic, so a restart that began at
-    // genesis again would sign a second child of a key a peer already accepted —
-    // an honest node that looks exactly like a clone. `init` restores every
-    // persisted chain and verifier before anything else in `run_node` runs, and
-    // `advance_and_tip` refuses to sign until it has.
     #[cfg(feature = "research")]
     {
         super::research_hooks::braid::init(&node.fingerprint());
-        // Vault placement reads the live session table to decide whether a
-        // bundle can be spread over three hosts; binding it here keeps that
-        // decision off the synchronous deposit path.
         super::research_hooks::vault::bind_sessions(Arc::clone(&node.sessions));
     }
-    // ── Boomerang home-exit advertisement ──────────────────────────────
-    // A node that runs exit service *and* opted in publishes CAP_HOME_EXIT in
-    // its signed descriptor. If the opt-in is set while exit service is off, the
-    // node refuses to pretend: the flag is not advertised and the conflict is
-    // logged, because a capability bit that claims unimplemented behaviour is a
-    // bug rather than a warning sign.
     let claims_home_exit = std::env::var("GHOST_HOME_EXIT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -307,16 +259,11 @@ pub(crate) async fn run_node(
         );
     }
     node.flow_controller.set_transit_rate_mbps(tm);
-    // The rate above is the operator's *policy* ceiling. The governor is the
-    // control half: it measures what the paths actually carry and lowers the
-    // effective rate to match, so a node whose links degrade stops accepting
-    // transit at the rate it was configured with.
     let transit_governor = Arc::new(vantablack::ghost::net::cc::TransitGovernor::new(
         tm.saturating_mul(125_000),
     ));
     tracing::info!(fingerprint = %node.fingerprint(), address = %node.local_addr, "Node ready");
 
-    // ── BOOTSTRAP SEEDS ──
     let addrs: Arc<DashMap<String, SocketAddr>> = Arc::new(DashMap::new());
     let spool: Arc<SpoolPool> = Arc::new(DashMap::new());
     let pending_hs: PendingHandshakes = Arc::new(DashMap::new());
@@ -328,22 +275,15 @@ pub(crate) async fn run_node(
     let connect_ok_ctrs: ConnectOkCtrs = Arc::new(DashMap::new());
     let default_exit: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let nc = Arc::new(node);
-    // Hand the node to the desktop window's tray, when one is coming.
     if let Some(tx) = node_tx {
         let _ = tx.send(Arc::clone(&nc));
     }
 
-    // WIRED: Category A - Fair-share transit enforcement (Tit-for-Tat)
     let tft = Arc::new(TitForTatEnforcer::new(
         nc.fingerprint(),
         Arc::clone(&reputation_matrix),
     ));
 
-    // Category A (A1 + A4) — Single-socket UDP multiplexing on `nc.socket`.
-    //
-    // STUN reflexive discovery, UPnP/NAT-PMP port mapping, ICE connectivity checks,
-    // NAT keepalives, and GTF frames all share `nc.socket` so external NAT pinholes
-    // and advertised candidate ports match the mesh socket identically.
     let (stun_tx, _) = tokio::sync::broadcast::channel::<(Vec<u8>, SocketAddr)>(256);
     let stun_server = std::env::var("GHOST_STUN_SERVER")
         .ok()
@@ -366,8 +306,6 @@ pub(crate) async fn run_node(
             .parse()
             .expect("the beacon address is a valid socket address")
     });
-    // A wildcard bind does not say which interface we would send from, so ask
-    // the routing table (a UDP `connect` is a route lookup only).
     let host_candidate = match vantablack::ghost::net::ice::probe_local_addr(probe_target) {
         Ok(a) => SocketAddr::new(a.ip(), mesh_local.port()),
         Err(e) => {
@@ -378,14 +316,12 @@ pub(crate) async fn run_node(
         }
     };
 
-    // Our advertised offer: stable credentials plus whatever candidates we gather.
     let mut offer_agent = vantablack::ghost::net::ice::IceAgent::new(
         vantablack::ghost::net::ice::IceRole::Controlling,
     );
     offer_agent.set_local_credentials(nat_puncher.local_credentials().clone());
     offer_agent.add_host_candidate(host_candidate, host_candidate);
 
-    // Opportunistic: ask the local gateway to open `mesh_local.port()` for us.
     let upnp_public: Option<SocketAddr> = if let std::net::IpAddr::V4(local_v4) =
         host_candidate.ip()
     {
@@ -411,13 +347,6 @@ pub(crate) async fn run_node(
     } else {
         None
     };
-    // ── TURN allocation ──
-    //
-    // The last rung of the fallback ladder. Configured, never assumed: without
-    // `GHOST_TURN_SERVER` (plus credentials) nothing here runs and the node behaves
-    // exactly as before. An allocation gives us an address on the public internet
-    // that peers can reach even when both ends are behind address-and-port
-    // dependent NATs, which is the case ICE cannot solve on its own.
     let turn_configured = std::env::var("GHOST_TURN_SERVER")
         .ok()
         .and_then(|v| v.parse::<SocketAddr>().ok());
@@ -439,9 +368,6 @@ pub(crate) async fn run_node(
                         lifetime_secs = path.granted_lifetime().as_secs(),
                         "TURN: allocation established — advertising it as a relay candidate"
                     );
-                    // The allocation is part of our own offer: a peer that cannot
-                    // reach us directly can reach *it*, and the server hands us
-                    // what arrives. This is the address, not the server's.
                     offer_agent.add_relay_candidate(host_candidate, path.relayed_addr());
                     (Some(path), Some(rx))
                 }
@@ -464,8 +390,6 @@ pub(crate) async fn run_node(
     let our_offer = vantablack::ghost::net::ice::IceOffer::new(
         nat_puncher.local_credentials().clone(),
         offer_agent.local_candidates().to_vec(),
-        // Advisory only: the real role is derived from the two fingerprints so
-        // both sides agree without negotiation.
         true,
     );
     tracing::info!(
@@ -476,19 +400,9 @@ pub(crate) async fn run_node(
 
     let nat_puncher = Arc::new(nat_puncher);
 
-    // ── Relay role + fallback routes (B22) ──
-    //
-    // A node relays for others only when asked (`GHOST_RELAY=1`): forwarding
-    // someone else's traffic costs transit bandwidth, and that should be a
-    // deliberate operational choice rather than a surprise. The quota is the
-    // same `FlowController` that bounds our own transit traffic.
     let relay_env = std::env::var("GHOST_RELAY")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    // The dashboard's opt-in is persisted, but the relay role is built here at
-    // boot. Honor that setting only when its AC-only promise is measurable now;
-    // a battery-powered or unmeasured machine does not relay just because the
-    // checkbox was ticked earlier.
     let persisted_relay = std::fs::read_to_string(crate::control::consumer_config_path())
         .ok()
         .and_then(|raw| {
@@ -509,15 +423,9 @@ pub(crate) async fn run_node(
         })
         .unwrap_or(false);
     let relay_enabled = relay_env || persisted_relay;
-    // The skywave (ABOS) anchor: bridge + virtual carrier always come up (cheap,
-    // loopback-only), but the fallback ladder only arms its fourth rung when the
-    // operator opted in via `--skywave` / `GHOST_SKYWAVE=1`.
     let skywave_enabled = std::env::var("GHOST_SKYWAVE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    // The QEL (quantum) anchor: without opt-in the engine is never spawned and
-    // the anchor reports `unavailable`-by-choice (`unprobed`) rather than paying
-    // a boot probe.
     let quantum_enabled = std::env::var("GHOST_QUANTUM")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -529,23 +437,14 @@ pub(crate) async fn run_node(
     } else {
         None
     };
-    // Which unreachable peers go through which relay. Empty until a punch fails,
-    // and cleared the moment a direct path is measured again.
     let fallback_routes = Arc::new(Fallback::new(turn_path.clone()));
-    // Relay-capable peers discovered via beacons, tracked on EVERY node (A2)
-    // regardless of whether `GHOST_RELAY=1` is enabled on this node.
     let known_relays: Arc<DashMap<String, SocketAddr>> = Arc::new(DashMap::new());
-    // Frames from every REALITY front stream (an admitted one, or one this node
-    // dialed after a punch failed) land here and are drained into `ingest` once
-    // the receive pipeline exists — the drain task below is spawned right after
-    // `rx`. Created this early because the ICE task can start a dial immediately.
     #[cfg(feature = "reality-front")]
     let front_inbound: Option<mpsc::UnboundedReceiver<(Vec<u8>, SocketAddr)>> = {
         let (tx, inbound) = mpsc::unbounded_channel();
         super::reality_front::install_ingress(tx);
         Some(inbound)
     };
-    // Verified PeerDescriptorV2 cache shared across Tier-1 cache, Tier-3 blind mailbox, and PEX v2.
     let known_descriptors: Arc<
         DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
     > = Arc::new(DashMap::new());
@@ -553,24 +452,13 @@ pub(crate) async fn run_node(
     let vpn_hub_active = matches!(vpn_mode.as_ref(), Some(VpnMode::Hub(_)));
     #[cfg(not(feature = "vpn"))]
     let vpn_hub_active = false;
-    // Peers an operator declared radio-only (`GHOST_SKYWAVE_ONLY`). Populated
-    // below, before anything can check a candidate pair, and read wherever a
-    // measured path would otherwise supersede a declared one.
     let skywave_only: Arc<DashSet<String>> = Arc::new(DashSet::new());
 
-    // ── SKYWAVE (ABOS) CARRIER ──
-    //
-    // In-simulation fallback carrier: TX arms below ship frames into the
-    // bridge, the virtual UDP carrier (loopback-bound by default) carries them
-    // to a peer, and skywave ingress is drained into the same receive pipeline.
-    // Without `--features sdr` the bridge runs in synthetic mode; it only
-    // becomes ladder-selectable when explicitly activated.
     let skywave_bridge =
         match net::sdr_bridge::SkywaveBridge::with_virtual_carrier(skywave_enabled).await {
             Ok(b) => Arc::new(b),
             Err(e) => {
                 tracing::warn!(error = %e, "skywave: bridge init failed — carrier disabled");
-                // A dead bridge must not take the daemon down.
                 Arc::new(
                     net::sdr_bridge::SkywaveBridge::with_virtual_carrier(false)
                         .await
@@ -579,15 +467,6 @@ pub(crate) async fn run_node(
             }
         };
 
-    // Publish the bridge process-wide (egress arms + control plane read it via
-    // `SkywaveBridge::global()`), and activate the synthetic carrier only when
-    // the operator asked for the skywave anchor: without opt-in the ladder's
-    // fourth rung stays folded up.
-    //
-    // This is done here — rather than beside the ingress drain further down —
-    // because the radio-only declarations below are resolved *through* the armed
-    // bridge, and they must be in force before the discovery and ICE tasks can
-    // spawn a check that a declaration outranks.
     let _ = skywave_bridge.install_global();
     if skywave_enabled {
         skywave_bridge.activate_synthetic(5_350_000);
@@ -596,13 +475,6 @@ pub(crate) async fn run_node(
         );
     }
 
-    // ── RADIO-ONLY PEERS (`GHOST_SKYWAVE_ONLY`) ──
-    //
-    // An operator who knows a peer has no usable IP path says so here, and the
-    // declaration is resolved through the same ladder a failed check walks, with
-    // the terrestrial rungs withheld — so it can only pre-empt the ladder's
-    // answer, never invent one. From here on the peer is never checked and its
-    // route is never cleared.
     {
         let declared = std::env::var(SKYWAVE_ONLY_ENV).unwrap_or_default();
         let applied = install_skywave_only(
@@ -621,14 +493,8 @@ pub(crate) async fn run_node(
         }
     }
 
-    // ── Optional QUIC transport ──
-    //
-    // The registry exists in every build so the egress sites can ask one question
-    // per frame without a `cfg` of their own; whether it holds a transport is the
-    // operator's call, and without one every answer is "nothing to send on".
     let carrier = build_carrier(&nc);
 
-    // WIRED: Category B - Long-stream Forward Error Correction (LDPC Codec)
     let ldpc_enabled = std::env::var("GHOST_LDPC_FEC")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -639,9 +505,6 @@ pub(crate) async fn run_node(
         );
     }
 
-    // ── BOOTSTRAP SEEDS & PEER DISCOVERY (DNS Seed + Peers Cache) ──
-    // Automatically resolves DNS seed hostnames (e.g. seeds.vantablack.net) and
-    // loads/saves local peers.cache so nodes stay connected without ongoing seed dependencies.
     {
         let nc = Arc::clone(&nc);
         let pending_hs = Arc::clone(&pending_hs);
@@ -680,7 +543,6 @@ pub(crate) async fn run_node(
                     }
                 };
             }
-            // Load cached peers from local disk (peers.cache)
             let peers_cache = vantablack::ghost::paths::data_file("peers.cache");
             if let Ok(cache_str) = std::fs::read_to_string(&peers_cache) {
                 for line in cache_str
@@ -719,7 +581,6 @@ pub(crate) async fn run_node(
                     sleep(Duration::from_secs(5)).await;
                 }
             }
-            // Periodically save known healthy peers to peers.cache for future runs
             loop {
                 sleep(Duration::from_secs(60)).await;
                 if !addrs_ref.is_empty() {
@@ -735,14 +596,12 @@ pub(crate) async fn run_node(
         });
     }
 
-    // WIRED: Start store-and-forward task for deferred bundle delivery
     let sf_socket = Arc::clone(&nc.socket);
     let sf_sessions = Arc::clone(&nc.sessions);
     let sf_addrs = Arc::clone(&addrs);
     let sf_buffer = Arc::clone(&bundle_buffer);
     let _sf_handle = spawn_store_forward_task(sf_socket, sf_sessions, sf_addrs, sf_buffer);
 
-    // WIRED: Orbital Ephemeris & TLE Gossip Task
     let tle_distributor = Arc::new(net::security::TleDistributor::new());
     let tle_dist_task = Arc::clone(&tle_distributor);
     let tle_addrs = Arc::clone(&addrs);
@@ -763,7 +622,6 @@ pub(crate) async fn run_node(
         }
     });
 
-    // ── HTTP Metrics, Status & Consumer Web Control Center Endpoint ──
     let metrics_port: u16 = control_port_from_env();
     let metrics_enabled = std::env::var("GHOST_METRICS_ENABLED")
         .map(|v| v != "0" && v.to_lowercase() != "false")
@@ -778,23 +636,14 @@ pub(crate) async fn run_node(
             .ok()
             .filter(|s| !s.trim().is_empty()),
     ));
-    // Consumer control plane: friendly device names, the system-VPN vs SOCKS5
-    // egress choice and the split-tunnel bypass list. Persisted so a rename or
-    // a bypass rule survives a restart; GHOST_EGRESS_MODE only seeds the first
-    // run, after which the user's choice in the Web UI wins.
     let consumer_config = consumer_config_path();
     let consumer_settings = Arc::new(parking_lot::RwLock::new(
         load_consumer_settings(&consumer_config).unwrap_or_else(|| {
             ConsumerSettings::with_mode(std::env::var("GHOST_EGRESS_MODE").ok().as_deref())
         }),
     ));
-    // True when a desktop window is being shown by main(): the browser tab is
-    // then suppressed, because it is the secondary way in.
     let _gui_active = suppress_browser;
 
-    // Pairing target advertised in the QR code: this host's LAN address, the
-    // control-center port and the node fingerprint. The fingerprint is stable
-    // across runs because the Ed25519 identity is persisted in identity.key.
     let mesh_port = nc
         .socket
         .local_addr()
@@ -814,8 +663,6 @@ pub(crate) async fn run_node(
     let scan_interval_secs = Arc::new(AtomicU32::new(3600)); // Default 1 hour
     let scan_notify = Arc::new(tokio::sync::Notify::new());
 
-    // Discovery bootstrap: Tier-1 `peers.bin` v2 (with legacy fallback) + Tier-3 BlindMailboxClient
-    // when `GHOST_RENDEZVOUS_URL` is configured, else legacy `http_bootstrap`.
     {
         let nc_boot = Arc::clone(&nc);
         let addrs_boot = Arc::clone(&addrs);
@@ -827,7 +674,6 @@ pub(crate) async fn run_node(
         let offer_boot = Arc::clone(&our_offer_text);
         let mesh_port_boot = mesh_port;
         tokio::spawn(async move {
-            // Small delay to let the UDP socket settle
             tokio::time::sleep(Duration::from_millis(500)).await;
             let (v2_cached, legacy_addrs) = load_tier1_peer_cache();
             for desc in v2_cached {
@@ -884,8 +730,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // Autonomous Private Mesh LAN discovery background engine:
-    // Immediate sweep on startup, periodic sweep (1h / 4h), and on-demand trigger.
     {
         let nc_sweep = Arc::clone(&nc);
         let phs_sweep = Arc::clone(&pending_hs);
@@ -929,19 +773,12 @@ pub(crate) async fn run_node(
         });
     }
 
-    // Shared QEL anchor state for the control plane: probed once at boot, then
-    // updated by anchor endpoints.
     let qel_state = Arc::new(parking_lot::RwLock::new(
         vantablack::ghost::layers::l10_qel::QelAnchorState::Unprobed,
     ));
     let qel_last_route: Arc<
         parking_lot::RwLock<Option<vantablack::ghost::layers::l10_qel::QuantumRouteResult>>,
     > = Arc::new(parking_lot::RwLock::new(None));
-    // Constructed whether or not the anchor is enabled — it is inert until
-    // something asks it for a key — but only *probed* on opt-in, so a default
-    // build never spawns python or dials an appliance on boot just to learn what
-    // it is missing. The backend is the operator's choice (`GHOST_QEL_BACKEND`),
-    // resolved here and never substituted afterwards.
     let qel_ctrl = Arc::new(QuantumAnchorController::from_env());
     if quantum_enabled {
         tracing::info!(
@@ -976,13 +813,9 @@ pub(crate) async fn run_node(
             Arc::clone(&qel_last_route),
         );
     }
-    // A build with only the `tray` feature keeps the lighter tray icon that
-    // opens the browser. The full desktop window is started by main(), because
-    // it has to own the main thread.
     #[cfg(all(feature = "tray", not(feature = "webview")))]
     tray::run_tray(Arc::clone(&nc));
 
-    // ── SOCKS5 PROXY (initiator mode) ──
     if socks {
         socks::spawn_socks5_server(
             socks_port,
@@ -1001,7 +834,6 @@ pub(crate) async fn run_node(
         );
     }
 
-    // ── BEACON SENDER (UDP multicast) ──
     {
         let nc = Arc::clone(&nc);
         let offers = Arc::clone(&our_offer_text);
@@ -1031,8 +863,6 @@ pub(crate) async fn run_node(
             let zk_enabled = std::env::var("GHOST_ZK_DISCOVERY")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
-            // Cumulative transit egress per peer as of the last tick, so the
-            // delivery rate is a delta and not a lifetime total.
             let mut last_forwarded: std::collections::HashMap<String, u64> =
                 std::collections::HashMap::new();
             let mut bootstrap_counter: u32 = 0;
@@ -1090,12 +920,6 @@ pub(crate) async fn run_node(
                 let secs = nc.keepalive_interval_secs.load(Ordering::Relaxed);
                 let interval = Duration::from_secs(secs.clamp(1, 300));
 
-                // ── Congestion-control tick ──
-                // The beacon cadence is also the control cadence. Every signal
-                // below is a measurement, not a setting: ICE's connectivity
-                // checks time the round trip of the very path the shards will
-                // use, and the tit-for-tat ledger counts the transit bytes
-                // actually forwarded for each peer.
                 let connected = nat_p.local_cache();
                 for (fp, _addr) in &connected {
                     if let Some(rtt) = nat_p.selected_rtt(fp) {
@@ -1110,8 +934,6 @@ pub(crate) async fn run_node(
                         router.record_delivery(fp, delta, interval);
                     }
                 }
-                // Keep NAT mappings open on `nc.socket` toward all discovered relays,
-                // even on client nodes where `GHOST_RELAY` is not set.
                 let relay_addrs: Vec<SocketAddr> =
                     known_relays_tx.iter().map(|e| *e.value()).collect();
                 if !relay_addrs.is_empty() {
@@ -1128,11 +950,6 @@ pub(crate) async fn run_node(
                     "Transit shaper retuned from measured path capacity"
                 );
 
-                // The same two measurements keep the contact plan honest: a CGR
-                // route is only as good as the link latency and capacity on it,
-                // and both are now observed rather than assumed. Without this a
-                // contact registered once at connect time would keep its first
-                // RTT forever while the path degraded around it.
                 {
                     let me = nc.fingerprint();
                     let now = unix_now_secs();
@@ -1153,23 +970,8 @@ pub(crate) async fn run_node(
                 }
 
                 if nc.beacon_enabled.load(Ordering::Relaxed) {
-                    // Beacons are signed with the device identity so a forged
-                    // fingerprint can never trigger an auto-handshake.
-                    // When GHOST_ZK_DISCOVERY=1, a zero-knowledge membership proof is attached.
-                    // Carry our ICE offer so a discoverer can authenticate
-                    // connectivity checks against us immediately.
                     let offer_text = offers.read().ok().map(|g| g.clone());
-                    // Our post-quantum commitment rides every beacon (P2-1): it is
-                    // 32 bytes and the key it names is 1952, so the commitment is
-                    // what a discoverer can remember and check against the key we
-                    // later prove on the carrier.
                     let pq_commitment = nc.identity.pq_commitment();
-                    // A membership proof needs a membership secret. Without a
-                    // GHOST_PSK there is none to prove with, and a peer that
-                    // shares this setting has none to verify with either, so
-                    // this is a misconfiguration that stops discovery: it is
-                    // reported once instead of being papered over with a block
-                    // that proves nothing.
                     let zk_proof = if zk_enabled {
                         match psk.as_ref() {
                             Some(psk) => Some(ZkAuthenticator::create_proof(
@@ -1198,9 +1000,6 @@ pub(crate) async fn run_node(
                         Some(&pq_commitment),
                         Some(mesh_port),
                     );
-                    // Collective defense (`exp_collective_defense`): attach this
-                    // node's coarse observation. Only the bucketed loss figure and
-                    // a hashed /24 leave the node — no peer identity, no payload.
                     let our_ip = nc
                         .socket
                         .local_addr()
@@ -1227,7 +1026,6 @@ pub(crate) async fn run_node(
                         tracing::debug!("Beacon send error: {e}");
                     }
 
-                    // Send PEX gossip to all currently connected peers
                     let peer_fps: Vec<String> = addrs.iter().map(|e| e.key().clone()).collect();
                     for dest_fp in peer_fps {
                         send_pex(&nc, &nc.socket, &dest_fp, &addrs, &known_descriptors_tx).await;
@@ -1238,13 +1036,10 @@ pub(crate) async fn run_node(
         });
     }
 
-    // ── BEACON LISTENER + AUTO-HANDSHAKE ──
     {
         let nc = Arc::clone(&nc);
         let pending = Arc::clone(&pending_hs);
         let peers = Arc::clone(&addrs);
-        // The registry is where a post-quantum commitment can actually be
-        // enforced (it holds the links), so the beacon listener pins into it.
         let carrier_pins = Arc::clone(&carrier);
         let rl = Arc::clone(&revocation_list);
         let nat_p = Arc::clone(&nat_puncher);
@@ -1257,9 +1052,6 @@ pub(crate) async fn run_node(
             let zk_required = std::env::var("GHOST_ZK_DISCOVERY")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
-            // The membership proof is a proof about a shared secret, so without
-            // the secret nothing can be verified: this fails closed, and says so
-            // once instead of dropping every beacon in silence.
             if zk_required && psk.is_none() {
                 tracing::error!(
                     "GHOST_ZK_DISCOVERY=1 without GHOST_PSK: no beacon can carry a verifiable membership proof, so discovery will accept nothing — set GHOST_PSK or unset GHOST_ZK_DISCOVERY"
@@ -1290,13 +1082,6 @@ pub(crate) async fn run_node(
                     return;
                 }
             };
-            // A beacon is the 112-byte signed prefix plus optional sections, and
-            // the ICE offer is the long one. 256 bytes truncated every beacon big
-            // enough to matter, and a truncated datagram does not tile as
-            // sections — so the offer and the PQ commitment were silently lost
-            // and only the bare prefix survived. 1472 is the bound the plan
-            // states for a beacon and the largest thing that fits an Ethernet MTU
-            // without fragmenting.
             let mut buf = vec![0u8; 1472];
             let local_fp = nc.fingerprint();
             while nc.running.load(Ordering::Relaxed) {
@@ -1307,7 +1092,6 @@ pub(crate) async fn run_node(
                     if &buf[..16] != BEACON_PREFIX {
                         continue;
                     }
-                    // Verify the Ed25519 signature before trusting the beacon.
                     let mut pk = [0u8; 32];
                     pk.copy_from_slice(&buf[16..48]);
                     let mut sig = [0u8; 64];
@@ -1317,8 +1101,6 @@ pub(crate) async fn run_node(
                         continue;
                     }
 
-                    // Optional trailing sections (Phase 1 P1-1): a membership
-                    // proof, the sender's ICE offer, relay capability, and mesh port.
                     let mut advertises_relay = false;
                     let mut advertised_port: Option<u16> = None;
                     let beacon_fp = hex::encode(&pk[..8]);
@@ -1326,18 +1108,10 @@ pub(crate) async fn run_node(
                         Some(sections) => {
                             advertises_relay = sections.relay_capable;
                             advertised_port = sections.mesh_port;
-                            // Trust on first use (P2-1): a beacon names the sender's
-                            // post-quantum key, and a later, different commitment for
-                            // the same fingerprint is logged rather than adopted.
                             if let Some(commitment) = sections.pq_commitment {
                                 carrier_pins.pin_commitment(&beacon_fp, *commitment);
                             }
                             match sections.zk {
-                                // A Schnorr proof that the sender knows the
-                                // membership secret for exactly this identity.
-                                // It needs the PSK, because the statement is
-                                // about the PSK: a node without one cannot
-                                // verify and does not pretend to.
                                 Some((context, proof))
                                     if !ZkAuthenticator::verify_proof(
                                         &pk,
@@ -1359,13 +1133,6 @@ pub(crate) async fn run_node(
                             sections.ice_offer.map(str::to_string)
                         }
                         None => {
-                            // The datagram does not tile as sections: either a bare
-                            // 112-byte beacon, or an older peer's 208-byte one whose
-                            // trailing block is a signature over a discarded nonce.
-                            // Under the hard switch that block is not verified —
-                            // and cannot be, since it commits to nothing — so such
-                            // a peer is an identity-only beacon and never a proven
-                            // member.
                             if zk_required {
                                 tracing::warn!(peer = %src, "Beacon rejected — GHOST_ZK_DISCOVERY requires a membership proof");
                                 continue;
@@ -1376,8 +1143,6 @@ pub(crate) async fn run_node(
                     if beacon_fp == local_fp {
                         continue;
                     }
-                    // Use the advertised mesh port (`nc.socket`) rather than the
-                    // ephemeral multicast `beacon_sock` source port when present (A2).
                     let peer_mesh_addr = advertised_port
                         .filter(|&p| p != 0)
                         .map(|p| SocketAddr::new(src.ip(), p))
@@ -1388,9 +1153,6 @@ pub(crate) async fn run_node(
                         nat_p.register_peer(&beacon_fp, peer_mesh_addr, local_sa);
                     }
 
-                    // Relay bookkeeping (A2): track relay-capable peers on EVERY node,
-                    // even when `GHOST_RELAY` is not enabled locally. Only forwarding
-                    // incoming `BLND!` frames in `handle_pkt` is gated on `relay_role`.
                     if advertises_relay {
                         known_relays.insert(beacon_fp.clone(), peer_mesh_addr);
                         routes.record_relay(&beacon_fp, peer_mesh_addr);
@@ -1407,15 +1169,9 @@ pub(crate) async fn run_node(
                         relay.authorize(&beacon_fp, peer_mesh_addr);
                     }
 
-                    // Install the peer's offer and start authenticated checks.
-                    // Both sides learn the other's offer from beacons, so this is
-                    // the point at which a direct path can be attempted at all.
                     if let Some(offer_text) = peer_offer {
                         match vantablack::ghost::net::ice::IceOffer::decode(&offer_text) {
                             Ok(offer) => {
-                                // The peer's own relayed address, if it holds a
-                                // TURN allocation: that is where a TURN fallback
-                                // would have to send, not our own allocation.
                                 let peer_turn = offer
                                     .candidates
                                     .iter()
@@ -1434,25 +1190,15 @@ pub(crate) async fn run_node(
                                     let routes = Arc::clone(&routes);
                                     let peers_ice = Arc::clone(&peers);
                                     let pending_ice = Arc::clone(&pending);
-                                    // Only the front dialer needs the peer's own
-                                    // address; a default build has no front.
                                     #[cfg(feature = "reality-front")]
                                     let peer_front = peer_mesh_addr;
                                     let relay_candidates: Vec<(String, SocketAddr)> = known_relays
                                         .iter()
                                         .map(|e| (e.key().clone(), *e.value()))
                                         .collect();
-                                    // Our own allocation is the transport; the
-                                    // peer's is the destination.
                                     let turn_relayed = peer_turn;
                                     let pinned = Arc::clone(&pinned_peers);
                                     tokio::spawn(async move {
-                                        // A radio-only peer never walks the checks: the
-                                        // operator has declared that no candidate pair can
-                                        // carry it, so measuring would only spend the check
-                                        // budget to learn what was declared — and a
-                                        // *successful* check would clear the very route the
-                                        // declaration installed.
                                         if pinned.contains(&fp) {
                                             tracing::debug!(
                                                 peer = %fp,
@@ -1463,11 +1209,7 @@ pub(crate) async fn run_node(
                                         }
                                         if np.punch_hole(&sock, &fp).await {
                                             tracing::info!(peer = %fp, "ICE: direct path established");
-                                            // A measured path supersedes any fallback: direct
-                                            // is cheaper and is what the ladder prefers.
                                             routes.clear(&fp);
-                                            // Update peer routing with the nominated remote
-                                            // address and initiate handshake if no session exists.
                                             if let Some(nominated_sa) = np.nominated_addr(&fp) {
                                                 peers_ice.insert(fp.clone(), nominated_sa);
                                                 if !node.sessions.contains_key(&fp)
@@ -1487,11 +1229,6 @@ pub(crate) async fn run_node(
                                                     );
                                                 }
                                             }
-                                            // The completed check measured a round
-                                            // trip, so register it as a real
-                                            // contact: from here the CGR router
-                                            // routes on observations rather than
-                                            // on assumptions.
                                             if let Some(rtt) = np.selected_rtt(&fp) {
                                                 vantablack::ghost::v2::chronos::observe_outer_rtt(
                                                     rtt,
@@ -1511,20 +1248,7 @@ pub(crate) async fn run_node(
                                                 );
                                             }
                                         } else {
-                                            // A failed punch is not a silent event, and it
-                                            // is not the end of the path either: hand the
-                                            // peer to the fallback ladder (B22).
-                                            // The router must still stop treating this path
-                                            // as usable — that is a measured loss, and it
-                                            // accumulates across beacon intervals until the
-                                            // path falls below the selection threshold.
                                             r.record_loss(&fp);
-                                            // A TLS stream to the peer itself is a direct
-                                            // path, so it is tried before the relay ladder.
-                                            // Only a dial is started here: the route below
-                                            // is still recorded (the dial can fail), and
-                                            // `send3_adaptive` skips it the moment a stream
-                                            // exists — see `reality_front::carries`.
                                             #[cfg(feature = "reality-front")]
                                             if super::reality_front::try_dial(peer_front) {
                                                 tracing::info!(
@@ -1533,9 +1257,6 @@ pub(crate) async fn run_node(
                                                     "ICE: no direct UDP path — dialing the peer's REALITY front"
                                                 );
                                             }
-                                            // The MASQUE endpoint is also the peer itself, so
-                                            // it is tried before the relay ladder for the
-                                            // same reason the front is.
                                             #[cfg(feature = "quic")]
                                             if super::masque::try_dial(&node, peer_mesh_addr) {
                                                 tracing::info!(
@@ -1554,9 +1275,6 @@ pub(crate) async fn run_node(
                                             );
                                             match chosen {
                                                 Some(path) => {
-                                                    // `set` refuses a TURN route when this
-                                                    // node holds no allocation: recording
-                                                    // one would black-hole every send.
                                                     if routes.set(&fp, path.clone()) {
                                                         tracing::warn!(
                                                             peer = %fp,
@@ -1593,7 +1311,6 @@ pub(crate) async fn run_node(
                         }
                     }
 
-                    // WIRED: Check revocation list before auto-handshaking
                     if rl.reject_handshake(&beacon_fp) {
                         tracing::warn!(peer = %src, fingerprint = %beacon_fp, "Discovered peer is revoked, ignoring");
                         continue;
@@ -1617,14 +1334,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // The receive pipeline (`RxContext`, below) is module-level on purpose: it
-    // used to be declared inside `main`, which made the one entry point every
-    // socket feeds **impossible to test** — and that is exactly where a
-    // `#[cfg(feature = "vpn")]` on the self-contained-frame bypass hid, dropping
-    // every ratchet step PDU in a default build. A receive path that cannot be
-    // driven from a test is a receive path whose branches are guesses.
-    //
-    // Dispatcher's owned view of the VPN state (main keeps the original).
     #[cfg(feature = "vpn")]
     let vpn_rx: Option<VpnMode> = vpn_mode.as_ref().map(|m| match m {
         VpnMode::Hub(h) => VpnMode::Hub(Arc::clone(h)),
@@ -1657,10 +1366,6 @@ pub(crate) async fn run_node(
         nat_puncher: Some(Arc::clone(&nat_puncher)),
         known_descriptors: Some(Arc::clone(&known_descriptors)),
     });
-    // REALITY front transport (feature `reality-front`, opt-in via
-    // `GHOST_REALITY_FRONT=1`). Admitted TLS streams feed `ingest`, the same
-    // entry point a UDP datagram takes, and replies for those sessions go back
-    // down the same stream (see `daemon::reality_front::try_send`).
     #[cfg(feature = "reality-front")]
     {
         let _front_listener = super::reality_front::spawn();
@@ -1673,10 +1378,6 @@ pub(crate) async fn run_node(
             });
         }
     }
-    // MASQUE (Phase 4, opt-in via `GHOST_MASQUE=1`). Admitted HTTP/3 tunnels feed
-    // `ingest`; frames for those sessions go back down the same stream (see
-    // `daemon::masque::try_send`). The sink is installed even when only dialing is
-    // enabled, because a dialed stream is not a child of the listener task.
     #[cfg(feature = "quic")]
     {
         let (tx, mut inbound) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
@@ -1690,15 +1391,9 @@ pub(crate) async fn run_node(
             });
         }
     }
-    // Universal shard tunnel (`exp_universal_tunnel`, opt-in via the toggle plus
-    // `GHOST_TUNNEL_PORTS`). The listeners live here; envelopes arriving over the
-    // mesh are handled in `ingest` and spliced by `daemon::tunnel`.
     {
         let _tunnel = super::tunnel::spawn(Arc::clone(&nc), Arc::clone(&addrs));
     }
-    // DTN flush loop (`exp_dtn_reconcile`): when a peer that had no session comes
-    // back, its buffered bundles go out on the new session. The tick is cheap when
-    // the toggle is off — `flush_all` returns immediately.
     {
         let _dtn = super::dtn::spawn_flush_loop(
             Arc::clone(&nc),
@@ -1706,7 +1401,6 @@ pub(crate) async fn run_node(
             std::time::Duration::from_secs(5),
         );
     }
-    // Scheduled Threat Shield feed refresh & CIDR expiry pruning.
     {
         tokio::spawn(async move {
             let feed_path = std::env::var("GHOST_THREAT_FEED_PATH")
@@ -1792,9 +1486,6 @@ pub(crate) async fn run_node(
             }
         });
     }
-    // HPEB bonding (Phase 5, opt-in via `GHOST_BOND=1`). Each path's socket feeds
-    // the same `ingest` a plain datagram takes, so a carrier that arrived over a
-    // bonded interface is indistinguishable downstream from one that did not.
     {
         let (tx, mut inbound) = mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
         if super::bonding::spawn(tx).is_some() {
@@ -1806,8 +1497,6 @@ pub(crate) async fn run_node(
             });
         }
     }
-    // Graceful shutdown watcher: broadcast GHOST_BYE to all connected peers
-    // when Ctrl+C arrives or the desktop UI / tray sets `nc.running = false`.
     {
         let nc_bye = Arc::clone(&nc);
         let addrs_bye = Arc::clone(&addrs);
@@ -1839,7 +1528,6 @@ pub(crate) async fn run_node(
             }
         });
     }
-    // Single-socket UDP receive + RFC 8489 STUN/ICE demux loop (A1).
     {
         let rx = Arc::clone(&rx);
         let stun_tx = stun_tx.clone();
@@ -1866,7 +1554,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // Inbound STUN/ICE responder for peers when no `drive_checks` task owns their ufrag.
     {
         let nc_stun_resp = Arc::clone(&nc);
         let np_resp = Arc::clone(&nat_puncher);
@@ -1886,9 +1573,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // Async default STUN pool resolution & NAT classification (A4).
-    // Runs asynchronously on `nc.socket` via `stun_tx` so offline/DNS-denied
-    // environments never block daemon startup.
     {
         let nc_stun = Arc::clone(&nc);
         let stun_tx_probe = stun_tx.clone();
@@ -1976,7 +1660,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // Periodic ~25s NAT keepalive loop on `nc.socket` for active WAN peers and known relays (A1).
     {
         let nc_ka = Arc::clone(&nc);
         let np_ka = Arc::clone(&nat_puncher);
@@ -1991,7 +1674,6 @@ pub(crate) async fn run_node(
                 }
                 np_ka.send_keepalives(&nc_ka.socket).await;
 
-                // Keep NAT mappings open for active WAN peers in `addrs` not tracked by ICE.
                 let wan_peers: Vec<SocketAddr> = addrs_ka
                     .iter()
                     .filter(|e| {
@@ -2026,13 +1708,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // ── SKYWAVE INGRESS ──
-    //
-    // Frames that "arrived over the air" — the virtual UDP carrier today, an
-    // SDR RX thread in a future physical build — enter the same authenticated
-    // pipeline as every other datagram. The source address is unspecified by
-    // design: the carrier is a medium, not a peer, and every frame must still
-    // authenticate under the session's AEAD before it is trusted.
     {
         let rx = Arc::clone(&rx);
         let sky = Arc::clone(&skywave_bridge);
@@ -2051,11 +1726,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // ── TURN INGRESS ──
-    //
-    // Datagrams the TURN server relays to us are sealed for us exactly as a
-    // direct send would be, so they enter the same pipeline. `peer` is the peer's
-    // address as the server knows it, which is what tunnel bookkeeping keys on.
     if let Some(mut ingress) = turn_rx.take() {
         let rx = Arc::clone(&rx);
         tokio::spawn(async move {
@@ -2066,10 +1736,8 @@ pub(crate) async fn run_node(
         });
     }
 
-    // ── OPTIONAL TRANSPORT INGRESS + DIAL ──
     spawn_carrier_tasks!(&carrier, &rx, &nc, &nat_puncher, &addrs);
 
-    // ── A6: SELF-HEALING INTERFACE, MOBILITY & TUN WATCHDOG ──
     {
         let nc_wd = Arc::clone(&nc);
         let fb_wd = Arc::clone(&fallback_routes);
@@ -2080,7 +1748,6 @@ pub(crate) async fn run_node(
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
-                // (a) Detect local primary IPv4/IPv6 route changes.
                 let current_ip = std::net::UdpSocket::bind("0.0.0.0:0").ok().and_then(|s| {
                     s.connect("8.8.8.8:80").ok()?;
                     s.local_addr().ok().map(|a| a.ip())
@@ -2095,7 +1762,6 @@ pub(crate) async fn run_node(
                     }
                     last_primary_ip = Some(ip);
                 }
-                // (b) Evict stale/dead peer sessions after missed keepalives and fail-over routes.
                 let stale_fps = nat_wd.evict_stale_peers(std::time::Duration::from_secs(90));
                 for fp in stale_fps {
                     nc_wd.sessions.remove(&fp);
@@ -2110,12 +1776,9 @@ pub(crate) async fn run_node(
         });
     }
 
-    // ── VPN EGRESS ──
     #[cfg(feature = "vpn")]
     match vpn_mode.as_ref() {
         Some(VpnMode::Hub(hub)) => {
-            // Hub: drain netstack (TCP) + UDP/ICMP replies, send as tunnel
-            // frames. All channels inside the hub are bounded (rule 3).
             let nc = Arc::clone(&nc);
             let hub = Arc::clone(hub);
             let fb = Arc::clone(&fallback_routes);
@@ -2153,20 +1816,11 @@ pub(crate) async fn run_node(
             });
         }
         Some(VpnMode::Client(client, tun)) => {
-            // Client TUN → mesh pump (blocking thread; wintun read is
-            // non-blocking, so a 2 ms poll cadence keeps latency low).
             let nc = Arc::clone(&nc);
             let client = Arc::clone(client);
             let tun = Arc::clone(tun);
             let client2 = Arc::clone(&client);
             let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1024); // bounded (rule 3)
-                                                               // ── Tunnel watchdog: keepalive → dead detection → re-handshake ───
-                                                               // A sealed tunnel that silently dies (LTE blip, hub reboot,
-                                                               // counter sentinel) must heal itself. Liveness = authenticated
-                                                               // inbound datagrams (open_to_tun notes them); keepalive = ICMP
-                                                               // echo to the hub overlay (the hub answers it); recovery = a
-                                                               // fresh mesh handshake — the ctr==1 path rotates the epoch and
-                                                               // adopts the new key, the hub re-anchors the lease.
             {
                 let client_ip: std::net::Ipv4Addr = std::env::var("GHOST_VPN_LOCAL_IP")
                     .ok()
@@ -2195,9 +1849,6 @@ pub(crate) async fn run_node(
                                 wd.on_inbound(std::time::Instant::now());
                                 seen = cur;
                             }
-                            // Counter headroom is a second liveness trigger: a
-                            // spent tunnel counter is unrecoverable without a
-                            // new epoch (PROTOTYPE.md flaw #1).
                             wd.poll_with_counter(std::time::Instant::now(), w_client.tx_counter())
                         };
                         match action {
@@ -2294,13 +1945,11 @@ pub(crate) async fn run_node(
                     }
                 }
             });
-            // Mesh sender half: outer session encryption + bulk frame.
             let nc2 = Arc::clone(&nc);
             let addrs2 = Arc::clone(&addrs);
             let fb = Arc::clone(&fallback_routes);
             tokio::spawn(async move {
                 while let Some(wire) = rx.recv().await {
-                    // ClientState.fingerprint = the hub's fingerprint (or "auto" / evicted peer).
                     let dest = client2.fingerprint.clone();
                     if let Some(tgt) = addrs2.get(&dest).map(|v| *v.value()) {
                         send_tunnel_frame(&nc2, &dest, tgt, &wire, Some(&fb)).await;
@@ -2320,7 +1969,6 @@ pub(crate) async fn run_node(
         None => {}
     }
 
-    // ── ACK RETRANSMIT ──
     let nr2 = Arc::clone(&nc);
     let pa2 = Arc::clone(&addrs);
     let pa2_keepalive = Arc::clone(&pa2);
@@ -2357,18 +2005,6 @@ pub(crate) async fn run_node(
         }
     });
 
-    // ── RATCHET MAINTENANCE ──
-    //
-    // This is what makes the ratchet real rather than dormant: an epoch holds at
-    // most `RATCHET_INTERVAL` datagrams, and when one is spent the session pays for
-    // a fresh hybrid exchange. The step is *started* here and *completed* in
-    // `handle_pkt` when the peer's signed answer arrives (or, on the answering
-    // side, when the initiator's first frame in the new epoch authenticates).
-    //
-    // Nothing stalls on it: traffic keeps flowing on the current epoch until the
-    // step lands, and a lost step is abandoned after `STEP_STALL` and retried on the
-    // next tick — the same shape as the old pre-wrap re-key, but with a bound on how
-    // long one attempt may sit unanswered.
     {
         let nc = Arc::clone(&nc);
         let pa = Arc::clone(&addrs);
@@ -2385,14 +2021,8 @@ pub(crate) async fn run_node(
         });
     }
 
-    // ── COVER-TRAFFIC TASK ──
-    //
-    // Spawned unconditionally and never gated on idleness, so the frame rate is the
-    // same whether the node is in use or not. See `spawn_cover_task` for why gating
-    // it on idleness would defeat the purpose, and what it costs.
     let _cover = spawn_cover_task(Arc::clone(&nc), Arc::clone(&addrs), relay_role.clone());
 
-    // ── KEEPALIVE TASK ──
     {
         let nc = Arc::clone(&nc);
         let pa2 = pa2_keepalive;
@@ -2412,11 +2042,6 @@ pub(crate) async fn run_node(
                         .elapsed();
                     if idle > idle_timeout {
                         let sh = e.session_hash;
-                        // Tunnel relays use their own counter space; a
-                        // keepalive firing mid-tunnel would reuse a
-                        // (key, nonce) with a tunnel frame. Skip while a
-                        // tunnel is active, but refresh activity so the
-                        // session does not expire during the tunnel.
                         let tunnel_busy = kc_sess.iter().any(|e| e.key().0 == sh)
                             || kc_tunnels.iter().any(|t| t.value().session_hash == sh);
                         if tunnel_busy {
@@ -2452,7 +2077,6 @@ pub(crate) async fn run_node(
         });
     }
 
-    // ── Session & Peer Mapping Cleanup ──
     let nm = Arc::clone(&nc);
     let addrs_cleanup = Arc::clone(&addrs);
     #[cfg(feature = "vpn")]
@@ -2468,9 +2092,6 @@ pub(crate) async fn run_node(
                     let ctx = SealCtx::from_session(&entry);
                     drop(entry);
                     if let Some(dst) = addrs_cleanup.get(&fp).map(|v| *v.value()) {
-                        // Only challenge for a circuit the proxy actually built;
-                        // `unwrap_or(1)` would turn "no circuit" into a signed
-                        // one-hop hop claim and pollute the echo witness.
                         let Some(hops) = vantablack::ghost::v2::boomerang::last_circuit_hops()
                         else {
                             continue;
@@ -2501,7 +2122,6 @@ pub(crate) async fn run_node(
                 }
                 valid
             });
-            // Also prune any orphaned addrs entries that have no active session
             addrs_cleanup.retain(|fp, _| nm.sessions.contains_key(fp));
 
             #[cfg(feature = "vpn")]
@@ -2513,17 +2133,14 @@ pub(crate) async fn run_node(
         }
     });
 
-    // ── Reputation Expiry Task ──
     let _rep_expiry = Arc::clone(&reputation_matrix);
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(300)).await;
-            // Reputation entries naturally age out via the sliding window
             tracing::debug!("Reputation matrix heartbeat");
         }
     });
 
-    // ── Tit-for-Tat Periodic Audit Cycle ──
     let tft_audit = Arc::clone(&tft);
     let sessions_audit = Arc::clone(&nc.sessions);
     tokio::spawn(async move {
@@ -2538,7 +2155,6 @@ pub(crate) async fn run_node(
         }
     });
 
-    // ── CLI ──
     if !socks {
         tracing::info!("Commands: PEER <ip:port>, CHAT <fp> <msg>, SENDRELAY <dest> <relay> <payload>, EXIT <fp>, EXITS, TFT [fp], FEC, MEMSEC, SHAMIR <split|join>, FINGERPRINT, PEERS, STATUS, STATS, BEACON <on/off>, REVOKE, REP, HELP");
     }
@@ -2583,7 +2199,6 @@ pub(crate) async fn run_node(
                 }
             },
             "EXITAUTH" => {
-                // Manage the exit-node allowlist for THIS node.
                 match p.get(1).copied() {
                     Some("off") => {
                         trusted_exits.write().unwrap().clear();
@@ -2601,9 +2216,6 @@ pub(crate) async fn run_node(
                 }
             }
             "EXPORTTOPOLOGY" => {
-                // Export the live mesh graph (real fingerprints/addrs/sessions)
-                // for the quantum-entanglement layer (quantumnet ghost-net).
-                // Take the raw remainder of the line (paths may contain spaces).
                 let path = inp
                     .find(' ')
                     .map(|i| inp[i + 1..].trim())
@@ -2736,12 +2348,6 @@ pub(crate) async fn run_node(
                 }
             }
             "SENDRELAY" => {
-                // Multi-hop relay:
-                //   SENDRELAY <dest_fp> <guard_fp> <payload>
-                //   SENDRELAY <dest_fp> <guard_fp> <middle_fp> <payload>
-                // The second form builds a real guard→middle→destination
-                // nested onion. The first remains wire-compatible with the
-                // original one-relay command.
                 let dest = p.get(1).copied().unwrap_or("");
                 let relay = p.get(2).copied().unwrap_or("");
                 let (middle, payload) = if p.len() >= 5 {
@@ -2764,15 +2370,11 @@ pub(crate) async fn run_node(
                     .get(dest)
                     .map(|s| s.next_tx_counter())
                     .unwrap_or(2);
-                // End-to-end blob: [len u16][payload][pad][tag]
                 let mut blob = (payload.len() as u16).to_be_bytes().to_vec();
                 blob.extend_from_slice(payload.as_bytes());
                 if !blob.len().is_multiple_of(2) {
                     blob.push(0);
                 }
-                // The onion's inner layer now seals with XChaCha20-Poly1305 and a
-                // 64-bit counter plus transmitted 96-bit random nonce, eliminating
-                // 32-bit counter exhaustion.
                 let wire_nonce = random_xnonce();
                 if xchacha_seal_in_place(&dkey, &wire_nonce, 0, dir_for(drole), &mut blob).is_err()
                 {
@@ -2827,10 +2429,7 @@ pub(crate) async fn run_node(
                 println!("Relay sent: {payload} -> {dest} via {relay}");
             }
             "CHAT" => {
-                // Direct-session chat: CHAT <dest_fp> <message>
-                // (multi-hop delivery: SENDRELAY <dest_fp> <relay_fp> <message>)
                 let dest = p.get(1).copied().unwrap_or("");
-                // Fix B14: extract the entire remaining message string past "CHAT <dest_fp> "
                 let msg = if let Some(stripped) = inp.strip_prefix(&format!("{} {}", p[0], dest)) {
                     stripped.trim()
                 } else {
@@ -2840,8 +2439,6 @@ pub(crate) async fn run_node(
                     println!("Usage: CHAT <dest_fp> <message>");
                     continue;
                 }
-                // Keep the framed payload within the 486 B privacy-shard cap
-                // (same bound as the SOCKS5 read buffer).
                 if msg.len() > 900 {
                     println!("Message too long (max 900 bytes)");
                     continue;

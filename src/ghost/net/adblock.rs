@@ -10,8 +10,6 @@ static ADBLOCK_ENABLED: AtomicBool = AtomicBool::new(true);
 static ADBLOCK_DOH_GUARD: AtomicBool = AtomicBool::new(true);
 static ADBLOCK_BLOCKED_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Well-known public DoH/DoT resolvers blocked when `ADBLOCK_DOH_GUARD` is active
-/// so browsers/SDKs cannot silently bypass filtered port-53 DNS.
 const DOH_RESOLVERS: &[&str] = &[
     "dns.google",
     "dns.google.com",
@@ -27,8 +25,6 @@ const DOH_RESOLVERS: &[&str] = &[
     "doh.cleanbrowsing.org",
 ];
 
-/// Curated list of ad networks, mobile interstitial SDKs, and telemetry trackers.
-/// Matched by exact domain or subdomain suffix (e.g. `foo.doubleclick.net` matches `doubleclick.net`).
 const BLOCKED_DOMAINS: &[&str] = &[
     "doubleclick.net",
     "googlesyndication.com",
@@ -122,7 +118,6 @@ const BLOCKED_DOMAINS: &[&str] = &[
     "spotxchange.com",
     "springserve.com",
     "connatix.com",
-    // Mobile game mediation, interstitial video SDKs & telemetry (e.g. AppLovin MAX, Unity, LevelPlay, Mintegral, Pangle)
     "safedk.com",
     "admob.com",
     "admob.googleapis.com",
@@ -200,7 +195,6 @@ const BLOCKED_DOMAINS: &[&str] = &[
     "undertone.com",
     "adtelligent.com",
     "kwai-ads.com",
-    // Consolidated ad networks, exchanges, DMPs, popunders & mobile SDKs (from add_links.txt)
     "analytics.google.com",
     "app-analytics-services.com",
     "adwords.google.com",
@@ -377,27 +371,18 @@ fn matches_domain_list(domain: &str, list: &[&str]) -> bool {
     false
 }
 
-/// Check if `domain` (case-insensitive, optional trailing dot) is blocked when adblock is enabled.
 pub fn is_blocked_domain(domain: &str) -> bool {
     is_enabled() && matches_domain_list(domain, BLOCKED_DOMAINS)
 }
 
-/// Check if `domain` is a DoH/DoT bootstrap resolver when adblock + DoH guard are enabled.
 pub fn is_doh_blocked_domain(domain: &str) -> bool {
     is_enabled() && is_doh_guard_enabled() && matches_domain_list(domain, DOH_RESOLVERS)
 }
 
-/// Check if `domain` is blocked either as an ad/tracker or as a DoH/DoT bypass resolver.
 pub fn is_blocked_target(domain: &str) -> bool {
     is_blocked_domain(domain) || is_doh_blocked_domain(domain)
 }
 
-/// The predicate every DNS, `ClientHello` SNI and SOCKS5 `CONNECT` filter should ask:
-/// ad/tracker blocking **or** the local Threat Shield.
-///
-/// The two toggles stay independent — the shield has its own switch and its own
-/// lists — but they share this one pipeline, so a hostname is checked once and a
-/// literal address is matched against the shield's netblock table.
 pub fn is_shielded_target(host: &str) -> bool {
     if is_blocked_target(host) {
         return true;
@@ -408,13 +393,11 @@ pub fn is_shielded_target(host: &str) -> bool {
     crate::ghost::net::threat_shield::blocks_domain(host)
 }
 
-/// Verdict for an outbound IPv4 packet inspected by local adblock + Threat Shield.
 pub enum PacketShieldVerdict {
     Allow,
     Block(Option<Vec<u8>>),
 }
 
-/// Inspect an outbound raw IPv4 packet from a local TUN interface (DNS qname + TLS ClientHello SNI).
 pub fn inspect_outbound_ipv4_packet(pkt: &[u8]) -> PacketShieldVerdict {
     if pkt.len() < 20 || (pkt[0] >> 4) != 4 {
         return PacketShieldVerdict::Allow;
@@ -468,17 +451,14 @@ pub fn inspect_outbound_ipv4_packet(pkt: &[u8]) -> PacketShieldVerdict {
     PacketShieldVerdict::Allow
 }
 
-/// Check if `port` (e.g. TCP/UDP 853 for DoT/DoQ) should be blocked to prevent DNS bypass.
 pub fn is_blocked_port(port: u16) -> bool {
     port == 853 && is_enabled() && is_doh_guard_enabled()
 }
 
-/// Extract the QNAME from a standard DNS query payload (UDP port 53).
 pub fn extract_dns_qname(payload: &[u8]) -> Option<String> {
     if payload.len() < 12 {
         return None;
     }
-    // QR bit == 0 (standard query) and QDCOUNT >= 1
     if (payload[2] & 0x80) != 0 {
         return None;
     }
@@ -515,14 +495,12 @@ pub fn extract_dns_qname(payload: &[u8]) -> Option<String> {
     }
 }
 
-/// Build an RFC 1035 NXDOMAIN (RCODE=3) response for a blocked DNS query.
 pub fn build_dns_nxdomain_response(query: &[u8]) -> Option<Vec<u8>> {
     if query.len() < 12 {
         return None;
     }
     let mut resp = query.to_vec();
     let rd = query[2] & 0x01;
-    // QR=1 (0x80), preserve RD, RA=1 (0x80), RCODE=3 (NXDOMAIN, 0x03)
     resp[2] = 0x80 | rd;
     resp[3] = 0x83;
     resp[6] = 0;
@@ -593,7 +571,6 @@ fn udp_checksum(src_ip: [u8; 4], dst_ip: [u8; 4], udp_segment: &[u8]) -> u16 {
     }
 }
 
-/// Synthesize a complete IPv4+UDP DNS reply packet swapping src/dst of `req_pkt`.
 pub fn synthesize_ipv4_udp_reply(req_pkt: &[u8], dns_resp: &[u8]) -> Option<Vec<u8>> {
     if req_pkt.len() < 28 || (req_pkt[0] >> 4) != 4 || req_pkt[9] != 17 {
         return None;
@@ -636,8 +613,6 @@ pub fn synthesize_ipv4_udp_reply(req_pkt: &[u8], dns_resp: &[u8]) -> Option<Vec<
     Some(pkt)
 }
 
-/// Read a DNS name starting at `offset`, following at most 16 compression pointers.
-/// Returns `(decoded_name, next_offset_after_initial_name)`.
 fn read_dns_name(msg: &[u8], offset: usize) -> Option<(String, usize)> {
     let mut labels: Vec<String> = Vec::new();
     let mut pos = offset;
@@ -678,7 +653,6 @@ fn read_dns_name(msg: &[u8], offset: usize) -> Option<(String, usize)> {
     Some((labels.join("."), end_pos))
 }
 
-/// Extract all `CNAME` (type 5) target domains from a DNS response packet.
 pub fn extract_dns_cnames(response: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     if response.len() < 12 || (response[2] & 0x80) == 0 {
@@ -727,8 +701,6 @@ pub fn extract_dns_cnames(response: &[u8]) -> Vec<String> {
     out
 }
 
-/// CNAME uncloaking: if an upstream DNS response contains a `CNAME` pointing to a
-/// blocked domain, record the block and return a synthesized `NXDOMAIN` response.
 pub fn filter_dns_response(response: &[u8]) -> Option<Vec<u8>> {
     if !is_enabled() {
         return None;
@@ -741,18 +713,13 @@ pub fn filter_dns_response(response: &[u8]) -> Option<Vec<u8>> {
     build_dns_nxdomain_response(response)
 }
 
-/// Extract the TLS Server Name Indication (SNI) hostname from an initial TLS `ClientHello`
-/// record without decrypting or modifying any bytes.
 pub fn extract_tls_sni(payload: &[u8]) -> Option<String> {
-    // TLS record header (5B): ContentType=0x16 (Handshake), version, length
     if payload.len() < 43 || payload[0] != 0x16 {
         return None;
     }
-    // Handshake header: HandshakeType=0x01 (ClientHello)
     if payload[5] != 0x01 {
         return None;
     }
-    // Skip record (5) + handshake header (4) + client_version (2) + random (32) = 43
     let mut pos = 43usize;
     let sid_len = *payload.get(pos)? as usize;
     pos = pos.checked_add(1 + sid_len)?;
@@ -776,7 +743,6 @@ pub fn extract_tls_sni(payload: &[u8]) -> Option<String> {
             break;
         }
         if ext_type == 0x0000 && ext_len >= 5 {
-            // server_name_list_len (2) + name_type (1, 0x00=host_name) + name_len (2)
             let name_type = payload[pos + 2];
             let name_len = u16::from_be_bytes([payload[pos + 3], payload[pos + 4]]) as usize;
             if name_type == 0x00 && pos + 5 + name_len <= next_ext {
@@ -854,7 +820,6 @@ mod tests {
     #[test]
     fn uncloaks_blocked_cname_into_nxdomain() {
         set_enabled(true);
-        // Query: metrics.example.com -> Answer: CNAME tracker.doubleclick.net
         let qname = [
             7, b'm', b'e', b't', b'r', b'i', b'c', b's', 7, b'e', b'x', b'a', b'm', b'p', b'l',
             b'e', 3, b'c', b'o', b'm', 0,

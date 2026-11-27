@@ -33,27 +33,17 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-/// Default requested allocation lifetime.
 pub const DEFAULT_LIFETIME: Duration = Duration::from_secs(600);
 
-/// RFC 8656 servers clamp allocations to at least 10 minutes; ask for that.
 pub const MIN_LIFETIME_SECS: u32 = 600;
 
-/// Permissions expire after 5 minutes unless refreshed (RFC 8656 §8).
 pub const DEFAULT_PERMISSION_LIFETIME: Duration = Duration::from_secs(300);
 
-/// Channel bindings expire after 10 minutes unless refreshed (RFC 8656 §12).
 pub const DEFAULT_CHANNEL_LIFETIME: Duration = Duration::from_secs(600);
 
-/// Channel lifetimes as the spec states them.
 const CHANNEL_LIFETIME_SECS: u32 = 600;
 
-/// Caps how many outstanding nonces the server tracks. Each unanswered
-/// challenge issues one, so without a cap an unauthenticated flood grows the
-/// map without bound.
 const MAX_OUTSTANDING_NONCES: usize = 4096;
-
-// ── Errors ──────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
@@ -77,13 +67,6 @@ pub enum TurnError {
     Malformed(&'static str),
 }
 
-// ── Channel data framing ────────────────────────────────────────────
-
-/// Wrap `payload` in a ChannelData message (RFC 8656 §12.5):
-/// `[channel u16][length u16][payload][pad to 4]`.
-///
-/// ChannelData is not STUN — it has no header, cookie or transaction, which is
-/// exactly why the relay uses it for the bulk path.
 pub fn channel_data(channel: u16, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + payload.len() + 3);
     out.extend_from_slice(&channel.to_be_bytes());
@@ -95,7 +78,6 @@ pub fn channel_data(channel: u16, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Parse a ChannelData message. Returns `None` when `raw` is not channel data.
 pub fn parse_channel_data(raw: &[u8]) -> Option<(u16, &[u8])> {
     if raw.len() < 4 {
         return None;
@@ -111,29 +93,20 @@ pub fn parse_channel_data(raw: &[u8]) -> Option<(u16, &[u8])> {
     Some((channel, &raw[4..4 + len]))
 }
 
-// ── Client ──────────────────────────────────────────────────────────
-
-/// An established allocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Allocation {
-    /// The address peers should send to; the server relays it to us.
     pub relayed_addr: SocketAddr,
-    /// The public address the server saw for us (its XOR-MAPPED-ADDRESS).
     pub mapped_addr: Option<SocketAddr>,
     pub lifetime: Duration,
     pub expires_at: Instant,
 }
 
-/// What a client received on its allocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnInbound {
-    /// A `Data` indication: the peer address is explicit.
     Data { peer: SocketAddr, payload: Vec<u8> },
-    /// ChannelData: the channel number identifies the peer.
     ChannelData { channel: u16, payload: Vec<u8> },
 }
 
-/// A TURN client for one server and one set of long-term credentials.
 pub struct TurnClient {
     server: SocketAddr,
     username: String,
@@ -141,11 +114,8 @@ pub struct TurnClient {
     realm: Option<String>,
     nonce: Option<String>,
     allocation: Option<Allocation>,
-    /// Permission expiry per peer IP.
     permissions: HashMap<IpAddr, Instant>,
-    /// Channel number → peer address.
     channels: HashMap<u16, SocketAddr>,
-    /// Peer address → channel number.
     channel_peers: HashMap<SocketAddr, u16>,
     next_channel: u16,
     timeout: Duration,
@@ -197,20 +167,15 @@ impl TurnClient {
         self.allocation.as_ref().map(|a| a.relayed_addr)
     }
 
-    /// True when the allocation still has time left.
     pub fn is_live(&self, now: Instant) -> bool {
         self.allocation.as_ref().is_some_and(|a| a.expires_at > now)
     }
 
-    // ── Message construction ────────────────────────────────────────
-
-    /// The long-term integrity key, once the realm is known.
     fn key(&self) -> Result<[u8; 16], TurnError> {
         let realm = self.realm.as_deref().ok_or(TurnError::MissingCredentials)?;
         Ok(stun::long_term_key(&self.username, realm, &self.password))
     }
 
-    /// Add the long-term credential attributes and the integrity digest.
     fn seal(&self, msg: &mut Message) -> Result<Vec<u8>, TurnError> {
         let realm = self.realm.clone().ok_or(TurnError::MissingCredentials)?;
         let nonce = self.nonce.clone().ok_or(TurnError::MissingCredentials)?;
@@ -220,15 +185,10 @@ impl TurnClient {
         Ok(msg.encode_with_integrity(&self.key()?)?)
     }
 
-    /// A request with the attributes common to every authenticated TURN request.
     fn request(&self, method: Method, txid: TransactionId) -> Message {
         Message::new(method, Class::Request, txid)
     }
 
-    /// Send `request` and read until the matching response arrives.
-    ///
-    /// Datagrams belonging to the caller are handed to `on_other` rather than
-    /// dropped: this socket also carries mesh traffic.
     async fn transact(
         &self,
         sock: &tokio::net::UdpSocket,
@@ -267,7 +227,6 @@ impl TurnClient {
                 }
                 continue;
             }
-            // A TURN response must be integrity-protected once we hold a key.
             if let Ok(key) = self.key() {
                 if msg.get(0x0008).is_some() && stun::verify_integrity(&buf[..n], &key).is_err() {
                     warn!("TURN: response failed MESSAGE-INTEGRITY — ignoring");
@@ -278,11 +237,6 @@ impl TurnClient {
         }
     }
 
-    /// Allocate a relayed transport address (RFC 8656 §4).
-    ///
-    /// The first attempt is deliberately unauthenticated: a server answers it
-    /// with `401` and the `REALM`/`NONCE` we must then use, which is how
-    /// long-term credentials bootstrap.
     pub async fn allocate(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -327,7 +281,6 @@ impl TurnClient {
                 Class::ErrorResponse => {
                     let (code, reason) = response.error_code().unwrap_or((0, ""));
                     match code {
-                        // 401 Unauthorized / 438 Stale Nonce: adopt the challenge.
                         401 | 438 => {
                             let realm = response
                                 .realm()
@@ -364,7 +317,6 @@ impl TurnClient {
         Err(TurnError::MissingCredentials)
     }
 
-    /// Refresh (or, with `Duration::ZERO`, release) the allocation.
     pub async fn refresh(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -399,10 +351,6 @@ impl TurnClient {
         Ok(granted)
     }
 
-    /// Install (or refresh) a permission for a peer IP (RFC 8656 §9).
-    ///
-    /// The server ignores the port, but the attribute still carries one, so the
-    /// caller passes the full address it intends to talk to.
     pub async fn create_permission(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -428,10 +376,6 @@ impl TurnClient {
         Ok(())
     }
 
-    /// Bind a channel to a peer and return the channel number (RFC 8656 §11).
-    ///
-    /// ChannelData is cheaper than a Send indication: no STUN header, so the
-    /// relay costs 4 bytes rather than ~40.
     pub async fn channel_bind(
         &mut self,
         sock: &tokio::net::UdpSocket,
@@ -459,14 +403,12 @@ impl TurnClient {
         }
         self.channels.insert(channel, peer);
         self.channel_peers.insert(peer, channel);
-        // A binding implies a permission.
         self.permissions
             .insert(peer.ip(), Instant::now() + DEFAULT_PERMISSION_LIFETIME);
         Ok(channel)
     }
 
     fn allocate_channel(&mut self) -> Result<u16, TurnError> {
-        // Channel numbers are client-chosen within 0x4000..=0x7FFF.
         for _ in 0..=(CHANNEL_NUMBER_MAX - CHANNEL_NUMBER_MIN) {
             let candidate = self.next_channel;
             self.next_channel = if candidate >= CHANNEL_NUMBER_MAX {
@@ -481,11 +423,6 @@ impl TurnClient {
         Err(TurnError::NoChannelAvailable)
     }
 
-    /// Send application data to a peer.
-    ///
-    /// Uses ChannelData when the peer has a channel, otherwise a Send indication.
-    /// Indications get no response, so this cannot report delivery — only that
-    /// the datagram was handed to the server.
     pub async fn send(
         &self,
         sock: &tokio::net::UdpSocket,
@@ -500,7 +437,6 @@ impl TurnClient {
                     Message::new(Method::SEND, Class::Indication, TransactionId::random());
                 msg.push(Attribute::XorPeerAddress(peer));
                 msg.push(Attribute::Data(payload.to_vec()));
-                // RFC 8656 §10.2 allows (and recommends) integrity on indications.
                 match self.key() {
                     Ok(key) => msg.encode_with_integrity(&key)?,
                     Err(_) => msg.encode(),
@@ -511,10 +447,6 @@ impl TurnClient {
         Ok(())
     }
 
-    /// Parse something received on the allocation socket.
-    ///
-    /// Returns `None` for datagrams that are not ours (mesh traffic, other
-    /// clients' data on a shared socket).
     pub fn decode_inbound(&self, raw: &[u8]) -> Option<TurnInbound> {
         if let Some((channel, payload)) = parse_channel_data(raw) {
             return Some(TurnInbound::ChannelData {
@@ -532,7 +464,6 @@ impl TurnClient {
         })
     }
 
-    /// Resolve an inbound channel number back to its peer.
     pub fn peer_for_channel(&self, channel: u16) -> Option<SocketAddr> {
         self.channels.get(&channel).copied()
     }
@@ -546,14 +477,9 @@ impl TurnClient {
     }
 }
 
-// ── Server ──────────────────────────────────────────────────────────
-
-/// What the server wants emitted. The caller owns the sockets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outbound {
-    /// Send to the client's 5-tuple from the relay port.
     ToClient { dest: SocketAddr, data: Vec<u8> },
-    /// Send from the relay port to a peer.
     ToPeer {
         from_port: u16,
         dest: SocketAddr,
@@ -563,30 +489,20 @@ pub enum Outbound {
 
 #[derive(Debug, Clone)]
 struct ServerAllocation {
-    /// Port on `relay_ip` allocated to this client.
     relay_port: u16,
     permissions: HashMap<IpAddr, Instant>,
-    /// Channel → the peer address bound to it. Stores the *full* address:
-    /// ChannelData carries no port, so the relay needs the port from the
-    /// binding, not from the datagram.
     channels: HashMap<u16, SocketAddr>,
     channel_peers: HashMap<SocketAddr, u16>,
     expires_at: Instant,
 }
 
-/// A TURN server. Pure: no sockets, no I/O, fully testable.
 pub struct TurnServer {
     realm: String,
-    /// username → long-term password. Shared with the software credentials the
-    /// operator configures; TURN long-term credentials are not the node identity.
     users: HashMap<String, String>,
-    /// Address the relay listens on.
     relay_ip: IpAddr,
-    /// Port pool handed out to allocations.
     port_min: u16,
     port_max: u16,
     allocations: HashMap<SocketAddr, ServerAllocation>,
-    /// Issued nonces, so a replay of an old nonce is distinguishable.
     nonces: HashMap<String, Instant>,
     nonce_lifetime: Duration,
 }
@@ -611,14 +527,9 @@ impl TurnServer {
         }
     }
 
-    /// Handle one datagram from `from`. Emits zero or more datagrams.
-    ///
-    /// `now` is passed in rather than read from the clock so lifetime behaviour
-    /// is testable without sleeping.
     pub fn handle(&mut self, raw: &[u8], from: SocketAddr, now: Instant) -> Vec<Outbound> {
         self.expire(now);
 
-        // ChannelData from a client is inbound application data to relay.
         if let Some((channel, payload)) = parse_channel_data(raw) {
             return self.relay_channel_data(from, channel, payload);
         }
@@ -641,7 +552,6 @@ impl TurnServer {
         }
     }
 
-    /// Feed a datagram arriving from a *peer* on one of our relay ports.
     pub fn handle_peer_data(
         &mut self,
         relay_port: u16,
@@ -655,16 +565,10 @@ impl TurnServer {
         let client = *client;
 
         if !alloc.permissions.contains_key(&peer.ip()) {
-            // No permission: RFC 8656 §8 says drop it silently. Dropping is the
-            // security property — it stops the relay being used as a reflection
-            // amplifier against arbitrary third parties.
             debug!(peer = %peer, port = relay_port, "TURN: dropping peer data without permission");
             return None;
         }
 
-        // Prefer ChannelData when a binding exists; it costs 4 bytes instead of
-        // a full indication. Look up the exact 5-tuple: a peer sending from a
-        // different port is a different peer, and must use the indication path.
         let data = match alloc.channel_peers.get(&peer) {
             Some(channel) => channel_data(*channel, payload),
             None => {
@@ -688,8 +592,6 @@ impl TurnServer {
             .map(|a| SocketAddr::new(self.relay_ip, a.relay_port))
     }
 
-    // ── Request handlers ────────────────────────────────────────────
-
     fn handle_allocate(
         &mut self,
         raw: &[u8],
@@ -697,7 +599,6 @@ impl TurnServer {
         from: SocketAddr,
         now: Instant,
     ) -> Vec<Outbound> {
-        // Challenge first if the request carries no credentials.
         let Some(key) = self.authenticate(raw, msg) else {
             return vec![self.error_response(
                 from,
@@ -712,7 +613,6 @@ impl TurnServer {
             return vec![self.error_response(from, msg.txid, msg.typ.method(), 400, "Bad Request")];
         };
         if proto != TRANSPORT_UDP {
-            // 442 Unsupported Transport Protocol (RFC 8656 §4).
             return vec![self.error_response(
                 from,
                 msg.txid,
@@ -721,7 +621,6 @@ impl TurnServer {
                 "Unsupported Transport Protocol",
             )];
         }
-        // The server must not relay to itself.
         if from.ip() == self.relay_ip {
             return vec![self.error_response(from, msg.txid, msg.typ.method(), 403, "Forbidden")];
         }
@@ -847,8 +746,6 @@ impl TurnServer {
             .allocations
             .get_mut(&from)
             .expect("allocation existence checked immediately above");
-        // RFC 8656 §9.2: a permission for 0.0.0.0 or an unspecified address is
-        // rejected — those are not real peers.
         if peer.ip().is_unspecified() {
             return vec![self.error_response(from, msg.txid, msg.typ.method(), 403, "Forbidden")];
         }
@@ -900,7 +797,6 @@ impl TurnServer {
             .allocations
             .get_mut(&from)
             .expect("allocation existence checked immediately above");
-        // One channel per peer and one peer per channel (RFC 8656 §11.2).
         if let Some(existing) = alloc.channels.get(&channel) {
             if *existing != peer {
                 return vec![self.error_response(
@@ -940,8 +836,6 @@ impl TurnServer {
     }
 
     fn handle_send(&mut self, raw: &[u8], msg: &Message, from: SocketAddr) -> Vec<Outbound> {
-        // Indications have no response, so an unauthenticated one is dropped
-        // rather than challenged.
         let Some(key) = self.authenticate(raw, msg) else {
             debug!(client = %from, "TURN: dropping unauthenticated Send indication");
             return vec![];
@@ -962,7 +856,6 @@ impl TurnServer {
         let Some(alloc) = self.allocations.get(&from) else {
             return vec![];
         };
-        // The binding supplies the peer's port; the datagram does not.
         let Some(peer) = alloc.channels.get(&channel).copied() else {
             return vec![];
         };
@@ -977,8 +870,6 @@ impl TurnServer {
         let Some(alloc) = self.allocations.get(&client) else {
             return vec![];
         };
-        // A Send indication to a peer we hold no permission for is dropped:
-        // otherwise the relay is an open reflector.
         if !alloc.permissions.contains_key(&peer.ip()) {
             debug!(peer = %peer, "TURN: dropping Send for peer without permission");
             return vec![];
@@ -990,9 +881,6 @@ impl TurnServer {
         }]
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────
-
-    /// Verify long-term credentials, returning the integrity key on success.
     fn authenticate(&self, raw: &[u8], msg: &Message) -> Option<[u8; 16]> {
         let username = match msg.get(0x0006) {
             Some(Attribute::Username(u)) => String::from_utf8_lossy(u).into_owned(),
@@ -1002,7 +890,6 @@ impl TurnServer {
         if realm != self.realm {
             return None;
         }
-        // A nonce we did not issue is not acceptable.
         let nonce = msg.nonce()?;
         if !self.nonces.contains_key(nonce) {
             return None;
@@ -1032,8 +919,6 @@ impl TurnServer {
             reason: reason.to_string(),
         });
         if code == 401 || code == 438 {
-            // Only a challenge carries the credentials bootstrap; a plain error
-            // must not hand out a nonce.
             let nonce = self.issue_nonce();
             resp.push(Attribute::Realm(self.realm.clone()));
             resp.push(Attribute::Nonce(nonce));
@@ -1044,12 +929,6 @@ impl TurnServer {
         }
     }
 
-    /// Issue a nonce, keeping the outstanding set bounded.
-    ///
-    /// Every unauthenticated `Allocate` is answered with a fresh nonce, so an
-    /// attacker can drive this map directly. Expiring by TTL and capping the
-    /// size keeps that from being a memory-growth vector; dropping nonces only
-    /// costs legitimate clients one extra round trip.
     fn issue_nonce(&mut self) -> String {
         let now = Instant::now();
         let lifetime = self.nonce_lifetime;
@@ -1068,30 +947,19 @@ impl TurnServer {
             .find(|p| !self.allocations.values().any(|a| a.relay_port == *p))
     }
 
-    /// Drop expired allocations and permissions; recycle ports.
     fn expire(&mut self, now: Instant) {
         self.allocations.retain(|_, a| {
-            // A permission is live until its expiry instant passes.
             a.permissions.retain(|_, expiry| *expiry > now);
             a.expires_at > now
         });
     }
 
-    /// Drop everything whose lifetime has passed, returning how many allocations
-    /// were released.
-    ///
-    /// [`Self::handle`] sweeps on every datagram, so this exists for the two
-    /// cases that need the sweep to be explicit: a maintenance tick on a quiet
-    /// allocation, and a test that must advance the clock without also driving a
-    /// request through the state machine.
     pub fn sweep(&mut self, now: Instant) -> usize {
         let before = self.allocations.len();
         self.expire(now);
         before - self.allocations.len()
     }
 }
-
-// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1116,10 +984,6 @@ mod tests {
         "192.168.1.50:40000".parse().unwrap()
     }
 
-    /// Build an authenticated request exactly as the client would, so the server
-    /// can be exercised without a socket.
-    /// Build a message of `class` signed the way a real client signs one:
-    /// username, realm and nonce, then MESSAGE-INTEGRITY over all of it.
     fn signed(
         sg: &TurnServer,
         method: Method,
@@ -1146,7 +1010,6 @@ mod tests {
     }
 
     fn challenge_nonce(sg: &mut TurnServer) -> String {
-        // Unauthenticated Allocate → 401 with REALM + NONCE.
         let txid = TransactionId::random();
         let mut msg = Message::new(Method::ALLOCATE, Class::Request, txid);
         msg.push(Attribute::RequestedTransport(TRANSPORT_UDP));
@@ -1171,9 +1034,7 @@ mod tests {
         assert_eq!(channel, 0x4001);
         assert_eq!(payload, &[1, 2, 3, 4, 5]);
 
-        // A channel number outside 0x4000..=0x7FFF is not channel data.
         assert!(parse_channel_data(&[0x00, 0x01, 0x00, 0x00]).is_none());
-        // Truncated payload.
         assert!(parse_channel_data(&[0x40, 0x01, 0x00, 0x08, 0xAA]).is_none());
         assert!(parse_channel_data(&[0x40]).is_none());
     }
@@ -1193,7 +1054,6 @@ mod tests {
             panic!("expected a response");
         };
 
-        // The response must itself be integrity-protected.
         let key = stun::long_term_key(USER, REALM, PASS);
         stun::verify_integrity(data, &key).expect("response must be authenticated");
 
@@ -1246,7 +1106,6 @@ mod tests {
         let mut sg = server();
         let nonce = challenge_nonce(&mut sg);
         let req = authenticated_request(&sg, Method::ALLOCATE, &nonce, |m| {
-            // 6 = TCP: we only relay UDP.
             m.push(Attribute::RequestedTransport(6));
         });
         let out = sg.handle(&req, client_addr(), Instant::now());
@@ -1266,21 +1125,18 @@ mod tests {
         });
         let now = Instant::now();
         sg.handle(&req, client_addr(), now);
-        // Second client gets a different port.
         let other: SocketAddr = "192.168.1.51:40001".parse().unwrap();
         sg.handle(&req, other, now);
         let a = sg.relay_addr(&client_addr()).unwrap();
         let b = sg.relay_addr(&other).unwrap();
         assert_ne!(a, b);
 
-        // Once every allocation's lifetime passes, both ports come back.
         let later = now + Duration::from_secs(601);
         assert_eq!(sg.sweep(later), 2, "both allocations expire together");
         assert_eq!(sg.allocation_count(), 0);
         assert!(sg.relay_addr(&client_addr()).is_none());
         assert!(sg.relay_addr(&other).is_none());
 
-        // …and the freed port is handed out again, to a new client.
         assert_eq!(sg.sweep(later), 0, "a second sweep finds nothing to do");
     }
 
@@ -1296,10 +1152,6 @@ mod tests {
         sg.handle(&alloc, client_addr(), Instant::now());
         let relayed = sg.relay_addr(&client_addr()).unwrap();
 
-        // A Send indication with no permission must be dropped, not relayed:
-        // otherwise the relay is an open reflector. The indication is properly
-        // signed, because an *unsigned* one is dropped a step earlier and would
-        // not exercise the permission check at all.
         let send = signed(&sg, Method::SEND, Class::Indication, &nonce, |m| {
             m.push(Attribute::XorPeerAddress(peer));
             m.push(Attribute::Data(b"payload".to_vec()));
@@ -1308,7 +1160,6 @@ mod tests {
             sg.handle(&send, client_addr(), Instant::now()).is_empty(),
             "a signed Send to an unauthorised peer must still be dropped"
         );
-        // An *unsigned* indication is dropped too, but for the other reason.
         let mut unsigned = Message::new(Method::SEND, Class::Indication, TransactionId::random());
         unsigned.push(Attribute::XorPeerAddress(peer));
         unsigned.push(Attribute::Data(b"payload".to_vec()));
@@ -1316,7 +1167,6 @@ mod tests {
             .handle(&unsigned.encode(), client_addr(), Instant::now())
             .is_empty());
 
-        // After CreatePermission it relays from the allocation's port.
         let perm = authenticated_request(&sg, Method::CREATE_PERMISSION, &nonce, |m| {
             m.push(Attribute::XorPeerAddress(peer));
         });
@@ -1367,7 +1217,6 @@ mod tests {
             Class::SuccessResponse
         );
 
-        // Client → peer over ChannelData.
         let framed = channel_data(0x4001, b"outbound");
         let out = sg.handle(&framed, client_addr(), Instant::now());
         match &out[0] {
@@ -1383,7 +1232,6 @@ mod tests {
             other => panic!("expected ToPeer, got {other:?}"),
         }
 
-        // Peer → client comes back as ChannelData on the bound channel.
         let out = sg
             .handle_peer_data(relayed.port(), peer, b"inbound")
             .expect("peer data must relay once permitted");
@@ -1502,7 +1350,6 @@ mod tests {
         let client = TurnClient::new(client_addr(), USER, PASS);
         let peer: SocketAddr = "198.51.100.77:51820".parse().unwrap();
 
-        // Data indication.
         let mut ind = Message::new(Method::DATA, Class::Indication, TransactionId::random());
         ind.push(Attribute::XorPeerAddress(peer));
         ind.push(Attribute::Data(b"hello".to_vec()));
@@ -1514,7 +1361,6 @@ mod tests {
             other => panic!("expected Data, got {other:?}"),
         }
 
-        // ChannelData.
         let framed = channel_data(0x4005, b"world");
         match client.decode_inbound(&framed) {
             Some(TurnInbound::ChannelData { channel, payload }) => {
@@ -1524,7 +1370,6 @@ mod tests {
             other => panic!("expected ChannelData, got {other:?}"),
         }
 
-        // Unrelated traffic is not mistaken for TURN.
         assert!(client.decode_inbound(b"mesh traffic").is_none());
     }
 
@@ -1565,20 +1410,15 @@ mod tests {
         sg.handle(&alloc, client_addr(), now);
         assert_eq!(sg.allocation_count(), 1);
 
-        // A Refresh at +500 s restarts the lifetime clock there, so the
-        // allocation now dies at +1100 s rather than at +600 s.
         let req = authenticated_request(&sg, Method::REFRESH, &nonce, |m| {
             m.push(Attribute::Lifetime(600));
         });
         sg.handle(&req, client_addr(), now + Duration::from_secs(500));
         assert_eq!(sg.allocation_count(), 1);
 
-        // Past the original expiry but inside the refreshed one: still live.
         assert_eq!(sg.sweep(now + Duration::from_secs(900)), 0);
         assert_eq!(sg.allocation_count(), 1, "the refresh kept it alive");
 
-        // Past the refreshed expiry it goes: a refresh extends an allocation, it
-        // does not immortalise it.
         assert_eq!(sg.sweep(now + Duration::from_secs(1200)), 1);
         assert_eq!(sg.allocation_count(), 0);
     }

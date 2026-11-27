@@ -18,28 +18,21 @@ use parking_lot::Mutex;
 
 use super::{seal_datagram, OpenOutcome, VpnIngress, TUNNEL_HDR_LEN};
 
-/// What the client uses to push sealed datagrams into the mesh.
 pub trait MeshSender: Send + Sync {
     fn send_datagram(&self, wire: Vec<u8>);
 }
 
-/// What the client uses to receive sealed datagrams from the mesh.
 pub trait MeshReceiver: Send {
-    /// Next tunnel datagram from the hub (blocking is allowed).
     fn recv_datagram(&mut self) -> Option<Vec<u8>>;
 }
 
-/// Per-epoch client TX state: one monotonic counter per epoch.
 pub struct ClientState {
     pub fingerprint: String,
     pub epoch: AtomicU32,
-    /// Widened from AtomicU32 to eliminate 32-bit counter exhaustion.
     tx_counter: AtomicU64,
     key: Mutex<[u8; 32]>,
     ingress: VpnIngress,
-    /// Resilience loop state (see resilience::TunnelWatchdog).
     pub watchdog: Mutex<resilience::TunnelWatchdog>,
-    /// Millis clock of the last authenticated inbound datagram.
     last_inbound_ms: AtomicU64,
 }
 
@@ -64,7 +57,6 @@ impl ClientState {
         *self.key.lock()
     }
 
-    /// Fresh handshake completed: rotate epoch (clears counters + windows).
     pub fn rotate_epoch(&self) -> u32 {
         self.tx_counter.store(1, Ordering::Relaxed);
         let e = self.epoch.fetch_add(1, Ordering::Relaxed) + 1;
@@ -72,7 +64,6 @@ impl ClientState {
         e
     }
 
-    /// Watchdog feed: record an authenticated inbound datagram.
     pub fn note_inbound(&self) {
         self.last_inbound_ms.store(
             std::time::SystemTime::now()
@@ -83,7 +74,6 @@ impl ClientState {
         );
     }
 
-    /// Millis clock of the last authenticated inbound datagram.
     pub fn last_inbound_ms(&self) -> u64 {
         self.last_inbound_ms.load(Ordering::Relaxed)
     }
@@ -92,35 +82,28 @@ impl ClientState {
         self.epoch.load(Ordering::Relaxed)
     }
 
-    /// Current TX counter (diagnostics/tests).
     pub fn tx_counter(&self) -> u64 {
         self.tx_counter.load(Ordering::Relaxed)
     }
 }
 
-/// Errors from the pump.
 #[derive(Debug)]
 pub enum PumpError {
     Tun(std::io::Error),
     PacketTooBig(usize),
 }
 
-/// Max inner IP packet that fits the tunnel datagram budget.
 pub const MAX_IP_PACKET: usize = super::TUNNEL_MAX_PAYLOAD - 16 - TUNNEL_HDR_LEN;
 
-/// Seal one TUN packet for the wire. Returns None for oversized packets.
 pub fn seal_from_tun(state: &ClientState, ip_packet: &[u8]) -> Option<Vec<u8>> {
     if ip_packet.len() > MAX_IP_PACKET {
         return None;
     }
     let e = state.current_epoch();
-    // counter space is per-epoch: high 0 bits + epoch already in header,
-    // so a plain per-epoch counter is enough.
     let ctr = state.tx_counter.fetch_add(1, Ordering::Relaxed);
     Some(seal_datagram(&state.key(), e, ctr, ip_packet))
 }
 
-/// Frame one IP packet from the TUN for single-AEAD `GVPN2` transport.
 pub fn seal_v2_from_tun(state: &ClientState, ip_packet: &[u8]) -> Option<Vec<u8>> {
     if ip_packet.len() > MAX_IP_PACKET {
         return None;
@@ -150,8 +133,6 @@ fn deliver_outcome_to_tun(
     }
 }
 
-/// Open one wire datagram and, if fresh, write it into the TUN.
-/// Returns (accepted, advanced) for the caller's re-anchor logic.
 pub fn open_to_tun(
     state: &ClientState,
     wire: &[u8],
@@ -164,7 +145,6 @@ pub fn open_to_tun(
     deliver_outcome_to_tun(state, outcome, tun)
 }
 
-/// Open one single-AEAD `GVPN2` wire datagram and write it into the TUN.
 pub fn open_v2_to_tun(
     state: &ClientState,
     wire: &[u8],
@@ -175,15 +155,11 @@ pub fn open_v2_to_tun(
     deliver_outcome_to_tun(state, outcome, tun)
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ghost::net::vpn::tun::FakeTun;
 
-    /// In-memory mesh pair with configurable loss/reorder — the LossyVirtualLink
-    /// lives in virtual_net.rs; here we use a perfect link for roundtrip checks.
     struct ChanSender(std::sync::mpsc::Sender<Vec<u8>>);
     struct ChanReceiver(std::sync::mpsc::Receiver<Vec<u8>>);
 
@@ -200,7 +176,6 @@ mod tests {
 
     #[test]
     fn client_roundtrip_perfect_link() {
-        // "phone" and "hub" states sharing one key
         let key = [9u8; 32];
         let phone = Arc::new(ClientState::new("phone", key));
         let hub_ing = VpnIngress::new();
@@ -208,7 +183,6 @@ mod tests {
         let sender = ChanSender(tx);
         let mut recv = ChanReceiver(rx);
 
-        // TUN produces a packet → seal → "mesh" → hub opens
         let mut tun = FakeTun::new();
         tun.push_inbound(vec![0x45u8; 40]);
         let mut rbuf = [0u8; 1400];
@@ -228,7 +202,6 @@ mod tests {
             _ => panic!("hub must accept first packet"),
         }
 
-        // hub replies → client opens → TUN receives
         let reply = seal_datagram(&key, hub_epoch, 1, &[0x45u8; 60]);
         let (accepted, _adv) = open_to_tun(&phone, &reply, &tun);
         assert!(accepted);
@@ -243,18 +216,15 @@ mod tests {
         let c = ClientState::new("c", key);
         let w1 = seal_from_tun(&c, &[1u8; 20]).unwrap();
         let w2 = seal_from_tun(&c, &[2u8; 20]).unwrap();
-        // rotate (simulates reconnect): old wire must fail epoch check
         let new_epoch = c.rotate_epoch();
         assert_eq!(new_epoch, 2);
         let ing = VpnIngress::new();
         assert!(matches!(ing.open(&key, "c", 2, &w1), OpenOutcome::AuthFail));
-        // new-epoch packet opens
         let w3 = seal_from_tun(&c, &[3u8; 20]).unwrap();
         assert!(matches!(
             ing.open(&key, "c", 2, &w3),
             OpenOutcome::Accepted { .. }
         ));
-        // and w2 (old epoch) never opens under the new epoch
         assert!(matches!(ing.open(&key, "c", 2, &w2), OpenOutcome::AuthFail));
     }
 
@@ -265,8 +235,6 @@ mod tests {
         assert!(seal_from_tun(&c, &vec![0u8; MAX_IP_PACKET]).is_some());
     }
 }
-
-// ── Client resilience: tunnel watchdog + keepalive ──────────────────
 
 pub mod resilience {
     //! Decides WHEN the tunnel looks dead and drives recovery: an ICMP echo
@@ -282,39 +250,26 @@ pub mod resilience {
 
     use std::time::{Duration, Instant};
 
-    /// Idle tunnel: send a keepalive echo after this much silence.
     pub const KEEPALIVE_AFTER: Duration = Duration::from_secs(10);
-    /// No inbound traffic for this long (keepalive unanswered) → tunnel dead,
-    /// re-handshake. Must exceed KEEPALIVE_AFTER so one probe round fits.
     pub const SILENCE_SECS: u64 = 30;
-    /// Backoff before attempt n: BACKOFF_BASE * 2^(n-1), capped.
     pub const BACKOFF_BASE: Duration = Duration::from_secs(2);
     pub const BACKOFF_CAP: Duration = Duration::from_secs(30);
-    /// Give up dialing after this many consecutive dead-tunnel re-handshakes
-    /// (stay probing; the next inbound datagram still heals).
     pub const MAX_ATTEMPTS: u32 = 6;
-    /// Recycle the OS TUN adapter on this consecutive dead-tunnel re-handshake attempt.
     pub const RECYCLE_TUN_AFTER_ATTEMPT: u32 = 3;
 
-    /// Returns `true` when the watchdog should recycle the OS TUN interface
-    /// before issuing the next re-handshake.
     pub fn should_recycle_tun(attempt: u32) -> bool {
         attempt == RECYCLE_TUN_AFTER_ATTEMPT
     }
 
-    /// What the caller should do now.
     #[derive(Debug, PartialEq, Eq)]
     pub enum Action {
         Nothing,
-        /// Send the keepalive echo (then wait up to SILENCE for a reply).
         SendKeepalive,
-        /// Run a fresh handshake to the hub (n-th consecutive attempt).
         Rehandshake {
             attempt: u32,
         },
     }
 
-    /// Tunnel liveness state machine. All times are injected for tests.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Phase {
         Healthy,
@@ -325,11 +280,8 @@ pub mod resilience {
     #[derive(Debug)]
     pub struct TunnelWatchdog {
         phase: Phase,
-        /// Last observed inbound tunnel traffic.
         last_inbound: Instant,
-        /// Consecutive dead-tunnel re-handshake attempts.
         attempts: u32,
-        /// When the last re-handshake was kicked (backoff gate).
         last_attempt: Option<Instant>,
     }
 
@@ -353,7 +305,6 @@ pub mod resilience {
             }
         }
 
-        /// Any authenticated inbound tunnel datagram (keepalive reply counts).
         pub fn on_inbound(&mut self, now: Instant) {
             self.phase = Phase::Healthy;
             self.last_inbound = now;
@@ -361,7 +312,6 @@ pub mod resilience {
             self.last_attempt = None;
         }
 
-        /// Drive the machine. Cheap; call from the client pump tick.
         pub fn poll(&mut self, now: Instant) -> Action {
             let idle = now.saturating_duration_since(self.last_inbound);
             match self.phase {
@@ -397,17 +347,7 @@ pub mod resilience {
             }
         }
 
-        /// Drive the machine *and* honour the tunnel-counter headroom.
-        ///
-        /// PROTOTYPE.md flaw #1: the tunnel counter is per-epoch and the peer's
-        /// replay window is monotonic — once a counter wraps, every later frame is
-        /// rejected forever. A spent counter is therefore as fatal as a dead
-        /// tunnel, and the same recovery vehicle fixes it (fresh handshake → epoch
-        /// rotation → both counters reset). Checked *before* the liveness machine
-        /// so exhaustion takes precedence over a merely idle link.
         pub fn poll_with_counter(&mut self, now: Instant, tx_counter: u64) -> Action {
-            // Re-key well before the wrap. The margin wants to exceed the worst-case
-            // RTT + handshake time at the client's peak frame rate.
             const COUNTER_REKEY_AT: u64 = u64::MAX - 10_000_000;
             if tx_counter < COUNTER_REKEY_AT {
                 return self.poll(now);
@@ -431,7 +371,6 @@ pub mod resilience {
             BACKOFF_BASE.saturating_mul(1u32 << exp).min(BACKOFF_CAP)
         }
 
-        /// Diagnostics (VPN STATUS).
         pub fn is_dead(&self) -> bool {
             self.phase == Phase::Dead
         }
@@ -440,10 +379,6 @@ pub mod resilience {
         }
     }
 
-    /// ICMP echo request to the hub's overlay IP (28 bytes, valid IP checksum).
-    /// The hub's `answer_icmp` replies to echoes addressed to its overlay IP,
-    /// so a successful round trip proves the tunnel is bidirectionally alive
-    /// with zero hub-side changes.
     pub fn build_keepalive(
         hub_overlay: std::net::Ipv4Addr,
         client_ip: std::net::Ipv4Addr,
@@ -475,26 +410,19 @@ pub mod resilience {
         fn watchdog_transitions_idle_probe_dead_rehandshake() {
             let t0 = at(0);
             let mut w = TunnelWatchdog::new_at(t0);
-            // Fresh tunnel: quiet until KEEPALIVE_AFTER.
             assert_eq!(w.poll(at(5)), Action::Nothing);
             assert_eq!(w.poll(at(10)), Action::SendKeepalive, "idle → probe");
-            // Probe answered: healthy again.
             w.on_inbound(at(11));
             assert_eq!(w.poll(at(25)), Action::SendKeepalive, "idle again → probe");
-            // Probe NOT answered: dead at SILENCE_SECS since last inbound (26+30=56).
-            // Note: on_inbound started a NEW silence window, so a fresh probe
-            // fires once idle re-passes KEEPALIVE_AFTER — one probe per window.
             w.on_inbound(at(26));
             assert_eq!(w.poll(at(50)), Action::SendKeepalive, "new window's probe");
             assert_eq!(w.poll(at(55)), Action::Nothing, "idle 29 < 30");
             assert_eq!(w.poll(at(56)), Action::Nothing, "dead transition poll");
-            // Dead → rehandshake immediately, then backoff 2 s, 4 s.
             assert_eq!(w.poll(at(57)), Action::Rehandshake { attempt: 1 });
             assert_eq!(w.poll(at(58)), Action::Nothing, "inside 2 s backoff");
             assert_eq!(w.poll(at(59)), Action::Rehandshake { attempt: 2 });
             assert_eq!(w.poll(at(61)), Action::Nothing, "inside 4 s backoff");
             assert_eq!(w.poll(at(63)), Action::Rehandshake { attempt: 3 });
-            // Inbound heals everything.
             w.on_inbound(at(64));
             assert!(!w.is_dead());
             assert_eq!(w.attempts(), 0);
@@ -518,23 +446,16 @@ pub mod resilience {
                 }
                 last = s;
             }
-            // MAX_ATTEMPTS reached: never again, even far in the future.
             assert_eq!(w.poll(at(last + 3600)), Action::Nothing);
-            // But one inbound datagram revives the machine fully.
             w.on_inbound(at(last + 3601));
             assert_eq!(w.poll(at(last + 3611)), Action::SendKeepalive);
         }
 
         #[test]
         fn counter_exhaustion_triggers_rehandshake_before_wrap() {
-            // PROTOTYPE.md flaw #1: once the tunnel counter wraps, the peer's
-            // monotonic replay window rejects every later frame *forever*. The
-            // watchdog must therefore demand a fresh epoch before that point,
-            // reusing the same recovery vehicle as a dead link.
             const BELOW: u64 = u64::MAX - 20_000_000; // under the re-key margin
             const ABOVE: u64 = u64::MAX - 100_000; // past the re-key margin
 
-            // Headroom: the counter must never override the liveness machine.
             let t0 = at(0);
             let mut w = TunnelWatchdog::new_at(t0);
             assert_eq!(w.poll_with_counter(at(1), BELOW), Action::Nothing);
@@ -544,7 +465,6 @@ pub mod resilience {
                 "counter headroom must not mask the normal idle probe"
             );
 
-            // Past the margin: re-handshake at once, then honour the backoff gate.
             let mut w = TunnelWatchdog::new_at(t0);
             assert_eq!(
                 w.poll_with_counter(at(1), ABOVE),
@@ -560,7 +480,6 @@ pub mod resilience {
                 Action::Rehandshake { attempt: 2 }
             );
 
-            // A healthy inbound datagram (post-rotation, low counter) resets it.
             w.on_inbound(at(4));
             assert_eq!(w.poll_with_counter(at(5), 7), Action::Nothing);
             assert_eq!(w.attempts(), 0);

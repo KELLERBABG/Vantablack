@@ -34,68 +34,42 @@ use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Default ceiling on artificial ACK delay.
 pub const DEFAULT_MAX_SPLICE: Duration = Duration::from_millis(250);
 
-/// The stationary latency horizons a session may be pinned to, in ms.
-///
-/// A per-session horizon that never moves is the point: if `H` drifted with the
-/// measured inner RTT, the pacing would track the circuit and become visible as
-/// a correlation instead of hiding one.
 pub const HORIZONS_MS: [u64; 3] = [80, 160, 280];
 
-/// Pick this session's horizon from a seed. Deterministic for a seed, fixed for
-/// the life of the session.
 pub fn stationary_horizon(seed: u64) -> Duration {
     Duration::from_millis(HORIZONS_MS[(seed % HORIZONS_MS.len() as u64) as usize])
 }
 
-/// How closely the two clocks have to agree before the flow is uninteresting to
-/// an `ARTT − TRTT` classifier. Five percent or 2 ms, whichever is larger, is
-/// about the noise floor of a Wi-Fi link.
 pub const MATCH_TOLERANCE_FRAC: f64 = 0.05;
 pub const MATCH_TOLERANCE_FLOOR: Duration = Duration::from_millis(2);
 
-/// A splice decision plus the arithmetic behind it, kept for the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SplicePlan {
     pub inner_rtt: Duration,
     pub outer_rtt: Duration,
-    /// Extra delay applied to each outer ACK.
     pub delay_per_ack: Duration,
-    /// RTT the outer observer will measure once pacing is applied.
     pub paced_outer_rtt: Duration,
-    /// What the classifier can still see after pacing.
     pub residual: Duration,
-    /// This session's stationary horizon.
     pub horizon: Duration,
 }
 
 impl SplicePlan {
-    /// True when the paced outer RTT is inside the classifier's tolerance of the
-    /// inner one **and** the inner flow is inside the session's horizon.
-    ///
-    /// A circuit slower than `H` is not masked, however well the two clocks
-    /// happen to line up: pacing a 400 ms circuit to look like a 400 ms local
-    /// flow is still a 400 ms flow, and `H` is the boundary this session
-    /// promised to stay inside.
     pub fn is_indistinguishable(&self) -> bool {
         self.inner_rtt <= self.horizon && self.residual <= tolerance_for(self.inner_rtt)
     }
 
-    /// True when the inner circuit is outside the stationary horizon.
     pub fn exceeds_horizon(&self) -> bool {
         self.inner_rtt > self.horizon
     }
 }
 
-/// The tolerance for a given RTT: max(5 %, 2 ms).
 pub fn tolerance_for(rtt: Duration) -> Duration {
     let frac = rtt.mul_f64(MATCH_TOLERANCE_FRAC);
     frac.max(MATCH_TOLERANCE_FLOOR)
 }
 
-/// The pacing engine for one Guard session.
 #[derive(Debug, Clone, Copy)]
 pub struct ChronosSplice {
     inner_rtt: Duration,
@@ -119,27 +93,20 @@ impl ChronosSplice {
         self
     }
 
-    /// Pin this session to a stationary horizon.
     pub fn with_horizon(mut self, horizon: Duration) -> Self {
         self.horizon = horizon;
         self
     }
 
-    /// Update the measured outer RTT as the session's congestion controller
-    /// refines it.
     pub fn observe_outer_rtt(&mut self, outer_rtt: Duration) {
         self.outer_rtt = outer_rtt;
     }
 
-    /// Update the inner circuit RTT from a real round-trip through all hops.
     pub fn observe_inner_rtt(&mut self, inner_rtt: Duration) {
         self.inner_rtt = inner_rtt;
     }
 
     pub fn plan(&self) -> SplicePlan {
-        // One delayed ACK adds its delay to the measured RTT exactly once.
-        // The v2.1.7 code applied half the deficit and then multiplied by two
-        // on the way back out, which closed only half the gap.
         let delay = self
             .inner_rtt
             .saturating_sub(self.outer_rtt)
@@ -157,12 +124,6 @@ impl ChronosSplice {
     }
 }
 
-/// A queue of ACK obligations with release times.
-///
-/// The pacer only holds *our own* acknowledgements: an ACK is queued when the
-/// transport would have emitted it and released when the splice delay has
-/// elapsed. Ordering is FIFO by release time, and the queue is bounded so a
-/// stalled reader cannot grow it without limit.
 #[derive(Debug)]
 pub struct AckPacer {
     delay: Duration,
@@ -197,14 +158,10 @@ impl AckPacer {
         self.queue.is_empty()
     }
 
-    /// ACKs dropped because the queue was full. Counted, never hidden: a pacer
-    /// that silently discards acknowledgements would cause spurious
-    /// retransmissions and a very visible RTT inflation.
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
 
-    /// Queue one acknowledgement for `seq`.
     pub fn schedule(&mut self, seq: u64, now: Instant) {
         if self.queue.len() >= self.capacity {
             self.dropped = self.dropped.saturating_add(1);
@@ -213,8 +170,6 @@ impl AckPacer {
         self.queue.push_back((now + self.delay, seq));
     }
 
-    /// Release every ACK whose delay has elapsed. FIFO: a short delay never lets
-    /// a later ACK overtake an earlier one, which keeps the sequence monotone.
     pub fn due(&mut self, now: Instant) -> Vec<u64> {
         let mut out = Vec::new();
         while let Some(&(release, seq)) = self.queue.front() {
@@ -228,28 +183,21 @@ impl AckPacer {
         out
     }
 
-    /// When the next ACK becomes due, or `None` when the queue is empty.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.queue.front().map(|(t, _)| *t)
     }
 }
 
-/// A clock observation this old is no longer evidence of the live flow.
 pub const EVIDENCE_TTL_SECS: u64 = 120;
 
-/// How a live flow looks to the cross-layer classifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClockVerdict {
-    /// Both clocks agree.
     Consistent,
-    /// The gap is inside the pacing ceiling and being masked.
     Masking,
-    /// The gap exceeds what pacing may hide; the flow looks like a relay.
     Divergent,
 }
 
-/// One measured clock state, with the horizon and age that make it evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ChronosEvidence {
     pub inner_rtt_ms: f64,
@@ -262,7 +210,6 @@ pub struct ChronosEvidence {
 }
 
 impl ChronosEvidence {
-    /// Both clocks must have been observed at least once (a plan needs both).
     pub fn measured(&self) -> bool {
         self.observations >= 2
     }
@@ -272,8 +219,6 @@ impl ChronosEvidence {
             && super::now_secs().saturating_sub(self.observed_at) <= EVIDENCE_TTL_SECS
     }
 
-    /// The claim the ledger may verify: fresh, measured, inside the stationary
-    /// horizon, and judged consistent by the same classifier the pacer uses.
     pub fn is_verified(&self) -> bool {
         self.measured()
             && self.is_fresh()
@@ -284,8 +229,6 @@ impl ChronosEvidence {
 
 pub fn classify(plan: &SplicePlan) -> ClockVerdict {
     if plan.exceeds_horizon() {
-        // A circuit slower than the session's stationary horizon is visible no
-        // matter how well the clock arithmetic lines up.
         ClockVerdict::Divergent
     } else if plan.residual <= tolerance_for(plan.inner_rtt) {
         ClockVerdict::Consistent
@@ -301,9 +244,7 @@ struct ChronosRuntime {
     inner_rtt: Option<Duration>,
     pacer: AckPacer,
     observations: u64,
-    /// Unix time of the last RTT measurement, so `evidence()` can expire.
     last_observed_unix: u64,
-    /// Locked once at startup and never re-chosen.
     horizon: Duration,
 }
 
@@ -348,7 +289,6 @@ fn runtime() -> &'static Mutex<ChronosRuntime> {
     RT.get_or_init(|| Mutex::new(ChronosRuntime::new()))
 }
 
-/// Record a measured outer transport RTT (e.g. direct ICE/link probe).
 pub fn observe_outer_rtt(rtt: Duration) {
     let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.outer_rtt = Some(rtt);
@@ -357,7 +297,6 @@ pub fn observe_outer_rtt(rtt: Duration) {
     rt.sync_pacer();
 }
 
-/// Record a measured inner circuit RTT (e.g. multi-hop / relayed path).
 pub fn observe_inner_rtt(rtt: Duration) {
     let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.inner_rtt = Some(rtt);
@@ -366,14 +305,11 @@ pub fn observe_inner_rtt(rtt: Duration) {
     rt.sync_pacer();
 }
 
-/// Compute the current splice plan once both outer and inner RTTs are known.
 pub fn current_plan() -> Option<SplicePlan> {
     let rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.plan()
 }
 
-/// Measured clock state for the ledger, including the age that decides whether
-/// it is still evidence. `None` until both RTTs have actually been observed.
 pub fn evidence() -> Option<ChronosEvidence> {
     let rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     let plan = rt.plan()?;
@@ -388,43 +324,34 @@ pub fn evidence() -> Option<ChronosEvidence> {
     })
 }
 
-/// Whether the outer and inner clocks currently agree and the circuit is inside
-/// the session horizon, or `None` if unmeasured.
 pub fn clock_consistent() -> Option<bool> {
     current_plan().map(|p| p.is_indistinguishable())
 }
 
-/// This session's stationary horizon.
 pub fn horizon() -> Duration {
     runtime().lock().unwrap_or_else(|e| e.into_inner()).horizon
 }
 
-/// Pin the horizon explicitly. Intended for tests and for a caller that picks
-/// the horizon before the first measurement; normally it is chosen at startup.
 pub fn set_horizon(horizon: Duration) {
     let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.horizon = horizon;
     rt.sync_pacer();
 }
 
-/// Current per-ACK splice delay, if both outer and inner RTTs have been observed.
 pub fn suggested_ack_delay() -> Option<Duration> {
     current_plan().map(|p| p.delay_per_ack)
 }
 
-/// Queue an ACK sequence number on the shared pacer.
 pub fn schedule_ack(seq: u64, now: Instant) {
     let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.pacer.schedule(seq, now);
 }
 
-/// Drain all due ACKs from the shared pacer.
 pub fn drain_due_acks(now: Instant) -> Vec<u64> {
     let mut rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     rt.pacer.due(now)
 }
 
-/// JSON summary for `/api/v2/chronos` and diagnostics.
 pub fn status_json() -> serde_json::Value {
     let rt = runtime().lock().unwrap_or_else(|e| e.into_inner());
     let plan = rt.plan();
@@ -479,8 +406,6 @@ mod tests {
 
     #[test]
     fn splice_closes_the_gap_between_the_two_clocks() {
-        // 30 ms link carrying a 150 ms three-hop circuit. One delayed ACK adds
-        // its delay once, so the deficit is compensated in full, not halved.
         let plan = ChronosSplice::new(ms(150), ms(30))
             .with_horizon(ms(160))
             .plan();

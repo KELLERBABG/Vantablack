@@ -61,42 +61,20 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-/// Environment variable selecting the L10 QEL backend (`sim` or `rf_reciprocity`).
 pub const ENV_BACKEND: &str = "GHOST_QEL_BACKEND";
 
-/// How long a route computation may run before it is abandoned. Must stay
-/// below any caller's own deadline (the control endpoint's client gives up at
-/// 60 s), so the endpoint always answers — worst case with a degraded result.
 const QEL_PROCESS_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// The derivation seed the simulated backend pins for a session mix.
-///
-/// A constant (rather than a per-session nonce) is what lets one label name one
-/// key: the simulated channel is reproducible, so `(fidelity, seed)` determines
-/// the material. It costs nothing — the secret is the quantum channel's
-/// contribution, not the seed. A production deployment uses the `etsi014` backend
-/// instead, where the label is the appliance's key ID.
 pub const QEL_KDF_SEED: u64 = 0x51EE;
 
-/// Version tag on a simulated key label.
-///
-/// Present so a label from one algorithm can never be silently reinterpreted by
-/// another: the answering peer refuses a label it does not understand rather than
-/// deriving the wrong key from it.
 pub const QEL_SIM_LABEL_PREFIX: &str = "qkd-sim/1";
 
-/// The process-wide controller, installed once at boot so the whole daemon
-/// shares one probe result (and one subprocess code path).
 static CONTROLLER: OnceLock<Arc<QuantumAnchorController>> = OnceLock::new();
 
-/// Install the process-wide controller (daemon boot). Returns `false` if one
-/// was already ed.
 pub fn install_global_controller(ctrl: Arc<QuantumAnchorController>) -> bool {
     CONTROLLER.set(ctrl).is_ok()
 }
 
-/// The shared controller, or a fresh env-derived one when boot never installed
-/// one (tests, tools).
 pub fn shared_controller() -> Arc<QuantumAnchorController> {
     CONTROLLER
         .get()
@@ -104,31 +82,17 @@ pub fn shared_controller() -> Arc<QuantumAnchorController> {
         .unwrap_or_else(|| Arc::new(QuantumAnchorController::from_env()))
 }
 
-/// The backend name an operator selected, for logs and the control plane.
 pub fn selected_backend_name() -> String {
     std::env::var(ENV_BACKEND).unwrap_or_else(|_| "sim".to_string())
 }
 
-/// The JSON contract of `quantumnet ghost-net --json-output`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuantumRouteResult {
     pub success: bool,
     pub path: Vec<String>,
-    /// The route's fidelity as distributed: what the swapping chain achieved.
     pub end_to_end_fidelity: f64,
     pub swap_nodes: Vec<String>,
     pub qkd_key_hex: Option<String>,
-    /// The fidelity the key was derived at, *after* entanglement distillation,
-    /// and how many rounds that took.
-    ///
-    /// This is the label the session mix pins — not [`Self::end_to_end_fidelity`] —
-    /// because it is the number that identifies which key material the channel
-    /// produced. The distinction is not cosmetic: a route's fidelity is capped by
-    /// the dark-count floor at ~0.85, below the BB84 cutoff, so routing alone can
-    /// never yield a key and the distilled figure is always the one that matters.
-    ///
-    /// `None` on a document from an older engine, in which case the route
-    /// fidelity stands in.
     #[serde(default)]
     pub key_fidelity: Option<f64>,
     #[serde(default)]
@@ -136,25 +100,16 @@ pub struct QuantumRouteResult {
 }
 
 impl QuantumRouteResult {
-    /// The fidelity that labels the key: post-distillation where the engine
-    /// reports it, the raw route otherwise.
     pub fn key_label_fidelity(&self) -> f64 {
         self.key_fidelity.unwrap_or(self.end_to_end_fidelity)
     }
 }
 
-/// Whether the anchor can run on this machine, probed once at boot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QelAnchorState {
-    /// The backend's runtime is usable: keys may be obtained.
     Available = 0,
-    /// A runtime exists but is not usable — the quantumnet package is missing, or
-    /// the appliance answered an error rather than nothing: operator action needed.
     Degraded = 1,
-    /// The backend's transport is unreachable, or there is no usable runtime at
-    /// all. Nothing the session can do about it.
     Unavailable = 2,
-    /// The probe has not completed yet (only observable before boot finishes).
     Unprobed = 3,
 }
 
@@ -169,22 +124,16 @@ impl QelAnchorState {
     }
 }
 
-/// Outcome of acquiring or redeeming key material, including anchor bookkeeping.
 #[derive(Debug, Clone, Serialize)]
 pub struct QelOutcome {
     pub anchor_state: QelAnchorState,
-    /// The route that produced the key, on the simulated backend. `None` when the
-    /// backend does not route (ETSI 014 delivers by key ID).
     pub route: Option<QuantumRouteResult>,
     pub key: Option<[u8; 32]>,
-    /// The opaque label naming this key. Travels in the signed session-mix PDU;
-    /// never key material.
     pub label: Option<String>,
     pub error: Option<String>,
 }
 
 impl QelOutcome {
-    /// A degraded outcome: no key, a reason, and the anchor's own state.
     pub fn degraded(state: QelAnchorState, error: impl Into<String>) -> Self {
         Self {
             anchor_state: state,
@@ -196,9 +145,6 @@ impl QelOutcome {
     }
 }
 
-// ── The simulated backend ───────────────────────────────────────────────────
-
-/// The vendored `Quantum Entanglement Link/` stack, driven as a subprocess.
 pub struct SimulatedQel {
     qel_dir: PathBuf,
     python_bin: String,
@@ -211,7 +157,6 @@ impl Default for SimulatedQel {
 }
 
 impl SimulatedQel {
-    /// Backend pointed at the vendored QEL directory.
     pub fn new<P: AsRef<Path>>(qel_dir: P) -> Self {
         Self {
             qel_dir: qel_dir.as_ref().to_path_buf(),
@@ -219,7 +164,6 @@ impl SimulatedQel {
         }
     }
 
-    /// Locate the QEL directory relative to the running binary / CWD.
     pub fn autodetect() -> Self {
         Self::new(PathBuf::from("Quantum Entanglement Link"))
     }
@@ -228,28 +172,6 @@ impl SimulatedQel {
         &self.qel_dir
     }
 
-    /// The label naming the key derived at `(fidelity, seed)`.
-    ///
-    /// The parameters travel **verbatim**, as their raw bits: the label is what the
-    /// answering peer derives from, so both ends must read back the same `f64` and
-    /// the same `u64`, never two values that are merely close.
-    ///
-    /// # What this label names, and what it does not
-    ///
-    /// It identifies the derivation *parameters*, which is the contract the two
-    /// peers need — `parse_label` reproduces the same call on the other side, and
-    /// that is the whole requirement. It does **not** identify the resulting bytes
-    /// uniquely, and the difference is worth knowing rather than assuming.
-    ///
-    /// Measured against this engine: `qkd-derive` returns Alice's own seeded sifted
-    /// bit stream, with the noise level entering only through the QBER gate. So
-    /// **every fidelity above the ~0.87 cutoff yields the same 32 bytes for a given
-    /// seed** — and [`QEL_KDF_SEED`] is a constant. Two simulated sessions therefore
-    /// mix the *same* key. That is a property of the simulation, not of this file,
-    /// and it is why the simulated mix is documented as epoch agreement rather than
-    /// as a source of secrecy (`a_route_key_and_the_key_redeemed_from_its_label_are_
-    /// identical` pins it). A real appliance has no such degeneracy: there the label
-    /// is a `key_ID`, and each ID names one key.
     pub fn label(fidelity: f64, seed: u64) -> String {
         format!(
             "{QEL_SIM_LABEL_PREFIX}/f={:016x}/s={:016x}",
@@ -258,11 +180,6 @@ impl SimulatedQel {
         )
     }
 
-    /// Parse a label back into the parameters it names.
-    ///
-    /// Refuses anything this build did not write: an unrecognised label is an
-    /// answerable "no", where guessing would derive the wrong key and move one
-    /// side's epoch alone.
     pub fn parse_label(label: &str) -> Result<(f64, u64), String> {
         let mut parts = label.split('/');
         let (prefix, version) = (
@@ -306,8 +223,6 @@ impl SimulatedQel {
     }
 
     async fn probe(&self) -> QelAnchorState {
-        // Cold python start can take seconds under load; the probe must never
-        // wedge a caller for longer than this.
         match tokio::time::timeout(Duration::from_secs(15), self.run_probe()).await {
             Ok(s) => s,
             Err(_) => {
@@ -320,9 +235,6 @@ impl SimulatedQel {
         }
     }
 
-    /// Build `PYTHONPATH` with the vendored `src/` directory prepended so the
-    /// `quantumnet` package under `Quantum Entanglement Link/src/quantumnet`
-    /// is importable out-of-the-box without requiring `pip install -e`.
     fn python_path_env(&self) -> std::ffi::OsString {
         let src_dir = std::fs::canonicalize(self.qel_dir.join("src"))
             .unwrap_or_else(|_| PathBuf::from("src"));
@@ -355,10 +267,6 @@ impl SimulatedQel {
         QelAnchorState::Available
     }
 
-    /// Route over a live mesh export, distil, and derive the key material.
-    ///
-    /// Returns a degraded [`QelOutcome`] — never an error to the caller — when the
-    /// runtime is unavailable or the computation fails.
     async fn establish_quantum_link(
         &self,
         state: QelAnchorState,
@@ -378,12 +286,6 @@ impl SimulatedQel {
             "qel: computing quantum entanglement route over live mesh"
         );
 
-        // The subprocess runs with the QEL directory as its CWD, so a relative
-        // topology path (resolved against the daemon's CWD) would break. Make
-        // it absolute against *this* process's CWD first, and preflight it:
-        // without a mesh topology export there is nothing to route over, and
-        // spawning python would only produce a traceback after a full
-        // interpreter start-up. Answer immediately instead.
         let topo_abs = match Self::resolve_topology_path(topology_json_path) {
             Ok(p) => p,
             Err(e) => return QelOutcome::degraded(state, e),
@@ -421,9 +323,6 @@ impl SimulatedQel {
             .qkd_key_hex
             .as_deref()
             .and_then(|hex| Self::parse_quantum_key(hex).ok());
-        // Both figures, because the gap between them is the interesting part: a
-        // route is always below the cutoff, and the key only exists because
-        // distillation moved it above.
         info!(
             route_fidelity = result.end_to_end_fidelity,
             key_fidelity = result.key_label_fidelity(),
@@ -443,20 +342,6 @@ impl SimulatedQel {
         }
     }
 
-    /// Fetch the key material at an explicit `(fidelity, seed)` label — the
-    /// **answering** side of a session quantum mix.
-    ///
-    /// Both ends of a real QKD link fetch the *same* key by an identifier, not by
-    /// re-deriving it: the quantum channel is what made them agree, and the
-    /// appliance hands each end the material under a key ID. The simulated
-    /// equivalent is this call: the label travels in the signed mix PDU and the
-    /// answering peer derives from it instead of from its own view of the mesh.
-    /// That matters because the two nodes' topology exports legitimately differ —
-    /// each knows its own links — so re-routing locally would put the two sides on
-    /// different keys and refuse a mix that should have completed.
-    ///
-    /// No topology export is needed on this path, so a node can answer a mix with
-    /// nothing but the anchor installed.
     async fn derive_key_at(&self, state: QelAnchorState, fidelity: f64, seed: u64) -> QelOutcome {
         if state != QelAnchorState::Available {
             return QelOutcome::degraded(
@@ -470,10 +355,6 @@ impl SimulatedQel {
                 format!("refusing to derive at fidelity {fidelity}"),
             );
         }
-        // Derived from the *bits* the starter sent, so the two ends are provably
-        // asking for the same key: rust's float Display round-trips exactly and
-        // python parses the nearest f64 back to the identical value. Formatting
-        // with a fixed precision instead would silently move the key.
         let args: Vec<String> = [
             "-m",
             "quantumnet",
@@ -503,8 +384,6 @@ impl SimulatedQel {
         );
         QelOutcome {
             anchor_state: state,
-            // No route was walked on this path, and saying otherwise would put a
-            // bogus entry in the control plane's `last_route`.
             route: None,
             key,
             label: Some(Self::label(fidelity, seed)),
@@ -519,14 +398,6 @@ impl SimulatedQel {
         }
     }
 
-    /// Run one `quantumnet … --json-output` invocation and parse the single JSON
-    /// document on its stdout.
-    ///
-    /// Every failure comes back as a degraded [`QelOutcome`] carrying the reason,
-    /// so a caller only has to decide what a *successful* document means. Note
-    /// the deliberate asymmetry with an error return: the anchor is additive, so
-    /// "could not compute" is a result the session acts on, not an error it
-    /// propagates.
     async fn run_json(
         &self,
         state: QelAnchorState,
@@ -546,8 +417,6 @@ impl SimulatedQel {
                 .spawn()?;
             debug!(pid = ?child.id(), what, "qel: quantumnet subprocess spawned");
             let out = child.wait_with_output().await;
-            // A slow child is the one interesting datum when an operator
-            // reports the anchor "hanging": log the round trip either way.
             debug!(
                 what,
                 elapsed_ms = started.elapsed().as_millis() as u64,
@@ -568,7 +437,6 @@ impl SimulatedQel {
                 ))
             }
             Err(_) => {
-                // kill_on_drop reaps the timed-out python on scope exit.
                 return Err(QelOutcome::degraded(
                     state,
                     format!(
@@ -582,16 +450,8 @@ impl SimulatedQel {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            // The failure JSON on stdout still parses (contract), but treat a
-            // nonzero exit as authoritative.
             if let Ok(doc) = serde_json::from_str::<QuantumRouteResult>(stdout.trim()) {
                 if !doc.success {
-                    // Prefer the engine's own diagnostics, but do not *depend* on
-                    // them: `qkd-derive` refuses a sub-cutoff fidelity with a
-                    // machine-readable document and **no** stderr, so reporting
-                    // stderr alone would hand an operator `"no key fetch: "` and
-                    // nothing else. The document always carries the figure that
-                    // explains the refusal, so fall back to it.
                     let reason = if stderr.is_empty() {
                         format!(
                             "the engine produced no key at fidelity {:.4}{}",
@@ -623,8 +483,6 @@ impl SimulatedQel {
         }
     }
 
-    /// Absolutize the topology export path (the subprocess runs with a
-    /// different CWD) and refuse to spawn python when it is missing.
     fn resolve_topology_path(topology_json_path: &Path) -> Result<PathBuf, String> {
         let abs = if topology_json_path.is_absolute() {
             topology_json_path.to_path_buf()
@@ -642,7 +500,6 @@ impl SimulatedQel {
         Ok(abs)
     }
 
-    /// Extract a 32-byte quantum symmetric key from the BB84 hex payload.
     pub fn parse_quantum_key(hex_str: &str) -> Result<[u8; 32], String> {
         let bytes = hex::decode(hex_str.trim()).map_err(|e| e.to_string())?;
         if bytes.len() < 32 {
@@ -657,40 +514,13 @@ impl SimulatedQel {
     }
 }
 
-// ── RF reciprocity key extraction (RF-CRKG, Invention 9) ────────────────────
-//
-// `GHOST_QEL_BACKEND=rf_reciprocity` names a **physical-layer** key source that
-// needs no appliance: two peers chirp-sound the same ionospheric channel inside
-// its coherence time, quantize the reciprocal fading excursions, reconcile the
-// disagreed bits with a syndrome, and privacy-amplify what is left.
-//
-// This module implements the interactive half that a key-delivery backend cannot
-// express — syndrome exchange, correction and amplification — plus the monotone
-// combiner that lets the result sit beside X25519 and ML-KEM without weakening
-// either. It is deliberately **not** a `QelBackend`: that trait is "a label names
-// a key", while reciprocity needs a round trip between the peers, so selecting it
-// through the label API is refused rather than faked.
-//
-// Honest boundary: the capture is data. The tests drive the code with synthetic
-// samples because this host has no HF sounder; the physics (`h_AB ≈ h_BA` by
-// Helmholtz reciprocity, decorrelation beyond λ/2) is what a real deployment
-// relies on, and nothing here can manufacture it.
-
-/// Label prefix for a key derived from a reciprocity capture.
 pub const RF_RECIPROCITY_LABEL_PREFIX: &str = "rf-reciprocity/1";
 
-/// Minimum secret bits this module will amplify a key from.
 pub const RF_MIN_SECRET_BITS: usize = 256;
 
-/// Hamming(7,4) block: 7 raw bits carry 4 data bits and 3 syndrome bits.
 const RF_BLOCK_BITS: usize = 7;
 const RF_SYNDROME_BITS: usize = 3;
 
-/// One pair (plus optional eavesdropper) of channel soundings, in linear units.
-///
-/// `alice` and `bob` are the two ends' measurements of the same reciprocal
-/// channel; `eve` is a third receiver's view, used only to estimate how much of
-/// the agreement is secret. A real deployment fills this from the ABOS sounder.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReciprocityCapture {
     pub alice: Vec<f64>,
@@ -699,7 +529,6 @@ pub struct ReciprocityCapture {
     pub eve: Vec<f64>,
 }
 
-/// A key derived from a reconciled reciprocity capture.
 pub struct RfKey {
     key: [u8; 32],
     label: String,
@@ -710,12 +539,10 @@ pub struct RfKey {
 }
 
 impl RfKey {
-    /// The session key. Callers mix it; it is never logged or serialised.
     pub fn key(&self) -> [u8; 32] {
         self.key
     }
 
-    /// A non-secret label naming the derivation parameters (no key material).
     pub fn label(&self) -> &str {
         &self.label
     }
@@ -732,8 +559,6 @@ impl RfKey {
         self.secret_bits
     }
 
-    /// Short tag both ends can compare over an authenticated channel to confirm
-    /// they amplified the *same* bits before using the key.
     pub fn confirmation(&self) -> [u8; 8] {
         self.confirmation
     }
@@ -750,7 +575,6 @@ impl std::fmt::Debug for RfKey {
     }
 }
 
-/// `true` when the sample stream is long enough to attempt a key at all.
 const RF_MIN_SAMPLES: usize = 512;
 
 fn reciprocity_bits(samples: &[f64]) -> Vec<u8> {
@@ -774,12 +598,10 @@ fn bit_error_rate(a: &[u8], b: &[u8]) -> f64 {
     errors as f64 / n as f64
 }
 
-/// Shannon capacity of a binary symmetric channel with crossover `ber`.
 fn bsc_information(ber: f64) -> f64 {
     (1.0 - binary_entropy(ber)).clamp(0.0, 1.0)
 }
 
-/// Hamming(7,4) syndrome of one 7-bit block (0 = no error).
 fn hamming_syndrome(block: &[u8]) -> u8 {
     let s1 = block[0] ^ block[2] ^ block[4] ^ block[6];
     let s2 = block[1] ^ block[2] ^ block[5] ^ block[6];
@@ -787,7 +609,6 @@ fn hamming_syndrome(block: &[u8]) -> u8 {
     (s1 & 1) | ((s2 & 1) << 1) | ((s3 & 1) << 2)
 }
 
-/// The interactive reconciliation state for one capture.
 pub struct ReciprocityExchange {
     alice: Vec<u8>,
     bob: Vec<u8>,
@@ -795,7 +616,6 @@ pub struct ReciprocityExchange {
 }
 
 impl ReciprocityExchange {
-    /// Quantize a capture: a bit is 1 when the channel moved upward.
     pub fn from_capture(capture: &ReciprocityCapture) -> Result<Self, String> {
         if capture.alice.len() < RF_MIN_SAMPLES || capture.bob.len() < RF_MIN_SAMPLES {
             return Err(format!(
@@ -810,7 +630,6 @@ impl ReciprocityExchange {
         Self::from_bits(alice, bob, eve)
     }
 
-    /// Build from already-quantized bits (used by the capture path and tests).
     pub fn from_bits(alice: Vec<u8>, bob: Vec<u8>, eve: Vec<u8>) -> Result<Self, String> {
         let usable = alice.len().min(bob.len());
         if usable < RF_BLOCK_BITS {
@@ -833,9 +652,6 @@ impl ReciprocityExchange {
         self.alice.len()
     }
 
-    /// Maurer's secret-key capacity per bit: mutual information Alice–Bob minus
-    /// what the better eavesdropper can learn. Positive means a secret is
-    /// possible; zero or negative means the honest answer is "no key".
     pub fn capacity_bits_per_sample(&self) -> f64 {
         let i_ab = bsc_information(bit_error_rate(&self.alice, &self.bob));
         let eve_view = if self.eve.is_empty() {
@@ -847,8 +663,6 @@ impl ReciprocityExchange {
         i_ab - eve_view
     }
 
-    /// The parity bits Alice sends: one 3-bit value per 7-bit block. Bob XORs
-    /// his own parity into this to obtain the error position.
     pub fn alice_syndrome(&self) -> Vec<u8> {
         self.alice
             .as_chunks::<RF_BLOCK_BITS>()
@@ -858,12 +672,6 @@ impl ReciprocityExchange {
             .collect()
     }
 
-    /// Bob corrects his bits with Alice's syndrome.
-    ///
-    /// Hamming(7,4) corrects any single-bit error per block. A block with two
-    /// errors is *detected only when the syndrome is non-zero but wrong* — the
-    /// confirmation tag after amplification is what refuses a silently divergent
-    /// key, and it is checked below rather than assumed away.
     pub fn bob_reconciled(&self, syndrome: &[u8]) -> Result<Vec<u8>, String> {
         let blocks = self.bob.len() / RF_BLOCK_BITS;
         if syndrome.len() != blocks {
@@ -877,11 +685,6 @@ impl ReciprocityExchange {
             if alice_parity > 7 {
                 return Err(format!("block {index} has invalid syndrome {alice_parity}"));
             }
-            // The syndrome is the XOR of the two ends' parity checks for the
-            // block. It is zero when they agree and names the position when one
-            // bit differs — the 7 positions have distinct 3-bit columns, which
-            // is what makes Hamming(7,4) correct a single error per block even
-            // when the bits were never encoded as a codeword.
             let block = &self.bob[index * RF_BLOCK_BITS..(index + 1) * RF_BLOCK_BITS];
             let s = hamming_syndrome(block) ^ alice_parity;
             match s {
@@ -893,11 +696,6 @@ impl ReciprocityExchange {
         Ok(out)
     }
 
-    /// Reconcile, check agreement, then privacy-amplify.
-    ///
-    /// `transcript` binds the key to the handshake it was derived for; both ends
-    /// must pass the same bytes. `None`/`Err` is the honest answer when the
-    /// channel cannot support a secret of the required size.
     pub fn derive_key(&self, transcript: &[u8]) -> Result<RfKey, String> {
         let capacity = self.capacity_bits_per_sample();
         if capacity <= 0.0 {
@@ -923,9 +721,6 @@ impl ReciprocityExchange {
             ));
         }
 
-        // Pack the reconciled bits, then extract with HKDF. The salt is public but
-        // transcript-bound; the Leftover Hash Lemma is what makes the output
-        // uniform given H_inf >= secret_bits.
         let mut ikm = Vec::with_capacity(self.alice.len() / 8);
         for chunk in self.alice.chunks(8) {
             let mut byte = 0u8;
@@ -969,15 +764,8 @@ impl ReciprocityExchange {
     }
 }
 
-/// Domain separator for the monotone nested dual-PRF combiner.
 pub const MONOTONE_COMBINER_DOMAIN: &[u8] = b"VB-L10-MONOTONE-COMBINER-V1";
 
-/// `HMAC(K_ML-KEM, HMAC(K_X25519, K_L10 ‖ transcript))`.
-///
-/// The nesting is the point: HMAC is a dual-PRF, so uniformity in *any one* key
-/// survives the other two being known or chosen. A simple concatenation would
-/// not — an adversary who broke the classical DH and the KEM would still see the
-/// L10 key sitting in the clear beside them.
 pub fn combine_monotone(
     k_x25519: &[u8; 32],
     k_mlkem: &[u8; 32],
@@ -1007,18 +795,13 @@ pub fn combine_monotone(
     key
 }
 
-// ── The controller ──────────────────────────────────────────────────────────
-
-/// Which key-delivery backend the anchor runs on.
 enum QelBackend {
     Simulated(SimulatedQel),
-    /// The operator selected a backend that could not be configured.
     Misconfigured {
         reason: String,
     },
 }
 
-/// The L10 anchor controller. Cheap to clone; the probe result is shared.
 pub struct QuantumAnchorController {
     backend: QelBackend,
     state: AtomicU8,
@@ -1032,7 +815,6 @@ impl Default for QuantumAnchorController {
 }
 
 impl QuantumAnchorController {
-    /// Build the controller the operator asked for, from the environment.
     pub fn from_env() -> Self {
         let backend = match selected_backend_name().trim().to_ascii_lowercase().as_str() {
             "" | "sim" | "simulated" | "quantumnet" => {
@@ -1041,12 +823,6 @@ impl QuantumAnchorController {
             "etsi014" | "etsi" | "qkd014" => QelBackend::Misconfigured {
                 reason: "ETSI GS QKD 014 hardware backend has been removed for now".to_string(),
             },
-            // RF reciprocity is real key material, but it is interactive: the
-            // peers must exchange a syndrome before either can derive the same
-            // bits. The label API cannot carry that round trip, so pretending it
-            // could would produce two different keys and a broken session. The
-            // exchange is exposed directly (`ReciprocityExchange`) for the
-            // caller that can perform the round trip.
             "rf_reciprocity" | "rf-reciprocity" | "rf" => QelBackend::Misconfigured {
                 reason: "rf_reciprocity needs an interactive syndrome exchange and cannot be a \
                          label-based key backend; use l10_qel::ReciprocityExchange in-band"
@@ -1066,7 +842,6 @@ impl QuantumAnchorController {
         }
     }
 
-    /// A controller on the simulated backend pointed at `qel_dir` (tests, tools).
     pub fn new<P: AsRef<Path>>(qel_dir: P) -> Self {
         Self {
             backend: QelBackend::Simulated(SimulatedQel::new(qel_dir)),
@@ -1075,7 +850,6 @@ impl QuantumAnchorController {
         }
     }
 
-    /// The backend in use: `simulated` or `misconfigured`.
     pub fn backend_name(&self) -> &'static str {
         match self.backend {
             QelBackend::Simulated(_) => "simulated",
@@ -1083,11 +857,6 @@ impl QuantumAnchorController {
         }
     }
 
-    /// A non-secret description of the backend, for the control plane.
-    ///
-    /// Deliberately carries no key material and no token: an operator-facing
-    /// status document is not the place for secrets, and it is fetched over a
-    /// loopback HTTP endpoint.
     pub fn backend_report(&self) -> serde_json::Value {
         let mut report = serde_json::json!({ "name": self.backend_name() });
         match &self.backend {
@@ -1112,7 +881,6 @@ impl QuantumAnchorController {
         }
     }
 
-    /// The cached anchor state (probing first if necessary).
     pub async fn state(&self) -> QelAnchorState {
         if let Some(s) = self.probed.get() {
             return *s;
@@ -1122,16 +890,10 @@ impl QuantumAnchorController {
             return s;
         }
         let s = self.probe().await;
-        // Best effort: a concurrent probe lands the same answer.
         self.state.store(s as u8, Ordering::Relaxed);
         s
     }
 
-    /// Probe, once, whether the selected backend can deliver keys.
-    ///
-    /// The result is cached for the process lifetime, so a half-installed or
-    /// misconfigured anchor is reported (and logged) once and normal mesh
-    /// operation never re-probes.
     pub async fn probe(&self) -> QelAnchorState {
         if let Some(s) = self.probed.get() {
             return *s;
@@ -1172,11 +934,6 @@ impl QuantumAnchorController {
         state
     }
 
-    /// Obtain fresh key material for a session with `peer_fp` — the **starting**
-    /// side of a mix.
-    ///
-    /// `topology_json_path` is used only by the simulated backend, which routes
-    /// over a mesh export; the appliance does not need one.
     pub async fn acquire_key(
         &self,
         topology_json_path: &Path,
@@ -1196,7 +953,6 @@ impl QuantumAnchorController {
         }
     }
 
-    /// Turn `label` back into the key it names — the **answering** side of a mix.
     pub async fn redeem_key(&self, _peer_fp: &str, label: &str) -> QelOutcome {
         let state = self.state().await;
         match &self.backend {
@@ -1211,7 +967,6 @@ impl QuantumAnchorController {
         }
     }
 
-    /// Route a quantum path between two peers over a topology export.
     pub async fn establish_quantum_link(
         &self,
         topology_json_path: &Path,
@@ -1231,8 +986,6 @@ impl QuantumAnchorController {
         }
     }
 
-    /// Whether this backend routes over a mesh export (the control plane uses
-    /// this to explain why a route query is not available).
     pub fn routes_over_topology(&self) -> bool {
         matches!(self.backend, QelBackend::Simulated(_))
     }
@@ -1268,8 +1021,6 @@ mod tests {
         assert_eq!(r.path.len(), 3);
         assert_eq!(r.swap_nodes, vec!["b".to_string()]);
         assert_eq!(r.distillation_rounds, 1);
-        // The label the session mix pins is the distilled fidelity, not the
-        // route's -- the route is below the BB84 cutoff by construction.
         assert_eq!(r.key_label_fidelity(), 0.9307);
         assert!(SimulatedQel::parse_quantum_key(r.qkd_key_hex.as_deref().unwrap()).is_ok());
     }
@@ -1287,9 +1038,6 @@ mod tests {
 
     #[test]
     fn an_older_document_without_the_label_falls_back_to_the_route_fidelity() {
-        // The two added fields are `serde(default)`, so a document from an
-        // engine that predates distillation still parses rather than failing
-        // the whole route.
         let raw = r#"{"success": false, "path": [], "end_to_end_fidelity": 0.0,
                       "swap_nodes": [], "qkd_key_hex": null}"#;
         let r: QuantumRouteResult = serde_json::from_str(raw).unwrap();
@@ -1297,9 +1045,6 @@ mod tests {
         assert_eq!(r.distillation_rounds, 0);
     }
 
-    /// A key label must survive the round trip bit-for-bit — a lossy rendering
-    /// would hand the two peers different keys and the mix would be refused for no
-    /// visible reason.
     #[test]
     fn a_key_label_round_trips_every_field_exactly() {
         for (f, seed) in [
@@ -1323,8 +1068,6 @@ mod tests {
         }
     }
 
-    /// A label this build did not write is refused, not guessed at: deriving the
-    /// wrong key from an alien label would move one side's epoch alone.
     #[test]
     fn a_foreign_or_malformed_label_is_refused() {
         for bad in [
@@ -1335,7 +1078,6 @@ mod tests {
             "qkd-sim/1/f=zzzz/s=00000000000051ee",
             "qkd-sim/1/s=00000000000051ee",
             "qkd-sim/1/f=0000000000000000",
-            // A valid-looking label with a fidelity outside 0..1.
             "qkd-sim/1/f=7ff0000000000000/s=00000000000051ee", // +inf
             "qkd-sim/1/f=3ff0000000000001/s=00000000000051ee", // > 1
             "qkd-sim/1/f=0000000000000000/s=00000000000051ee/extra",
@@ -1345,15 +1087,11 @@ mod tests {
                 "{bad:?} must be refused"
             );
         }
-        // The well-formed one still parses, so the list above is not passing for
-        // the wrong reason.
         assert!(SimulatedQel::parse_label(&SimulatedQel::label(0.9, QEL_KDF_SEED)).is_ok());
     }
 
     #[test]
     fn the_label_is_short_enough_for_the_mix_pdu() {
-        // The PDU carries the label in a fixed 128-byte field; a sim label that
-        // overflowed it would be silently truncated on the wire.
         let label = SimulatedQel::label(0.937_008_462_446_596_7, QEL_KDF_SEED);
         assert!(
             label.len() <= crate::ghost::session::QEL_MIX_MAX_LABEL,
@@ -1364,8 +1102,6 @@ mod tests {
 
     #[test]
     fn an_unknown_backend_name_is_misconfigured_rather_than_a_silent_fallback() {
-        // The environment is process-wide, so this test owns the variable for its
-        // duration; nothing else in the suite reads it concurrently.
         let previous = std::env::var(ENV_BACKEND).ok();
         std::env::set_var(ENV_BACKEND, "qkd-over-carrier-pigeon");
         let ctrl = QuantumAnchorController::from_env();
@@ -1390,7 +1126,6 @@ mod tests {
         }
     }
 
-    /// A missing topology export must be reported without spawning python.
     #[test]
     fn missing_topology_is_refused_before_spawning_python() {
         let missing = std::env::temp_dir().join("vanta_no_such_topology_9f2c.json");
@@ -1400,8 +1135,6 @@ mod tests {
         assert!(err.contains("no mesh topology export"), "got: {err}");
     }
 
-    /// An existing export resolves to an absolute path, so the subprocess
-    /// (which runs in the QEL directory) can still open it.
     #[test]
     fn existing_topology_resolves_to_an_absolute_path() {
         let file = std::env::temp_dir().join("vanta_topology_9f2c.json");
@@ -1412,7 +1145,6 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
-    /// The real subprocess, only where Python + numpy exist.
     #[tokio::test]
     #[ignore = "requires python + numpy (or pip install -e \"Quantum Entanglement Link\")"]
     async fn live_subprobe_and_route() {
@@ -1420,19 +1152,6 @@ mod tests {
         assert_eq!(ctrl.state().await, QelAnchorState::Available);
     }
 
-    /// **The property the label design rests on**, end to end on the simulated
-    /// backend: the key the *starter* routes and the key the *answerer* gets from
-    /// the label must be the same bytes, or the two peers prepare epochs from
-    /// different keys and the mix is refused for no visible reason.
-    ///
-    /// This is the sim twin of the appliance test
-    /// `both_nodes_derive_one_epoch_key_from_a_key_id`: there the two ends share a
-    /// `key_ID`, here they share a `qkd-sim/1/…` derivation label, and in both cases
-    /// the assertion is `key == key` with nothing secret on the wire.
-    ///
-    /// Runs only where the engine exists (prints `SKIP` otherwise, the way the
-    /// control-plane test does), because the derivation *is* a python subprocess —
-    /// there is no way to test this without it, and faking it would test nothing.
     #[tokio::test]
     async fn a_route_key_and_the_key_redeemed_from_its_label_are_identical() {
         let sim = SimulatedQel::autodetect();
@@ -1444,8 +1163,6 @@ mod tests {
             return;
         }
 
-        // A two-node export with a length, because the quantum layer derives a
-        // link's attenuation from its physical extent and skips a link with none.
         let topo = std::env::temp_dir().join(format!(
             "vanta_qel_label_roundtrip_{}.json",
             std::process::id()
@@ -1465,7 +1182,6 @@ mod tests {
         )
         .expect("write topology export");
 
-        // The starter: route, distil, derive, and name the key it derived.
         let starter = sim
             .establish_quantum_link(state, &topo, "labelfrom0000000", "labelto000000000")
             .await;
@@ -1484,8 +1200,6 @@ mod tests {
             "the label must name the key, never contain it: {label}"
         );
 
-        // The answerer: parse the label the PDU carried, derive from it, and get
-        // the same bytes. It has no topology export of its own — that is the point.
         let (fidelity, seed) = SimulatedQel::parse_label(&label).expect("a label we wrote");
         let answerer = sim.derive_key_at(state, fidelity, seed).await;
         assert_eq!(
@@ -1499,8 +1213,6 @@ mod tests {
             "and the answering side reports the same label back"
         );
 
-        // Asking twice gives the same bytes, which is what makes a label
-        // sufficient on the answering side at all.
         let again = sim.derive_key_at(state, fidelity, seed).await;
         assert_eq!(
             again.key.map(|k| k.to_vec()),
@@ -1508,10 +1220,6 @@ mod tests {
             "the derivation is deterministic in (fidelity, seed)"
         );
 
-        // Below the BB84 cutoff there is **no** key, and the answering side must be
-        // told that rather than handed something derived anyway: a mix built on
-        // material the other end does not have would prepare an epoch alone.
-        // Measured edge: F 0.870 yields nothing, F 0.872 does.
         let below = sim.derive_key_at(state, 0.85, seed).await;
         assert!(
             below.key.is_none(),
@@ -1524,15 +1232,6 @@ mod tests {
             below.error
         );
 
-        // **A limitation of the simulated engine, pinned so it cannot change
-        // silently.** `qkd-derive` returns Alice's own seeded sifted bits, and its
-        // noise parameter enters only through the QBER gate — so every fidelity
-        // above the cutoff maps to the *same* 32 bytes, and with a constant seed
-        // every simulated session mixes the same key. In this build the mix's real
-        // contribution is epoch agreement, not entropy (see
-        // `docs/ANCHORS_CODEBASE_INTEGRATION.md` §8). If this assertion ever starts
-        // failing, the engine grew error correction and privacy amplification —
-        // good news, and §8 needs rewriting.
         let higher = SimulatedQel::label(fidelity + 0.05, seed);
         let (higher_f, higher_s) = SimulatedQel::parse_label(&higher).unwrap();
         let same_for_higher = sim.derive_key_at(state, higher_f, higher_s).await;
@@ -1612,8 +1311,6 @@ mod rf_tests {
             "what survives is the data bits, after the syndrome leak"
         );
 
-        // The key is transcript-bound: the same bits for another handshake must
-        // not yield the same key.
         let other = exchange.derive_key(b"handshake-2").expect("derive");
         assert_ne!(first.key(), other.key());
     }
@@ -1642,8 +1339,6 @@ mod rf_tests {
 
     #[test]
     fn a_real_sounding_capture_flows_through_quantization_and_agrees() {
-        // 1024 soundings of one slowly fading channel: both ends see the same
-        // excursions, so quantized bits agree exactly and Eve is absent.
         let alice: Vec<f64> = (0..1024)
             .map(|i| (i as f64 * 0.05).sin() + (i as f64 * 0.31).cos() * 0.2)
             .collect();
@@ -1671,8 +1366,6 @@ mod rf_tests {
         assert_ne!(base, combine_monotone(&x, &m, &[0x34u8; 32], b"transcript"));
         assert_ne!(base, combine_monotone(&x, &m, &l, b"other"));
 
-        // The construction is the one the theorem is about, not merely a hash of
-        // the concatenation.
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
         let mut inner = Hmac::<Sha256>::new_from_slice(&l).unwrap();

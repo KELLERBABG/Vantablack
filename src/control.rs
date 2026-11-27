@@ -28,8 +28,6 @@ use vantablack::ghost::v2;
 use vantablack::ghost::v2::{api as v2api, regime as v2regime};
 use vantablack::ghost::GhostNode;
 
-/// Port the HTTP control center listens on (`GHOST_WEB_PORT`, else the legacy
-/// `GHOST_METRICS_PORT`, else 2270). Shared by the node and the desktop window.
 pub fn control_port_from_env() -> u16 {
     std::env::var("GHOST_WEB_PORT")
         .or_else(|_| std::env::var("GHOST_METRICS_PORT"))
@@ -38,13 +36,11 @@ pub fn control_port_from_env() -> u16 {
         .unwrap_or(2270)
 }
 
-/// Parse the JSON body out of an HTTP request, ignoring headers.
 pub fn json_body(req: &str) -> serde_json::Value {
     let body_str = req.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
     serde_json::from_str(body_str.trim()).unwrap_or(serde_json::Value::Null)
 }
 
-/// Extract and validate the `Origin` header against permitted localhost origins.
 pub fn is_origin_allowed(req: &str, port: u16) -> bool {
     let origin = req.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -63,7 +59,6 @@ pub fn is_origin_allowed(req: &str, port: u16) -> bool {
     }
 }
 
-/// Extract the `X-Pin` header from an incoming HTTP request.
 pub fn header_pin(req: &str) -> Option<&str> {
     req.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -75,9 +70,6 @@ pub fn header_pin(req: &str) -> Option<&str> {
     })
 }
 
-/// Constant-time PIN check. The length difference is folded into the result, so
-/// the compare neither short-circuits on a mismatched byte nor on a mismatched
-/// length, either of which would time the configured PIN out to the caller.
 pub fn pin_matches(expected: &str, supplied: Option<&str>) -> bool {
     use subtle::ConstantTimeEq;
     let supplied = supplied.unwrap_or("");
@@ -90,13 +82,11 @@ pub fn pin_matches(expected: &str, supplied: Option<&str>) -> bool {
     bool::from(a.as_slice().ct_eq(b.as_slice()) & same_len)
 }
 
-/// Round to `places` decimals for stable JSON output.
 pub fn round(value: f64, places: i32) -> f64 {
     let factor = 10f64.powi(places);
     (value * factor).round() / factor
 }
 
-/// Nearest-rank percentile of an unsorted sample set.
 pub fn percentile(samples: &[f64], p: f64) -> f64 {
     if samples.is_empty() {
         return 0.0;
@@ -115,10 +105,6 @@ pub fn mean(samples: &[f64]) -> f64 {
     }
 }
 
-/// Benchmark the live in-process crypto pipeline:
-/// - XChaCha20-Poly1305 authenticated encryption
-/// - 2-of-3 Reed-Solomon erasure coding
-/// - Memory scrubbing / allocation
 pub fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
     let chunk_size = 900;
     let iterations = (total_bytes / chunk_size).max(10);
@@ -170,8 +156,6 @@ pub fn run_pipeline_probe(total_bytes: usize) -> serde_json::Value {
     })
 }
 
-/// Round-trip time to the public internet, from the fastest of three TCP
-/// connects.
 #[allow(dead_code)]
 pub async fn isp_rtt_ms() -> Option<f64> {
     let mut best: Option<f64> = None;
@@ -193,8 +177,6 @@ pub async fn isp_rtt_ms() -> Option<f64> {
     best.map(|v| round(v, 1))
 }
 
-/// One peer entry for `/api/status` and `/api/peers`, with the consumer-facing
-/// fields the dashboard renders: friendly name, platform, presence.
 pub fn peer_entry(
     nc: &GhostNode,
     settings: &ConsumerSettings,
@@ -216,8 +198,6 @@ pub fn peer_entry(
     })
 }
 
-/// Optional self-node telemetry override for `/api/topology`, allowing `wan-core`
-/// to supply live STUN/NAT/relay measurements without breaking the JSON schema.
 #[derive(Debug, Clone, Default)]
 pub struct TopologySelfHint {
     pub public_addr: Option<String>,
@@ -227,7 +207,6 @@ pub struct TopologySelfHint {
     pub transport: Option<String>,
 }
 
-/// Optional per-peer telemetry override for `/api/topology`.
 #[derive(Debug, Clone, Default)]
 pub struct TopologyPeerHint {
     pub rtt_ms: Option<f64>,
@@ -236,8 +215,6 @@ pub struct TopologyPeerHint {
     pub is_exit: bool,
 }
 
-/// Classify a socket address as `"lan"` (RFC1918, loopback, link-local, or ULA)
-/// or `"wan"` (globally routable).
 pub fn classify_addr_scope(addr: &SocketAddr) -> &'static str {
     match addr.ip() {
         IpAddr::V4(v4) => {
@@ -260,7 +237,6 @@ pub fn classify_addr_scope(addr: &SocketAddr) -> &'static str {
     }
 }
 
-/// Determine active roles advertised for the local node in `/api/topology`.
 pub fn local_node_roles(socks_listening: bool, vpn_role: &str) -> Vec<&'static str> {
     let mut roles = vec!["mesh"];
     if socks_listening {
@@ -285,7 +261,6 @@ pub fn local_node_roles(socks_listening: bool, vpn_role: &str) -> Vec<&'static s
     roles
 }
 
-/// Build the `/api/topology` JSON document with optional `wan-core` telemetry hints.
 pub fn build_topology_json(
     nc: &GhostNode,
     addrs: &DashMap<String, SocketAddr>,
@@ -396,8 +371,6 @@ pub fn build_topology_json(
     })
 }
 
-/// Build a `proxy.pac` script routing RFC1918 and localhost traffic `DIRECT`
-/// and all remaining traffic through `SOCKS5 127.0.0.1:<socks_port>; DIRECT`.
 pub fn build_proxy_pac(socks_port: u16) -> String {
     format!(
         "function FindProxyForURL(url, host) {{\n\
@@ -417,7 +390,6 @@ pub fn build_proxy_pac(socks_port: u16) -> String {
     )
 }
 
-/// Map [`NatType`] into the wire byte used by [`PeerDescriptorV2`].
 fn nat_type_to_code(nt: NatType) -> u8 {
     match nt {
         NatType::Direct => NAT_DIRECT,
@@ -428,7 +400,6 @@ fn nat_type_to_code(nt: NatType) -> u8 {
     }
 }
 
-/// Human-readable NAT label for `/api/topology` and `/api/status`.
 fn nat_type_label(nt: NatType) -> &'static str {
     match nt {
         NatType::Unknown => "Detecting",
@@ -436,7 +407,6 @@ fn nat_type_label(nt: NatType) -> &'static str {
     }
 }
 
-/// Compute advertised [`PeerDescriptorV2`] capability bitflags for this node.
 fn local_capability_flags(vpn_role: &str) -> u8 {
     let env_true = |key: &str| {
         std::env::var(key)
@@ -462,7 +432,6 @@ fn local_capability_flags(vpn_role: &str) -> u8 {
     caps
 }
 
-/// Upsert a verified [`PeerDescriptorV2`] into Tier-1 disk cache (`peers.bin`).
 fn record_peer_cache_v2_entry(desc: PeerDescriptorV2) {
     let peers_bin = vantablack::ghost::paths::data_file("peers.bin");
     let mut list = LocalPeerCache::load_v2(&peers_bin).unwrap_or_default();
@@ -476,7 +445,6 @@ fn record_peer_cache_v2_entry(desc: PeerDescriptorV2) {
     let _ = LocalPeerCache::save_v2(&peers_bin, &list);
 }
 
-/// Append a peer endpoint to `peers.cache` if not already present.
 fn record_peer_cache_entry(addr_str: &str) {
     let peers_cache = vantablack::ghost::paths::data_file("peers.cache");
     if let Ok(mut current) = std::fs::read_to_string(&peers_cache) {
@@ -493,8 +461,6 @@ fn record_peer_cache_entry(addr_str: &str) {
     }
 }
 
-/// Extract an optional `?port=<u16>` query parameter from a `/proxy.pac` request line,
-/// clamped to the node's own multi-port SOCKS5 range (`socks_port..=socks_port+3`).
 fn pac_port_from_request(req: &str, socks_port: u16) -> u16 {
     let first_line = req.lines().next().unwrap_or("");
     let path = first_line.split_whitespace().nth(1).unwrap_or("");
@@ -512,7 +478,6 @@ fn pac_port_from_request(req: &str, socks_port: u16) -> u16 {
     socks_port
 }
 
-/// Spawns the Ghost Web Control Center and Telemetry HTTP service.
 pub fn spawn_control_center(
     metrics_port: u16,
     nc: Arc<GhostNode>,
@@ -601,13 +566,6 @@ pub fn spawn_control_center(
                             let qel_state_ref = Arc::clone(&qel_state_m);
                             let qel_last_route = Arc::clone(&qel_route_m);
                             tokio::spawn(async move {
-                                // Read the whole request. A single `read` races the client's
-                                // TCP segmentation: a POST whose body lands in a later segment
-                                // would be parsed as body-less and rejected. Clients here do
-                                // NOT half-close their write side before reading the response
-                                // (every browser does the same), so we cannot read to EOF;
-                                // instead read until the headers are complete and then until
-                                // `Content-Length` body bytes have arrived (bounded).
                                 let mut buf: Vec<u8> = Vec::with_capacity(4096);
                                 {
                                     let mut chunk = [0u8; 4096];
@@ -615,7 +573,6 @@ pub fn spawn_control_center(
                                         tokio::time::Duration::from_secs(10),
                                         async {
                                             loop {
-                                                // Headers complete?
                                                 let header_end =
                                                     buf.windows(4).position(|w| w == b"\r\n\r\n");
                                                 let need_body = match header_end {
@@ -670,9 +627,6 @@ pub fn spawn_control_center(
                                     );
                                     let vpn_available = vpn_ref.is_some();
                                     let configured_pin = pin_ref.read().clone();
-                                    // `true` here means the caller may see identity and
-                                    // pairing material: either no PIN is configured, or it
-                                    // was supplied correctly.
                                     let pin_ok = match configured_pin.as_deref() {
                                         None => true,
                                         Some(expected) => pin_matches(expected, header_pin(&req)),
@@ -725,10 +679,6 @@ pub fn spawn_control_center(
                                             || req.starts_with("GET /api/topology")
                                             || req.starts_with("GET /api/invite"))
                                     {
-                                        // These reads carry peer or node fingerprints and
-                                        // have no liveness role, so a missing PIN denies
-                                        // them outright. /api/status stays readable and
-                                        // redacts its identity fields instead.
                                         let body = serde_json::json!({
                                             "success": false,
                                             "error": "PIN required",
@@ -882,8 +832,6 @@ pub fn spawn_control_center(
                                         (status, body, ct)
                                     } else if req.starts_with("GET /api/v2/") {
                                         let peers = nc_ref.sessions.len();
-                                        // A regime listener is already the final port;
-                                        // the API derives offsets, so give it the base.
                                         let regime_active = v2regime::active().ok();
                                         let api_socks_base = if regime_active.is_some() {
                                             1080
@@ -901,15 +849,9 @@ pub fn spawn_control_center(
                                             exit_ip: None,
                                             node_fingerprint: nc_ref.fingerprint(),
                                             witnesses: v2api::Witnesses {
-                                                // A relay count is only evidence once
-                                                // the descriptor signature checked out;
-                                                // `accept_descriptor` records those.
                                                 relay_population: Some(relay_population),
                                                 relay_domains: Some(relay_domains),
                                                 cap_relay_verified: Some(relay_population),
-                                                // Typed witnesses: the API can
-                                                // pass these through but cannot
-                                                // mint them from configuration.
                                                 circuit_hops: v2::xray::circuit_hops_witness(),
                                                 cover_tx: v2::xray::cover_tx_witness(),
                                                 nonce_echo_hops: v2::xray::nonce_echo_witness(),
@@ -997,9 +939,6 @@ pub fn spawn_control_center(
                                                 .unwrap_or(55225)
                                         };
                                         let lan_sa = lan_host_ref.parse::<SocketAddr>().ok();
-                                        // Same operator override as the descriptor
-                                        // builder: a manually forwarded endpoint wins
-                                        // over STUN, and then it is the only candidate.
                                         let advertised_override =
                                             std::env::var("GHOST_ADVERTISE_ADDR").ok().and_then(
                                                 |raw| raw.trim().parse::<SocketAddr>().ok(),
@@ -1183,9 +1122,6 @@ pub fn spawn_control_center(
                                                     )
                                                 ),
                                             );
-                                            // Tier 1 telemetry: entropy-beacon rounds,
-                                            // braid revocation/quarantine and the vault's
-                                            // placement split. Counter-only, no keys.
                                             #[cfg(feature = "research")]
                                             obj.insert(
                                                 "research".to_string(),
@@ -1235,10 +1171,6 @@ pub fn spawn_control_center(
                                                     update_peer_telemetry(&fp, |t| {
                                                         t.is_exit = is_exit;
                                                     });
-                                                    // A `vb://2.` invite carries the
-                                                    // descriptor's signature, so it is
-                                                    // enough to register a home-exit
-                                                    // candidate before any session exists.
                                                     v2::boomerang::note_peer(
                                                         &fp,
                                                         caps,
@@ -1661,8 +1593,6 @@ pub fn spawn_control_center(
                                     }).to_string();
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("GET /api/v1/anchors/status") {
-                                        // Physical anchors (experimental, in-simulation):
-                                        // ABOS skywave carrier + QEL quantum anchor.
                                         let sky = net::sdr_bridge::SkywaveBridge::global()
                                             .map(|b| b.telemetry());
                                         let qel_state = *qel_state_ref.read();
@@ -1696,10 +1626,6 @@ pub fn spawn_control_center(
                                                     "swap_nodes": r.swap_nodes,
                                                     "key_derived": r.qkd_key_hex.is_some(),
                                                 })),
-                                            // Which key-delivery backend this node runs, and
-                                            // whether it is a simulation or an appliance.
-                                            // Carries no key material and no token: this
-                                            // document is fetched over loopback HTTP.
                                             "backend": l10_qel::shared_controller().backend_report(),
                                             "routes_over_topology":
                                                 l10_qel::shared_controller().routes_over_topology(),
@@ -1710,9 +1636,6 @@ pub fn spawn_control_center(
                                         ("HTTP/1.1 200 OK", body, "application/json")
                                     } else if req.starts_with("POST /api/v1/anchors/qel/route") {
                                         tracing::debug!("control: qel route endpoint entered");
-                                        // Trigger a real QEL route computation between two
-                                        // live peer fingerprints: {"from": "<fp>", "to": "<fp>"}.
-                                        // PIN-gated like every mutation above.
                                         let parsed: Option<(String, String)> = req
                                             .split_once("\r\n\r\n")
                                             .and_then(|(_, body)| {
@@ -1879,8 +1802,6 @@ pub fn spawn_control_center(
     });
 }
 
-/// Where the consumer settings document lives (device names, egress mode,
-/// split-tunnel list).
 pub fn consumer_config_path() -> String {
     std::env::var("GHOST_CONSUMER_CONFIG")
         .ok()
@@ -1888,8 +1809,6 @@ pub fn consumer_config_path() -> String {
         .unwrap_or_else(|| vantablack::ghost::paths::data_file_string("ghost-consumer.json"))
 }
 
-/// Load consumer settings. Returns `None` when the file is absent, so the
-/// caller can fall back to env-derived defaults.
 pub fn load_consumer_settings(path: &str) -> Option<ConsumerSettings> {
     let data = std::fs::read_to_string(path).ok()?;
     match serde_json::from_str::<ConsumerSettings>(&data) {
@@ -1901,8 +1820,6 @@ pub fn load_consumer_settings(path: &str) -> Option<ConsumerSettings> {
     }
 }
 
-/// Persist consumer settings via a temp file + rename, so a crash mid-write
-/// cannot leave a truncated document behind.
 pub fn save_consumer_settings(path: &str, settings: &ConsumerSettings) {
     let Ok(json) = serde_json::to_string_pretty(settings) else {
         return;
@@ -1918,7 +1835,6 @@ pub fn save_consumer_settings(path: &str, settings: &ConsumerSettings) {
     }
 }
 
-/// Compare two semver-like version strings (e.g. "v0.8.18" vs "0.8.17").
 pub fn is_newer_version(latest: &str, current: &str) -> bool {
     let parse_parts = |s: &str| -> Vec<u32> {
         s.trim_start_matches('v')
@@ -1942,7 +1858,6 @@ pub fn is_newer_version(latest: &str, current: &str) -> bool {
     false
 }
 
-/// Query the latest release info from the official GitHub repository.
 pub async fn check_github_update() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .user_agent("Vantablack-Updater/0.8")
@@ -2004,7 +1919,6 @@ pub async fn check_github_update() -> Result<serde_json::Value, String> {
     }))
 }
 
-/// Download the latest Windows release installer to temp without launching it yet.
 pub async fn download_github_update() -> Result<String, String> {
     let update_info = check_github_update().await?;
     let setup_url = update_info
@@ -2034,7 +1948,6 @@ pub async fn download_github_update() -> Result<String, String> {
     Ok("Update downloaded and ready to install".to_string())
 }
 
-/// Download (if not already staged) and execute the latest Windows release installer.
 pub async fn apply_github_update() -> Result<String, String> {
     let temp_installer = std::env::temp_dir().join("vantablack-latest-setup.exe");
     if !temp_installer
@@ -2201,8 +2114,6 @@ fn handle_post_settings(
                 enabled: true,
                 ac_only: s.blind_relay_ac_only,
             };
-            // An explicit opt-in is worth one real measurement: the cached
-            // reading may predate the user unplugging the machine.
             let power = v2::adopt::probe_power_evidence();
             let (decision, reason) = v2::adopt::relay_decision(policy, Some(power), v2::now_secs());
             if decision == v2::adopt::RelayDecision::Withheld {

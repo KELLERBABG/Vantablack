@@ -11,7 +11,6 @@
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-/// An individual peer's entropy contribution for a specific round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntropyShare {
     pub round: u64,
@@ -29,7 +28,6 @@ impl EntropyShare {
     }
 }
 
-/// The finalized, verifiable beacon randomness for an epoch round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BeaconRandomnessOutput {
     pub round: u64,
@@ -37,10 +35,8 @@ pub struct BeaconRandomnessOutput {
     pub beacon_digest: [u8; 32],
 }
 
-/// Entropy Beacon Commons Engine aggregating threshold public randomness.
 #[derive(Debug, Default)]
 pub struct EntropyBeaconCommons {
-    /// round -> contributor_id -> EntropyShare
     rounds: HashMap<u64, HashMap<[u8; 32], EntropyShare>>,
     threshold: usize,
 }
@@ -53,7 +49,6 @@ impl EntropyBeaconCommons {
         }
     }
 
-    /// Submit an entropy share for a round.
     pub fn submit_share(&mut self, share: EntropyShare) {
         self.rounds
             .entry(share.round)
@@ -61,29 +56,20 @@ impl EntropyBeaconCommons {
             .insert(share.contributor_id, share);
     }
 
-    /// Drop every round for which `keep` answers false.
-    ///
-    /// The daemon submits a share on every PEX beat, so a long-lived node would
-    /// otherwise retain one map entry per contributor per round forever. Pruning
-    /// is the caller's policy — this type holds no clock — but the retention
-    /// decision belongs next to the round key it is about.
     pub fn retain_rounds(&mut self, keep: impl Fn(u64) -> bool) {
         self.rounds.retain(|round, _| keep(*round));
     }
 
-    /// Number of rounds currently retained. Status and test surface.
     pub fn round_count(&self) -> usize {
         self.rounds.len()
     }
 
-    /// Try finalizing beacon output for a round once threshold is reached.
     pub fn try_finalize_round(&self, round: u64) -> Option<BeaconRandomnessOutput> {
         let shares_map = self.rounds.get(&round)?;
         if shares_map.len() < self.threshold {
             return None;
         }
 
-        // Sort contributors for deterministic output aggregation
         let mut sorted_shares: Vec<&EntropyShare> = shares_map.values().collect();
         sorted_shares.sort_by_key(|s| s.contributor_id);
 
@@ -117,19 +103,16 @@ mod tests {
         let node2 = [0x22u8; 32];
         let node3 = [0x33u8; 32];
 
-        // 1. Submit 2 shares: below threshold 3 -> cannot finalize
         commons.submit_share(EntropyShare::new(round, node1, [0xAAu8; 32]));
         commons.submit_share(EntropyShare::new(round, node2, [0xBBu8; 32]));
         assert!(commons.try_finalize_round(round).is_none());
 
-        // 2. Submit 3rd share: reaches threshold -> finalizes deterministic beacon output!
         commons.submit_share(EntropyShare::new(round, node3, [0xCCu8; 32]));
         let output = commons.try_finalize_round(round).expect("finalizes");
         assert_eq!(output.round, round);
         assert_eq!(output.participant_count, 3);
         assert_ne!(output.beacon_digest, [0u8; 32]);
 
-        // 3. Determinism: calling again produces identical beacon digest
         let output2 = commons.try_finalize_round(round).unwrap();
         assert_eq!(output.beacon_digest, output2.beacon_digest);
     }

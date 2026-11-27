@@ -24,13 +24,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Certificate validity used by [`FleetRoot::issue`] when the caller does not
-/// pass one: 90 days. Long enough that a phone is not re-onboarded monthly,
-/// short enough that a lost device ages out without depending on gossip.
 pub const DEFAULT_CERT_TTL_SECS: u64 = 90 * 24 * 3600;
 
-/// Why a device was revoked. One byte on the wire, so the reason survives
-/// gossip without a text field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RevokeReason {
@@ -63,11 +58,6 @@ impl RevokeReason {
     }
 }
 
-/// A device's short public identifier: the first 8 bytes of its key hash.
-///
-/// Eight bytes is what fits in a gossip message and a QR code; a collision
-/// within one fleet is not a security event because the certificate itself
-/// carries the full key, so a revoked id only ever removes *more* authority.
 pub fn device_id_for(pk: &[u8; 32]) -> [u8; 8] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -84,27 +74,17 @@ fn put_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-/// A device certificate, signed by the offline fleet root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceCert {
-    /// Fleet identifier (hash of the root public key), so certs from two fleets
-    /// cannot be mixed.
     pub fleet_id: String,
-    /// The device's Ed25519 public key, hex.
     pub device_pk: String,
-    /// Human label ("Lukas' phone"). Authenticated but not trusted for routing.
     pub label: String,
-    /// Unix seconds.
     pub issued_at: u64,
     pub expires_at: u64,
-    /// Hex, 64 bytes.
     pub signature: String,
 }
 
 impl DeviceCert {
-    /// The exact bytes the root signs. Any change to the fields invalidates the
-    /// signature; the encoding is length-prefixed so labels cannot be shifted
-    /// between fields.
     pub fn canonical_bytes(
         fleet_id_hex: &str,
         device_pk: &[u8; 32],
@@ -128,8 +108,6 @@ impl DeviceCert {
         Some(device_id_for(&pk))
     }
 
-    /// Verify against the fleet's public key. Checks the fleet id binding, the
-    /// signature, and the validity window at `now`.
     pub fn verify(&self, root_pk: &[u8; 32], now: u64) -> Result<(), CertError> {
         let expected_fleet = fleet_id_for(root_pk);
         if self.fleet_id != expected_fleet {
@@ -184,7 +162,6 @@ impl std::fmt::Display for CertError {
 
 impl std::error::Error for CertError {}
 
-/// The fleet's public identity, derived from the root key.
 pub fn fleet_id_for(root_pk: &[u8; 32]) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -193,24 +170,18 @@ pub fn fleet_id_for(root_pk: &[u8; 32]) -> String {
     hex::encode(&h.finalize()[..16])
 }
 
-/// The offline root. Deliberately not `Clone` and not serialisable: it cannot be
-/// written to disk by accident through a derive.
 pub struct FleetRoot {
     signing: SigningKey,
     fleet_id: String,
 }
 
 impl FleetRoot {
-    /// From a 32-byte seed, which the operator is expected to keep offline
-    /// (paper, hardware token).
     pub fn from_seed(seed: [u8; 32]) -> Self {
         let signing = SigningKey::from_bytes(&seed);
         let fleet_id = fleet_id_for(&signing.verifying_key().to_bytes());
         Self { signing, fleet_id }
     }
 
-    /// Generate a new root from the OS RNG. The seed is returned so the caller
-    /// can persist it wherever it keeps secrets; it is not retained separately.
     pub fn generate() -> (Self, [u8; 32]) {
         use rand::RngCore;
         let mut seed = [0u8; 32];
@@ -230,8 +201,6 @@ impl FleetRoot {
         &self.fleet_id
     }
 
-    /// Issue a certificate. `label` is authenticated; it is not a security
-    /// boundary, so it is capped to keep a hostile label from inflating gossip.
     pub fn issue(&self, device_pk: [u8; 32], label: &str, now: u64, ttl: u64) -> DeviceCert {
         let label: String = label.chars().take(64).collect();
         let expires_at = now.saturating_add(ttl.max(1));
@@ -247,8 +216,6 @@ impl FleetRoot {
         }
     }
 
-    /// Sign a revocation. The root is required: an attacker who has stolen a
-    /// device has that device's key, not this one.
     pub fn revoke(&self, device_pk: &[u8; 32], reason: RevokeReason, now: u64) -> Revocation {
         let device_id = device_id_for(device_pk);
         let msg = Revocation::canonical_bytes(&device_id, now, reason);
@@ -262,7 +229,6 @@ impl FleetRoot {
     }
 }
 
-/// A gossipped revocation entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revocation {
     pub device_id: String,
@@ -283,8 +249,6 @@ impl Revocation {
         out
     }
 
-    /// Wire form: 4-byte magic, 8-byte id, 8-byte timestamp, reason byte and a
-    /// 64-byte signature — 85 bytes, inside the roadmap's 128-byte budget.
     pub fn encode(&self) -> Option<Vec<u8>> {
         let id = hex::decode(&self.device_id).ok()?;
         let id: [u8; 8] = id.try_into().ok()?;
@@ -337,7 +301,6 @@ impl Revocation {
     }
 }
 
-/// The set of revoked device ids a node knows, with gossip merge.
 #[derive(Debug, Default)]
 pub struct RevocationSet {
     entries: HashMap<[u8; 8], u64>,
@@ -349,9 +312,6 @@ impl RevocationSet {
         Self::default()
     }
 
-    /// Merge a gossipped revocation. Only a signature by the fleet root is
-    /// accepted; the newest timestamp wins per device so replaying an old entry
-    /// cannot resurrect a revoked device.
     pub fn merge(&mut self, rev: &Revocation, root_pk: &[u8; 32]) -> bool {
         if !rev.verify(root_pk) {
             self.rejected = self.rejected.saturating_add(1);
@@ -391,13 +351,8 @@ impl RevocationSet {
     }
 }
 
-/// Admit a device only if its certificate is valid, unexpired and unrevol­ked.
-/// Prefix of the QR/onboarding payload for a device certificate.
 pub const FLEET_URI_PREFIX: &str = "vb-fleet://";
 
-/// Encode the onboarding payload a QR code carries: the fleet's public key and
-/// the device certificate, both hex. Hex keeps the payload dependency-free; a QR
-/// encoder only has to render the string.
 pub fn encode_invite(root_pk: &[u8; 32], cert: &DeviceCert) -> Option<String> {
     let json = serde_json::to_vec(cert).ok()?;
     Some(format!(
@@ -407,8 +362,6 @@ pub fn encode_invite(root_pk: &[u8; 32], cert: &DeviceCert) -> Option<String> {
     ))
 }
 
-/// Parse a `vb-fleet://` payload. It is not trusted until `admit` verifies the
-/// certificate against the root key it carries.
 pub fn decode_invite(uri: &str) -> Result<([u8; 32], DeviceCert), String> {
     let rest = uri
         .trim()
@@ -442,8 +395,6 @@ pub fn admit(
     Ok(pk)
 }
 
-// ── Live Revocation Gossip Store ────────────────────────────────────────────
-
 #[derive(Default)]
 struct GossipState {
     root_pk: Option<[u8; 32]>,
@@ -457,7 +408,6 @@ fn gossip_state() -> &'static std::sync::Mutex<GossipState> {
     STATE.get_or_init(|| std::sync::Mutex::new(GossipState::default()))
 }
 
-/// Configure the fleet root public key used to verify incoming gossiped revocations.
 pub fn configure_root_pk(root_pk: [u8; 32]) {
     gossip_state()
         .lock()
@@ -465,7 +415,6 @@ pub fn configure_root_pk(root_pk: [u8; 32]) {
         .root_pk = Some(root_pk);
 }
 
-/// Return the configured fleet root public key (checking `GHOST_FLEET_ROOT_PK` if unset).
 pub fn configured_root_pk() -> Option<[u8; 32]> {
     let mut guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(pk) = guard.root_pk {
@@ -482,7 +431,6 @@ pub fn configured_root_pk() -> Option<[u8; 32]> {
     None
 }
 
-/// Verify and store a signed [`Revocation`] for mesh gossip.
 pub fn record_revocation(rev: Revocation, root_pk: &[u8; 32]) -> bool {
     let mut guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
     if guard.root_pk.is_none() {
@@ -501,7 +449,6 @@ pub fn record_revocation(rev: Revocation, root_pk: &[u8; 32]) -> bool {
     }
 }
 
-/// Check whether `device_pk` has been revoked in the live fleet store.
 pub fn is_device_pk_revoked(device_pk: &[u8; 32]) -> bool {
     gossip_state()
         .lock()
@@ -512,7 +459,6 @@ pub fn is_device_pk_revoked(device_pk: &[u8; 32]) -> bool {
 
 const REVOCATION_BYTES: usize = 85;
 
-/// Encode up to 16 revocations into a `GHOST_REVOKE__` gossip batch: `[count u8]([85-byte Revocation]...)`.
 pub fn export_gossip_revocation_batch() -> Vec<u8> {
     let guard = gossip_state().lock().unwrap_or_else(|e| e.into_inner());
     if guard.raw_entries.is_empty() {
@@ -536,7 +482,6 @@ pub fn export_gossip_revocation_batch() -> Vec<u8> {
     out
 }
 
-/// Ingest a `GHOST_REVOKE__` gossip batch, verifying every entry against the configured fleet root.
 pub fn ingest_gossip_revocation_batch(bytes: &[u8]) -> usize {
     let Some(root_pk) = configured_root_pk() else {
         return 0;
@@ -585,8 +530,6 @@ pub fn status_json() -> serde_json::Value {
         "gossip_merged": guard.gossip_merged,
     })
 }
-
-// ── Pure-Rust ISO-18004 QR SVG Renderer (Versions 1..=14, ECC-L, Mask 0) ────
 
 struct QrVersionSpec {
     version: u8,
@@ -859,7 +802,6 @@ fn push_bits(buf: &mut Vec<u8>, bit_len: &mut usize, val: u32, count: usize) {
     }
 }
 
-/// Encode `text` into a QR matrix (`size x size` booleans, `true` = dark module).
 pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
     let payload = text.as_bytes();
     let spec = QR_SPECS
@@ -986,11 +928,9 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
         }
     }
 
-    // Reserve format areas + write ECC-L Mask 0 format bits (0x77c4, MSB-first).
     const FORMAT_L_M0: u16 = 0x77c4;
     for i in 0..15 {
         let bit = ((FORMAT_L_M0 >> (14 - i)) & 1) != 0;
-        // Top-left copy: bits 14..=8 along row 8, bit 7 at (8,8), bits 6..=0 up col 8.
         if i < 6 {
             set_fn(8, i, bit);
         } else if i < 8 {
@@ -1000,7 +940,6 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
         } else {
             set_fn(14 - i, 8, bit);
         }
-        // Split copy: bits 14..=8 up col 8 from bottom, bits 7..=0 along row 8 from right.
         if i < 7 {
             set_fn(n - 1 - i, 8, bit);
         } else {
@@ -1025,7 +964,6 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
         }
     }
 
-    // Place data bits in zig-zag columns, applying Mask 0: (r + c) % 2 == 0.
     let mut bit_idx = 0usize;
     let total_bits = codewords.len() * 8;
     let mut col = n as isize - 1;
@@ -1056,9 +994,6 @@ pub fn encode_qr_matrix(text: &str) -> Result<Vec<Vec<bool>>, String> {
     Ok(grid)
 }
 
-/// Render `text` as a Vantablack "Connected Liquid Tracks" `<svg>` QR code with
-/// circular finder eyes, horizontal liquid pill tracks, and a central Vantablack
-/// Ghost medallion (sized within ECC-L recovery budget).
 pub fn render_qr_svg(text: &str) -> Result<String, String> {
     use std::fmt::Write;
     let matrix = encode_qr_matrix(text)?;
@@ -1066,8 +1001,6 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     let quiet = 4usize;
     let total = size.saturating_add(quiet.saturating_mul(2));
 
-    // Reserve a small center medallion on Version 3+ matrices (<= 2.2% area,
-    // safely within ECC-L's ~7% recovery capacity).
     let mid = size / 2;
     let has_badge = size >= 29;
     let badge_half: usize = if size >= 45 { 4 } else { 2 };
@@ -1148,7 +1081,6 @@ pub fn render_qr_svg(text: &str) -> Result<String, String> {
     ))
 }
 
-/// Render a `vb-fleet://` onboarding invite directly as an SVG QR code.
 pub fn render_invite_qr_svg(root_pk: &[u8; 32], cert: &DeviceCert) -> Result<String, String> {
     let uri = encode_invite(root_pk, cert).ok_or_else(|| "invite encoding failed".to_string())?;
     render_qr_svg(&uri)
@@ -1233,7 +1165,6 @@ mod tests {
         assert!(!set.merge(&forged, &root.public_key()));
         assert_eq!(set.rejected(), 1);
 
-        // An older but genuine entry must not roll the timestamp back.
         let older = root.revoke(&dev, RevokeReason::Lost, 100);
         assert!(set.merge(&older, &root.public_key()));
         assert!(set.is_revoked(&dev));
@@ -1271,7 +1202,6 @@ mod tests {
             Ok(device(9))
         );
 
-        // A payload that swaps in another device's key must fail admission.
         let mut tampered = decoded;
         tampered.device_pk = hex::encode(device(10));
         assert_eq!(
@@ -1303,10 +1233,7 @@ mod tests {
         let matrix = encode_qr_matrix(&uri).unwrap();
         let n = matrix.len();
         assert!(n >= 21 && (n - 17).is_multiple_of(4));
-        // Top-left 7x7 finder border & center must be dark.
         assert!(matrix[0][0] && matrix[0][6] && matrix[6][0] && matrix[3][3]);
-        // Top-left MSB-first format bits for ECC-L Mask 0 (0x77c4 -> 111011111000100):
-        // bit 14 = 1 at (8,0), bit 11 = 0 at (8,3), bit 0 = 0 at (0,8).
         assert!(matrix[8][0] && !matrix[8][3] && !matrix[0][8]);
     }
 

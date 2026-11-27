@@ -63,12 +63,6 @@ use crate::ghost::layers::l0_identity::{
 pub const QUIC_ALPN: &[u8] = b"h3";
 pub const QUIC_DEFAULT_PORT: u16 = 2271;
 pub const ID_BINDING_LABEL: &[u8] = b"ggn-quic-identity-binding";
-/// Version 2 of the binding: a hybrid proof (Ed25519 + ML-DSA-65).
-///
-/// The binding rides a QUIC *stream*, which puts no small bound on it — which is
-/// exactly why the post-quantum proof lives here and not in a beacon (512–1472
-/// byte datagrams) or a handshake PDU (~880 bytes). A 5.4 kB proof fits a stream
-/// and nothing else in this stack.
 pub const BINDING_VERSION_HYBRID: u8 = 2;
 pub const BINDING_LEN_V1: usize = 96;
 pub const BINDING_LEN_V2: usize = 1 + 32 + ML_DSA_65_PK_LEN + ED25519_SIG_LEN + ML_DSA_65_SIG_LEN;
@@ -116,8 +110,6 @@ pub enum QuicError {
 }
 
 impl QuicError {
-    /// A datagram failure is only ever a connection failure underneath; saying so
-    /// keeps the caller's retry decision meaningful.
     fn from_datagram(e: quinn::SendDatagramError) -> Self {
         match e {
             quinn::SendDatagramError::ConnectionLost(c) => QuicError::Connection(c),
@@ -126,15 +118,8 @@ impl QuicError {
     }
 }
 
-/// How long a datagram may wait for room before the frame is reported as not
-/// carried. Short on purpose: this is the privacy path's budget for one shard.
 const DATAGRAM_ROOM_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// Which framing a frame actually left by.
-///
-/// The tunnel's own name for this decision (`net::CarrierPath`) is reused rather
-/// than shadowed, so a caller can hold one value type whether or not this
-/// transport is compiled in.
 pub use super::CarrierPath as FramePath;
 
 #[derive(Debug, Default)]
@@ -162,17 +147,11 @@ impl LinkStats {
     }
 }
 
-/// A self-signed certificate built from the node's Ed25519 identity.
-///
-/// The key is the identity's own, so the certificate's subject key *is* the
-/// fingerprint the mesh knows — which is what lets the binding below be checked
-/// against it, and what makes the certificate a name rather than a secret.
 pub fn identity_certificate(
     identity: &GhostIdentity,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), QuicError> {
     use rcgen::{CertificateParams, KeyPair, PKCS_ED25519};
 
-    // PKCS#8 v1 for Ed25519 is a fixed 48-byte wrapper around the 32-byte seed.
     let seed: [u8; 32] = identity.long_term_signing.to_bytes();
     let mut pkcs8 = vec![
         0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
@@ -196,13 +175,6 @@ pub fn identity_certificate(
     ))
 }
 
-/// The bytes both keys sign: the session's keying material **and the PQ public
-/// key**.
-///
-/// The PQ key has to be inside the signed message, or the two signatures would
-/// each bind the session to a key without binding the keys to each other — and a
-/// man in the middle could then swap in a PQ key of its own while leaving the
-/// (correct) classical half untouched.
 fn binding_material(channel_binding: &[u8], pq_pk: &[u8]) -> Vec<u8> {
     let mut msg = Vec::with_capacity(channel_binding.len() + pq_pk.len());
     msg.extend_from_slice(channel_binding);
@@ -210,8 +182,6 @@ fn binding_material(channel_binding: &[u8], pq_pk: &[u8]) -> Vec<u8> {
     msg
 }
 
-/// The message each end sends to bind **both** of its identity keys to this TLS
-/// session.
 pub fn identity_binding(identity: &GhostIdentity, channel_binding: &[u8]) -> Vec<u8> {
     let pq_pk = identity.pq_public_key_bytes();
     let sig = identity.sign_hybrid(&binding_material(channel_binding, &pq_pk));
@@ -224,18 +194,7 @@ pub fn identity_binding(identity: &GhostIdentity, channel_binding: &[u8]) -> Vec
     msg
 }
 
-/// Verify a hybrid binding and return the peer's fingerprint and the commitment
-/// to the post-quantum key it proved.
-///
-/// The accepting side uses this: its admission rule is `is_known(fp)` rather than
-/// one expected fingerprint, so it needs the identity the binding proves and not
-/// a comparison.
 fn verify_binding(binding: &[u8], channel_binding: &[u8]) -> Result<(String, [u8; 32]), QuicError> {
-    // A v1 message is structurally a classical-only proof. It is **refused**
-    // rather than accepted: honoring it would let anyone strip the post-quantum
-    // half and hand a peer back the Ed25519-only identity P2-1 exists to replace
-    // — a downgrade, not a compatibility win. A migration window would need an
-    // explicit policy flag, which this build does not have.
     if binding.len() == BINDING_LEN_V1 {
         return Err(QuicError::ClassicalOnlyBinding);
     }
@@ -252,8 +211,6 @@ fn verify_binding(binding: &[u8], channel_binding: &[u8]) -> Result<(String, [u8
         return Err(QuicError::UnprovenIdentity);
     };
     let msg = binding_material(channel_binding, pq_pk);
-    // Both halves, always. There is no mode in which the classical half alone is
-    // enough, because that is the half a quantum adversary forges.
     if !verify_peer_signature(&pk, &msg, ed_sig) {
         return Err(QuicError::UnprovenIdentity);
     }
@@ -263,7 +220,6 @@ fn verify_binding(binding: &[u8], channel_binding: &[u8]) -> Result<(String, [u8
     Ok((hex::encode(&pk[..8]), pq_commitment(pq_pk)))
 }
 
-/// Verify a peer's binding against the fingerprint we expect.
 pub fn verify_identity_binding(
     expected_fp: &str,
     binding: &[u8],
@@ -279,12 +235,6 @@ pub fn verify_identity_binding(
     Ok(got)
 }
 
-/// A rustls verifier that accepts a self-signed chain.
-///
-/// Documented rather than hidden: X.509 is not the trust anchor here (there is no
-/// PKI in a mesh), and the identity is proven by the channel binding instead. The
-/// signature *algorithms* are still verified normally, so a peer cannot negotiate
-/// a scheme it cannot actually use.
 #[derive(Debug)]
 struct SelfSignedAccepted;
 
@@ -337,25 +287,19 @@ impl quinn::rustls::client::danger::ServerCertVerifier for SelfSignedAccepted {
 
 fn transport_config() -> Arc<TransportConfig> {
     let mut t = TransportConfig::default();
-    // Datagrams are unreliable by contract; make the buffers deep enough that a
-    // burst is not dropped for want of room before the RS pool can use it.
     t.datagram_send_buffer_size(4 * INGRESS_QUEUE * 64)
         .datagram_receive_buffer_size(Some(4 * INGRESS_QUEUE * 64))
-        // Idle: the mesh keeps sessions alive with its own keepalives, so a
-        // QUIC connection that has gone quiet is genuinely gone.
         .max_idle_timeout(Some(Duration::from_secs(60).try_into().unwrap_or_default()))
         .keep_alive_interval(Some(Duration::from_secs(15)));
     Arc::new(t)
 }
 
-/// A QUIC endpoint: the listening side, the dialling side, or both.
 pub struct QuicTransport {
     endpoint: Endpoint,
     identity: Arc<GhostIdentity>,
 }
 
 impl QuicTransport {
-    /// Listen for inbound QUIC connections.
     pub fn listen(bind: SocketAddr, identity: Arc<GhostIdentity>) -> Result<Self, QuicError> {
         let (chain, key) = identity_certificate(&identity)?;
         let mut tls = quinn::rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -373,20 +317,10 @@ impl QuicTransport {
         info!(local = %endpoint.local_addr()?, "QUIC: listening");
         Ok(QuicTransport { endpoint, identity })
     }
-    /// A client endpoint, bound to an ephemeral local port.
     pub fn client(identity: Arc<GhostIdentity>) -> Result<Self, QuicError> {
         Self::client_bound("0.0.0.0:0".parse().expect("valid bind"), identity)
     }
 
-    /// A client endpoint bound to a **specific local address**.
-    ///
-    /// This is what makes more than one path possible from one host: a Wi-Fi
-    /// address and an LTE address each get their own endpoint, and therefore their
-    /// own QUIC connection to the same peer. QUIC will not migrate a connection
-    /// between them on its own — that is `multipath` in the transport's own terms,
-    /// and what this crate does instead is open two connections and spread the
-    /// Reed-Solomon shards across them, which is the same trick the shard router
-    /// already plays across peers.
     pub fn client_bound(bind: SocketAddr, identity: Arc<GhostIdentity>) -> Result<Self, QuicError> {
         let mut tls = quinn::rustls::ClientConfig::builder_with_provider(Arc::new(
             quinn::rustls::crypto::ring::default_provider(),
@@ -413,19 +347,10 @@ impl QuicTransport {
         self.identity.fingerprint()
     }
 
-    /// The identity this endpoint speaks for.
-    ///
-    /// Exposed so a registry holding one endpoint can build further endpoints for
-    /// the *same* identity on other local addresses — which is what multipath is
-    /// (see `net::carrier`). The identity is a public key plus its signing key, and
-    /// every link already proves possession of it to the peer, so this hands out
-    /// no authority a peer cannot already ask for.
     pub fn identity(&self) -> &Arc<GhostIdentity> {
         &self.identity
     }
 
-    /// True when this endpoint is bound to one specific local address rather than
-    /// a wildcard, i.e. it is a *named path* in the multipath sense.
     pub fn is_named_path(&self) -> bool {
         self.endpoint
             .local_addr()
@@ -433,7 +358,6 @@ impl QuicTransport {
             .unwrap_or(false)
     }
 
-    /// Dial a peer and prove both identities over the new session.
     pub async fn connect(
         &self,
         peer: SocketAddr,
@@ -448,11 +372,6 @@ impl QuicTransport {
         QuicLink::establish(conn, Arc::clone(&self.identity), Some(expected_fp), path).await
     }
 
-    /// Accept one connection, refusing an identity the caller does not know.
-    ///
-    /// `is_known` is the caller's admission decision — in `main.rs` it is
-    /// "a peer whose signed beacon we have verified", the same rule the relay
-    /// uses, so a stranger cannot open a QUIC session just by reaching the port.
     pub async fn accept_one(
         &self,
         is_known: impl Fn(&str) -> bool + Send + Sync + 'static,
@@ -463,10 +382,6 @@ impl QuicTransport {
             .await
             .ok_or_else(|| QuicError::Certificate("endpoint closed".into()))?;
         let conn = incoming.await.map_err(QuicError::Connection)?;
-        // The listening endpoint is bound to the wildcard address, so the path a
-        // peer reached us on is whatever the socket says the datagram arrived at —
-        // which is how a peer that dials two of our addresses ends up on two paths
-        // here, and one that dials a single address on one.
         let link = QuicLink::establish_accepted(
             conn,
             Arc::clone(&self.identity),
@@ -482,31 +397,14 @@ impl QuicTransport {
     }
 }
 
-/// One established, identity-bound QUIC link.
-///
-/// Debug is hand-written because the useful facts about a link are its peer and
-/// its datagram budget, not the internals of a live connection.
 pub struct QuicLink {
     conn: Connection,
     peer_fp: String,
-    /// Commitment to the peer's post-quantum public key, as proven by its binding.
-    ///
-    /// Kept on the link because it is what a registry *pins*: without pinning, an
-    /// adversary who forges the classical half — which is exactly what a quantum
-    /// computer gives them — may present a post-quantum key of their own and no
-    /// verifier would notice, because the binding only proves that the pair is
-    /// self-consistent (P2-1).
     peer_pq_commitment: [u8; 32],
-    /// The local address this link sends from — the *path* half of its identity.
-    ///
-    /// Taken from the endpoint when that endpoint was bound to one address (which
-    /// is how a named path is configured), otherwise from the connection itself.
-    /// See [`QuicLink::local_addr`] for what the fallback means.
     local: std::net::IpAddr,
     max_datagram: usize,
     stats: Arc<LinkStats>,
     inbound: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
-    /// Kept so the stream reader can keep feeding `inbound`.
     _reader: tokio::task::JoinHandle<()>,
 }
 
@@ -521,14 +419,6 @@ impl std::fmt::Debug for QuicLink {
     }
 }
 
-/// The local address an endpoint can name, if it can name one at all.
-///
-/// A wildcard endpoint (`0.0.0.0:0`) has no opinion: the kernel chooses per
-/// connection, so the answer has to come from the connection, and a *client*
-/// connection does not always report it (quinn: "`None` for clients, or when the
-/// platform does not expose this information"). A bound endpoint, by contrast,
-/// names its address before a single byte is sent — which is exactly why the
-/// multipath configuration binds one.
 fn endpoint_path(endpoint: &Endpoint) -> Option<std::net::IpAddr> {
     endpoint
         .local_addr()
@@ -538,7 +428,6 @@ fn endpoint_path(endpoint: &Endpoint) -> Option<std::net::IpAddr> {
 }
 
 impl QuicLink {
-    /// Dialled side: send our binding, check the peer's against `expected_fp`.
     async fn establish(
         conn: Connection,
         identity: Arc<GhostIdentity>,
@@ -554,9 +443,6 @@ impl QuicLink {
             .read_to_end(BINDING_LEN_V2 + 1)
             .await
             .map_err(|e| QuicError::Binding(e.to_string()))?;
-        // One parse, one pair of verifications: the fingerprint comparison is the
-        // dialling end's admission rule, and `verify_binding` already returns the
-        // identity it proved.
         let expected = expected_fp.ok_or(QuicError::UnprovenIdentity)?;
         let (peer_fp, peer_pq_commitment) = verify_binding(&peer, &binding)?;
         if peer_fp != expected {
@@ -569,7 +455,6 @@ impl QuicLink {
         Self::finish(conn, peer_fp, peer_pq_commitment, path).await
     }
 
-    /// Accepted side: same exchange, with the caller's admission rule.
     async fn establish_accepted(
         conn: Connection,
         identity: Arc<GhostIdentity>,
@@ -582,8 +467,6 @@ impl QuicLink {
             .read_to_end(BINDING_LEN_V2 + 1)
             .await
             .map_err(|e| QuicError::Binding(e.to_string()))?;
-        // The same hybrid check the dialling end runs; only the admission rule
-        // differs (that is the caller's, not the transport's).
         let (peer_fp, peer_pq_commitment) = verify_binding(&peer, &binding)?;
         if !is_known(&peer_fp) {
             warn!(peer = %peer_fp, "QUIC: refusing a connection from an unknown identity");
@@ -596,14 +479,6 @@ impl QuicLink {
         Self::finish(conn, peer_fp, peer_pq_commitment, path).await
     }
 
-    /// Build the link, naming the path it sends from as well as we can.
-    ///
-    /// A bound endpoint's address wins because it is authoritative and available
-    /// before the handshake; the connection is asked next, because a wildcard
-    /// endpoint has no opinion and only the socket knows what the kernel chose.
-    /// `0.0.0.0` is what is left when neither can answer — an honest "unknown
-    /// path", which keeps such a link distinct from every named one rather than
-    /// pretending to be one of them.
     async fn finish(
         conn: Connection,
         peer_fp: String,
@@ -633,33 +508,18 @@ impl QuicLink {
         &self.peer_fp
     }
 
-    /// Commitment to the peer's post-quantum public key, proven by its binding.
-    ///
-    /// A verifier that remembers this value — the carrier registry does, on first
-    /// sight — can refuse a later session that presents a different one, which is
-    /// what keeps a forged classical half from carrying a substitute PQ key.
     pub fn peer_pq_commitment(&self) -> [u8; 32] {
         self.peer_pq_commitment
     }
 
-    /// The peer's address as QUIC sees it. Data ingress keys tunnel state on an
-    /// address, and the only honest one to offer is where the frames came from.
     pub fn remote_address(&self) -> SocketAddr {
         self.conn.remote_address()
     }
 
-    /// Which *local* address this link sends from — the path half of its identity.
-    ///
-    /// This is what lets two links to the same peer coexist instead of displacing
-    /// one another. `0.0.0.0` means "the platform would not say": the endpoint was
-    /// bound to the wildcard address and the connection did not report the source
-    /// it used (quinn documents this for clients on some platforms). A caller must
-    /// treat that as an unknown path rather than as a real address.
     pub fn local_addr(&self) -> std::net::IpAddr {
         self.local
     }
 
-    /// Largest frame QUIC will carry as a datagram right now.
     pub fn max_datagram(&self) -> usize {
         self.max_datagram
     }
@@ -672,12 +532,6 @@ impl QuicLink {
         self.conn.close_reason().is_some()
     }
 
-    /// Send one GTF frame, choosing the framing by size.
-    ///
-    /// A frame that fits a datagram goes as one: the privacy path is Reed-Solomon
-    /// coded, so an unreliable carrier is what it expects. Anything larger goes
-    /// on its own unidirectional stream, where delivery is ordered and reliable.
-    /// A caller that wants a specific framing calls `send_frame_as`.
     pub async fn send_frame(&self, frame: &[u8]) -> Result<FramePath, QuicError> {
         let path = if frame.len() <= self.max_datagram && self.max_datagram > 0 {
             FramePath::Datagram
@@ -687,12 +541,6 @@ impl QuicLink {
         self.send_frame_as(frame, path).await
     }
 
-    /// Send one frame with the framing held fixed.
-    ///
-    /// `send_frame` picks by size, which is the right default. A caller with an
-    /// opinion needs the lever too: a bulk transfer may want reliability even for
-    /// a frame that would fit a datagram, and a benchmark has to hold the framing
-    /// still to compare two carriers on equal terms.
     pub async fn send_frame_as(
         &self,
         frame: &[u8],
@@ -702,12 +550,6 @@ impl QuicLink {
             if frame.len() > self.max_datagram || self.max_datagram == 0 {
                 return Err(QuicError::FrameTooLarge(frame.len(), self.max_datagram));
             }
-            // `send_datagram` never blocks: it makes room by discarding the
-            // oldest *queued* datagrams, which would silently turn this carrier
-            // back into the lossy one it was chosen to improve on. `wait`
-            // prioritises the frames already queued instead — bounded, because a
-            // frame that cannot go promptly is a frame the peer's pool is waiting
-            // on, and the UDP path is right there.
             let bytes = bytes::Bytes::copy_from_slice(frame);
             match tokio::time::timeout(DATAGRAM_ROOM_TIMEOUT, self.conn.send_datagram_wait(bytes))
                 .await
@@ -725,8 +567,6 @@ impl QuicLink {
         if frame.len() > MAX_STREAM_FRAME {
             return Err(QuicError::FrameTooLarge(frame.len(), MAX_STREAM_FRAME));
         }
-        // One frame per stream: a stream boundary is the frame boundary, so a
-        // truncated frame can never be mistaken for a short one.
         let mut send = self.conn.open_uni().await?;
         send.write_all(&(frame.len() as u32).to_be_bytes()).await?;
         send.write_all(frame).await?;
@@ -740,14 +580,10 @@ impl QuicLink {
         Ok(FramePath::Stream)
     }
 
-    /// The next frame the peer sent, datagram or stream.
     pub async fn recv_frame(&self) -> Option<Vec<u8>> {
-        // A closed link is not an error the caller can act on — the tunnel simply
-        // stops receiving from it, exactly as it would from a dead UDP path.
         self.inbound.lock().await.recv().await
     }
 
-    /// Wait until the peer closes the connection.
     pub async fn closed(&self) {
         self.conn.closed().await;
     }
@@ -757,7 +593,6 @@ impl QuicLink {
     }
 }
 
-/// Derive the channel binding both ends will see identically.
 fn channel_binding(conn: &Connection) -> Result<[u8; 32], QuicError> {
     let mut out = [0u8; 32];
     conn.export_keying_material(&mut out, ID_BINDING_LABEL, &[])
@@ -765,13 +600,6 @@ fn channel_binding(conn: &Connection) -> Result<[u8; 32], QuicError> {
     Ok(out)
 }
 
-/// Read datagrams and stream frames into one queue.
-///
-/// Both sources share a queue because the receive path does not care which
-/// carrier a frame arrived on — the GTF header is the same either way — and
-/// because ordering between the two is meaningless: a datagram may be lost and a
-/// stream frame may be late, which the RS pool and the replay window already
-/// handle.
 fn spawn_reader(
     conn: Connection,
     tx: mpsc::Sender<Vec<u8>>,
@@ -784,9 +612,6 @@ fn spawn_reader(
                     Ok(d) => {
                         stats.datagrams_recv.fetch_add(1, Ordering::Relaxed);
                         stats.bytes_recv.fetch_add(d.len() as u64, Ordering::Relaxed);
-                        // Datagrams may be dropped under pressure: the RS pool is
-                        // what makes that safe, and blocking here would stall the
-                        // streams sharing this task.
                         if tx.try_send(d.to_vec()).is_err() {
                             stats.datagrams_dropped.fetch_add(1, Ordering::Relaxed);
                         }
@@ -804,9 +629,6 @@ fn spawn_reader(
                             while let Ok(Some(frame)) = read_stream_frame(&mut recv).await {
                                 stats.stream_frames_recv.fetch_add(1, Ordering::Relaxed);
                                 stats.bytes_recv.fetch_add(frame.len() as u64, Ordering::Relaxed);
-                                // Streams promised delivery, so wait rather than
-                                // drop: the queue is bounded and the sender is
-                                // already flow-controlled by QUIC.
                                 if tx.send(frame).await.is_err() {
                                     return;
                                 }
@@ -824,7 +646,6 @@ fn spawn_reader(
     })
 }
 
-/// Read one length-prefixed frame from a stream.
 async fn read_stream_frame(recv: &mut quinn::RecvStream) -> Result<Option<Vec<u8>>, QuicError> {
     let mut len_buf = [0u8; 4];
     match recv.read_exact(&mut len_buf).await {
@@ -844,16 +665,10 @@ async fn read_stream_frame(recv: &mut quinn::RecvStream) -> Result<Option<Vec<u8
     Ok(Some(buf))
 }
 
-// ── HTTP/3 MASQUE CONNECT-UDP Capsule Framing (RFC 9297 / RFC 9298) ───────────
-
-/// RFC 9297 §3.2: DATAGRAM capsule type.
 pub const CAPSULE_TYPE_DATAGRAM: u64 = 0x00;
-/// RFC 9298 §5: Context ID `0x00` for raw UDP payloads in `CONNECT-UDP`.
 pub const CONNECT_UDP_CONTEXT_ID_PAYLOAD: u64 = 0x00;
-/// Maximum value representable by a QUIC variable-length integer (2^62 - 1).
 const QUIC_VARINT_MAX: u64 = (1 << 62) - 1;
 
-/// Encode a QUIC variable-length integer (RFC 9000 §16).
 pub fn encode_quic_varint(val: u64, out: &mut Vec<u8>) -> Result<(), QuicError> {
     if val > QUIC_VARINT_MAX {
         return Err(QuicError::Crypto(format!(
@@ -872,7 +687,6 @@ pub fn encode_quic_varint(val: u64, out: &mut Vec<u8>) -> Result<(), QuicError> 
     Ok(())
 }
 
-/// Decode a QUIC variable-length integer (RFC 9000 §16), returning `(value, bytes_consumed)`.
 pub fn decode_quic_varint(buf: &[u8]) -> Option<(u64, usize)> {
     let first = *buf.first()?;
     let len = 1usize << (first >> 6);
@@ -886,7 +700,6 @@ pub fn decode_quic_varint(buf: &[u8]) -> Option<(u64, usize)> {
     Some((val, len))
 }
 
-/// Frame a UDP/GTF payload as an HTTP/3 `CONNECT-UDP` `DATAGRAM` capsule (RFC 9297 + RFC 9298).
 pub fn encode_connect_udp_capsule(payload: &[u8]) -> Result<Vec<u8>, QuicError> {
     let mut context_id = Vec::with_capacity(1);
     encode_quic_varint(CONNECT_UDP_CONTEXT_ID_PAYLOAD, &mut context_id)?;
@@ -900,7 +713,6 @@ pub fn encode_connect_udp_capsule(payload: &[u8]) -> Result<Vec<u8>, QuicError> 
     Ok(out)
 }
 
-/// Decode an HTTP/3 `CONNECT-UDP` `DATAGRAM` capsule, returning `(payload, total_capsule_bytes)`.
 pub fn decode_connect_udp_capsule(buf: &[u8]) -> Option<(&[u8], usize)> {
     let (capsule_type, type_len) = decode_quic_varint(buf)?;
     if capsule_type != CAPSULE_TYPE_DATAGRAM {
@@ -920,19 +732,11 @@ pub fn decode_connect_udp_capsule(buf: &[u8]) -> Option<(&[u8], usize)> {
     Some((&capsule_val[ctx_len..], total_len))
 }
 
-// ── REALITY-style Active-Probe Fallback (TLS legacy_session_id Knock) ─────────
-
-/// Configuration for active-probe resistance: clients embed an ephemeral ECDH
-/// knock in TLS `legacy_session_id`; invalid probes are spliced to `cover_origin`.
 #[derive(Debug, Clone)]
 pub struct RealityKnockConfig {
-    /// Server's static X25519 public key.
     pub server_public_key: [u8; 32],
-    /// Pre-shared 8-byte short identifier.
     pub short_id: [u8; 8],
-    /// Cover origin (`host:port`) to splice unauthenticated active probes to.
     pub cover_origin: String,
-    /// Maximum allowed clock skew in seconds for knock timestamps.
     pub max_clock_skew_secs: u64,
 }
 
@@ -957,7 +761,6 @@ fn derive_reality_knock_key(shared_secret: &[u8; 32], short_id: &[u8; 8]) -> [u8
     key
 }
 
-/// Build a 32-byte TLS `legacy_session_id` knock using an ephemeral X25519 secret.
 pub fn build_reality_knock(
     client_ephemeral_secret: &x25519_dalek::StaticSecret,
     server_public_key: &[u8; 32],
@@ -986,9 +789,6 @@ pub fn build_reality_knock(
     knock
 }
 
-/// Verify a 32-byte TLS `legacy_session_id` knock.
-///
-/// Returns `false` for active probes so the listener can splice them to `cover_origin`.
 pub fn verify_reality_knock(
     server_secret: &x25519_dalek::StaticSecret,
     client_ephemeral_pub: &[u8; 32],
@@ -1029,13 +829,10 @@ mod tests {
 
     #[test]
     fn the_certificate_is_built_from_the_identity_key() {
-        // The subject key IS the identity, which is what makes the binding
-        // checkable against a fingerprint the mesh already knows.
         let identity = GhostIdentity::generate_fresh();
         let (chain, _key) = identity_certificate(&identity).expect("a certificate");
         assert_eq!(chain.len(), 1);
         assert!(chain[0].len() > 64, "a real DER certificate");
-        // The 32-byte public key appears verbatim inside the DER (as the SPKI).
         let pk = identity.public_key_bytes();
         assert!(
             chain[0].windows(32).any(|w| w == pk),
@@ -1055,27 +852,19 @@ mod tests {
             fp
         );
 
-        // A signature over a different session is refused: this is the property
-        // that makes a self-signed certificate safe to accept, because a MITM
-        // terminating TLS on both sides cannot produce it.
         assert!(matches!(
             verify_identity_binding(&fp, &binding, b"another-session"),
             Err(QuicError::UnprovenIdentity)
         ));
-        // So is someone else's identity.
         let other = GhostIdentity::generate_fresh();
         assert!(matches!(
             verify_identity_binding(&other.fingerprint(), &binding, b"session-binding"),
             Err(QuicError::WrongIdentity { .. })
         ));
-        // And so is a truncated or absent proof.
         assert!(matches!(
             verify_identity_binding(&fp, &binding[..40], b"session-binding"),
             Err(QuicError::UnprovenIdentity)
         ));
-        // A PQ half from another identity fails even though the classical half is
-        // the right one, and vice versa: the two keys are bound to each other and
-        // to this session, not merely presented together.
         let mut swapped_pq = binding.clone();
         let foreign = other.pq_public_key_bytes();
         swapped_pq[33..33 + ML_DSA_65_PK_LEN].copy_from_slice(&foreign);
@@ -1083,7 +872,6 @@ mod tests {
             verify_identity_binding(&fp, &swapped_pq, b"session-binding"),
             Err(QuicError::UnprovenIdentity)
         ));
-        // A tampered PQ signature is refused.
         let mut bad_pq_sig = binding.clone();
         let last = bad_pq_sig.len() - 1;
         bad_pq_sig[last] ^= 0x01;
@@ -1091,7 +879,6 @@ mod tests {
             verify_identity_binding(&fp, &bad_pq_sig, b"session-binding"),
             Err(QuicError::UnprovenIdentity)
         ));
-        // A tampered classical signature is refused.
         let mut bad_ed_sig = binding.clone();
         let ed_off = 33 + ML_DSA_65_PK_LEN;
         bad_ed_sig[ed_off] ^= 0x01;
@@ -1101,9 +888,6 @@ mod tests {
         ));
     }
 
-    /// A v1 (classical-only) binding is refused rather than accepted: accepting it
-    /// would let anyone strip the post-quantum half, which is the whole point of
-    /// the hybrid identity.
     #[test]
     fn a_classical_only_binding_is_refused() {
         let identity = GhostIdentity::generate_fresh();
@@ -1151,7 +935,6 @@ mod tests {
             now + 5,
             120,
         ));
-        // Expired timestamp fails
         assert!(!verify_reality_knock(
             &server_secret,
             client_pub.as_bytes(),
@@ -1160,7 +943,6 @@ mod tests {
             now + 300,
             120,
         ));
-        // Tampered knock (active probe) fails
         let mut probe = knock;
         probe[15] ^= 0xFF;
         assert!(!verify_reality_knock(

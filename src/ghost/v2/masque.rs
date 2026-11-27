@@ -43,7 +43,6 @@ fn crypto_provider() -> Arc<quinn::rustls::crypto::CryptoProvider> {
     }
 }
 
-// HTTP/3 frame and stream types.
 const DATA_FRAME: u64 = 0x00;
 const HEADERS_FRAME: u64 = 0x01;
 const SETTINGS_FRAME: u64 = 0x04;
@@ -51,13 +50,11 @@ const CONTROL_STREAM: u64 = 0x00;
 const QPACK_ENCODER_STREAM: u64 = 0x02;
 const QPACK_DECODER_STREAM: u64 = 0x03;
 
-// HTTP/3 settings.
 const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x01;
 const SETTINGS_QPACK_BLOCKED_STREAMS: u64 = 0x07;
 const SETTINGS_ENABLE_CONNECT_PROTOCOL: u64 = 0x08;
 const SETTINGS_H3_DATAGRAM: u64 = 0x33;
 
-/// QPACK static table (RFC 9204 Appendix A).
 const STATIC_TABLE: [(&str, &str); 99] = [
     (":authority", ""),
     (":path", "/"),
@@ -248,8 +245,6 @@ fn settings_frame() -> Vec<u8> {
     out
 }
 
-// ── QPACK ─────────────────────────────────────────────────────────────────
-
 fn decode_int(buf: &[u8], pos: &mut usize, prefix: u8) -> Option<u64> {
     let mask = (1u64 << prefix) - 1;
     let first = *buf.get(*pos)?;
@@ -366,8 +361,6 @@ fn put_string(out: &mut Vec<u8>, value: &str) {
         out.push(bytes.len() as u8);
     } else {
         out.push(0x7f);
-        // A 7-bit-prefix integer continues at `len - 127`: the prefix itself already
-        // carries 127, so the continuation must not count it again.
         let mut v = bytes.len() as u64 - 127;
         while v >= 128 {
             out.push((v as u8 & 0x7f) | 0x80);
@@ -378,7 +371,6 @@ fn put_string(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(bytes);
 }
 
-/// Literal field lines with literal names (never indexed), no Huffman.
 fn qpack_encode_fields(fields: &[(&str, &str)]) -> Vec<u8> {
     let mut out = vec![0u8, 0u8];
     for (name, value) in fields {
@@ -400,8 +392,6 @@ fn qpack_encode_fields(fields: &[(&str, &str)]) -> Vec<u8> {
     out
 }
 
-/// `:status 200`, plus the static `text/html; charset=utf-8` entry and a
-/// content-length literal when a body follows.
 fn qpack_response(body_len: Option<usize>) -> Vec<u8> {
     let mut out = vec![0x00, 0x00, 0xD9]; // :status 200 (static index 25)
     if let Some(len) = body_len {
@@ -411,8 +401,6 @@ fn qpack_response(body_len: Option<usize>) -> Vec<u8> {
     }
     out
 }
-
-// ── QUIC server ───────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 struct AcceptAnyCert;
@@ -469,9 +457,6 @@ fn transport() -> Arc<quinn::TransportConfig> {
     t.datagram_send_buffer_size(256 * 1024)
         .datagram_receive_buffer_size(Some(256 * 1024))
         .max_idle_timeout(Some(Duration::from_secs(60).try_into().unwrap_or_default()));
-    // Chronos: quinn has no hook for our own ACK scheduling, but it can ask the
-    // peer to delay the ACKs it sends for our data, which is the direction a
-    // guard can control with the ACK_FREQUENCY extension.
     if let Ok(ms) = std::env::var("GHOST_CHRONOS_ACK_DELAY_MS") {
         if let Ok(ms) = ms.parse::<u64>() {
             if ms > 0 {
@@ -536,23 +521,12 @@ fn handshake(conn: &quinn::Connection) -> (String, String) {
     }
 }
 
-/// Header naming the peer's mesh fingerprint on a CONNECT request.
 pub const IDENTITY_HEADER: &str = "ghost-identity";
-/// Header carrying the peer's signature over this connection's exporter value.
 pub const PROOF_HEADER: &str = "ghost-proof";
-/// TLS exporter label that binds a proof to one QUIC connection.
 pub const ID_BINDING_LABEL: &[u8] = b"EXPORT-Vantablack-Masque";
 
-/// How the endpoint decides that a CONNECT belongs to a peer we already trust.
 pub enum Admission {
-    /// Label admission, kept for the standalone `ggn masque` endpoint: the first
-    /// label of `:authority` must equal the token. It authenticates a *string*,
-    /// which is all a demo endpoint needs and not enough for the mesh.
     Label(String),
-    /// Post-quantum session binding: the request names the peer's fingerprint and
-    /// carries a signature over this connection's exporter value, checked against
-    /// the identity the mesh session pinned. A peer that holds no session cannot
-    /// produce it, so admission follows the PQ handshake rather than a name.
     Session(Arc<dyn Fn(&str, &[u8; 32], &[u8]) -> bool + Send + Sync>),
 }
 
@@ -565,10 +539,6 @@ impl std::fmt::Debug for Admission {
     }
 }
 
-/// This connection's exporter value: the channel binding a proof signs.
-///
-/// Both ends derive it from the TLS session, so a proof captured on one
-/// connection is useless on another.
 pub fn channel_binding(conn: &quinn::Connection) -> Option<[u8; 32]> {
     let mut out = [0u8; 32];
     conn.export_keying_material(&mut out, ID_BINDING_LABEL, &[])
@@ -576,7 +546,6 @@ pub fn channel_binding(conn: &quinn::Connection) -> Option<[u8; 32]> {
     Some(out)
 }
 
-/// The bytes a peer signs to prove it holds the identity it names.
 pub fn proof_message(binding: &[u8; 32], fingerprint: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(12 + 32 + fingerprint.len());
     out.extend_from_slice(b"GGN_MASQUE_V1");
@@ -585,10 +554,6 @@ pub fn proof_message(binding: &[u8; 32], fingerprint: &str) -> Vec<u8> {
     out
 }
 
-/// Apply the admission rule to a decoded CONNECT field section.
-///
-/// Returns the admitted peer's name, or `None` when the request is not from a
-/// peer this endpoint can vouch for.
 fn admit(
     conn: &quinn::Connection,
     admission: &Admission,
@@ -630,28 +595,19 @@ pub async fn run_server(
     .await
 }
 
-/// What an admitted CONNECT does.
 enum EndpointMode {
-    /// Echo datagrams and capsules back — the `ggn masque` demonstration.
     Echo,
-    /// Hand the request streams to the caller, which carries GTF frames on them.
     Tunnel(mpsc::UnboundedSender<Tunnel>),
 }
 
-/// One admitted request stream, ready for the caller to pump.
 pub struct Tunnel {
     pub conn: quinn::Connection,
     pub peer: SocketAddr,
-    /// The admitted peer's fingerprint (session binding) or token (label mode).
     pub identity: String,
     pub send: quinn::SendStream,
     pub recv: quinn::RecvStream,
 }
 
-/// Serve an endpoint that hands every admitted CONNECT to `tunnels`.
-///
-/// Used by the daemon: the caller pumps each `Tunnel` in both directions, exactly
-/// as it pumps a REALITY front stream.
 pub async fn run_tunnel_server(
     listen: SocketAddr,
     admission: Admission,
@@ -669,11 +625,6 @@ pub async fn run_tunnel_server(
     .await
 }
 
-/// Pump one admitted tunnel in both directions.
-///
-/// Outbound frames from `queue` become datagram capsules on the request stream;
-/// arriving capsules become frames on `inbound`. Split out from the daemon so the
-/// HTTP/3 framing stays in this module and the caller only moves bytes.
 pub async fn pump_tunnel(
     tunnel: Tunnel,
     mut queue: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -779,9 +730,6 @@ async fn serve_connection(
     let mut qpack_dec = conn.open_uni().await?;
     qpack_dec.write_all(&[QPACK_DECODER_STREAM as u8]).await?;
 
-    // Drain the peer's control/QPACK streams so their flow control never blocks.
-    // Each stream is kept open by a reader task; dropping a RecvStream early
-    // would reset a critical stream and close the whole connection.
     let drain_conn = conn.clone();
     tokio::spawn(async move {
         while let Ok(mut uni) = drain_conn.accept_uni().await {
@@ -837,9 +785,6 @@ async fn handle_request(
             let _ = send.finish();
             return Ok(());
         }
-        // Admission is decided here, after the PQ identity proof (session mode) or
-        // the authority label (label mode) is available — never from the SNI alone,
-        // which any client can type.
         let Some(identity) = admit(&conn, &admission, &fields) else {
             println!(
                 "MASQUE CONNECT refused from {} (no PQ proof or label)",
@@ -856,8 +801,6 @@ async fn handle_request(
         );
         send_frame(&mut send, HEADERS_FRAME, &qpack_response(None)).await?;
 
-        // A tunnel endpoint hands the streams over now that the request is
-        // admitted; the caller's pump owns both directions from here.
         if let EndpointMode::Tunnel(tunnels) = &*mode {
             let peer = conn.remote_address();
             if tunnels
@@ -945,14 +888,6 @@ fn take_capsule(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     Some(capsule)
 }
 
-// ── HTTP/3 client (used by `ggn masque --client`) ─────────────────────────
-
-/// Dial a MASQUE endpoint as this node and carry frames over the request stream.
-///
-/// Every frame dequeued from `outbound` becomes one datagram capsule on the
-/// request stream; every capsule that arrives is handed to `inbound`. The proof is
-/// signed over this connection's exporter value, so a captured proof cannot be
-/// replayed onto another connection. Returns when either direction ends.
 pub async fn tunnel_client(
     connect: SocketAddr,
     sni: String,
@@ -972,8 +907,6 @@ pub async fn tunnel_client(
     let binding = channel_binding(&conn).ok_or_else(|| anyhow!("no channel binding"))?;
     let proof = hex::encode(sign(&proof_message(&binding, &fingerprint)));
 
-    // The control and QPACK streams are opened before the request, as HTTP/3
-    // requires; the server drains them.
     let mut control = conn.open_uni().await?;
     let mut head = Vec::new();
     put_varint(&mut head, CONTROL_STREAM);
@@ -1126,9 +1059,6 @@ pub async fn run_client(connect: SocketAddr, token: String, sni: String) -> Resu
 mod tests {
     use super::*;
 
-    /// A literal value of 127 bytes or more needs a continuation byte, and the
-    /// continuation starts at `len - 127`. The daemon's proof value is a 128-char
-    /// hex signature, so getting this wrong fails every CONNECT it sends.
     #[test]
     fn a_long_literal_value_round_trips_through_qpack() {
         for len in [0usize, 1, 126, 127, 128, 300] {
@@ -1176,9 +1106,7 @@ mod tests {
 
     #[test]
     fn qpack_decodes_static_and_huffman_values() {
-        // `:method GET` from static index 17.
         assert_eq!(qpack_decode(&[0, 0, 0xC0 | 17]).unwrap()[0].1, "GET");
-        // Huffman for "www.example.com" (RFC 7541 C.4.1).
         let encoded = [
             0u8,
             0,

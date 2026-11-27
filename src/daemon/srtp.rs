@@ -38,19 +38,13 @@ use std::sync::OnceLock;
 
 use vantablack::ghost::v2::reality::{srtp_shape, srtp_unshape, RTP_PT_OPUS, RTP_TS_STEP_20MS};
 
-/// Environment switch for outbound SRTP carrier shaping.
 pub(crate) const SRTP_ENV: &str = "GHOST_SRTP";
 
-/// Whether this process shapes outbound GTFv2 datagrams as RTP.
-///
-/// Cached once: the answer must not change under a running packet path, and
-/// reading the environment per datagram would put a syscall on the hot path.
 pub(crate) fn enabled() -> bool {
     static RESOLVED: OnceLock<bool> = OnceLock::new();
     *RESOLVED.get_or_init(|| enabled_for(std::env::var(SRTP_ENV).ok().as_deref()))
 }
 
-/// The pure decision behind [`enabled`], so every env shape is unit-testable.
 pub(crate) fn enabled_for(env_value: Option<&str>) -> bool {
     match env_value {
         Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
@@ -58,12 +52,6 @@ pub(crate) fn enabled_for(env_value: Option<&str>) -> bool {
     }
 }
 
-/// Per-destination RTP media clock.
-///
-/// `seq` and `ts` are 32-bit atomics rather than a mutex-guarded struct: several
-/// sends for one peer can be in flight on different tasks, and an RTP sequence
-/// number must not repeat. `fetch_add` gives each datagram a unique value without
-/// holding a lock across the socket send.
 struct MediaClock {
     seq: AtomicU32,
     timestamp: AtomicU32,
@@ -74,9 +62,6 @@ impl MediaClock {
     fn new(seed: u32) -> Self {
         Self {
             seq: AtomicU32::new(0),
-            // Start the media clock at a random-ish offset, as a real stream does
-            // after its first packet: a timestamp that always begins at 0 is a
-            // pattern a classifier can key on.
             timestamp: AtomicU32::new(seed % RTP_TS_STEP_20MS),
             ssrc: seed,
         }
@@ -96,9 +81,6 @@ fn clocks() -> &'static DashMap<SocketAddr, Arc<MediaClock>> {
     CLOCKS.get_or_init(DashMap::new)
 }
 
-/// A stable SSRC for one destination: the identity of the "participant" in the
-/// media stream. Derived from the address so a restarted send path continues the
-/// same call rather than appearing as a new one mid-stream.
 fn ssrc_for(dst: &SocketAddr) -> u32 {
     match dst {
         SocketAddr::V4(a) => {
@@ -115,10 +97,6 @@ fn ssrc_for(dst: &SocketAddr) -> u32 {
     }
 }
 
-/// Shape one outbound GTFv2 datagram for `dst`.
-///
-/// Returns the frame unchanged when shaping is off, so callers can use this
-/// unconditionally and keep one send path.
 pub(crate) fn shape_for_send(dst: &SocketAddr, frame: &[u8]) -> Vec<u8> {
     if !enabled() {
         return frame.to_vec();
@@ -131,25 +109,12 @@ pub(crate) fn shape_for_send(dst: &SocketAddr, frame: &[u8]) -> Vec<u8> {
     srtp_shape(frame, seq, timestamp, ssrc)
 }
 
-/// Whether `frame` carries the RTP shape this module emits.
-///
-/// Deliberately shallow: this only says "the header looks like our stream". The
-/// decision to actually unwrap is [`unshape_if_shaped`], which additionally
-/// requires the inner bytes to parse as GTFv2 — a plain GTF frame whose session
-/// hash happens to start with `0x80` and whose next byte is `111` (about one in a
-/// thousand) is therefore never misread as media.
 pub(crate) fn looks_shaped(frame: &[u8]) -> bool {
     frame.len() > vantablack::ghost::v2::reality::RTP_HEADER_LEN
         && frame[0] >> 6 == 2
         && frame[1] == RTP_PT_OPUS
 }
 
-/// Unwrap an SRTP-shaped datagram, or return `None` when it is not one.
-///
-/// Only reached on the receive path, and only trusted after the inner frame
-/// parses as GTFv2, so this never reinterprets legacy traffic. Shaping is
-/// accepted from any peer regardless of this node's own `GHOST_SRTP` setting:
-/// the switch decides what *we* send, not what we are willing to hear.
 pub(crate) fn unshape_if_shaped(frame: &[u8]) -> Option<&[u8]> {
     if !looks_shaped(frame) {
         return None;
@@ -158,12 +123,6 @@ pub(crate) fn unshape_if_shaped(frame: &[u8]) -> Option<&[u8]> {
     net::parse_gtf_v2_header(inner).map(|_| inner)
 }
 
-/// Send one v2 frame, shaped when the carrier is on.
-///
-/// This is the daemon's ordinary "seal, then put a shard on the wire" call. It
-/// exists so the shaping decision is made in exactly one place instead of at
-/// every call site: with the carrier off it is the same `send_gtf_v2` the daemon
-/// has always used.
 pub(crate) async fn send_v2(
     sock: &UdpSocket,
     dst: &SocketAddr,
@@ -173,13 +132,10 @@ pub(crate) async fn send_v2(
 ) -> std::io::Result<()> {
     let frame = net::try_build_gtf_v2_frame(header, shard, tag)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    // An admitted — or dialed — REALITY front stream carries the frame unchanged
-    // in place of the UDP datagram; shaping is a UDP-wire concern, skipped there.
     #[cfg(feature = "reality-front")]
     if super::reality_front::try_send(dst, &frame) {
         return Ok(());
     }
-    // A MASQUE stream carries the frame unchanged for the same reason.
     if super::try_send_masque(dst, &frame) {
         return Ok(());
     }
@@ -192,7 +148,6 @@ pub(crate) async fn send_v2(
     Ok(())
 }
 
-/// Send an already-built datagram, shaped when the carrier is on.
 pub(crate) async fn send_raw(
     sock: &UdpSocket,
     dst: &SocketAddr,
@@ -214,7 +169,6 @@ pub(crate) async fn send_raw(
     Ok(())
 }
 
-/// The non-async twin for callers that already hold `try_send_to` semantics.
 pub(crate) fn try_send_raw(sock: &UdpSocket, dst: &SocketAddr, frame: &[u8]) {
     if !enabled() {
         let _ = sock.try_send_to(frame, *dst);
@@ -229,7 +183,6 @@ mod tests {
     use vantablack::ghost::layers::l2_aead::xchacha_open;
     use vantablack::ghost::net::{extract_payload, parse_gtf_v2_header, unframe};
 
-    /// Two seats on one v2 session, the same construction the transport tests use.
     fn session_pair() -> (Session, Session) {
         let alice_id = l0_identity::GhostIdentity::generate_fresh();
         let bob_id = l0_identity::GhostIdentity::generate_fresh();
@@ -254,7 +207,6 @@ mod tests {
         assert!(enabled_for(Some("TRUE")));
     }
 
-    /// The whole carrier, end to end: seal → SRTP wrap → SRTP unwrap → GTFv2 open.
     #[test]
     fn srtp_wrap_unwrap_then_gtf_open_recovers_the_payload() {
         let (alice, bob) = session_pair();
@@ -263,17 +215,13 @@ mod tests {
         let frame = seal_single(&ctx, payload);
         assert!(parse_gtf_v2_header(&frame).is_some());
 
-        // Shape exactly as `shape_for_send` would, with a known media clock.
         let shaped = srtp_shape(&frame, 3, RTP_TS_STEP_20MS * 3, 0xDEAD_BEEF);
         assert!(looks_shaped(&shaped));
         assert_eq!(shaped.len() % 4, 0);
 
-        // The receive path's detection: unwrap only because the inner bytes parse.
         let inner = unshape_if_shaped(&shaped).expect("a shaped GTFv2 datagram");
         assert_eq!(inner, frame.as_slice());
 
-        // …and the frame opens on the peer's session, byte for byte as a direct
-        // send would have.
         let header = parse_gtf_v2_header(inner).expect("a v2 header");
         let plan = bob.plan_open(
             header.epoch,
@@ -303,8 +251,6 @@ mod tests {
         let (alice, _bob) = session_pair();
         let ctx = SealCtx::from_session(&alice);
         let frame = seal_single(&ctx, b"plain");
-        // Whatever the first bytes happen to be, the inner-parse rule means the
-        // only frames this unwraps are frames that really are shaped.
         if let Some(inner) = unshape_if_shaped(&frame) {
             assert!(parse_gtf_v2_header(inner).is_some());
         }

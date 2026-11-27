@@ -26,37 +26,14 @@ use crate::ghost::net::FlowController;
 use crate::ghost::net::GtfV2Header;
 use crate::ghost::session::Session;
 
-/// Magic prefix for relay packets — distinguishes relay from direct data.
 pub const RELAY_MAGIC: &[u8; 4] = b"RLY!";
 
-/// Magic prefix for a single-hop *blind* envelope.
-///
-/// Deliberately not [`RELAY_MAGIC`]. Both envelopes carry a hop count, and the
-/// onion's last hop rewraps with `remaining_hops - 1`, so a legitimate two-hop
-/// onion arrives with a hop count of **zero** — structurally identical to a
-/// blind forward. Sharing a magic would make the two indistinguishable on the
-/// wire, and a receiver that guessed wrong would either re-encrypt someone
-/// else's ciphertext or hand an onion body to the tunnel as if it were a frame.
 pub const BLIND_MAGIC: &[u8; 4] = b"BLND";
 
 pub const MAX_HOPS: usize = 5;
 
-/// Maximum time (seconds) a bundle is held in store-and-forward before expiry.
 pub const BUNDLE_EXPIRY_SECS: u64 = 3600; // 1 hour
 
-/// Exit destination policy used by an exit node.
-///
-/// An unset policy keeps the historical open-exit behavior for compatibility;
-/// once `GHOST_EXIT_ALLOWLIST` is set, destinations must match an exact host or
-/// a leading-wildcard suffix (`*.example.test`). `any` explicitly opts into the
-/// open mode. Matching is performed on the parsed host, never on the raw
-/// `host:port` string, so a caller cannot smuggle a port or path through a rule.
-/// Signed, expiring capability authorizing one peer to use one exit scope.
-///
-/// The voucher is intentionally independent of the transport session: it can be
-/// issued by an exit operator, carried inside an authenticated request, and
-/// verified without trusting the requesting peer's claims. `scope` is normally
-/// a hostname or an exit-policy label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitCapability {
     pub issuer_pk: [u8; 32],
@@ -119,7 +96,6 @@ impl ExitCapability {
         verify_peer_signature(&self.issuer_pk, &signing, &self.signature)
     }
 
-    /// Compact binary encoding for an authenticated exit request.
     pub fn encode(&self) -> Option<Vec<u8>> {
         let mut out = Vec::new();
         out.extend_from_slice(Self::MAGIC);
@@ -175,22 +151,6 @@ impl ExitCapability {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Sphinx-Shard Onion — 3 Hops, Constant 576B, Shard-Aware
-//
-// Tor onion routing relies on a single serial circuit path where middle nodes
-// can correlate flow volume and timing across hops. Nym Sphinx is per-packet
-// but does not exploit information-theoretic erasure codes.
-//
-// In Sphinx-Shard Onion:
-// - Every Reed-Solomon shard (e.g. any 2-of-3) is independently encapsulated in a
-//   fixed-size 576-byte Sphinx-like 3-layer onion (guard -> middle -> exit).
-// - Intermediate nodes only learn their immediate successor (next hop) and cannot
-//   distinguish which shard index they carry or who the eventual exit/destination is.
-// - Even if an adversary compromises or drops 1 middle node on 1 plane, the exit
-//   node reconstructs the original payload from the remaining surviving shards.
-// ══════════════════════════════════════════════════════════════════
-
 pub const SPHINX_SHARD_LEN: usize = 576;
 pub const SPHINX_HOP_TAG_LEN: usize = 16;
 pub const SPHINX_MAX_HOP_NAME: usize = 32;
@@ -204,7 +164,6 @@ pub struct PeeledSphinxHop {
 pub struct SphinxShardOnion;
 
 impl SphinxShardOnion {
-    /// Build a 3-hop layered onion fixed to 576 bytes carrying one RS shard.
     pub fn build(
         guard_key: &[u8; 32],
         middle_hop: &str,
@@ -226,7 +185,6 @@ impl SphinxShardOnion {
         exit_plaintext.push(shard_data.len() as u8);
         exit_plaintext.extend_from_slice(shard_data);
 
-        // PEN-2 fix: fresh random 96-bit nonce per hop eliminates keystream reuse
         let mut exit_nonce = [0u8; 12];
         rng.fill_bytes(&mut exit_nonce);
         let exit_cipher = ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(exit_key));
@@ -272,8 +230,6 @@ impl SphinxShardOnion {
         guard_sealed.extend_from_slice(&guard_nonce);
         guard_sealed.extend_from_slice(&guard_ct);
 
-        // Fixed-size 576-byte frame: 2-byte inner length prefix + ciphertext + random padding
-        // PEN-4 fix: reject rather than silently truncate.
         if guard_sealed.len() > SPHINX_SHARD_LEN - 2 {
             panic!(
                 "Sphinx shard too large for 576-byte frame: {} > {}",
@@ -286,12 +242,10 @@ impl SphinxShardOnion {
         out[..2].copy_from_slice(&len_bytes);
         let copy_len = guard_sealed.len();
         out[2..2 + copy_len].copy_from_slice(&guard_sealed);
-        // PEN-3 fix: keyed/random filler instead of deterministic arithmetic sequence
         rng.fill_bytes(&mut out[2 + copy_len..]);
         out
     }
 
-    /// Peel one hop layer as an intermediate relay (guard or middle).
     pub fn peel_hop(hop_key: &[u8; 32], ciphertext: &[u8]) -> Option<PeeledSphinxHop> {
         use chacha20poly1305::{
             aead::{Aead, KeyInit},
@@ -332,7 +286,6 @@ impl SphinxShardOnion {
         })
     }
 
-    /// Exit node opens the terminal layer to extract shard index and payload.
     pub fn exit_open(exit_key: &[u8; 32], ciphertext: &[u8]) -> Option<(u8, Vec<u8>)> {
         use chacha20poly1305::{
             aead::{Aead, KeyInit},
@@ -360,11 +313,6 @@ impl SphinxShardOnion {
     }
 }
 
-/// ZK Proof-of-Transit — Blind Forwarding Verification.
-///
-/// Allows an intermediate relay that forwards an opaque encrypted frame or shard
-/// to mint a cryptographic proof of transit: `Ed25519(sign(SHA256(payload) || next_hop_fp || timestamp))`.
-/// The client can verify that transit occurred without the relay ever inspecting or decrypting the payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProofOfTransit {
     pub relay_pk: [u8; 32],
@@ -384,7 +332,6 @@ impl ProofOfTransit {
         b
     }
 
-    /// Relay signs proof of forwarding an opaque payload to `next_hop`.
     pub fn mint(relay: &GhostIdentity, payload: &[u8], next_hop: &str) -> Self {
         use sha2::{Digest, Sha256};
         let payload_hash: [u8; 32] = Sha256::digest(payload).into();
@@ -403,7 +350,6 @@ impl ProofOfTransit {
         }
     }
 
-    /// Client verifies that the relay indeed forwarded the expected payload to `next_hop`.
     pub fn verify(
         &self,
         expected_payload: &[u8],
@@ -427,10 +373,6 @@ impl ProofOfTransit {
     }
 }
 
-/// Trustless Relay Marketplace — Capability Vouchers for Priority Forwarding.
-///
-/// Clients mint verifiable capability vouchers (`Ed25519(sign(client_pk || max_bytes || expires_at))`)
-/// that intermediate relays redeem for priority bandwidth without a blockchain or payment processor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardingCapabilityVoucher {
     pub client_pk: [u8; 32],
@@ -450,7 +392,6 @@ impl ForwardingCapabilityVoucher {
         b
     }
 
-    /// Client mints a signed forwarding voucher for `max_bytes`.
     pub fn mint(client: &GhostIdentity, max_bytes: u64, expires_at: u64, voucher_id: u64) -> Self {
         let msg = Self::signing_bytes(max_bytes, expires_at, voucher_id);
         let signature = client.sign(&msg).to_bytes();
@@ -463,7 +404,6 @@ impl ForwardingCapabilityVoucher {
         }
     }
 
-    /// Relay verifies voucher validity and checks remaining bandwidth allotment.
     pub fn verify(&self, now: u64, requested_bytes: u64) -> bool {
         if now > self.expires_at || requested_bytes > self.max_bytes {
             return false;
@@ -473,30 +413,15 @@ impl ForwardingCapabilityVoucher {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Identity-Agnostic Channels — Blind Flow Forwarding
-//
-// Separates *identity* from *forwarding state*: routes and flows are
-// identified strictly by blind capability tokens. Intermediate relays
-// maintain zero knowledge of peer identity, sender identity, or recipient identity.
-// If a relay is seized or compromised, memory inspection yields zero client
-// public keys, zero fingerprints, and zero identity surface.
-// ══════════════════════════════════════════════════════════════════
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlindCapabilityToken {
-    /// Opaque cryptographic identifier derived from a blinded commitment
     pub token_id: [u8; 32],
-    /// Maximum byte quota allocated to this blind flow
     pub max_bytes: u64,
-    /// Unix timestamp after which this capability expires
     pub expires_at: u64,
-    /// Authorization tag proving legitimate issuance without disclosing client identity
     pub auth_tag: [u8; 32],
 }
 
 impl BlindCapabilityToken {
-    /// Compute the blinded token ID from a secret seed and flow salt.
     pub fn compute_token_id(seed: &[u8], flow_salt: &[u8; 32]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -506,7 +431,6 @@ impl BlindCapabilityToken {
         h.finalize().into()
     }
 
-    /// Compute authorization tag over capability parameters using flow auth key.
     pub fn compute_auth_tag(
         auth_key: &[u8; 32],
         token_id: &[u8; 32],
@@ -523,7 +447,6 @@ impl BlindCapabilityToken {
         h.finalize().into()
     }
 
-    /// Mint a new blind capability token containing zero client public key or identity.
     pub fn mint(
         auth_key: &[u8; 32],
         seed: &[u8],
@@ -541,7 +464,6 @@ impl BlindCapabilityToken {
         }
     }
 
-    /// Verify authorization tag and lifetime without requiring or inspecting client identity.
     pub fn verify(&self, auth_key: &[u8; 32], now: u64, requested_bytes: u64) -> bool {
         if now > self.expires_at || requested_bytes > self.max_bytes {
             return false;
@@ -552,7 +474,6 @@ impl BlindCapabilityToken {
     }
 }
 
-/// An identity-free forwarding channel maintained at an intermediate relay node.
 #[derive(Debug, Clone)]
 pub struct IdentityAgnosticChannel {
     pub egress_endpoint: SocketAddr,
@@ -561,7 +482,6 @@ pub struct IdentityAgnosticChannel {
     pub expires_at: u64,
 }
 
-/// In-memory table for blind capability-swapped packet routing.
 #[derive(Debug, Default)]
 pub struct IdentityAgnosticRelayTable {
     channels: std::collections::HashMap<[u8; 32], IdentityAgnosticChannel>,
@@ -572,7 +492,6 @@ impl IdentityAgnosticRelayTable {
         Self::default()
     }
 
-    /// Register a blind forwarding capability. Note: zero identity material is stored.
     pub fn register_channel(
         &mut self,
         token: &BlindCapabilityToken,
@@ -595,7 +514,6 @@ impl IdentityAgnosticRelayTable {
         Ok(())
     }
 
-    /// Forward a packet along an identity-agnostic channel.
     pub fn forward(
         &mut self,
         token_id: &[u8; 32],
@@ -614,7 +532,6 @@ impl IdentityAgnosticRelayTable {
         Ok(chan.egress_endpoint)
     }
 
-    /// Prove memory hygiene under seizure: returns all raw bytes stored in relay memory.
     pub fn audit_dump_memory(&self) -> Vec<u8> {
         let mut dump = Vec::new();
         for (token_id, chan) in &self.channels {
@@ -680,17 +597,9 @@ impl ExitPolicy {
     }
 }
 
-/// Attested Exit Diversity — Multi-ASN Shatter Constraint.
-///
-/// Cryptographically enforces that a 3-shard Reed-Solomon group is never routed
-/// through exit nodes or relays that share an Autonomous System Number (ASN).
-/// Prevents single-ASN adversaries or regional telecom monopolies from observing
-/// more than 1 shard of any transmission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsnDiversityConstraint {
-    /// Maximum shards permitted within the same Autonomous System.
     pub max_shards_per_asn: usize,
-    /// Map of shard index -> Autonomous System Number (ASN).
     assigned_asns: Vec<(u8, u32)>,
 }
 
@@ -711,7 +620,6 @@ impl AsnDiversityConstraint {
         }
     }
 
-    /// Checks if a candidate ASN can carry shard `shard_index`.
     pub fn is_asn_permitted(&self, shard_index: u8, candidate_asn: u32) -> bool {
         let count = self
             .assigned_asns
@@ -721,7 +629,6 @@ impl AsnDiversityConstraint {
         count < self.max_shards_per_asn
     }
 
-    /// Binds shard `shard_index` to an attested `asn`. Returns true if accepted.
     pub fn assign_shard_asn(&mut self, shard_index: u8, asn: u32) -> bool {
         if self.is_asn_permitted(shard_index, asn) {
             self.assigned_asns.retain(|(idx, _)| *idx != shard_index);
@@ -732,7 +639,6 @@ impl AsnDiversityConstraint {
         }
     }
 
-    /// Verifies whether the completed 3-shard flight satisfies ASN diversity.
     pub fn is_diverse(&self) -> bool {
         if self.assigned_asns.len() < 2 {
             return false;
@@ -747,13 +653,6 @@ impl AsnDiversityConstraint {
     }
 }
 
-/// Bounded, fixed-size batch used to randomize the emission order of one
-/// authenticated shard group.
-///
-/// A batch never grows beyond `capacity` and can be flushed by age. It is a
-/// transport-safe primitive: it only reorders already-authenticated opaque
-/// items, never combines ciphertexts or changes shard indices. Cross-message
-/// relay mixing can build on this without introducing a new wire format.
 pub struct MixBatch<T> {
     items: Vec<(Instant, T)>,
     capacity: usize,
@@ -805,13 +704,6 @@ impl<T> MixBatch<T> {
     }
 }
 
-/// A relay header prepended to the encrypted payload.
-///
-/// Wire format (inside the outer encryption layer):
-///   [0..4]   RELAY_MAGIC ("RLY!")
-///   [4..8]   Number of remaining hops (u32 BE)
-///   [8..40]  Next hop fingerprint (hex string, 32 bytes, null-padded)
-///   [40..]   Inner encrypted payload
 #[derive(Debug, Clone)]
 pub struct RelayHeader {
     pub remaining_hops: u32,
@@ -819,7 +711,6 @@ pub struct RelayHeader {
     pub inner_payload: Vec<u8>,
 }
 
-/// Parse a relay header from decrypted bytes.
 pub fn parse_relay_header(data: &[u8]) -> Option<RelayHeader> {
     if data.len() < 44 || &data[..4] != RELAY_MAGIC {
         return None;
@@ -836,7 +727,6 @@ pub fn parse_relay_header(data: &[u8]) -> Option<RelayHeader> {
     })
 }
 
-/// Build a relay header + inner payload.
 pub fn build_relay_packet(
     next_hop_fingerprint: &str,
     remaining_hops: u32,
@@ -850,19 +740,6 @@ pub fn build_relay_packet(
     )
 }
 
-/// Build a nested onion for a complete relay route.
-///
-/// `route[0]` is the first peer the caller sends to; each following entry is
-/// learned only after the preceding relay peels its layer.  The first hop is
-/// therefore not encoded as a header destination — it is selected by the
-/// transport — while every later hop is wrapped from the destination backwards.
-/// For example, `[guard, middle, exit]` produces `RLY!(middle, 2,
-/// RLY!(exit, 1, payload))`.
-///
-/// The fixed 40-byte envelope and the hop bound keep this suitable for the
-/// existing authenticated GTF payload path. The function is deliberately pure;
-/// per-hop session encryption remains in the transport, so a caller cannot
-/// accidentally reuse one key for all layers.
 pub fn build_onion_route(route: &[&str], payload: &[u8]) -> Option<Vec<u8>> {
     if route.len() < 2
         || route.len() > MAX_HOPS + 1
@@ -883,14 +760,6 @@ pub fn build_onion_route(route: &[&str], payload: &[u8]) -> Option<Vec<u8>> {
     Some(inner)
 }
 
-/// Build a per-hop AEAD-encrypted onion route so intermediate relays (e.g. Guard)
-/// cannot read downstream `RLY!` headers or the Exit fingerprint in cleartext.
-///
-/// `hop_keys` must have the same length as `route`, where `hop_keys[i]` is the
-/// 32-byte session key shared with `route[i]`. Each inner `RLY!` layer for
-/// `route[i]` (`i >= 1`) is sealed under `hop_keys[i - 1]` using XChaCha20-Poly1305
-/// (`[nonce (12B) || ciphertext+tag]`) before being wrapped in the outer `RLY!`
-/// header for `route[i - 1]`.
 pub fn build_encrypted_onion_route(
     route: &[&str],
     hop_keys: &[[u8; 32]],
@@ -913,8 +782,6 @@ pub fn build_encrypted_onion_route(
         let remaining = (route.len() - index) as u32;
         let rly = build_relay_packet(route[index], remaining, &inner);
         if index > 1 {
-            // Seal the downstream RLY! layer for `route[index - 1]` so `route[index - 2]`
-            // (e.g. Guard) cannot read `route[index]` (e.g. Exit) in cleartext.
             let nonce = crate::ghost::layers::l2_aead::random_xnonce();
             let mut sealed = rly;
             crate::ghost::layers::l2_aead::xchacha_seal_in_place(
@@ -937,11 +804,8 @@ pub fn build_encrypted_onion_route(
     Some(inner)
 }
 
-/// Marks a relay layer sealed for a downstream hop, so a middle relay knows it
-/// must try its session keys before falling back to plaintext `RLY!` parsing.
 pub const ONION_SEAL_MAGIC: &[u8; 4] = b"ONS1";
 
-/// Peel one per-hop AEAD-encrypted relay layer using `hop_key`.
 pub fn peel_encrypted_relay_layer(hop_key: &[u8; 32], encrypted_inner: &[u8]) -> Option<Vec<u8>> {
     let encrypted_inner = encrypted_inner
         .strip_prefix(ONION_SEAL_MAGIC)
@@ -963,10 +827,6 @@ pub fn peel_encrypted_relay_layer(hop_key: &[u8; 32], encrypted_inner: &[u8]) ->
     .map(|pt| pt.to_vec())
 }
 
-/// `[magic][hops u32][fingerprint 32, null-padded][payload]`.
-///
-/// One encoder for both envelope kinds, so the two can never drift apart in
-/// width — the parser on the far side reads fixed offsets.
 fn build_envelope(magic: &[u8; 4], fingerprint: &str, hops: u32, payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(40 + payload.len());
     buf.extend_from_slice(magic);
@@ -980,31 +840,18 @@ fn build_envelope(magic: &[u8; 4], fingerprint: &str, hops: u32, payload: &[u8])
     buf
 }
 
-/// A pending bundle in the store-and-forward queue.
 #[derive(Debug, Clone)]
 pub struct Bundle {
-    /// Target peer fingerprint.
     pub target_fingerprint: String,
-    /// Encrypted payload (already in GTF frame-ready form, RS-encoded shard data).
     pub encrypted_shards: Vec<Vec<u8>>,
-    /// Session hash for the next hop.
     pub session_hash: [u8; 4],
-    /// Bundle creation time.
     pub created_at: Instant,
-    /// Number of retries.
     pub retries: u8,
-    /// The full relay chain (fingerprints) that this bundle still needs to traverse.
     pub remaining_route: Vec<String>,
 }
 
-/// Store-and-Forward Bundle Buffer
-///
-/// Holds encrypted shards until a line-of-sight contact window opens
-/// for the next hop. Bundles are expired after BUNDLE_EXPIRY_SECS.
 pub struct BundleBuffer {
-    /// Bundles keyed by next-hop fingerprint.
     pub bundles: DashMap<String, Vec<Bundle>>,
-    /// Whether the bundle buffer is active.
     pub running: AtomicBool,
 }
 
@@ -1022,7 +869,6 @@ impl BundleBuffer {
         Self::default()
     }
 
-    /// Enqueue a bundle for deferred delivery.
     pub fn enqueue(&self, bundle: Bundle) {
         let fp = bundle.target_fingerprint.clone();
         self.bundles.entry(fp.clone()).or_default().push(bundle);
@@ -1033,7 +879,6 @@ impl BundleBuffer {
         );
     }
 
-    /// Dequeue all pending bundles for a given peer fingerprint.
     pub fn dequeue_for(&self, peer_fp: &str) -> Vec<Bundle> {
         self.bundles
             .remove(peer_fp)
@@ -1041,7 +886,6 @@ impl BundleBuffer {
             .unwrap_or_default()
     }
 
-    /// Expire old bundles.
     pub fn expire_old(&self) -> usize {
         let mut expired = 0usize;
         let cutoff = Duration::from_secs(BUNDLE_EXPIRY_SECS);
@@ -1058,7 +902,6 @@ impl BundleBuffer {
         expired
     }
 
-    /// Check if there are any bundles for a given peer.
     pub fn has_pending(&self, peer_fp: &str) -> bool {
         self.bundles
             .get(peer_fp)
@@ -1067,9 +910,6 @@ impl BundleBuffer {
     }
 }
 
-/// Attempt to forward a relay packet one hop.
-///
-/// Returns true if the packet was successfully forwarded.
 pub async fn try_forward_relay(
     socket: &UdpSocket,
     sessions: &DashMap<String, Session>,
@@ -1094,7 +934,6 @@ pub async fn try_forward_relay(
     let next_addr = match peer_addrs.get(next_fp) {
         Some(e) => *e.value(),
         None => {
-            // No route to next hop — buffer for later
             debug!("No address for next hop {}, buffering bundle", next_fp);
             let bundle = Bundle {
                 target_fingerprint: next_fp.clone(),
@@ -1109,7 +948,6 @@ pub async fn try_forward_relay(
         }
     };
 
-    // Get the session to the next hop for re-encryption
     let session_entry = match sessions.get(next_fp) {
         Some(s) => s,
         None => {
@@ -1118,41 +956,27 @@ pub async fn try_forward_relay(
         }
     };
 
-    // Seal with the ratchet's current epoch key and a fresh 96-bit
-    // nonce. The nonce is drawn once per *message*, so the three shards below all
-    // share it — they are pieces of one AEAD ciphertext, not three messages.
     let material = session_entry.seal_material();
     let sh = session_entry.session_hash;
     let use_bulk = session_entry.use_bulk;
     drop(session_entry);
 
-    // The inner payload is the remaining relay chain.
-    // We decrement remaining_hops and re-encrypt for the next hop.
     let new_remaining = header.remaining_hops - 1;
 
     let inner_relay = if new_remaining > 0 {
-        // Still more hops — wrap inner payload in another relay header
-        // The inner payload already contains the next relay header from the original sender
-        // We just forward it as-is since only the final destination can decrypt it
         header.inner_payload.clone()
     } else {
-        // This is the final hop — inner payload is the end-to-end ciphertext
-        // Mark with magic so the receiver knows it's direct
         let mut direct = Vec::with_capacity(4 + header.inner_payload.len());
         direct.extend_from_slice(b"DIR!");
         direct.extend_from_slice(&header.inner_payload);
         direct
     };
 
-    // Re-encrypt inner payload with next-hop session key
     let mut framed = inner_relay;
     let needs_padding = if framed.len() % 2 != 0 { 1 } else { 0 };
     if needs_padding > 0 {
         framed.push(0);
     }
-    // The jitter tail is authenticated as AEAD associated data, so it
-    // has to exist *before* the seal and then travel in the frame. A bulk frame
-    // carries no tail, and therefore no associated data either.
     let tail = if use_bulk {
         [0u8; crate::ghost::net::JITTER_MAX]
     } else {
@@ -1170,7 +994,6 @@ pub async fn try_forward_relay(
     )
     .expect("sealing an owned buffer cannot fail");
 
-    // RS-encode the encrypted payload
     let tag = if framed.len() >= 16 {
         let mut t = [0u8; 16];
         if let Some(slice) = framed.get(framed.len().saturating_sub(16)..) {
@@ -1184,7 +1007,6 @@ pub async fn try_forward_relay(
     };
     let shards = l4_rs::encode(&mut framed);
 
-    // Send shards to next hop
     for (i, shard) in shards.iter().take(3).enumerate() {
         let shard_data = frame_shard(shard);
         let header = GtfV2Header {
@@ -1210,10 +1032,6 @@ pub async fn try_forward_relay(
     true
 }
 
-/// Spawn the store-and-forward background task.
-///
-/// Periodically checks for pending bundles and attempts delivery
-/// when a session becomes available.
 pub fn spawn_store_forward_task(
     socket: Arc<UdpSocket>,
     sessions: Arc<DashMap<String, Session>>,
@@ -1225,13 +1043,11 @@ pub fn spawn_store_forward_task(
         loop {
             sleep(check_interval).await;
 
-            // Expire old bundles
             let expired = bundle_buffer.expire_old();
             if expired > 0 {
                 debug!("Expired {} stale bundles", expired);
             }
 
-            // Collect all peer fingerprints that have pending bundles
             let pending_peers: Vec<String> = bundle_buffer
                 .bundles
                 .iter()
@@ -1239,12 +1055,10 @@ pub fn spawn_store_forward_task(
                 .collect();
 
             for fp in pending_peers {
-                // Only attempt delivery if we have a session and address for this peer
                 let has_route = sessions.contains_key(&fp) && peer_addrs.contains_key(&fp);
                 if has_route {
                     let bundles = bundle_buffer.dequeue_for(&fp);
                     for bundle in bundles {
-                        // Re-attempt forwarding
                         let relay_header = build_relay_packet(
                             &fp,
                             1, // one hop remaining — direct delivery
@@ -1265,11 +1079,6 @@ pub fn spawn_store_forward_task(
     })
 }
 
-/// Per-source-IP token bucket and stateless cookie helper for WAN anti-abuse (C4).
-///
-/// Enforces per-IP rate limits on `ctr == 0` handshakes, unauthenticated beacons,
-/// and STUN requests when `pending_hs` crosses 50% capacity (`MAX_PENDING_HANDSHAKES / 2`),
-/// preventing CPU exhaustion from spoofed ML-KEM-768 handshakes on public WAN relays/exits.
 #[derive(Debug, Clone)]
 pub struct WanRateLimiter {
     buckets: Arc<DashMap<std::net::IpAddr, (f64, Instant)>>,
@@ -1294,10 +1103,6 @@ impl WanRateLimiter {
         }
     }
 
-    /// Check whether a packet from `ip` is allowed given current `pending_hs_len`.
-    ///
-    /// Below 50% of `max_pending_hs`, requests are allowed without throttling.
-    /// At or above `max_pending_hs / 2`, the per-IP token bucket is enforced.
     pub fn allow(
         &self,
         ip: std::net::IpAddr,
@@ -1310,7 +1115,6 @@ impl WanRateLimiter {
         self.allow_strict(ip)
     }
 
-    /// Strictly consume 1 token from `ip`'s bucket, returning `false` if exhausted.
     pub fn allow_strict(&self, ip: std::net::IpAddr) -> bool {
         let now = Instant::now();
         if self.buckets.len() >= self.max_entries && !self.buckets.contains_key(&ip) {
@@ -1336,7 +1140,6 @@ impl WanRateLimiter {
         }
     }
 
-    /// Compute a stateless 16-byte handshake cookie bound to `ip` and a 60s time window.
     pub fn issue_cookie(secret: &[u8; 32], ip: std::net::IpAddr, now_secs: u64) -> [u8; 16] {
         use sha2::{Digest, Sha256};
         let window = now_secs / 60;
@@ -1354,7 +1157,6 @@ impl WanRateLimiter {
         out
     }
 
-    /// Verify a stateless 16-byte handshake cookie for `ip` (accepts current or previous 60s window).
     pub fn verify_cookie(
         secret: &[u8; 32],
         ip: std::net::IpAddr,
@@ -1378,53 +1180,32 @@ impl WanRateLimiter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Telescoping Post-Quantum Circuit Isolation & Hop-Local CircuitId Swapping
-// ---------------------------------------------------------------------------
-
-/// 128-bit hop-local circuit identifier.
-///
-/// Each hop-to-hop link uses an independent `CircuitId` so no intermediate
-/// relay can correlate incoming and outgoing circuit IDs across hops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CircuitId(pub [u8; 16]);
 
 impl CircuitId {
-    /// Generate a fresh cryptographically random 128-bit `CircuitId`.
     pub fn random() -> Self {
         let mut id = [0u8; 16];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut id);
         Self(id)
     }
 
-    /// Construct a `CircuitId` from raw 16 bytes.
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
-    /// Return the underlying 16-byte slice.
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
 }
 
-/// Entry in a relay's hop-local [`CircuitSwapTable`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwapEntry {
-    /// Next hop fingerprint (`None` when this node is the circuit Exit).
     pub next_hop: Option<String>,
-    /// Outgoing hop-local circuit ID to stamp onto the forwarded cell.
     pub outgoing_circuit_id: CircuitId,
-    /// Per-hop symmetric key derived from ephemeral `X25519 + ML-KEM-768`.
     pub hop_key: [u8; 32],
 }
 
-/// Hop-local circuit routing and key-swapping table.
-///
-/// Enforces strict topological isolation:
-/// - Guard only stores `(Client_ID -> (Some(Middle), Middle_ID, guard_key))`
-/// - Middle only stores `(Guard_ID -> (Some(Exit), Exit_ID, middle_key))`
-/// - Exit only stores `(Middle_ID -> (None, Middle_ID, exit_key))`
 #[derive(Debug, Default)]
 pub struct CircuitSwapTable {
     entries: DashMap<CircuitId, SwapEntry>,
@@ -1437,7 +1218,6 @@ impl CircuitSwapTable {
         }
     }
 
-    /// Insert or update a hop-local circuit swap mapping.
     pub fn insert(
         &self,
         in_id: CircuitId,
@@ -1455,12 +1235,10 @@ impl CircuitSwapTable {
         );
     }
 
-    /// Look up a swap entry by incoming `CircuitId`.
     pub fn lookup(&self, in_id: &CircuitId) -> Option<SwapEntry> {
         self.entries.get(in_id).map(|e| e.value().clone())
     }
 
-    /// Remove a swap entry by incoming `CircuitId`.
     pub fn remove(&self, in_id: &CircuitId) -> Option<SwapEntry> {
         self.entries.remove(in_id).map(|(_, v)| v)
     }
@@ -1473,8 +1251,6 @@ impl CircuitSwapTable {
         self.entries.is_empty()
     }
 
-    /// Peel one ChaCha20-Poly1305 onion layer using the hop key for `in_id`
-    /// and return `(next_hop, outgoing_circuit_id, inner_payload)`.
     pub fn swap_and_peel(
         &self,
         in_id: &CircuitId,
@@ -1494,7 +1270,6 @@ impl CircuitSwapTable {
     }
 }
 
-/// Telescoping PQ circuit extension cell using ephemeral `X25519 + ML-KEM-768`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendPqCell {
     pub circuit_id: CircuitId,
@@ -1524,8 +1299,6 @@ impl ExtendPqCell {
         Some(okm)
     }
 
-    /// Initiate a telescoping PQ hop extension toward a relay with `hop_x25519_pk`
-    /// and `hop_ml_kem_ek`. Returns `(cell, derived_hop_key)`.
     pub fn initiate(
         circuit_id: CircuitId,
         next_hop: Option<String>,
@@ -1553,8 +1326,6 @@ impl ExtendPqCell {
         Some((cell, hop_key))
     }
 
-    /// Accept a telescoping PQ hop extension on the relay using its `X25519`
-    /// secret key and `ML-KEM-768` decapsulation key, returning the shared `hop_key`.
     pub fn accept(
         &self,
         hop_x25519_sk: &x25519_dalek::StaticSecret,
@@ -1570,7 +1341,6 @@ impl ExtendPqCell {
         Self::derive_hop_key(&self.circuit_id, x25519_ss.as_bytes(), ml_kem_ss.as_slice())
     }
 
-    /// Serialize `ExtendPqCell` to wire bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let next_bytes = self.next_hop.as_deref().unwrap_or("").as_bytes();
         let mut out =
@@ -1585,7 +1355,6 @@ impl ExtendPqCell {
         out
     }
 
-    /// Parse `ExtendPqCell` from wire bytes.
     pub fn from_bytes(data: &[u8]) -> Option<Self> {
         if data.len() < 4 + 16 + 2 + 32 + 2 || &data[..4] != Self::MAGIC {
             return None;
@@ -1624,7 +1393,6 @@ impl ExtendPqCell {
     }
 }
 
-/// One hop in a client-side [`TelescopingCircuit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelescopingHop {
     pub peer_fp: String,
@@ -1632,7 +1400,6 @@ pub struct TelescopingHop {
     pub hop_key: [u8; 32],
 }
 
-/// Client-side telescoping PQ circuit handle.
 #[derive(Debug, Clone)]
 pub struct TelescopingCircuit {
     entry_circuit_id: CircuitId,
@@ -1663,8 +1430,6 @@ impl TelescopingCircuit {
         self.entry_circuit_id
     }
 
-    /// Seal `payload` in reverse hop order (Exit -> Middle -> Guard) so each
-    /// hop peels exactly one layer via [`CircuitSwapTable::swap_and_peel`].
     pub fn seal_onion(&self, payload: &[u8]) -> Option<Vec<u8>> {
         use chacha20poly1305::aead::{Aead, KeyInit};
         use chacha20poly1305::{ChaCha20Poly1305, Nonce};
@@ -1809,29 +1574,14 @@ mod tests {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// DERP-style blind relay — the Phase 1 fallback when ICE cannot connect
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Minimum width of a relay envelope: magic(4) + hops(4) + fingerprint(32).
 const RELAY_ENVELOPE_MIN: usize = 40;
 
-/// A borrowed view of a single-hop relay envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlindFrame<'a> {
-    /// Final destination fingerprint.
     pub target_fingerprint: &'a str,
-    /// End-to-end ciphertext. The relay has no key for this and must not alter
-    /// it — the identity of these bytes across the relay *is* the blind property.
     pub opaque: &'a [u8],
 }
 
-/// Parse a single-hop relay envelope ("blind forward").
-///
-/// Returns `None` for anything else, including multi-hop onions (a non-zero hop
-/// count), which travel via [`try_forward_relay`] instead. Keeping the two
-/// apart matters: blind forwarding must never re-encrypt, and the onion path
-/// must never forward someone else's ciphertext untouched.
 pub fn parse_blind_frame(raw: &[u8]) -> Option<BlindFrame<'_>> {
     if raw.len() < RELAY_ENVELOPE_MIN || &raw[..4] != BLIND_MAGIC {
         return None;
@@ -1849,42 +1599,22 @@ pub fn parse_blind_frame(raw: &[u8]) -> Option<BlindFrame<'_>> {
     })
 }
 
-/// Wrap an already-sealed frame for delivery to `target_fp` through a relay.
-///
-/// The hop count is zero: exactly one relay hop, no onion layers.
 pub fn wrap_blind_frame(target_fp: &str, opaque: &[u8]) -> Vec<u8> {
     build_envelope(BLIND_MAGIC, target_fp, 0, opaque)
 }
 
-/// Why a relay refused to forward. Counted rather than only logged, so an
-/// operator can tell abuse apart from a misconfiguration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropReason {
-    /// Not a relay envelope at all, or a blind envelope that does not parse.
     NotAnEnvelope,
-    /// A multi-hop onion (`RLY!`): not this code path's business.
     NotBlindForward,
-    /// The sender has no established session with us.
     UnauthorizedSender,
-    /// We have no address for the target.
     UnknownTarget,
-    /// Transit quota exhausted.
     QuotaExceeded,
-    /// The target is the sender — would be a reflection.
     Loop,
 }
 
-/// The result of a relay decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Forwarded {
-    /// Emit these bytes to this address.
-    ///
-    /// `bytes` is the envelope's *opaque region*, not the envelope: the target has
-    /// to parse the datagram out of it exactly as it would off the wire, so the
-    /// relay drops the addressing header it routed on and nothing else. That
-    /// header is relay-layer framing the relay wrote (or read) itself; the region
-    /// it carries — the target's own AEAD ciphertext — is forwarded verbatim, and
-    /// that unchanged region is the property that makes the forward blind.
     Deliver {
         dest: SocketAddr,
         bytes: Vec<u8>,
@@ -1892,24 +1622,9 @@ pub enum Forwarded {
     Dropped(DropReason),
 }
 
-/// DERP-style blind relay.
-///
-/// The security story is what this type *cannot* do:
-///
-/// * **Blind.** It holds no key for the payload. The opaque region is the
-///   end-to-end sealed frame between the two endpoints, so the relay forwards
-///   bytes it cannot interpret — blindness is structural, not a policy.
-/// * **Not an open relay.** Only peers with an established session can relay
-///   through it.
-/// * **Rationed.** Forwarded bytes are charged against a transit quota, reusing
-///   the same [`FlowController`] the node uses for its own transit traffic.
-/// * **Not a reflector.** A frame addressed back to its sender is refused.
 pub struct DerpRelay {
-    /// Peers with an established session, and their addresses.
     authorized: Arc<DashMap<String, SocketAddr>>,
-    /// Peers that advertise relay capability, usable as *our* relays.
     candidates: Arc<DashMap<String, SocketAddr>>,
-    /// Transit accounting for other people's traffic.
     flow: Arc<FlowController>,
     forwarded_frames: AtomicU64,
     forwarded_bytes: AtomicU64,
@@ -1928,7 +1643,6 @@ impl DerpRelay {
         }
     }
 
-    /// Record a peer we have a session with, making it eligible to relay.
     pub fn authorize(&self, fp: &str, addr: SocketAddr) {
         self.authorized.insert(fp.to_string(), addr);
     }
@@ -1945,18 +1659,10 @@ impl DerpRelay {
         self.authorized.len()
     }
 
-    /// Record a peer that advertised relay capability (from its beacon).
     pub fn add_relay_candidate(&self, fp: &str, addr: SocketAddr) {
         self.candidates.insert(fp.to_string(), addr);
     }
 
-    /// Known relays, ordered by whether we already have a session with them — a
-    /// relay we are authenticated to is strictly more useful, because using it
-    /// costs no new handshake and we know it is reachable.
-    ///
-    /// Ties break on fingerprint. Without that the order within a group came from
-    /// `DashMap` iteration and changed between runs, which made relay selection —
-    /// and any test of it — non-reproducible.
     pub fn relay_candidates(&self) -> Vec<(String, SocketAddr)> {
         let mut out: Vec<(String, SocketAddr)> = self
             .candidates
@@ -1971,14 +1677,12 @@ impl DerpRelay {
         out
     }
 
-    /// Pick a relay that is neither us nor the destination, if one is known.
     pub fn pick_relay(&self, our_fp: &str, target_fp: &str) -> Option<(String, SocketAddr)> {
         self.relay_candidates()
             .into_iter()
             .find(|(fp, _)| fp != our_fp && fp != target_fp)
     }
 
-    /// `(forwarded_frames, forwarded_bytes, dropped)`.
     pub fn stats(&self) -> (u64, u64, u64) {
         (
             self.forwarded_frames.load(Ordering::Relaxed),
@@ -1987,20 +1691,8 @@ impl DerpRelay {
         )
     }
 
-    /// Relay side: decide whether to forward, and produce the datagram.
-    ///
-    /// Forwarding is *one-way*: nothing here remembers the sender, so the target's
-    /// reply travels through a relay of its own choosing. That is what keeps the
-    /// relay stateless and unable to correlate the two directions, and it is why
-    /// both ends run the fallback ladder independently.
-    ///
-    /// `from_fp` must be an identity we have verified — the caller establishes
-    /// that, since only it knows which session a datagram arrived on.
     pub fn forward(&self, from_fp: &str, payload: &[u8]) -> Forwarded {
         let Some(frame) = parse_blind_frame(payload) else {
-            // An onion is a different protocol path, and saying *that* is more
-            // useful than a generic refusal: the caller routes it to the
-            // hop-forwarding path instead of reporting a malformed envelope.
             let is_onion = payload.len() >= RELAY_ENVELOPE_MIN && &payload[..4] == RELAY_MAGIC;
             return Forwarded::Dropped(if is_onion {
                 DropReason::NotBlindForward
@@ -2035,8 +1727,6 @@ impl DerpRelay {
         self.forwarded_frames.fetch_add(1, Ordering::Relaxed);
         self.forwarded_bytes
             .fetch_add(frame.opaque.len() as u64, Ordering::Relaxed);
-        // The opaque region, verbatim: the relay has parsed only its own header
-        // (which is how it knows where this goes) and can interpret nothing else.
         Forwarded::Deliver {
             dest,
             bytes: frame.opaque.to_vec(),
@@ -2044,19 +1734,8 @@ impl DerpRelay {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Shards over Tor — Multi-Circuit Egress
-// ══════════════════════════════════════════════════════════════════
-
-/// Multi-circuit Tor SOCKS5 dispatcher for Reed-Solomon shards.
-///
-/// Sends each shard of a 3-shard flight through an independent, isolated Tor circuit
-/// (via distinct local SOCKS5 proxy endpoints, defaulting to 127.0.0.1:9050, 9052, 9054).
-/// A hostile Tor guard, malicious middle relay, or rogue exit node observing one circuit
-/// captures at most 1 shard, exposing mathematically 0 bytes of plaintext.
 #[derive(Debug, Clone)]
 pub struct TorMultiCircuitDispatcher {
-    /// Local SOCKS5 endpoints for the 3 circuits.
     pub circuit_endpoints: [SocketAddr; 3],
 }
 
@@ -2079,19 +1758,14 @@ impl TorMultiCircuitDispatcher {
         }
     }
 
-    /// Maps a shard index (0, 1, 2) to its designated Tor circuit proxy.
     pub fn circuit_for_shard(&self, shard_index: u8) -> SocketAddr {
         self.circuit_endpoints[(shard_index as usize) % 3]
     }
 
-    /// Builds an RFC 1928 SOCKS5 initial method negotiation request.
     pub fn build_socks5_auth_request() -> Vec<u8> {
-        // VER = 0x05, NMETHODS = 0x01, METHODS = [0x00 (NO AUTHENTICATION REQUIRED)]
         vec![0x05, 0x01, 0x00]
     }
 
-    /// Formats a SOCKS5 UDP encapsulation header for a shard payload:
-    /// [RSV:2][FRAG:1][ATYP:1][DEST.ADDR:4][DEST.PORT:2][SHARD_DATA]
     pub fn encapsulate_shard_udp(shard_data: &[u8], target_addr: SocketAddr) -> Vec<u8> {
         let mut out = Vec::with_capacity(10 + shard_data.len());
         out.extend_from_slice(&[0x00, 0x00]); // RSV
@@ -2112,7 +1786,6 @@ impl TorMultiCircuitDispatcher {
         out
     }
 
-    /// Strips the SOCKS5 UDP encapsulation header and recovers the raw shard bytes.
     pub fn decapsulate_shard_udp(encapsulated: &[u8]) -> Option<Vec<u8>> {
         if encapsulated.len() < 10 {
             return None;
@@ -2130,24 +1803,12 @@ impl TorMultiCircuitDispatcher {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Anonymous Capability Economy (Threshold Credentials)
-// ══════════════════════════════════════════════════════════════════
-
-/// Anonymous Capability Voucher authorized by a threshold group (§41).
-///
-/// Combines forwarding capability vouchers with threshold group signing:
-/// - Authorized by at least 3-of-5 group shares
-/// - Flow is identity-free: relay verifies that voucher is signed by a valid threshold group
-///   and respects quota bounds, without ever identifying the underlying user or client.
-/// - Protected against double-spending via spent token registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnonymousThresholdVoucher {
     pub group_id: [u8; 16],
     pub voucher_id: u64,
     pub max_bytes: u64,
     pub expires_at: u64,
-    /// Threshold group signature commitment over [voucher_id || max_bytes || expires_at]
     pub group_commitment: [u8; 32],
 }
 
@@ -2178,7 +1839,6 @@ impl AnonymousThresholdVoucher {
         }
     }
 
-    /// Verifies the threshold voucher against the group's secret without exposing user identities.
     pub fn verify(&self, expected_group_secret: &[u8; 32], current_time: u64) -> bool {
         if current_time > self.expires_at {
             return false;
@@ -2196,10 +1856,8 @@ impl AnonymousThresholdVoucher {
     }
 }
 
-/// Ledger tracking anonymous threshold capability spending and double-spend prevention.
 #[derive(Debug, Default)]
 pub struct AnonymousCapabilityLedger {
-    /// voucher_id -> bytes consumed
     spent_table: DashMap<u64, u64>,
 }
 
@@ -2208,8 +1866,6 @@ impl AnonymousCapabilityLedger {
         Self::default()
     }
 
-    /// Try spending `bytes` from an anonymous threshold voucher.
-    /// Returns Ok(remaining_bytes) if permitted, or Err if expired, invalid, or quota exceeded.
     pub fn try_spend(
         &self,
         voucher: &AnonymousThresholdVoucher,
@@ -2254,7 +1910,6 @@ mod derp_tests {
 
     #[test]
     fn multi_hop_onions_are_not_blind_forwarded() {
-        // A 2-hop onion must go down the re-encrypting path, not this one.
         let onion = build_relay_packet("aabbccdd", 2, b"layered");
         assert!(parse_blind_frame(&onion).is_none());
         let relay = relay_with_quota(10);
@@ -2273,7 +1928,6 @@ mod derp_tests {
             relay.forward("sender", b"just mesh traffic"),
             Forwarded::Dropped(DropReason::NotAnEnvelope)
         );
-        // A RLY! prefix that is too short is still not an envelope.
         assert_eq!(
             relay.forward("sender", b"RLY!short"),
             Forwarded::Dropped(DropReason::NotAnEnvelope)
@@ -2285,7 +1939,6 @@ mod derp_tests {
         let relay = relay_with_quota(10);
         relay.authorize("target", addr("10.0.0.2:2"));
         let framed = wrap_blind_frame("target", b"sealed");
-        // Unknown sender: refused. This is what stops it being an open relay.
         assert_eq!(
             relay.forward("stranger", &framed),
             Forwarded::Dropped(DropReason::UnauthorizedSender)
@@ -2326,19 +1979,13 @@ mod derp_tests {
         relay.authorize("sender", addr("10.0.0.1:1"));
         relay.authorize("target", addr("10.0.0.2:2"));
 
-        // Stand in for a sealed GTF frame: high-entropy bytes the relay cannot
-        // interpret, which is exactly the relay's view of real traffic.
         let opaque: Vec<u8> = (0..512u32).map(|i| (i * 31 % 251) as u8).collect();
         let framed = wrap_blind_frame("target", &opaque);
 
         match relay.forward("sender", &framed) {
             Forwarded::Deliver { dest, bytes } => {
                 assert_eq!(dest, addr("10.0.0.2:2"));
-                // Not merely equal in length: identical, so the relay could not
-                // have read, rewritten, padded or re-tagged anything it carries.
                 assert_eq!(bytes, opaque);
-                // And what it emits is the *frame*, not its own envelope: the
-                // target parses this exactly as it would a direct send.
                 assert!(
                     parse_blind_frame(&bytes).is_none(),
                     "the relay's own header must not be forwarded"
@@ -2358,7 +2005,6 @@ mod derp_tests {
 
     #[test]
     fn transit_quota_is_charged_and_exhaustion_is_visible() {
-        // Zero transit rate: the bucket starts empty, so nothing can be relayed.
         let relay = relay_with_quota(0);
         relay.authorize("sender", addr("10.0.0.1:1"));
         relay.authorize("target", addr("10.0.0.2:2"));
@@ -2378,14 +2024,11 @@ mod derp_tests {
         relay.add_relay_candidate("alpha", addr("10.0.0.3:3"));
         relay.add_relay_candidate("beta", addr("10.0.0.4:4"));
 
-        // Neither ourselves nor the destination may be our relay, and with no
-        // session yet the choice is deterministic rather than map-ordered.
         let picked = relay.pick_relay("us", "target").expect("a usable relay");
         assert_ne!(picked.0, "us");
         assert_ne!(picked.0, "target");
         assert_eq!(picked.0, "alpha", "unauthenticated relays break ties by fp");
 
-        // A relay we already hold a session with wins over every stranger.
         relay.authorize("beta", addr("10.0.0.4:4"));
         assert_eq!(relay.pick_relay("us", "target").unwrap().0, "beta");
         assert_eq!(
@@ -2393,7 +2036,6 @@ mod derp_tests {
             Some("beta")
         );
 
-        // With only ourselves and the destination known, there is no relay.
         let solo = relay_with_quota(10);
         solo.add_relay_candidate("us", addr("10.0.0.1:1"));
         solo.add_relay_candidate("target", addr("10.0.0.2:2"));
@@ -2419,20 +2061,15 @@ mod derp_tests {
     fn test_asn_diversity_constraint() {
         let mut constraint = AsnDiversityConstraint::new(1); // Strict multi-ASN
 
-        // Shard 0 over ASN 13335 (Cloudflare) -> Accepted
         assert!(constraint.assign_shard_asn(0, 13335));
 
-        // Shard 1 over ASN 13335 (Cloudflare again) -> Rejected by diversity constraint
         assert!(!constraint.is_asn_permitted(1, 13335));
         assert!(!constraint.assign_shard_asn(1, 13335));
 
-        // Shard 1 over ASN 15169 (Google) -> Accepted
         assert!(constraint.assign_shard_asn(1, 15169));
 
-        // Shard 2 over ASN 16509 (AWS) -> Accepted
         assert!(constraint.assign_shard_asn(2, 16509));
 
-        // Total 3 shards span 3 distinct ASNs
         assert!(constraint.is_diverse());
     }
 
@@ -2442,17 +2079,13 @@ mod derp_tests {
         let payload = b"opaque_encrypted_gtf_frame_bytes";
         let next_hop = "node_charlie_5fa96851";
 
-        // Relay mints blind proof of transit
         let proof = ProofOfTransit::mint(&relay_identity, payload, next_hop);
 
-        // Client verifies proof against expected payload and destination
         assert!(proof.verify(payload, next_hop, 60));
 
-        // Tampered payload fails verification
         let tampered_payload = b"altered_encrypted_gtf_frame_bytes";
         assert!(!proof.verify(tampered_payload, next_hop, 60));
 
-        // Wrong next hop fails verification
         assert!(!proof.verify(payload, "node_eve_malicious", 60));
     }
 
@@ -2467,16 +2100,12 @@ mod derp_tests {
         let voucher =
             ForwardingCapabilityVoucher::mint(&client_identity, max_bytes, expires_at, voucher_id);
 
-        // Valid voucher redemption within limits
         assert!(voucher.verify(now, 500_000));
 
-        // Requesting more bytes than authorized fails
         assert!(!voucher.verify(now, 2_000_000));
 
-        // Redeeming after expiration fails
         assert!(!voucher.verify(3000, 500_000));
 
-        // Forged signature from another key fails
         let imposter = GhostIdentity::generate_fresh();
         let forged_msg =
             ForwardingCapabilityVoucher::signing_bytes(max_bytes, expires_at, voucher_id);
@@ -2489,7 +2118,6 @@ mod derp_tests {
     fn test_sphinx_shard_onion_roundtrip_and_drop_resilience() {
         use crate::ghost::layers::l4_rs;
 
-        // Generate 3 hops: guard, middle, exit
         let guard_key = [0x11u8; 32];
         let middle_key = [0x22u8; 32];
         let exit_key = [0x33u8; 32];
@@ -2497,11 +2125,9 @@ mod derp_tests {
         let payload = b"critical_confidential_mesh_packet";
         let mut original_data = payload.to_vec();
 
-        // 1. Encode payload into 3 Reed-Solomon shards
         let shards = l4_rs::encode(&mut original_data);
         assert_eq!(shards.len(), 3);
 
-        // 2. Wrap each shard into a constant 576-byte Sphinx onion
         let mut onions = Vec::new();
         for (idx, shard) in shards.iter().enumerate() {
             let onion = SphinxShardOnion::build(
@@ -2517,25 +2143,20 @@ mod derp_tests {
             onions.push(onion);
         }
 
-        // 3. Simulate Middle 1 dropping: Shard 1 is lost!
-        // We only have onion 0 and onion 2 arriving at Exit.
         let mut exit_received_shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
 
         for (i, onion) in onions.iter().enumerate() {
             if i == 1 {
                 continue; // Dropped on middle hop!
             }
-            // Guard peels layer
             let guard_peeled = SphinxShardOnion::peel_hop(&guard_key, onion).expect("guard peel");
             assert_eq!(guard_peeled.next_hop, "node_middle");
 
-            // Middle peels layer
             let middle_peeled =
                 SphinxShardOnion::peel_hop(&middle_key, &guard_peeled.inner_payload)
                     .expect("middle peel");
             assert_eq!(middle_peeled.next_hop, "node_exit");
 
-            // Exit verifies authenticity and reconstructs shard
             let (shard_idx, shard_data) =
                 SphinxShardOnion::exit_open(&exit_key, &middle_peeled.inner_payload)
                     .expect("exit open");
@@ -2543,7 +2164,6 @@ mod derp_tests {
             exit_received_shards[shard_idx as usize] = Some(shard_data);
         }
 
-        // 4. RS Reconstruct from the 2 surviving shards (0 and 2)
         assert!(exit_received_shards[0].is_some());
         assert!(exit_received_shards[1].is_none());
         assert!(exit_received_shards[2].is_some());
@@ -2572,7 +2192,6 @@ mod derp_tests {
         let expires_at = now + 3600;
         let max_bytes = 10_000u64;
 
-        // Mint a blind capability voucher with zero client identity
         let token = BlindCapabilityToken::mint(&auth_key, seed, &flow_salt, max_bytes, expires_at);
         assert!(token.verify(&auth_key, now, 100));
 
@@ -2582,19 +2201,15 @@ mod derp_tests {
             .register_channel(&token, &auth_key, egress, now)
             .expect("register valid token");
 
-        // Forward a packet
         let target = table
             .forward(&token.token_id, 500, now + 10)
             .expect("forward ok");
         assert_eq!(target, egress);
 
-        // Exceed quota
         let err = table.forward(&token.token_id, 10_000, now + 20);
         assert!(err.is_err());
 
-        // Prove zero identity exposure in audit memory dump
         let dump = table.audit_dump_memory();
-        // Client ed25519 PK or identities are strictly absent
         let fake_client_pk = [0x55u8; 32];
         assert!(!dump.windows(32).any(|w| w == fake_client_pk));
         assert!(dump.len() >= 32);
@@ -2608,16 +2223,13 @@ mod derp_tests {
 
         let dispatcher = TorMultiCircuitDispatcher::new([ep1, ep2, ep3]);
 
-        // Verify independent circuit isolation per shard
         assert_eq!(dispatcher.circuit_for_shard(0), ep1);
         assert_eq!(dispatcher.circuit_for_shard(1), ep2);
         assert_eq!(dispatcher.circuit_for_shard(2), ep3);
 
-        // Verify SOCKS5 auth request format
         let auth_req = TorMultiCircuitDispatcher::build_socks5_auth_request();
         assert_eq!(auth_req, vec![0x05, 0x01, 0x00]);
 
-        // Verify SOCKS5 UDP encapsulation and decapsulation for an RS shard
         let shard_data = b"rs_shard_payload_through_tor_circuit";
         let target_peer: SocketAddr = "198.51.100.42:2270".parse().unwrap();
 
@@ -2642,7 +2254,6 @@ mod derp_tests {
         let now = 500u64;
         let expires_at = 1500u64;
 
-        // Mint anonymous threshold voucher
         let voucher = AnonymousThresholdVoucher::mint(
             group_id,
             &group_secret,
@@ -2651,42 +2262,33 @@ mod derp_tests {
             expires_at,
         );
 
-        // Verification with valid group secret succeeds
         assert!(voucher.verify(&group_secret, now));
 
-        // Verification with invalid group secret fails
         let wrong_secret = [0x11u8; 32];
         assert!(!voucher.verify(&wrong_secret, now));
 
-        // Expired verification fails
         assert!(!voucher.verify(&group_secret, expires_at + 1));
 
-        // Ledger spend testing
         let ledger = AnonymousCapabilityLedger::new();
 
-        // 1. Spend 20,000 bytes -> 30,000 remaining
         let remaining = ledger
             .try_spend(&voucher, &group_secret, 20_000, now)
             .expect("first spend ok");
         assert_eq!(remaining, 30_000);
 
-        // 2. Spend 25,000 bytes -> 5,000 remaining
         let remaining = ledger
             .try_spend(&voucher, &group_secret, 25_000, now + 10)
             .expect("second spend ok");
         assert_eq!(remaining, 5_000);
 
-        // 3. Attempt to double-spend / exceed quota by spending 10,000 bytes (exceeds remaining 5,000)
         let err = ledger.try_spend(&voucher, &group_secret, 10_000, now + 20);
         assert!(err.is_err(), "quota exceeded must be rejected");
 
-        // 4. Spending exactly 5,000 bytes succeeds, exhausting quota to 0
         let remaining = ledger
             .try_spend(&voucher, &group_secret, 5_000, now + 30)
             .expect("exhaust quota ok");
         assert_eq!(remaining, 0);
 
-        // 5. Subsequent spend fails
         let err_exhausted = ledger.try_spend(&voucher, &group_secret, 1, now + 40);
         assert!(err_exhausted.is_err());
     }
@@ -2696,7 +2298,6 @@ mod derp_tests {
         use ml_kem::kem::{Kem, KeyExport};
         use ml_kem::MlKem768;
 
-        // Generate ephemeral X25519 + ML-KEM-768 keys for Guard, Middle, Exit
         let gen_hop_keys = || {
             let x_sk = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
             let x_pk = x25519_dalek::PublicKey::from(&x_sk).to_bytes();
@@ -2713,7 +2314,6 @@ mod derp_tests {
         let cid_gm = CircuitId::random();
         let cid_me = CircuitId::random();
 
-        // Client initiates 3-hop telescoping PQ extensions
         let (cell_g, key_g_client) =
             ExtendPqCell::initiate(cid_cg, Some("middle_fp".into()), &g_xpk, &g_ek)
                 .expect("guard extend");
@@ -2732,7 +2332,6 @@ mod derp_tests {
         let key_e_relay = cell_e.accept(&e_xsk, &e_dk).expect("exit accept");
         assert_eq!(key_e_client, key_e_relay);
 
-        // Populate hop-local swap tables
         let guard_table = CircuitSwapTable::new();
         guard_table.insert(cid_cg, Some("middle_fp".into()), cid_gm, key_g_relay);
 
@@ -2742,7 +2341,6 @@ mod derp_tests {
         let exit_table = CircuitSwapTable::new();
         exit_table.insert(cid_me, None, cid_me, key_e_relay);
 
-        // Build client circuit & seal payload
         let mut circuit = TelescopingCircuit::new(cid_cg);
         circuit.extend_hop("guard_fp".into(), cid_cg, key_g_client);
         circuit.extend_hop("middle_fp".into(), cid_gm, key_m_client);
@@ -2752,7 +2350,6 @@ mod derp_tests {
         let payload = b"secret_telescoping_pq_payload";
         let onion = circuit.seal_onion(payload).expect("seal onion");
 
-        // Guard peels layer 1: only knows (cid_cg -> middle_fp, cid_gm)
         let (next1, out_id1, body1) = guard_table
             .swap_and_peel(&cid_cg, &onion)
             .expect("guard peel");
@@ -2760,7 +2357,6 @@ mod derp_tests {
         assert_eq!(out_id1, cid_gm);
         assert!(guard_table.lookup(&cid_me).is_none());
 
-        // Middle peels layer 2: only knows (cid_gm -> exit_fp, cid_me)
         let (next2, out_id2, body2) = middle_table
             .swap_and_peel(&out_id1, &body1)
             .expect("middle peel");
@@ -2768,7 +2364,6 @@ mod derp_tests {
         assert_eq!(out_id2, cid_me);
         assert!(middle_table.lookup(&cid_cg).is_none());
 
-        // Exit peels layer 3: no client session, no client fingerprint/IP
         let (next3, _out_id3, plaintext) = exit_table
             .swap_and_peel(&out_id2, &body2)
             .expect("exit peel");

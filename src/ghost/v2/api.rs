@@ -14,8 +14,6 @@ use super::regime::{self, effective_policy, Regime};
 use super::xray::{self, CircuitHops, CoverTx, LedgerInput, NonceEchoHops, WireWitness};
 use std::fmt;
 
-/// A private identity seed held by the running node, with a redacting `Debug`
-/// so `{:?}` on [`ApiState`] can never print it into a log line.
 #[derive(Clone)]
 pub struct NodeSecret([u8; 32]);
 
@@ -35,51 +33,28 @@ impl fmt::Debug for NodeSecret {
     }
 }
 
-/// Measurements the daemon actually took. Every field is `Option`: the ledger
-/// turns a missing measurement into `Unknown`, so this struct must not carry a
-/// default that reads like a pass.
 #[derive(Debug, Clone, Default)]
 pub struct Witnesses {
-    /// Hops in the circuit currently in use, if one is established. This is a
-    /// [`WireWitness`]: the HTTP layer can pass the measurement through but
-    /// cannot construct one, so a config value or a peer's claim cannot become
-    /// a verified circuit length here.
     pub circuit_hops: Option<WireWitness<CircuitHops>>,
-    /// Distinct ASNs among those hops.
     pub circuit_asns: Option<usize>,
-    /// Peers whose CAP_RELAY bit verified against a signed descriptor.
     pub cap_relay_verified: Option<usize>,
-    /// Hop count of the last signed nonce echo that came back.
     pub nonce_echo_hops: Option<WireWitness<NonceEchoHops>>,
-    /// Cover frames emitted by this process.
     pub cover_tx: Option<WireWitness<CoverTx>>,
-    /// Verified peers advertising CAP_RELAY — the raw population.
     pub relay_population: Option<usize>,
-    /// That population grouped by routing-domain cluster.
     pub relay_domains: Option<Vec<usize>>,
     pub dns_leak: Option<bool>,
     pub outer_sni: Option<String>,
 }
 
-/// What the HTTP layer knows about the running node.
 #[derive(Debug, Clone)]
 pub struct ApiState {
-    /// Peers currently connected. Used as the live relay population.
     pub peers: usize,
     pub regime: Regime,
-    /// The node's first SOCKS5 listener.
     pub socks_port: u16,
-    /// Outer transport label, when a session exists.
     pub transport: Option<String>,
-    /// Address websites see, when this node is exiting.
     pub exit_ip: Option<String>,
-    /// This node's fingerprint, for the home-exit view.
     pub node_fingerprint: String,
-    /// Live measurements. Configured regime booleans are not witnesses.
     pub witnesses: Witnesses,
-    /// The private seed the ticket issuer derives from. `None` in a view that
-    /// has no node identity, which makes `/api/v2/btcr` report unavailability
-    /// rather than minting from a guess.
     pub identity_seed: Option<NodeSecret>,
 }
 
@@ -102,8 +77,6 @@ fn ledger_input(state: &ApiState) -> LedgerInput {
     let connected = state.peers > 0;
     LedgerInput {
         regime: Some(state.regime),
-        // Prefer the verified relay population; a live session count is a
-        // fallback that the ledger still has to treat as domain-ungrouped.
         public_relays: state
             .witnesses
             .relay_population
@@ -115,8 +88,6 @@ fn ledger_input(state: &ApiState) -> LedgerInput {
         exit_ip: state.exit_ip.clone(),
         cover_tx: state.witnesses.cover_tx.clone(),
         dns_leak: state.witnesses.dns_leak,
-        // The hybrid handshake is mandatory in this build: a session cannot be
-        // established without it, so a live session is direct evidence.
         pq_hybrid: connected.then_some(true),
         chronos: super::chronos::evidence(),
         shaping: super::racs::shaping_evidence(),
@@ -128,7 +99,6 @@ fn ledger_input(state: &ApiState) -> LedgerInput {
     }
 }
 
-/// `GET /api/v2/xray` — the truth ledger.
 pub fn xray(state: &ApiState) -> Value {
     let ledger = xray::build(&ledger_input(state));
     json!({
@@ -143,7 +113,6 @@ pub fn xray(state: &ApiState) -> Value {
     })
 }
 
-/// `GET /api/v2/regime` — the active policy plus every option.
 pub fn regime(state: &ApiState) -> Value {
     let policy = effective_policy(state.regime, state.peers, state.socks_port);
     let options: Vec<Value> = Regime::ALL
@@ -176,7 +145,6 @@ pub fn regime(state: &ApiState) -> Value {
     })
 }
 
-/// `GET /api/v2/capabilities` — what this build contains.
 pub fn capabilities() -> Value {
     json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -198,7 +166,6 @@ pub fn capabilities() -> Value {
     })
 }
 
-/// Dispatch a `GET /api/v2/...` request. `None` means "not a v2 route".
 pub fn handle(state: &ApiState, req: &str) -> Option<Value> {
     let path = req
         .strip_prefix("GET ")
@@ -231,11 +198,6 @@ pub fn handle(state: &ApiState, req: &str) -> Option<Value> {
     }
 }
 
-/// Apply a `POST /api/v2/regime` body `{"regime": "fast|shielded|ghost|vantablack"}`.
-///
-/// Persists the choice and sets it for this process. The SOCKS listeners are
-/// bound at startup, so a change takes effect on restart; the response says so
-/// instead of implying a live switch that did not happen.
 pub fn apply_regime(body: &Value) -> Result<Value, String> {
     let raw = body
         .get("regime")
@@ -259,12 +221,6 @@ pub fn apply_regime(body: &Value) -> Result<Value, String> {
     }))
 }
 
-/// `POST /api/v2/btcr/issue` — blind-evaluate a request against a work receipt.
-///
-/// The caller supplies the **blinded** point and a beneficiary-signed receipt.
-/// The node returns `E = k·B` plus the DLEQ proof; it never sees the ticket
-/// input, so it cannot link issuance to a later spend. Without a configured
-/// beneficiary key the endpoint refuses rather than minting unearned tickets.
 pub fn btcr_issue(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, String> {
     let beneficiary_hex = std::env::var("GHOST_BTCR_BENEFICIARY").map_err(|_| {
         "GHOST_BTCR_BENEFICIARY is not set; refusing to mint tickets without a trusted work signer"
@@ -295,8 +251,6 @@ pub fn btcr_issue(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, Strin
         btcr::record_rejected_receipt();
         return Err(e);
     }
-    // The issuer lives in the node's private identity; the caller's fingerprint
-    // is not an input anywhere in this derivation.
     let issuer = Issuer::from_identity_seed(identity_seed);
     let now = super::now_secs();
     let bucket = Bucket {
@@ -306,8 +260,6 @@ pub fn btcr_issue(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, Strin
     let (eval, dleq) = issuer
         .evaluate(blinded, bucket.day, bucket.tier)
         .inspect_err(|_| btcr::record_rejected_receipt())?;
-    // Only claim the receipt once the request is known to be well-formed; a
-    // malformed body must not burn a unit of work.
     btcr::redeem_receipt(&receipt)?;
     btcr::record_issue();
     Ok(json!({
@@ -323,7 +275,6 @@ pub fn btcr_issue(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, Strin
     }))
 }
 
-/// `POST /api/v2/btcr/spend` — verify and spend a bearer ticket once.
 pub fn btcr_spend(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, String> {
     let encoded = body
         .get("ticket")
@@ -341,9 +292,6 @@ pub fn btcr_spend(body: &Value, identity_seed: &[u8; 32]) -> Result<Value, Strin
     }))
 }
 
-/// `POST /api/v2/fleet/invite` — render a `vb-fleet://` invite URI and SVG QR code
-/// from a caller-supplied `root_pk` (hex) + `cert` JSON, or `seed` (32-byte hex) +
-/// `device_pk` (32-byte hex) + `label`.
 pub fn fleet_invite_qr(body: &Value) -> Result<Value, String> {
     let (root_pk, cert) = if let Some(uri) = body.get("uri").and_then(|v| v.as_str()) {
         super::fleet::decode_invite(uri)?
@@ -391,7 +339,6 @@ pub fn fleet_invite_qr(body: &Value) -> Result<Value, String> {
     }))
 }
 
-/// `POST /api/v2/fleet/revoke` — record a signed [`Revocation`] for mesh gossip.
 pub fn fleet_revoke(body: &Value) -> Result<Value, String> {
     let root_hex = body
         .get("root_pk")
@@ -431,8 +378,6 @@ mod tests {
 
     #[test]
     fn xray_endpoint_uses_neff_domain_clustering() {
-        // 400 addresses on one host are one anonymity bucket. The API must
-        // report the failed population check, not the raw count.
         let state = ApiState {
             peers: 400,
             regime: Regime::Vantablack,
@@ -468,8 +413,6 @@ mod tests {
             ..Default::default()
         };
         let value = xray(&state);
-        // Four peers with no circuit, no cover count and no domain grouping is
-        // not evidence of anonymity: every witness is Unknown, never Verified.
         assert!(value["claim"].as_str().unwrap().contains("withheld"));
         assert!(value["headline"].as_str().unwrap().contains("unmeasured"));
         assert!(value["observations"].as_array().unwrap().len() >= 3);

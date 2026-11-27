@@ -28,29 +28,19 @@
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 
-/// Inclusive carrier bounds, in kHz.
 pub const BAND_MIN_KHZ: u32 = 2_000;
 pub const BAND_MAX_KHZ: u32 = 10_000;
-/// Inclusive occupied-bandwidth bounds, in Hz.
 pub const BANDWIDTH_MIN_HZ: u32 = 3_000;
 pub const BANDWIDTH_MAX_HZ: u32 = 24_000;
-/// Inclusive information-rate bounds after FEC, in bps.
 pub const INFO_BPS_MIN: u32 = 24;
 pub const INFO_BPS_MAX: u32 = 48;
-/// A GhostCell-Nano is fixed at 180 bytes; this is the unit the airtime bound
-/// is defined over, matching [`super::continuum::CELL_LEN`].
 pub const CELL_BYTES: u32 = 180;
-/// Spreading gain (10·log₁₀(BW / information rate)) bounds in dB. The 3 kHz /
-/// 24 bps corner is 20.97 dB, so 20.9 is the inclusive floor.
 pub const SPREADING_GAIN_MIN_DB: f64 = 20.9;
 pub const SPREADING_GAIN_MAX_DB: f64 = 27.0;
 pub const AIRTIME_MIN_SECS: f64 = 30.0;
 pub const AIRTIME_MAX_SECS: f64 = 60.0;
-/// How long a channel measurement remains evidence.
 pub const EVIDENCE_TTL_SECS: u64 = 900;
 
-/// One measured narrowband profile. Constructing it validates every bound, so
-/// a stored profile is always physically admissible.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct NvisProfile {
     pub freq_khz: u32,
@@ -62,8 +52,6 @@ pub struct NvisProfile {
 }
 
 impl NvisProfile {
-    /// Validate a measurement against the narrowband profile. Errors name the
-    /// violated bound; nothing is silently clamped.
     pub fn from_measurement(
         freq_khz: u32,
         bandwidth_hz: u32,
@@ -118,8 +106,6 @@ fn registry() -> &'static Mutex<Option<NvisProfile>> {
     PROFILE.get_or_init(|| Mutex::new(None))
 }
 
-/// Record a channel measurement from the radio layer. An invalid measurement is
-/// returned as an error and does not replace the last valid one.
 pub fn note_channel_sample(
     freq_khz: u32,
     bandwidth_hz: u32,
@@ -131,20 +117,14 @@ pub fn note_channel_sample(
     Ok(profile)
 }
 
-/// The last measurement, fresh or stale. The ledger decides freshness so a
-/// stale profile is demoted to `Unknown` rather than disappearing.
 pub fn last_profile() -> Option<NvisProfile> {
     *registry().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A fresh profile, or `None` when the radio has not measured the channel
-/// within [`EVIDENCE_TTL_SECS`].
 pub fn evidence() -> Option<NvisProfile> {
     last_profile().filter(NvisProfile::is_fresh)
 }
 
-/// Pure status for a supplied profile and clock, so the contract is testable
-/// without touching the global registry.
 pub fn status_for(profile: Option<NvisProfile>, now: u64) -> serde_json::Value {
     let (claim, profile_value) = match profile {
         None => ("unmeasured", serde_json::Value::Null),
@@ -169,7 +149,6 @@ pub fn status_for(profile: Option<NvisProfile>, now: u64) -> serde_json::Value {
     })
 }
 
-/// `GET /api/v2/nvis` — the last measured channel and whether it is evidence.
 pub fn status_json() -> serde_json::Value {
     status_for(last_profile(), super::now_secs())
 }
@@ -209,8 +188,6 @@ mod tests {
 
     #[test]
     fn an_impossible_wideband_plan_is_refused_rather_than_clamped() {
-        // 1 Mcps-class signalling inside a 24 kHz channel: the old whitepaper
-        // claim. It must not validate as a narrowband profile.
         assert!(NvisProfile::from_measurement(5_000, 24_000, 1_000_000, 1).is_err());
     }
 

@@ -25,28 +25,23 @@ use std::sync::{OnceLock, RwLock};
 
 use super::regime::{effective_population, Plane, Regime, MIN_ANONYMITY_RELAYS};
 
-/// A quantity the transport measures. Each marker carries the type of its
-/// measurement and how long that measurement remains evidence.
 pub trait Measure: 'static {
     type Value: Copy + std::fmt::Debug;
     const TTL_SECS: u64;
 }
 
-/// Hops in the last circuit the proxy actually assembled.
 pub struct CircuitHops;
 impl Measure for CircuitHops {
     type Value = u8;
     const TTL_SECS: u64 = 300;
 }
 
-/// Cover frames emitted by this process's RACS scheduler.
 pub struct CoverTx;
 impl Measure for CoverTx {
     type Value = u64;
     const TTL_SECS: u64 = 120;
 }
 
-/// Hop count of the last signed nonce echo that verified.
 pub struct NonceEchoHops;
 impl Measure for NonceEchoHops {
     type Value = u8;
@@ -57,15 +52,6 @@ mod wire {
     use super::Measure;
     use std::marker::PhantomData;
 
-    /// A measurement observed by the transport, not a configuration value.
-    ///
-    /// The fields are private and the constructor is visible only inside
-    /// [`super`]. `api.rs`, the UI and the CLI can receive one from the
-    /// producers in this module (`circuit_hops_witness`, `cover_tx_witness`,
-    /// `nonce_echo_witness`), but there is no way for them to mint one from a
-    /// config flag, a literal, or a peer's say-so. That is the type-level part
-    /// of the Stage 3 gate: a `Verified` wire claim needs a token only the
-    /// measurement layer can produce, and the token decays.
     pub struct WireWitness<P: Measure> {
         value: P::Value,
         observed_at: u64,
@@ -89,8 +75,6 @@ mod wire {
             self.observed_at
         }
 
-        /// `false` once the observation is older than the quantity's horizon;
-        /// a stale token is reported as unmeasured, never as a pass.
         pub fn is_fresh(&self) -> bool {
             super::super::now_secs().saturating_sub(self.observed_at) <= P::TTL_SECS
         }
@@ -118,31 +102,13 @@ mod wire {
 
 pub use wire::WireWitness;
 
-/// Blind Census — a population proof that carries no addresses (Invention 8's
-/// companion in `DEV/UNPRECEDENTED_PRIMITIVES.md` §5).
-///
-/// A public relay directory lets a client verify `N ≥ 200` but hands a censor
-/// every address to block. Hiding the bridge list fixes the second problem and
-/// loses the first. The census breaks the dilemma: each relay publishes one
-/// VRF-shaped lottery ticket per epoch, bindable only to a hashed *cell* (no IP,
-/// no port, no static key), and clients keep the `m` smallest values. An
-/// `m`-minimum sketch of uniforms estimates the population from order
-/// statistics, and a duplicate cell collapses to one entry — so a rack of Sybils
-/// in one datacenter cannot inflate the count.
-///
-/// The estimate is deliberately **not** a claim of "N relays". It is the number
-/// of physically distinct cells the tickets can prove, with an exact 99% lower
-/// confidence bound; below the 200 floor the ledger withholds anonymity.
 pub mod census {
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
     use std::sync::{Mutex, OnceLock};
 
-    /// How many smallest tickets a sketch keeps. 64 × 49 bytes ≈ 3 KiB.
     pub const DEFAULT_SKETCH_M: usize = 64;
-    /// One census epoch.
     pub const CENSUS_EPOCH_SECS: u64 = 86_400;
-    /// The anonymity floor a census has to clear.
     pub const CENSUS_FLOOR: usize = super::MIN_ANONYMITY_RELAYS;
 
     fn census_message(epoch: u64, cell_commit: &[u8; 32]) -> Vec<u8> {
@@ -153,12 +119,10 @@ pub mod census {
         msg
     }
 
-    /// The current census epoch.
     pub fn current_epoch() -> u64 {
         super::super::now_secs() / CENSUS_EPOCH_SECS
     }
 
-    /// The unlinkable cell identity: a hash of a locally held cell secret.
     pub fn cell_commit(cell_secret: &[u8; 32]) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(b"VB-CENSUS-CELL-V1");
@@ -169,11 +133,6 @@ pub mod census {
         out
     }
 
-    /// One relay's ticket for one epoch.
-    ///
-    /// `value` is the top 64 bits of the VRF output. Ed25519 signatures are
-    /// deterministic, so a relay cannot mint two different tickets for the same
-    /// cell and epoch — the uniqueness a lottery needs comes for free.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct CensusTicket {
         pub epoch: u64,
@@ -191,7 +150,6 @@ pub mod census {
     }
 
     impl CensusTicket {
-        /// Issue this epoch's ticket for a cell.
         pub fn issue(epoch: u64, cell_secret: &[u8; 32], key: &ed25519_dalek::SigningKey) -> Self {
             use ed25519_dalek::Signer;
             let cell_commit = cell_commit(cell_secret);
@@ -204,8 +162,6 @@ pub mod census {
             }
         }
 
-        /// Verify the issuer signed *this* epoch and cell, and that the claimed
-        /// lottery value is the one that proof produces.
         pub fn verify(&self, epoch: u64, key: &ed25519_dalek::VerifyingKey) -> bool {
             use ed25519_dalek::{Signature, Verifier};
             if self.epoch != epoch || self.value != value_of(&self.proof) {
@@ -224,25 +180,16 @@ pub mod census {
         u64::from_be_bytes(bytes)
     }
 
-    /// What a sketch can prove.
     #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
     pub struct CensusEstimate {
-        /// Distinct cells present in the sketch.
         pub cells_observed: usize,
-        /// The sketch width `m`.
         pub m: usize,
-        /// The largest kept lottery value, mapped into (0, 1).
         pub u_m: f64,
-        /// `(m-1)/u_m` — unbiased when at least `m` cells exist.
         pub n_hat: f64,
-        /// Exact 99% lower confidence bound on the number of distinct cells.
         pub n_lower_99: usize,
-        /// Fewer than `m` cells were seen, so the sketch is the whole population
-        /// and says nothing about the wider network.
         pub saturated: bool,
     }
 
-    /// The `m`-minimum sketch itself: no addresses, only values and cell hashes.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct CensusSketch {
         pub epoch: u64,
@@ -250,7 +197,6 @@ pub mod census {
         pub tickets: Vec<CensusTicket>,
     }
 
-    /// The address-free wire form of a sketch entry.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
     pub struct WireTicket {
         pub value: u64,
@@ -266,8 +212,6 @@ pub mod census {
             }
         }
 
-        /// Insert a ticket, keeping one (the smallest) per cell and the `m`
-        /// smallest cells overall. Returns whether the sketch changed.
         pub fn insert(&mut self, ticket: CensusTicket) -> bool {
             if ticket.epoch != self.epoch {
                 return false;
@@ -275,10 +219,6 @@ pub mod census {
             self.insert_cell(ticket.cell_commit, ticket.value)
         }
 
-        /// Insert a `(cell, value)` pair this epoch, keeping the smallest value
-        /// per cell and the `m` smallest cells overall. This is the primitive a
-        /// locally derived cell uses: the receiver attests the cell from the
-        /// network path it observed, not from anything the sender claimed.
         pub fn insert_cell(&mut self, cell_commit: [u8; 32], value: u64) -> bool {
             if let Some(existing) = self
                 .tickets
@@ -299,8 +239,6 @@ pub mod census {
                     epoch: self.epoch,
                     cell_commit,
                     value,
-                    // No signature: the attestation is the peer's observed
-                    // endpoint, which the receiver measured itself.
                     proof: [0u8; 64],
                 });
             }
@@ -309,8 +247,6 @@ pub mod census {
             true
         }
 
-        /// Insert only if the ticket verifies. The node calls this on tickets it
-        /// received from a relay whose key it already trusts.
         pub fn insert_verified(
             &mut self,
             ticket: CensusTicket,
@@ -323,7 +259,6 @@ pub mod census {
             self.tickets.len()
         }
 
-        /// The address-free form that is safe to gossip.
         pub fn wire_tickets(&self) -> Vec<WireTicket> {
             self.tickets
                 .iter()
@@ -334,7 +269,6 @@ pub mod census {
                 .collect()
         }
 
-        /// Estimate the distinct-cell population, or `None` for an empty sketch.
         pub fn estimate(&self) -> Option<CensusEstimate> {
             let observed = self.tickets.len();
             if observed == 0 {
@@ -343,10 +277,6 @@ pub mod census {
             let last = self.tickets.last()?;
             let u_m = ((last.value as f64) + 1.0) / (u64::MAX as f64 + 1.0);
             if observed < self.m {
-                // Fewer cells than the sketch width: the sketch is the entire
-                // population we know of. N_hat is exactly `observed`; pretending
-                // the order-statistic formula applies would invent a wider
-                // network out of an empty tail.
                 return Some(CensusEstimate {
                     cells_observed: observed,
                     m: self.m,
@@ -367,12 +297,9 @@ pub mod census {
         }
     }
 
-    /// `P(Bin(n, u) >= m)` — the probability that an `m`-th smallest uniform is
-    /// at most `u` under population `n`.
     fn binomial_tail(n: u64, u: f64, m: usize) -> f64 {
         let u = u.clamp(1e-12, 1.0 - 1e-12);
         let q = 1.0 - u;
-        // P(X = 0), then the recurrence for P(X = k), summing only k < m.
         let mut p = q.powf(n as f64);
         let mut cdf = p;
         for k in 1..m {
@@ -385,9 +312,6 @@ pub mod census {
         (1.0 - cdf).clamp(0.0, 1.0)
     }
 
-    /// Smallest population `n` for which the observation is not rejected at the
-    /// 1% level. Larger `n` makes a small order statistic more likely, so the
-    /// consistent set is `[n_lower, ∞)`.
     pub fn lower_confidence_bound(m: usize, u_m: f64) -> usize {
         const ALPHA: f64 = 0.01;
         let mut lo = m as u64;
@@ -413,10 +337,6 @@ pub mod census {
         })
     }
 
-    /// Domain-separated cell secret a node uses for its own announcement.
-    ///
-    /// The receiver does not trust it — see [`observed_cell`] — but the signature
-    /// over it proves the announcer holds the identity key for this epoch.
     pub fn local_cell_secret(fingerprint: &str, epoch: u64) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(b"VB-CENSUS-LOCAL-CELL-V1");
@@ -428,12 +348,6 @@ pub mod census {
         out
     }
 
-    /// The cell a receiver derives from the endpoint it actually observed.
-    ///
-    /// This is the live Sybil bound. Every relay in one `/24` (IPv4) or `/48`
-    /// (IPv6) collapses into one cell whatever identity, key or address it
-    /// claims, because the receiver measures the path, not the story. Moving to
-    /// a new cell costs a new routing domain, exactly as `N_eff` assumes.
     pub fn observed_cell(endpoint: &str, epoch: u64) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(b"VB-CENSUS-OBSERVED-CELL-V1");
@@ -445,11 +359,6 @@ pub mod census {
         out
     }
 
-    /// The lottery value of an observed cell.
-    ///
-    /// Derived from the cell and epoch alone: one cell has exactly one value per
-    /// epoch, so a sender cannot grind for a small one. A fresh identity in the
-    /// same subnet maps to the same cell and therefore the same value.
     pub fn observed_value(cell_commit: &[u8; 32], epoch: u64) -> u64 {
         let mut h = Sha256::new();
         h.update(b"VB-CENSUS-CELL-VALUE-V1");
@@ -461,19 +370,15 @@ pub mod census {
         u64::from_be_bytes(bytes)
     }
 
-    /// One relay's epoch announcement as it travels over PEX.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct CensusBroadcast {
-        /// 16 hex characters: the first 8 bytes of the Ed25519 key.
         pub fingerprint: String,
         pub verifying_key: [u8; 32],
         pub ticket: CensusTicket,
     }
 
-    /// `fingerprint(16) | key(32) | epoch(8) | cell(32) | value(8) | proof(64)`.
     pub const CENSUS_WIRE_ENTRY_LEN: usize = 16 + 32 + 8 + 32 + 8 + 64;
 
-    /// Issue this node's announcement for `epoch`.
     pub fn announcement(
         key: &ed25519_dalek::SigningKey,
         fingerprint: &str,
@@ -487,7 +392,6 @@ pub mod census {
         }
     }
 
-    /// Batch up to 8 announcements into a PEX frame body.
     pub fn encode_gossip(entries: &[CensusBroadcast]) -> Vec<u8> {
         let count = entries.len().min(8);
         let mut out = Vec::with_capacity(1 + count * CENSUS_WIRE_ENTRY_LEN);
@@ -507,8 +411,6 @@ pub mod census {
         out
     }
 
-    /// Parse a PEX frame body into announcements, stopping at the first short
-    /// entry rather than inventing one.
     pub fn decode_gossip(body: &[u8]) -> Vec<CensusBroadcast> {
         let Some((&count, mut rest)) = body.split_first() else {
             return Vec::new();
@@ -547,12 +449,6 @@ pub mod census {
         out
     }
 
-    /// What a receiver should record for one announcement.
-    ///
-    /// Everything the sender said about *which* cell it is in is discarded: the
-    /// cell and its lottery value are recomputed from the endpoint the receiver
-    /// observed. What the signature buys is epoch binding and proof of key
-    /// possession, nothing else.
     pub fn observed_entry(
         announcement: &CensusBroadcast,
         observed_endpoint: &str,
@@ -578,10 +474,6 @@ pub mod census {
         sketch.insert_cell(cell_commit, value)
     }
 
-    /// Record one live announcement over the session it arrived on.
-    ///
-    /// Called from the PEX receive path with the address the frame actually came
-    /// from; the sketch therefore counts routing domains, not claimed cells.
     pub fn note_announcement(announcement: &CensusBroadcast, observed_endpoint: &str) -> bool {
         let epoch = current_epoch();
         match observed_entry(announcement, observed_endpoint, epoch) {
@@ -590,11 +482,6 @@ pub mod census {
         }
     }
 
-    /// Feed one verified ticket into the process-wide sketch.
-    ///
-    /// The caller is responsible for verifying the proof (and therefore that the
-    /// relay owns the cell) before calling this; [`CensusSketch::insert_verified`]
-    /// does both when the key is at hand.
     pub fn note_ticket(ticket: CensusTicket) -> bool {
         let epoch = super::super::now_secs() / CENSUS_EPOCH_SECS;
         let mut sketch = global_sketch().lock().unwrap_or_else(|e| e.into_inner());
@@ -604,7 +491,6 @@ pub mod census {
         sketch.insert(ticket)
     }
 
-    /// The current epoch's estimate, or `None` before any ticket arrived.
     pub fn current_estimate() -> Option<CensusEstimate> {
         global_sketch()
             .lock()
@@ -660,9 +546,6 @@ pub mod census {
 
         #[test]
         fn the_sketch_is_an_unbiased_estimator_of_a_population() {
-            // One sketch has ~2.4 sd of sampling noise at N=1000, so the claim
-            // under test is the estimator's bias over many independent epochs —
-            // the property Theorem 5 of the census section states.
             let mut rng = Rng(0x9E37);
             let trials = 41;
             let mut sum = 0.0;
@@ -672,9 +555,6 @@ pub mod census {
                 let estimate = sketch.estimate().expect("non-empty sketch");
                 assert_eq!(estimate.cells_observed, DEFAULT_SKETCH_M);
                 assert!(!estimate.saturated);
-                // A *99%* bound is allowed to miss high on ~1% of epochs; that
-                // is what the confidence level means. What it must not do is
-                // miss by much or often.
                 if estimate.n_lower_99 > 1_000 {
                     above_truth += 1;
                 }
@@ -705,8 +585,6 @@ pub mod census {
         fn sybils_in_one_cell_collapse_to_one_entry() {
             let mut sketch = CensusSketch::new(7, DEFAULT_SKETCH_M);
             let cell = [0x5Au8; 32];
-            // Five hundred tickets for the same physical cell, each minted by a
-            // different key so each has a distinct proof and value.
             for i in 0..500u64 {
                 let mut proof = [0u8; 64];
                 proof[..8].copy_from_slice(&i.to_be_bytes());
@@ -740,7 +618,6 @@ pub mod census {
             forged.value ^= 1;
             assert!(!forged.verify(5, &key.verifying_key()));
 
-            // Deterministic: one cell cannot mint two lottery values per epoch.
             assert_eq!(ticket, CensusTicket::issue(5, &cell, &key));
         }
 
@@ -795,8 +672,6 @@ pub mod census {
                 claimed_cells.insert(broadcast.ticket.cell_commit);
                 let (cell, value) =
                     observed_entry(&broadcast, "198.51.100.17:4433", epoch).expect("verifies");
-                // The first insert changes the sketch; the rest are the same
-                // cell with the same value, so they change nothing.
                 let _ = sketch.insert_cell(cell, value);
             }
             assert_eq!(claimed_cells.len(), 50, "fifty distinct claimed cells");
@@ -821,14 +696,9 @@ pub mod census {
                 observed_entry(&broadcast_a, "192.0.2.10:1", epoch).expect("a verifies");
             let (cell_b, value_b) =
                 observed_entry(&broadcast_b, "192.0.2.10:1", epoch).expect("b verifies");
-            // Two identities, one cell, one lottery value: there is nothing to
-            // grind, so many keys in one subnet cannot drag the order statistic
-            // down and inflate the estimate.
             assert_eq!(cell_a, cell_b);
             assert_eq!(value_a, value_b);
 
-            // A different subnet is a different cell, which is the cost the
-            // bound charges an adversary.
             let (cell_c, _) = observed_entry(&broadcast_a, "192.0.3.10:1", epoch).expect("c");
             assert_ne!(cell_a, cell_c);
         }
@@ -875,15 +745,12 @@ pub mod census {
                 !wire.windows(11).any(|w| w == b"203.0.113.9"),
                 "the announcement must not carry the sender's address"
             );
-            // A truncated frame stops instead of inventing an entry.
             assert!(decode_gossip(&wire[..wire.len() - 1]).is_empty());
             assert!(decode_gossip(&[]).is_empty());
         }
 
         #[test]
         fn two_hundred_routing_domains_clear_the_anonymity_floor() {
-            // The live path in one test: real signed announcements, the cells a
-            // receiver derives from 512 distinct /24s, and the ledger's floor.
             use ed25519_dalek::SigningKey;
             let key = SigningKey::from_bytes(&[0x77u8; 32]);
             let fingerprint = hex::encode(&key.verifying_key().to_bytes()[..8]);
@@ -912,7 +779,6 @@ pub mod census {
 
         #[test]
         fn the_lower_bound_is_never_above_the_truth_for_a_small_sketch() {
-            // 12 cells with a width of 64: nothing is proved about the network.
             let mut sketch = CensusSketch::new(7, DEFAULT_SKETCH_M);
             for ticket in tickets(12) {
                 sketch.insert(ticket);
@@ -925,12 +791,6 @@ pub mod census {
     }
 }
 
-/// Proof-carrying provenance for the formal models.
-///
-/// The table is generated by `build.rs` from `formal/attestations.json`, which
-/// it refuses to accept if a model's bytes changed without re-attestation. The
-/// binary therefore cannot report a proof result that was not true of the model
-/// it was built from.
 pub mod formal {
     use serde::Serialize;
 
@@ -941,7 +801,6 @@ pub mod formal {
         pub proverif: &'static str,
         pub attested_at: &'static str,
         pub models: usize,
-        /// Every attested model has at least one query ProVerif proved.
         pub all_queries_hold: bool,
     }
 
@@ -957,17 +816,14 @@ pub mod formal {
     }
 }
 
-/// A peer whose signed descriptor verified, kept only for the ledger.
 #[derive(Debug, Clone)]
 pub struct PeerWitness {
     pub fingerprint: String,
     pub capabilities: u8,
-    /// Routing-domain cluster the endpoint falls in (`/24` v4, `/48` v6).
     pub domain: String,
     pub seen_at: u64,
 }
 
-/// Descriptors older than this are not evidence of a live relay.
 const PEER_WITNESS_TTL_SECS: u64 = 7 * 86_400;
 
 fn witnesses() -> &'static RwLock<HashMap<String, PeerWitness>> {
@@ -975,12 +831,6 @@ fn witnesses() -> &'static RwLock<HashMap<String, PeerWitness>> {
     W.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-/// The routing-domain cluster of an endpoint: `/24` for IPv4, `/48` for IPv6.
-///
-/// This is a *proxy* for an administrative domain, not an ASN: the descriptor
-/// does not carry one. It still defeats the concrete Sybil shape the ledger is
-/// guarding against — many addresses on one host or one small allocation — and
-/// the field is labelled as a subnet cluster wherever it is reported.
 pub fn domain_cluster(endpoint: &str) -> String {
     use std::net::IpAddr;
     let host = endpoint
@@ -1000,10 +850,6 @@ pub fn domain_cluster(endpoint: &str) -> String {
     }
 }
 
-/// Record (or refresh) a peer whose signed descriptor verified.
-///
-/// Called from the descriptor install path, so a peer only enters this registry
-/// after its signature and freshness checked out.
 pub fn note_verified_peer(fingerprint: &str, capabilities: u8, endpoint: &str) {
     let mut reg = witnesses().write().unwrap_or_else(|e| e.into_inner());
     reg.insert(
@@ -1017,7 +863,6 @@ pub fn note_verified_peer(fingerprint: &str, capabilities: u8, endpoint: &str) {
     );
 }
 
-/// Drop a peer that disconnected or withdrew its descriptor.
 pub fn forget_verified_peer(fingerprint: &str) {
     witnesses()
         .write()
@@ -1037,7 +882,6 @@ fn nonce_echo_state() -> &'static std::sync::Mutex<NonceEchoState> {
     STATE.get_or_init(|| std::sync::Mutex::new(NonceEchoState::default()))
 }
 
-/// Canonical domain-separated signing input for a signed nonce-echo witness.
 pub fn nonce_echo_signing_input(nonce: &[u8; 16], hops: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(16 + 16 + 1);
     out.extend_from_slice(b"VB-NONCE-ECHO-V1");
@@ -1046,7 +890,6 @@ pub fn nonce_echo_signing_input(nonce: &[u8; 16], hops: u8) -> Vec<u8> {
     out
 }
 
-/// Issue a fresh 16-byte nonce challenge for an active circuit/session.
 pub fn issue_nonce_challenge() -> [u8; 16] {
     let nonce: [u8; 16] = rand::random();
     let now = super::now_secs();
@@ -1059,7 +902,6 @@ pub fn issue_nonce_challenge() -> [u8; 16] {
     nonce
 }
 
-/// Verify a peer's Ed25519 signature over an outstanding nonce challenge and record the hop count.
 pub fn verify_nonce_echo(
     nonce: &[u8; 16],
     signer_pk: &[u8; 32],
@@ -1085,40 +927,31 @@ pub fn verify_nonce_echo(
     true
 }
 
-/// Hop count of the latest verified signed nonce-echo witness (stale after 300s -> `None`).
 pub fn last_nonce_echo_hops() -> Option<u8> {
     let now = super::now_secs();
     nonce_echo_measurement().and_then(|(hops, ts)| (now.saturating_sub(ts) <= 300).then_some(hops))
 }
 
-/// Raw `(hops, observed_at)` of the last verified echo, without the horizon
-/// applied: the [`WireWitness`] decides freshness so stale evidence is reported
-/// as unmeasured rather than silently reused.
 fn nonce_echo_measurement() -> Option<(u8, u64)> {
     let st = nonce_echo_state().lock().unwrap_or_else(|e| e.into_inner());
     st.last_verified
 }
 
-/// Proof that the proxy assembled a circuit of this many hops.
 pub fn circuit_hops_witness() -> Option<WireWitness<CircuitHops>> {
     let (hops, observed_at) = super::boomerang::last_circuit_measurement()?;
     Some(WireWitness::observed(hops, observed_at))
 }
 
-/// Proof that the RACS emitter actually put frames on the wire.
 pub fn cover_tx_witness() -> Option<WireWitness<CoverTx>> {
     let (count, observed_at) = super::racs::cover_measurement();
     (observed_at != 0).then(|| WireWitness::observed(count, observed_at))
 }
 
-/// Proof that a signed nonce echo verified and how many hops it traversed.
 pub fn nonce_echo_witness() -> Option<WireWitness<NonceEchoHops>> {
     let (hops, observed_at) = nonce_echo_measurement()?;
     Some(WireWitness::observed(hops, observed_at))
 }
 
-/// A freshly observed token for tests. Compiled only in test builds; production
-/// `api.rs` has no such constructor.
 #[cfg(test)]
 pub fn test_witness<P: Measure>(value: P::Value) -> WireWitness<P> {
     WireWitness::observed(value, super::now_secs())
@@ -1133,12 +966,10 @@ fn live_witnesses() -> Vec<PeerWitness> {
         .collect()
 }
 
-/// Every unexpired verified peer, for tests and diagnostics.
 pub fn verified_peers() -> Vec<PeerWitness> {
     live_witnesses()
 }
 
-/// Verified peers advertising `CAP_RELAY`.
 pub fn cap_relay_verified() -> usize {
     live_witnesses()
         .iter()
@@ -1146,11 +977,6 @@ pub fn cap_relay_verified() -> usize {
         .count()
 }
 
-/// One consistent snapshot of the verified `CAP_RELAY` population and its
-/// routing-domain groups.
-///
-/// Both numbers are taken from the same read of the registry, so the ledger can
-/// never report a population and a grouping that describe different sets.
 pub fn relay_population() -> (usize, Vec<usize>) {
     let peers: Vec<PeerWitness> = live_witnesses()
         .into_iter()
@@ -1163,12 +989,10 @@ pub fn relay_population() -> (usize, Vec<usize>) {
     (peers.len(), groups.into_values().collect())
 }
 
-/// Verified `CAP_RELAY` peers, grouped by routing-domain cluster.
 pub fn relay_domains() -> Vec<usize> {
     relay_population().1
 }
 
-/// State of one invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
@@ -1187,84 +1011,49 @@ impl State {
     }
 }
 
-/// One checkable property of the running node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Invariant {
     pub id: &'static str,
     pub state: State,
-    /// What was checked, in plain language.
     pub detail: String,
 }
 
-/// Everything the ledger needs from the running node. Fields are `Option` so a
-/// headless build can say "not measured" instead of inventing a value.
 #[derive(Debug, Clone, Default)]
 pub struct LedgerInput {
     pub regime: Option<Regime>,
-    /// Live public relays the node can see. `None` means the node has not looked.
     pub public_relays: Option<usize>,
-    /// Hops actually in the circuit in use. A typed token: no API or UI code
-    /// can supply a number here without a transport observation.
     pub circuit_hops: Option<WireWitness<CircuitHops>>,
-    /// Distinct autonomous systems among the circuit's hops.
     pub circuit_asns: Option<usize>,
     pub transport: Option<String>,
-    /// The SNI an observer of the outer connection would read.
     pub outer_sni: Option<String>,
-    /// The address a website sees, if the node is exiting.
     pub exit_ip: Option<String>,
-    /// Cover frames actually emitted by this process, from the RACS counters.
-    /// `None` means the emitter has not reported; a fresh zero is a real failure.
     pub cover_tx: Option<WireWitness<CoverTx>>,
-    /// What the renewal schedule actually did: measured slot window, burst
-    /// bound and duty cycle. Emitting cover without this is unmeasured shaping,
-    /// not evidence of shaping.
     pub shaping: Option<super::racs::ShapingEvidence>,
-    /// Whether DNS queries are known to bypass the mesh.
     pub dns_leak: Option<bool>,
-    /// `true` when the handshake used the hybrid PQ suite.
     pub pq_hybrid: Option<bool>,
-    /// Measured ACK-pacing state, horizon and age, from [`super::chronos`].
     pub chronos: Option<super::chronos::ChronosEvidence>,
-    /// Peers whose `CAP_RELAY` bit was verified against their signed descriptor.
-    /// Raw connected-peer counts do not count: a peer that advertises nothing
-    /// may simply be dropping every circuit we hand it.
     pub cap_relay_verified: Option<usize>,
-    /// Hop count of the last completed signed nonce echo. `None` when no
-    /// circuit has answered the witness, which is the common case and is
-    /// reported as unmeasured rather than assumed.
     pub nonce_echo_hops: Option<WireWitness<NonceEchoHops>>,
-    /// Relay counts grouped by administrative domain (ASN / subnet cluster).
-    /// Without this, a raw relay count is not an effective population.
     pub relay_domains: Option<Vec<usize>>,
-    /// The last measured narrowband NVIS channel, if the radio reported one.
-    /// No profile means no NVIS claim, not a default profile.
     pub nvis: Option<super::nvis::NvisProfile>,
-    /// The current blind-census sketch's estimate. `None` before any verified
-    /// ticket arrives — a population claim without tickets is a guess.
     pub census: Option<census::CensusEstimate>,
 }
 
-/// One observer's view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Observation {
-    /// "Your ISP", "The guard", "The website".
     pub observer: String,
     pub sees: Vec<String>,
     pub does_not_see: Vec<String>,
 }
 
-/// The full ledger, ready for JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TruthLedger {
     pub headline: String,
-    /// The strongest sentence this node is allowed to say about itself.
     pub claim: String,
     pub regime: String,
     pub plane: String,
     pub observations: Vec<Observation>,
     pub invariants: Vec<Invariant>,
-    /// What was formally proved about the models this binary was built from.
     pub formal: formal::FormalProvenance,
     pub generated_at: u64,
 }
@@ -1291,13 +1080,10 @@ fn inv(id: &'static str, state: State, detail: impl Into<String>) -> Invariant {
     }
 }
 
-/// Build the ledger from live measurements.
 pub fn build(input: &LedgerInput) -> TruthLedger {
     let regime = input.regime.unwrap_or(Regime::Ghost);
     let plane = regime.plane();
     let relays = input.public_relays;
-    // A token older than its horizon is not evidence. Demote it here, once, so
-    // every downstream invariant and observation sees the same honest value.
     let circuit_hops = input
         .circuit_hops
         .as_ref()
@@ -1313,9 +1099,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         .as_ref()
         .filter(|w| w.is_fresh())
         .map(|w| w.value());
-    // Rényi-2 collision entropy over administrative domains: N_eff is what
-    // decides whether "200 relays" means 200 independent operators or one VPS
-    // with 200 addresses.
     let neff = input
         .relay_domains
         .as_deref()
@@ -1323,7 +1106,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         .map(effective_population)
         .map(|n| n.round() as usize);
 
-    // ── Invariants ──────────────────────────────────────────────────────
     let mut invariants = Vec::with_capacity(12);
 
     invariants.push(match input.pq_hybrid {
@@ -1366,8 +1148,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         ),
     });
 
-    // The witnesses below are the difference between "the regime asked for
-    // cover and three hops" and "the node measured cover and three hops".
     if plane == Plane::Umbra {
         invariants.push(match input.cap_relay_verified {
             Some(n) if n >= required_hops as usize => inv(
@@ -1428,9 +1208,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         });
     }
 
-    // The population check applies to a public anonymity plane whether or not
-    // the regime is allowed to claim anonymity: it is the difference between
-    // "hidden among users" and "alone in a bucket".
     if plane == Plane::Umbra {
         invariants.push(match (relays, neff) {
             (Some(n), Some(e)) if e >= MIN_ANONYMITY_RELAYS => inv(
@@ -1462,9 +1239,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         });
     }
 
-    // A population *claim* needs a population *proof*. The relay count above is
-    // what this node can reach; the census is what distinct physical cells have
-    // proven themselves to exist without disclosing a single address.
     if plane == Plane::Umbra {
         invariants.push(match input.census {
             Some(e) if e.n_lower_99 >= MIN_ANONYMITY_RELAYS => inv(
@@ -1559,9 +1333,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         });
     }
 
-    // Clock hardening is an Umbra property. Fast and Shielded must not gain a
-    // ledger requirement (or any added pacing delay) for a claim they do not
-    // make; the regime test in `regime.rs` pins that isolation.
     if plane == Plane::Umbra {
         let now = super::now_secs();
         invariants.push(match input.chronos {
@@ -1622,7 +1393,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         });
     }
 
-    // ── Claim ───────────────────────────────────────────────────────────
     let failed = invariants
         .iter()
         .filter(|i| i.state == State::Failed)
@@ -1665,7 +1435,6 @@ pub fn build(input: &LedgerInput) -> TruthLedger {
         claim.clone()
     };
 
-    // ── Observer views ──────────────────────────────────────────────────
     let mut isp_sees = vec![
         match input.transport.as_deref() {
             Some("quic") => "one QUIC/HTTP-3 flow to a single address".to_string(),
@@ -2056,8 +1825,6 @@ mod tests {
 
     #[test]
     fn the_verified_registry_is_the_source_of_the_population() {
-        // Unique fingerprint: the registry is process-global and libtest runs
-        // tests in parallel, so no test may assert on a global total.
         let fp = "xray-witness-test-9f3a";
         note_verified_peer(fp, CAP_RELAY, "192.0.2.200:2270");
         assert!(verified_peers().iter().any(|w| w.fingerprint == fp));
@@ -2126,7 +1893,6 @@ mod tests {
         let sig2 = id.sign(&msg2).to_bytes();
         assert!(verify_nonce_echo(&nonce2, &pk, &sig2, 3));
         assert_eq!(last_nonce_echo_hops(), Some(3));
-        // Replay of already-consumed nonce must fail.
         assert!(!verify_nonce_echo(&nonce2, &pk, &sig2, 3));
     }
 }

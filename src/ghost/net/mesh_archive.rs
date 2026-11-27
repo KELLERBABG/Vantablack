@@ -10,7 +10,6 @@
 use crate::ghost::layers::l4_rs;
 use sha2::{Digest, Sha256};
 
-/// An immutable public document archived across the mesh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchivalRecord {
     pub canonical_uri: String,
@@ -19,7 +18,6 @@ pub struct ArchivalRecord {
 }
 
 impl ArchivalRecord {
-    /// Archive a canonical document by splitting it into 3 Reed-Solomon shards.
     pub fn create(canonical_uri: String, content: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(content);
@@ -40,7 +38,6 @@ impl ArchivalRecord {
         }
     }
 
-    /// Reconstruct and verify document integrity from available surviving shards.
     pub fn reconstruct(
         &self,
         surviving_shards: &[Option<Vec<u8>>],
@@ -71,7 +68,6 @@ impl ArchivalRecord {
 
         let content = &combined[2..2 + length];
 
-        // Invariant: Reconstructed content MUST match canonical content hash
         let mut hasher = Sha256::new();
         hasher.update(content);
         let actual_hash: [u8; 32] = hasher.finalize().into();
@@ -96,7 +92,6 @@ mod tests {
         let archive = ArchivalRecord::create(uri, document);
         assert_eq!(archive.shards.len(), 3);
 
-        // 1. Reconstruct from Shard 0 and Shard 1 (Shard 2 missing)
         let surviving_0_1 = vec![
             Some(archive.shards[0].clone()),
             Some(archive.shards[1].clone()),
@@ -107,7 +102,6 @@ mod tests {
             .expect("reconstructs 0 and 1");
         assert_eq!(&recovered, document);
 
-        // 2. Reconstruct from Shard 1 and Shard 2 (Shard 0 missing)
         let surviving_1_2 = vec![
             None,
             Some(archive.shards[1].clone()),
@@ -118,7 +112,6 @@ mod tests {
             .expect("reconstructs 1 and 2");
         assert_eq!(&recovered2, document);
 
-        // 3. Exactly 1 shard is insufficient
         let surviving_only_0 = vec![Some(archive.shards[0].clone()), None, None];
         assert!(archive.reconstruct(&surviving_only_0).is_err());
     }

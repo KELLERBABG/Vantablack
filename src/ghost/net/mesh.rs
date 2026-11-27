@@ -22,31 +22,12 @@ use crate::ghost::net::routing::{ContactPlan, PoissonReputationMatrix, RouteOpti
 use crate::ghost::net::{frame_shard, ice, send_gtf_v2, stun, GtfV2Header};
 use crate::ghost::session::Session;
 
-// ── Bootstrap Seeds & Embedded Default Config ──────────────────────
-
-/// Hardcoded bootstrap seed VPS nodes for initial peer discovery.
-///
-/// New .exe instances that have never connected to the mesh can use these
-/// seeds to perform STUN hole-punching and locate the rest of the network
-/// (PC 2, PC 3, PC 4, PC 5 in the reference architecture).
-///
-/// Each entry is a (public_ip, port, fingerprint) tuple. The fingerprint
-/// is the first 16 hex chars of the node's identity public key; it allows
-/// the connecting node to verify they've reached the intended seed.
 pub const EMBEDDED_DEFAULT_CONFIG: &[(&str, u16, &str)] = &[
-    // Primary seed — VPS 1 (EU-West)
     ("51.15.xx.xx", 2270, "deadbeef12345678"),
-    // Secondary seed — VPS 2 (US-East)
     ("45.33.xx.xx", 2270, "cafebabe87654321"),
-    // Tertiary seed — VPS 3 (Asia-Pacific)
     ("139.162.xx.xx", 2270, "baadf00dabcdef01"),
 ];
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 1. NAT Traversal & ICE (RFC 8445) over STUN (RFC 8489)
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// A STUN-style NAT binding discovered via hole-punching.
 #[derive(Debug, Clone)]
 pub struct NatBinding {
     pub public_addr: SocketAddr,
@@ -56,7 +37,6 @@ pub struct NatBinding {
     pub lifetime_secs: u64,
 }
 
-/// NAT traversal state for a known peer.
 #[derive(Debug, Clone)]
 pub struct NatPeerState {
     pub fingerprint: String,
@@ -66,32 +46,22 @@ pub struct NatPeerState {
     pub last_keepalive: Instant,
 }
 
-/// Timeout for a single STUN Binding request / reflexive gathering attempt.
 const STUN_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Total budget for driving one ICE check list before declaring the path dead.
 const ICE_CHECK_BUDGET: Duration = Duration::from_secs(10);
 
-/// Default public STUN servers used when `GHOST_STUN_SERVER` is not set and
-/// `GHOST_STUN` is not disabled (`off`/`0`/`false`).
 pub const DEFAULT_STUN_SERVERS: &[&str] = &[
     "stun.cloudflare.com:3478",
     "stun.l.google.com:19302",
     "stun1.l.google.com:19302",
 ];
 
-/// Classified NAT behavior observed via STUN / UPnP probing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NatType {
-    /// Public address matches the local host interface address (no NAT translation).
     Direct,
-    /// Endpoint-independent mapping (multiple STUN servers report the same external ip:port).
     Cone,
-    /// Single external mapping observed that differs from the local interface address.
     Restricted,
-    /// Multiple STUN servers report differing external ports/IPs for the same socket.
     Symmetric,
-    /// STUN disabled, offline, or probe has not yet completed.
     #[default]
     Unknown,
 }
@@ -108,8 +78,6 @@ impl NatType {
     }
 }
 
-/// Classify NAT behavior from the local socket/interface address and one or more
-/// server-reflexive addresses returned by distinct STUN servers for the same socket.
 pub fn classify_nat_type(
     local_addr: Option<SocketAddr>,
     reflexive_samples: &[SocketAddr],
@@ -136,8 +104,6 @@ pub fn classify_nat_type(
     NatType::Restricted
 }
 
-/// Returns `true` when STUN probing is explicitly disabled via `GHOST_STUN=off|0|false|disabled`
-/// or `GHOST_STUN_SERVER=off|0|false`.
 pub fn stun_disabled_from_env() -> bool {
     let stun_off = std::env::var("GHOST_STUN")
         .map(|v| {
@@ -158,9 +124,6 @@ pub fn stun_disabled_from_env() -> bool {
     stun_off || server_off
 }
 
-/// Resolve the configured (`GHOST_STUN_SERVER`) or default (`DEFAULT_STUN_SERVERS`)
-/// STUN server pool asynchronously. Never fails or blocks indefinitely when offline
-/// or DNS is unavailable; unreachable/unresolvable entries are skipped.
 pub async fn resolve_stun_pool(timeout_per_host: Duration, ipv4_only: bool) -> Vec<SocketAddr> {
     if stun_disabled_from_env() {
         return Vec::new();
@@ -199,7 +162,6 @@ pub async fn resolve_stun_pool(timeout_per_host: Duration, ipv4_only: bool) -> V
     resolved
 }
 
-/// Lightweight read-only WAN / NAT telemetry snapshot for the control plane and dashboards.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WanTelemetrySnapshot {
     pub public_addr: Option<SocketAddr>,
@@ -218,7 +180,6 @@ fn wan_telemetry_cell() -> &'static std::sync::RwLock<WanTelemetrySnapshot> {
     WAN_TELEMETRY.get_or_init(|| std::sync::RwLock::new(WanTelemetrySnapshot::default()))
 }
 
-/// Return a point-in-time snapshot of the node's WAN / NAT telemetry.
 pub fn wan_telemetry_snapshot() -> WanTelemetrySnapshot {
     wan_telemetry_cell()
         .read()
@@ -226,7 +187,6 @@ pub fn wan_telemetry_snapshot() -> WanTelemetrySnapshot {
         .clone()
 }
 
-/// Update the process-global WAN / NAT telemetry snapshot in place.
 pub fn update_wan_telemetry<F: FnOnce(&mut WanTelemetrySnapshot)>(f: F) {
     let mut guard = wan_telemetry_cell()
         .write()
@@ -238,7 +198,6 @@ pub fn update_wan_telemetry<F: FnOnce(&mut WanTelemetrySnapshot)>(f: F) {
         .unwrap_or(0);
 }
 
-/// Per-peer runtime WAN/transport telemetry exported to `/api/topology`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PeerTopologyTelemetry {
     pub rtt_ms: Option<f64>,
@@ -256,7 +215,6 @@ fn peer_telemetry_cell(
     PEER_TELEMETRY.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
-/// Update per-peer runtime telemetry for `fp` in place.
 pub fn update_peer_telemetry<F: FnOnce(&mut PeerTopologyTelemetry)>(fp: &str, f: F) {
     let mut guard = peer_telemetry_cell()
         .write()
@@ -265,7 +223,6 @@ pub fn update_peer_telemetry<F: FnOnce(&mut PeerTopologyTelemetry)>(fp: &str, f:
     f(entry);
 }
 
-/// Remove per-peer runtime telemetry when a peer is disconnected.
 pub fn remove_peer_telemetry(fp: &str) {
     let mut guard = peer_telemetry_cell()
         .write()
@@ -273,7 +230,6 @@ pub fn remove_peer_telemetry(fp: &str) {
     guard.remove(fp);
 }
 
-/// Return a point-in-time snapshot of all per-peer WAN/transport telemetry.
 pub fn peer_telemetry_snapshot() -> std::collections::HashMap<String, PeerTopologyTelemetry> {
     peer_telemetry_cell()
         .read()
@@ -288,8 +244,6 @@ fn local_node_offer_cell() -> &'static std::sync::RwLock<(u16, Option<String>)> 
     LOCAL_NODE_OFFER.get_or_init(|| std::sync::RwLock::new((0, None)))
 }
 
-/// Record the local node's bound `mesh_port` and latest encoded `IceOffer`
-/// so control-plane invite endpoints (`GET /api/invite`) can embed them.
 pub fn set_local_node_offer(mesh_port: u16, ice_offer: Option<String>) {
     let mut guard = local_node_offer_cell()
         .write()
@@ -297,7 +251,6 @@ pub fn set_local_node_offer(mesh_port: u16, ice_offer: Option<String>) {
     *guard = (mesh_port, ice_offer);
 }
 
-/// Return the local node's `(mesh_port, ice_offer)` snapshot.
 pub fn local_node_offer() -> (u16, Option<String>) {
     local_node_offer_cell()
         .read()
@@ -305,7 +258,6 @@ pub fn local_node_offer() -> (u16, Option<String>) {
         .clone()
 }
 
-/// RAII guard removing a peer's `ufrag` from `active_ufrags` when `punch_hole` exits.
 struct ActiveUfragGuard {
     set: Arc<DashSet<String>>,
     ufrag: String,
@@ -317,39 +269,17 @@ impl Drop for ActiveUfragGuard {
     }
 }
 
-/// NAT traversal coordinator.
-///
-/// Holds the peer registry and drives the real ICE agent (`super::ice`) over
-/// STUN (`super::stun`). Checks are authenticated and a pair only succeeds when
-/// the peer answers.
 pub struct NatHolePuncher {
-    /// Known NAT peers keyed by fingerprint.
     peers: Arc<DashMap<String, NatPeerState>>,
-    /// Local STUN server address (for public address discovery).
     stun_server: Option<SocketAddr>,
-    /// Our public address as last discovered by STUN.
     public_addr: std::sync::Mutex<Option<SocketAddr>>,
-    /// Classified NAT type from STUN probing.
     nat_type: std::sync::Mutex<NatType>,
-    /// Per-peer ICE offers (credentials + candidates) received over signalling.
     offers: Arc<DashMap<String, ice::IceOffer>>,
-    /// Our own ICE credentials. Fixed for the process and advertised in every
-    /// beacon, because inbound checks are authenticated against them.
     local_credentials: ice::IceCredentials,
-    /// Our own fingerprint, used to assign ICE roles deterministically.
     local_fingerprint: Option<String>,
-    /// Measured round-trip time of each peer's nominated ICE pair. This is the
-    /// only honest source of link latency in the mesh: it comes from a check
-    /// that actually returned, and [`super::routing::ContactPlan`] consumes it so
-    /// CGR routes on measurements instead of assumptions.
     selected_rtts: Arc<DashMap<String, Duration>>,
-    /// Remote socket address of each peer's nominated ICE candidate pair.
     nominated_addrs: Arc<DashMap<String, SocketAddr>>,
-    /// Optional broadcast sender carrying demuxed STUN/ICE datagrams from a shared
-    /// mesh UDP socket (`nc.socket`). When `None`, methods read `sock.recv_from` directly.
     stun_mux: Option<broadcast::Sender<(Vec<u8>, SocketAddr)>>,
-    /// Remote `ufrag`s currently being driven by `drive_checks` so the background
-    /// inbound STUN responder does not double-answer them.
     active_ufrags: Arc<DashSet<String>>,
 }
 
@@ -372,7 +302,6 @@ impl Default for NatHolePuncher {
 }
 
 impl NatHolePuncher {
-    /// Evict peers whose last keepalive exceeds `max_idle`, returning their fingerprints (A6).
     pub fn evict_stale_peers(&self, max_idle: Duration) -> Vec<String> {
         let stale: Vec<String> = self
             .peers
@@ -389,90 +318,68 @@ impl NatHolePuncher {
         Self::default()
     }
 
-    /// Initialize with a STUN server for public address discovery.
     pub fn with_stun_server(mut self, stun_addr: SocketAddr) -> Self {
         self.stun_server = Some(stun_addr);
         self
     }
 
-    /// Update the configured STUN server after construction.
     pub fn set_stun_server(&mut self, stun_addr: SocketAddr) {
         self.stun_server = Some(stun_addr);
     }
 
-    /// Attach a STUN/ICE demux channel so `NatHolePuncher` shares `nc.socket`
-    /// without calling `recv_from` on it directly.
     pub fn with_stun_mux(mut self, tx: broadcast::Sender<(Vec<u8>, SocketAddr)>) -> Self {
         self.stun_mux = Some(tx);
         self
     }
 
-    /// The configured STUN server, if any.
     pub fn stun_server(&self) -> Option<SocketAddr> {
         self.stun_server
     }
 
-    /// Our public (server-reflexive) address, once STUN has reported one.
     pub fn public_addr(&self) -> Option<SocketAddr> {
         *self.public_addr.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Record a discovered public address.
     pub fn set_public_addr(&self, addr: SocketAddr) {
         *self.public_addr.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
     }
 
-    /// The classified NAT type, if probed.
     pub fn nat_type(&self) -> NatType {
         *self.nat_type.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Record the classified NAT type.
     pub fn set_nat_type(&self, nat_type: NatType) {
         *self.nat_type.lock().unwrap_or_else(|e| e.into_inner()) = nat_type;
     }
 
-    /// Remote `SocketAddr` of the nominated ICE pair for `fp`, if established.
     pub fn nominated_addr(&self, fp: &str) -> Option<SocketAddr> {
         self.nominated_addrs.get(fp).map(|a| *a.value())
     }
 
-    /// Measured RTT of the nominated path to `fp`, once a check has completed.
     pub fn selected_rtt(&self, fp: &str) -> Option<Duration> {
         self.selected_rtts.get(fp).map(|r| *r.value())
     }
 
-    /// Record the ICE offer a peer signalled (credentials + candidates + role).
-    /// Checks cannot be built without it, because they must be authenticated.
     pub fn set_ice_offer(&self, fp: &str, offer: ice::IceOffer) {
         self.offers.insert(fp.to_string(), offer);
     }
 
-    /// Our own ICE credentials, to be advertised in beacons.
-    ///
-    /// Stable for the process lifetime: a peer authenticates its checks with the
-    /// credentials it received, so rotating them silently breaks inbound checks.
     pub fn local_credentials(&self) -> &ice::IceCredentials {
         &self.local_credentials
     }
 
-    /// Record our own fingerprint so ICE roles can be assigned deterministically
-    /// from the two fingerprints (both sides compute the same answer).
     pub fn set_local_fingerprint(&mut self, fp: impl Into<String>) {
         self.local_fingerprint = Some(fp.into());
     }
 
-    /// Whether a peer's path has been validated by a completed ICE check.
     pub fn is_connected(&self, fp: &str) -> bool {
         self.peers.get(fp).map(|p| p.connected).unwrap_or(false)
     }
 
-    /// The stored offer for a peer, if any.
     pub fn ice_offer(&self, fp: &str) -> Option<ice::IceOffer> {
         self.offers.get(fp).map(|o| o.clone())
     }
 
-    /// Learn our public mapping from `server` (using the mux channel if attached).
     pub async fn discover_public_addr_from(
         &self,
         sock: &UdpSocket,
@@ -501,15 +408,11 @@ impl NatHolePuncher {
         }
     }
 
-    /// Learn our public mapping from the configured STUN server.
-    ///
-    /// Returns `None` when no server is configured or it does not answer.
     pub async fn discover_public_addr(&self, sock: &UdpSocket) -> Option<SocketAddr> {
         let server = self.stun_server?;
         self.discover_public_addr_from(sock, server).await
     }
 
-    /// Register a peer discovered via beacon and attempt hole-punch.
     pub fn register_peer(&self, fp: &str, public_addr: SocketAddr, local_addr: SocketAddr) {
         self.peers.insert(
             fp.to_string(),
@@ -524,11 +427,6 @@ impl NatHolePuncher {
         debug!("NAT peer registered: {} at {}", fp, public_addr);
     }
 
-    /// Establish a path to a peer with real ICE connectivity checks.
-    ///
-    /// Returns `true` only when a nominated pair completed an authenticated
-    /// round trip. Without an offer there is nothing to authenticate against, so
-    /// this refuses to check rather than reporting an unverified success.
     pub async fn punch_hole(&self, sock: &UdpSocket, fp: &str) -> bool {
         let Some(state) = self.peers.get(fp).map(|s| s.clone()) else {
             warn!("ICE: cannot check unknown peer {fp}");
@@ -545,7 +443,6 @@ impl NatHolePuncher {
             return false;
         };
 
-        // Subscribe before sending any STUN/ICE datagrams so early replies are not missed.
         let mut mux_rx = self.stun_mux.as_ref().map(|tx| tx.subscribe());
         self.active_ufrags.insert(offer.credentials.ufrag.clone());
         let _active_guard = ActiveUfragGuard {
@@ -553,9 +450,6 @@ impl NatHolePuncher {
             ufrag: offer.credentials.ufrag.clone(),
         };
 
-        // Roles must be agreed without negotiation. Comparing the two
-        // fingerprints gives both sides the same answer; the peer's advertised
-        // flag is only a fallback for when we do not know our own fingerprint.
         let controlling = match self.local_fingerprint.as_deref() {
             Some(me) => me > fp,
             None => !offer.controlling,
@@ -566,12 +460,9 @@ impl NatHolePuncher {
             ice::IceRole::Controlled
         };
         let mut agent = ice::IceAgent::new(role);
-        // Our advertised credentials, not freshly generated ones: inbound checks
-        // are verified against these.
         agent.set_local_credentials(self.local_credentials.clone());
         agent.set_remote_credentials(offer.credentials.clone());
 
-        // Host candidate: the address the OS would use to reach the peer.
         let route = offer
             .candidates
             .first()
@@ -586,7 +477,6 @@ impl NatHolePuncher {
                 return false;
             }
         }
-        // Reflexive candidate, when a STUN server is configured.
         if let Some(server) = self.stun_server {
             let res = match mux_rx.as_mut() {
                 Some(rx) => {
@@ -623,8 +513,6 @@ impl NatHolePuncher {
                 s.connected = true;
                 s.last_keepalive = Instant::now();
             }
-            // The nominated pair's round trip is a real measurement; publish it
-            // so the contact plan and control-plane topology can route on it.
             let measured_rtt_ms = agent.selected_pair_rtt().map(|rtt| {
                 debug!(peer = %fp, rtt_ms = rtt.as_millis(), "ICE: measured path RTT");
                 self.selected_rtts.insert(fp.to_string(), rtt);
@@ -654,8 +542,6 @@ impl NatHolePuncher {
         established
     }
 
-    /// Answer an inbound authenticated STUN Binding Request arriving on a shared
-    /// socket when no active `drive_checks` loop owns that peer's `ufrag`.
     pub async fn try_respond_inbound_stun(&self, sock: &UdpSocket, raw: &[u8], from: SocketAddr) {
         let Ok(msg) = stun::Message::parse(raw) else {
             return;
@@ -686,9 +572,6 @@ impl NatHolePuncher {
         }
     }
 
-    /// Send an authenticated check for each eligible pair until one succeeds,
-    /// processing inbound checks/responses as they arrive (either from the mux
-    /// channel when sharing `nc.socket` or directly via `sock.recv_from`).
     async fn drive_checks(
         &self,
         sock: &UdpSocket,
@@ -765,8 +648,6 @@ impl NatHolePuncher {
                     Err(e) => debug!(peer = %from, "ICE: check rejected: {e}"),
                 }
             } else if last_rto_tick.elapsed() >= ice::DEFAULT_RTO {
-                // Retransmit in-flight pairs once per RTO so an initial packet
-                // dropped before the peer's NAT pinhole opened still succeeds.
                 last_rto_tick = tokio::time::Instant::now();
                 let in_progress: Vec<usize> = agent
                     .pairs()
@@ -790,11 +671,6 @@ impl NatHolePuncher {
         }
     }
 
-    /// Send periodic keepalives to maintain NAT mappings.
-    ///
-    /// RFC 8445 §11 requires a STUN Binding *indication*: unlike a request it
-    /// gets no response, so it refreshes the mapping without adding a
-    /// round-trip or any state to the peer.
     pub async fn send_keepalives(&self, sock: &UdpSocket) {
         for mut entry in self.peers.iter_mut() {
             if entry.connected && entry.last_keepalive.elapsed() > Duration::from_secs(25) {
@@ -810,14 +686,6 @@ impl NatHolePuncher {
         }
     }
 
-    /// Send a STUN Binding indication to every address we may use as a relay.
-    ///
-    /// This is not housekeeping — it is what makes the relay fallback work
-    /// through NAT at all. A relay forwards a sealed frame to our *mesh* address
-    /// from *its* address, and a NAT admits an inbound datagram only if we have
-    /// already sent something out toward that address. A relay is a peer we
-    /// learned about from its beacon, so the same discipline ICE uses for a
-    /// direct path opens this mapping. Returns how many were sent.
     pub async fn send_relay_keepalives(&self, sock: &UdpSocket, relays: &[SocketAddr]) -> usize {
         let mut sent = 0usize;
         for addr in relays {
@@ -831,7 +699,6 @@ impl NatHolePuncher {
         sent
     }
 
-    /// Build a localized routing cache — peers within 1-2 hops.
     pub fn local_cache(&self) -> Vec<(String, SocketAddr)> {
         self.peers
             .iter()
@@ -841,31 +708,13 @@ impl NatHolePuncher {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 2. Dynamic Asymmetric Shard Allocation
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// The fitness a path is assumed to have before anything has been measured about
-/// it. Neutral, not optimistic: an unmeasured path must not outrank a measured
-/// good one.
 pub const DEFAULT_PATH_FITNESS: f64 = 0.5;
 
-/// Live performance metrics for a neighbor session.
-///
-/// These are the measurements the rest of the stack reads: the shard router
-/// orders paths by [`Self::fitness`], the transit governor takes
-/// [`Self::rate_bps`], and a contact plan takes [`Self::srtt_us`] as the link
-/// latency. Keeping the three signals *apart* is the whole point — this type used
-/// to mix them, which is how a lost packet (recorded as a 0 µs sample) made a
-/// lossy path look faster than a clean one, and how "throughput" came to be a
-/// number nobody measured (`cwnd = 10_000_000.0; // Assume`).
 #[derive(Debug, Clone)]
 pub struct PathMetrics {
     pub srtt_us: f64,
     pub min_rtt_us: f64,
     pub loss_rate: f64,
-    /// Congestion window (bytes): grown additively on delivery, halved on loss
-    /// (RFC 5681 §3.1).
     pub cwnd: u64,
     pub delivery_bps: f64,
     pub delivered_bytes: u64,
@@ -891,14 +740,8 @@ impl Default for PathMetrics {
 }
 
 impl PathMetrics {
-    /// How long a measurement stays usable. Beyond this the path is treated as
-    /// unmeasured again rather than as a fast path that has gone quiet.
     pub const STALE_AFTER: Duration = Duration::from_secs(30);
 
-    /// Record an RTT sample (µs).
-    ///
-    /// Non-positive samples are rejected: a zero would drag the estimate toward
-    /// "infinitely fast", and a loss is not a round trip.
     pub fn observe_rtt(&mut self, sample_us: f64) {
         if !(sample_us.is_finite() && sample_us > 0.0) {
             return;
@@ -915,30 +758,20 @@ impl PathMetrics {
         self.last_updated = Instant::now();
     }
 
-    /// Record a loss: multiplicative decrease, no RTT sample.
     pub fn observe_loss(&mut self) {
         const BETA: f64 = 0.1;
         self.loss_rate = self.loss_rate * (1.0 - BETA) + BETA;
         self.loss_events = self.loss_events.saturating_add(1);
-        // Floor at one MSS so the window can never reach zero and stall the path
-        // outright; a stalled window is indistinguishable from a dead path.
         self.cwnd = (self.cwnd / 2).max(cc::DEFAULT_MSS);
         self.last_updated = Instant::now();
     }
 
-    /// Record `bytes` delivered over `elapsed` — the measurement that makes the
-    /// rate estimate real instead of assumed.
     pub fn observe_delivery(&mut self, bytes: u64, elapsed: Duration) {
         const BETA: f64 = 0.1;
         const ALPHA: f64 = 0.25;
         self.delivered_bytes = self.delivered_bytes.saturating_add(bytes);
-        // Delivered bytes are evidence *against* loss, so the estimate decays
-        // rather than being reset — one good window does not erase a bad path.
         self.loss_rate *= 1.0 - BETA;
 
-        // Additive increase, sized so a full window of delivered data raises the
-        // window by about one MSS per round trip (RFC 5681 §3.1). GTF has no
-        // per-segment ACK, so this is counted in bytes rather than in ACKs.
         if self.cwnd > 0 {
             let inc = (cc::DEFAULT_MSS as f64 * bytes as f64 / self.cwnd as f64).max(1.0) as u64;
             self.cwnd = self.cwnd.saturating_add(inc).min(cc::DEFAULT_MAX_CWND);
@@ -956,10 +789,6 @@ impl PathMetrics {
         self.last_updated = Instant::now();
     }
 
-    /// Legacy one-call form: a sample plus whether it was a loss.
-    ///
-    /// `rtt_sample_us <= 0.0` means "no RTT sample", which is the honest way to
-    /// report a loss — there was no round trip to time.
     pub fn observe(&mut self, rtt_sample_us: f64, lost: bool) {
         if lost {
             self.observe_loss();
@@ -967,21 +796,10 @@ impl PathMetrics {
         self.observe_rtt(rtt_sample_us);
     }
 
-    /// Whether this path has a fresh measurement behind it.
     pub fn measured(&self) -> bool {
         self.samples > 0 && self.last_updated.elapsed() < Self::STALE_AFTER
     }
 
-    /// The rate this path can carry, bytes/sec.
-    ///
-    /// The window says `cwnd / srtt`; the observation says at least the measured
-    /// delivery rate. Shaping to the smaller of the window's allowance and
-    /// **twice** what was delivered keeps an idle path — whose window still grows
-    /// from additive increase — from being mistaken for a fast one, while the
-    /// factor of two leaves room for the window to keep probing upward.
-    ///
-    /// `0.0` means "no estimate": either nothing has been measured yet, the
-    /// measurement has gone stale, or the path is losing more than it delivers.
     pub fn rate_bps(&self) -> f64 {
         if !self.measured() || self.loss_rate > 0.5 {
             return 0.0;
@@ -996,19 +814,11 @@ impl PathMetrics {
         }
     }
 
-    /// Compute a fitness score (higher = better path).
-    /// Combines RTT, loss rate, and rate into a single score.
     pub fn fitness(&self) -> f64 {
         if self.loss_rate > 0.5 {
             return 0.0; // Unusable path
         }
         if !self.measured() {
-            // No RTT sample: we cannot compare this path's latency against a
-            // measured one, so it keeps the neutral prior — scoring it on a
-            // default RTT would be inventing the very number we are trying to
-            // stop inventing. Losses, though, we *did* observe, so they still
-            // count: a peer whose connectivity checks keep failing drifts below
-            // the selection threshold instead of sitting at neutral forever.
             return DEFAULT_PATH_FITNESS * (1.0 - self.loss_rate);
         }
         let rtt_score = (100_000.0 / self.srtt_us.max(1.0)).min(2.0);
@@ -1018,7 +828,6 @@ impl PathMetrics {
     }
 }
 
-/// A shard routing decision: which peer gets which shard.
 #[derive(Debug, Clone)]
 pub struct ShardRoute {
     pub peer_fingerprint: String,
@@ -1027,13 +836,6 @@ pub struct ShardRoute {
     pub reliability: f64,
 }
 
-/// Adaptive shard router that dynamically allocates shards across paths.
-///
-/// Leverages RS(2,1) erasure coding: any 2 of 3 shards reconstruct the
-/// payload. This means we can route shards asymmetrically:
-/// - Fast peers get shards
-/// - Slow/poor peers can be skipped (we only need 2 of 3)
-/// - If one path drops, the other 2 still reconstruct
 pub struct AdaptiveShardRouter {
     path_metrics: Arc<DashMap<String, PathMetrics>>,
     min_fitness: f64,
@@ -1054,10 +856,6 @@ impl AdaptiveShardRouter {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Record a successful shard delivery observation.
-    ///
-    /// `rtt_us` is expected to be a real measurement — an ICE connectivity check
-    /// or a timed shard round trip — not a guess.
     pub fn record_success(&self, peer_fp: &str, rtt_us: f64) {
         let mut metrics = self.path_metrics.entry(peer_fp.to_string()).or_default();
         metrics.observe_rtt(rtt_us);
@@ -1071,7 +869,6 @@ impl AdaptiveShardRouter {
         );
     }
 
-    /// Record a shard delivery failure (loss).
     pub fn record_loss(&self, peer_fp: &str) {
         let mut metrics = self.path_metrics.entry(peer_fp.to_string()).or_default();
         metrics.observe_loss();
@@ -1081,21 +878,11 @@ impl AdaptiveShardRouter {
         );
     }
 
-    /// Record `bytes` delivered on this path over `elapsed`.
-    ///
-    /// This is the feedback the rate estimate is built from. Without it the
-    /// window never grows and the estimate stays whatever the first sample said.
     pub fn record_delivery(&self, peer_fp: &str, bytes: u64, elapsed: Duration) {
         let mut metrics = self.path_metrics.entry(peer_fp.to_string()).or_default();
         metrics.observe_delivery(bytes, elapsed);
     }
 
-    /// The rate estimate for each path with a fresh measurement, bytes/sec.
-    ///
-    /// Paths that have gone quiet, that are new, or that are losing more than
-    /// they deliver are omitted rather than reported as zero: the caller
-    /// aggregates what it is told and must be able to tell "no estimate" from
-    /// "an estimate of nothing".
     pub fn live_path_rates(&self) -> Vec<f64> {
         self.path_metrics
             .iter()
@@ -1104,7 +891,6 @@ impl AdaptiveShardRouter {
             .collect()
     }
 
-    /// The rate estimate for a path, bytes/sec. `0.0` when there is none.
     pub fn path_rate_bps(&self, peer_fp: &str) -> f64 {
         self.path_metrics
             .get(peer_fp)
@@ -1112,7 +898,6 @@ impl AdaptiveShardRouter {
             .unwrap_or(0.0)
     }
 
-    /// The measured RTT for a path, if it has one.
     pub fn path_rtt_us(&self, peer_fp: &str) -> Option<f64> {
         self.path_metrics
             .get(peer_fp)
@@ -1120,13 +905,10 @@ impl AdaptiveShardRouter {
             .map(|m| m.srtt_us)
     }
 
-    /// How many peers a shard dispatch should aim to use: one per RS shard, so
-    /// `k` data shards plus one parity shard can take `k + 1` distinct paths.
     pub fn shard_target_count(&self) -> usize {
         self.data_shards.saturating_add(1)
     }
 
-    /// Get the fitness score for a peer path.
     pub fn path_fitness(&self, peer_fp: &str) -> f64 {
         self.path_metrics
             .get(peer_fp)
@@ -1134,15 +916,6 @@ impl AdaptiveShardRouter {
             .unwrap_or(DEFAULT_PATH_FITNESS)
     }
 
-    /// Select the best N peers from available peers for shard routing.
-    ///
-    /// Returns candidates sorted by measured path fitness, dropping any below
-    /// [`Self::min_fitness`].
-    ///
-    /// Note this is the *fitness* ordering only — it knows nothing about how the
-    /// peers reach each other. Prefer [`Self::select_shard_targets_routed`] when a
-    /// populated [`ContactPlan`] is available; this remains the fallback for a
-    /// node with no routing table yet.
     pub fn select_shard_targets(
         &self,
         available: &[(String, SocketAddr)],
@@ -1153,23 +926,10 @@ impl AdaptiveShardRouter {
             .filter(|(_, _, f)| *f >= self.min_fitness)
             .collect();
 
-        // Sort by fitness descending
         scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
         scored
     }
 
-    /// Select shard targets using the contact plan's earliest-arrival routes.
-    ///
-    /// Peers are accepted in **CGR arrival order** (a measured 5 ms link before
-    /// a guessed-fast one), and once a peer is accepted its intermediate nodes
-    /// are barred from later peers' paths. That is what puts the shards on
-    /// genuinely separate routes: three shards through the same relay are one
-    /// failure away from a lost payload, while three disjoint routes need three
-    /// simultaneous failures.
-    ///
-    /// A peer with no route in the plan is not dropped — it is appended by path
-    /// fitness below any routed peer — because a plan that has not learned about
-    /// a peer yet is a gap in our knowledge, not evidence the peer is unreachable.
     pub fn select_shard_targets_routed(
         &self,
         me: &str,
@@ -1178,11 +938,6 @@ impl AdaptiveShardRouter {
         now: Timestamp,
         want: usize,
     ) -> Vec<(String, SocketAddr, f64)> {
-        // First compute every candidate without exclusions.  Excluding while
-        // iterating the caller's registry made the result depend on DashMap's
-        // iteration order: a slower peer could reserve a relay before a faster
-        // peer was even considered.  Routing must be deterministic and greedy
-        // by earliest arrival, not by hash-table order.
         let mut candidates: Vec<(String, SocketAddr, f64, f64, Vec<String>)> = available
             .iter()
             .filter(|(fp, _)| fp != me)
@@ -1198,16 +953,8 @@ impl AdaptiveShardRouter {
                 ))
             })
             .collect();
-        // `sort_by` is stable: equal-arrival routes retain the caller's
-        // deterministic candidate order. This matters when two destinations
-        // share the same measured relay path; the first advertised route gets
-        // the uncontested slot and the other is deferred below.
         candidates.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Greedily accept the earliest route whose transit nodes do not overlap
-        // an already selected route.  This is the mesh-level disjointness gate:
-        // three shards get three peers and three divergent relay paths whenever
-        // the contact graph can provide them.
         let mut used_transit = std::collections::HashSet::new();
         let mut routed = Vec::new();
         let mut deferred = Vec::new();
@@ -1221,8 +968,6 @@ impl AdaptiveShardRouter {
             }
         }
 
-        // An overlapping route is still better than silently losing a shard.
-        // Keep it as a last-resort candidate, after all genuinely disjoint paths.
         deferred.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
         routed.extend(deferred);
 
@@ -1245,11 +990,6 @@ impl AdaptiveShardRouter {
         out
     }
 
-    /// Assign shards to selected peers.
-    ///
-    /// Distributes shards 0, 1, 2 across the best peers.
-    /// If we have fewer than 3 good peers, some peers get multiple shards
-    /// (which is fine — we only need 2 of 3 to arrive).
     pub fn assign_shards(&self, targets: &[(String, SocketAddr, f64)]) -> Vec<ShardRoute> {
         let mut routes = Vec::new();
         if targets.is_empty() {
@@ -1268,9 +1008,6 @@ impl AdaptiveShardRouter {
         routes
     }
 
-    /// Assign all RS(2,1) shards for a peer's encrypted message to `primary_fp`
-    /// directly rather than scattering shards encrypted under `primary_fp`'s
-    /// session key to unrelated peers.
     pub fn assign_shards_to_primary(
         &self,
         primary_fp: &str,
@@ -1287,7 +1024,6 @@ impl AdaptiveShardRouter {
             .collect()
     }
 
-    /// Check if we have enough reliable paths for RS reconstruction.
     pub fn can_reconstruct(&self) -> bool {
         let good_paths = self
             .path_metrics
@@ -1298,11 +1034,6 @@ impl AdaptiveShardRouter {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 3. Tit-for-Tat Peer Incentivization
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// A record of forwarding reciprocity between two peers.
 #[derive(Debug, Clone)]
 pub struct ReciprocityRecord {
     pub bytes_forwarded_for_them: u64,
@@ -1327,27 +1058,19 @@ impl Default for ReciprocityRecord {
 }
 
 impl ReciprocityRecord {
-    /// Update the reciprocity ratio:
-    /// Ratio = (bytes forwarded for us by peer) / (bytes forwarded for them by us)
     pub fn update_ratio(&mut self) {
         let sent = self.bytes_forwarded_for_them.max(1);
         let recv = self.bytes_forwarded_for_us;
         self.reciprocity_ratio = recv as f64 / sent as f64;
     }
 
-    /// Minimum bytes forwarded before bilateral leeching evaluation (10 MB).
-    /// Replaces the old 10 KB threshold that prematurely evicted 5G/CGNAT mobile
-    /// clients and `--relay-only` nodes in asymmetric topologies.
     pub const LEECH_EVAL_THRESHOLD_BYTES: u64 = 10_000_000;
 
-    /// Check if this peer is leeching (we forwarded significantly for them, but they gave back almost nothing).
     pub fn is_leeching(&self) -> bool {
         self.bytes_forwarded_for_them > Self::LEECH_EVAL_THRESHOLD_BYTES
             && self.reciprocity_ratio < 0.1
     }
 
-    /// Graceful asymmetric rate-limit factor in `(0.0, 1.0]`.
-    /// Asymmetric peers (e.g. CGNAT/mobile) are throttled rather than evicted.
     pub fn rate_limit_factor(&self) -> f64 {
         if self.bytes_forwarded_for_them <= 100_000 || self.reciprocity_ratio >= 0.3 {
             1.0
@@ -1359,16 +1082,11 @@ impl ReciprocityRecord {
     }
 }
 
-/// Tit-for-Tat enforcement engine.
-///
-/// Monitors peer reciprocity and applies graceful rate-limiting or eviction for leechers.
-/// Extends the PoissonReputationMatrix with concrete resource accounting.
 pub struct TitForTatEnforcer {
     reciprocity: Arc<DashMap<(String, String), ReciprocityRecord>>,
     reputation: Arc<PoissonReputationMatrix>,
     our_fingerprint: String,
     evicted: Arc<DashMap<String, bool>>,
-    /// Peers exempted from bilateral reciprocity eviction (e.g. `--relay-only`, 5G/CGNAT).
     exempt_peers: Arc<DashMap<String, bool>>,
     min_forward_bytes: u64,
 }
@@ -1385,8 +1103,6 @@ impl TitForTatEnforcer {
         }
     }
 
-    /// Mark or unmark a peer as exempt from bilateral reciprocity eviction
-    /// (e.g. `--relay-only` or non-routing 5G/CGNAT mobile clients).
     pub fn set_peer_exempt(&self, peer_fp: &str, exempt: bool) {
         if exempt {
             self.exempt_peers.insert(peer_fp.to_string(), true);
@@ -1395,13 +1111,10 @@ impl TitForTatEnforcer {
         }
     }
 
-    /// Returns true if the peer is exempt from bilateral reciprocity eviction.
     pub fn is_exempt(&self, peer_fp: &str) -> bool {
         self.exempt_peers.get(peer_fp).map(|v| *v).unwrap_or(false)
     }
 
-    /// Graceful bandwidth factor `(0.0, 1.0]` for a peer.
-    /// Exempt peers always receive `1.0`.
     pub fn rate_limit_factor(&self, peer_fp: &str) -> f64 {
         if self.is_exempt(peer_fp) {
             return 1.0;
@@ -1413,7 +1126,6 @@ impl TitForTatEnforcer {
             .unwrap_or(1.0)
     }
 
-    /// Record that we forwarded bytes for a peer.
     pub fn forwarded_for(&self, peer_fp: &str, bytes: u64) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let mut record = self.reciprocity.entry(key).or_default();
@@ -1422,7 +1134,6 @@ impl TitForTatEnforcer {
         record.last_activity = Instant::now();
     }
 
-    /// Record that a peer forwarded bytes for us.
     pub fn forwarded_by(&self, peer_fp: &str, bytes: u64) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let mut record = self.reciprocity.entry(key).or_default();
@@ -1432,7 +1143,6 @@ impl TitForTatEnforcer {
         record.last_activity = Instant::now();
     }
 
-    /// Record that we dropped a shard (failed to forward).
     pub fn dropped_for(&self, peer_fp: &str) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let mut record = self.reciprocity.entry(key).or_default();
@@ -1440,14 +1150,10 @@ impl TitForTatEnforcer {
         record.update_ratio();
     }
 
-    /// Check if a peer should be evicted for leeching.
-    ///
-    /// Returns true if the peer should have its session terminated.
     pub async fn should_evict(&self, peer_fp: &str) -> bool {
         if self.is_exempt(peer_fp) {
             return false;
         }
-        // Already evicted
         if self.evicted.get(peer_fp).map(|v| *v).unwrap_or(false) {
             return true;
         }
@@ -1464,13 +1170,11 @@ impl TitForTatEnforcer {
                     peer_fp, record.reciprocity_ratio
                 );
 
-                // Also record in reputation matrix
                 self.reputation
                     .record_interaction(&self.our_fingerprint, peer_fp, false);
                 return true;
             }
 
-            // If peer has good ratio, record positive reputation
             if record.reciprocity_ratio > 0.8 {
                 self.reputation
                     .record_interaction(&self.our_fingerprint, peer_fp, true);
@@ -1479,13 +1183,11 @@ impl TitForTatEnforcer {
         false
     }
 
-    /// Evict a peer — marks them as evicted and triggers session teardown.
     pub fn evict(&self, peer_fp: &str) {
         self.evicted.insert(peer_fp.to_string(), true);
         warn!("Evicted peer {} for leeching behavior", peer_fp);
     }
 
-    /// Get reciprocity ratio with a peer.
     pub fn ratio_with(&self, peer_fp: &str) -> f64 {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         self.reciprocity
@@ -1494,12 +1196,10 @@ impl TitForTatEnforcer {
             .unwrap_or(1.0)
     }
 
-    /// Check if a peer has been evicted.
     pub fn is_evicted(&self, peer_fp: &str) -> bool {
         self.evicted.get(peer_fp).map(|v| *v).unwrap_or(false)
     }
 
-    /// Get detailed reciprocity stats for a peer: (bytes_for_them, bytes_for_us, ratio, is_evicted)
     pub fn peer_stats(&self, peer_fp: &str) -> (u64, u64, f64, bool) {
         let key = (self.our_fingerprint.clone(), peer_fp.to_string());
         let (sent, recv, ratio) = self
@@ -1517,7 +1217,6 @@ impl TitForTatEnforcer {
         (sent, recv, ratio, evicted)
     }
 
-    /// Iterate all tracked reciprocity records
     pub fn all_stats(&self) -> Vec<(String, u64, u64, f64, bool)> {
         self.reciprocity
             .iter()
@@ -1536,7 +1235,6 @@ impl TitForTatEnforcer {
             .collect()
     }
 
-    /// Run the periodic audit cycle — evaluate all peers for eviction.
     pub async fn audit_cycle(&self, sessions: &DashMap<String, Session>) -> Vec<String> {
         let mut to_evict = Vec::new();
         let peer_fps: Vec<String> = sessions.iter().map(|e| e.key().clone()).collect();
@@ -1550,11 +1248,6 @@ impl TitForTatEnforcer {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Mesh Node — Top-Level Integration
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// A complete mesh peer node with all production subsystems.
 pub struct MeshNode {
     pub fingerprint: String,
     pub nat: NatHolePuncher,
@@ -1590,7 +1283,6 @@ impl MeshNode {
             .collect()
     }
 
-    /// Select the best peers for shard routing, respecting reciprocity.
     pub async fn select_egress_targets(
         &self,
         _destination: &str,
@@ -1598,10 +1290,8 @@ impl MeshNode {
         let available = self.peers_within(2);
         let mut candidates = self.router.select_shard_targets(&available);
 
-        // Filter out evicted peers
         candidates.retain(|(fp, _, _)| !self.tft.is_evicted(fp));
 
-        // Boost scores for peers with good reciprocity
         for (fp, _, score) in candidates.iter_mut() {
             let ratio = self.tft.ratio_with(fp);
             if ratio > 0.8 {
@@ -1612,12 +1302,10 @@ impl MeshNode {
         candidates
     }
 
-    /// Route shards through optimal paths using adaptive selection.
     pub fn assign_shard_routes(&self, targets: &[(String, SocketAddr, f64)]) -> Vec<ShardRoute> {
         self.router.assign_shards(targets)
     }
 
-    /// Build a localized cache tree: report our known peers.
     pub fn cache_tree(&self, max_entries: usize) -> Vec<(String, SocketAddr, u32)> {
         self.peer_registry
             .iter()
@@ -1627,15 +1315,6 @@ impl MeshNode {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 4. Exit Node Pool & Rotating Egress IPs
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Rotates through a pool of egress IP addresses for exit node traffic.
-///
-/// Each outbound TCP/HTTP connection receives a different source IP,
-/// preventing correlation of traffic to a single identity. Rotation
-/// can be based on round-robin or timer-based intervals.
 #[derive(Debug)]
 pub struct ExitIpRotator {
     pub egress_ips: Vec<std::net::IpAddr>,
@@ -1654,7 +1333,6 @@ impl ExitIpRotator {
         }
     }
 
-    /// Get the next egress address (round-robin) with a dynamic source port.
     pub fn get_next_socket_addr(&self, target_port: u16) -> std::net::SocketAddr {
         if self.egress_ips.is_empty() {
             return std::net::SocketAddr::new(
@@ -1669,7 +1347,6 @@ impl ExitIpRotator {
         std::net::SocketAddr::new(ip, target_port)
     }
 
-    /// Get the current egress IP without advancing the index.
     pub fn current_ip(&self) -> Option<std::net::IpAddr> {
         if self.egress_ips.is_empty() {
             None
@@ -1713,21 +1390,6 @@ impl ExitIpRotator {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 5. Multi-Path Shard Dispatch via Relay
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Dispatch shards across multiple peer paths using the AdaptiveShardRouter,
-/// with relay headers for intermediate hops.
-///
-/// This legacy helper remains available for v1 callers. The live v2 daemon path
-/// performs the same assignment with its session-owned epoch key and nonce in
-/// `send3_adaptive`; keeping this helper v1-shaped avoids inventing crypto state
-/// that belongs to the caller.
-///
-/// This implements the asymmetric shard allocation depicted in the mesh
-/// architecture: Shard 0 → Peer A, Shard 1 → Peer B, Parity → Peer C,
-/// where any 2 of 3 paths reconstruct at the destination via RS(2,1).
 pub async fn dispatch_shards_multipath(
     sock: &tokio::net::UdpSocket,
     session_hash: [u8; 4],
@@ -1749,7 +1411,6 @@ pub async fn dispatch_shards_multipath(
         }
         let shard_payload = &shards[shard_idx];
 
-        // Wrap shard in a relay header for the intermediate hop
         let relay_pkt = crate::ghost::net::relay::build_relay_packet(
             relay_hop_fingerprint,
             1, // one hop remaining — the intermediate forwards to final destination
@@ -1787,28 +1448,6 @@ pub async fn dispatch_shards_multipath(
     results
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// 6. Exit Tunnel — Forward Reconstructed Payloads to Exit Node Pool
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Forward a reconstructed payload to the exit tunnel for outbound delivery.
-///
-/// This is called at PC 3 (or any intermediate relay node) after shards are
-/// successfully collected and reconstructed via `assemble()`. The function:
-///
-/// 1. Decrypts the outer encryption layer (the original sender's session key).
-/// 2. Inspects the decrypted payload for a relay header pointing to the exit
-///    node pool (PC 4, PC 5).
-/// 3. Re-encrypts with the exit node's session key and forwards the traffic
-///    out of the mesh to the target internet host.
-///
-/// # Architecture
-///
-/// ```text
-/// PC 1 ──shards──→ PC 3 (reconstruct) ──→ Exit Node ──→ Internet
-///                      ↓
-///                 forward_to_exit_tunnel()
-/// ```
 pub async fn forward_to_exit_tunnel(
     sock: &UdpSocket,
     sessions: &DashMap<String, Session>,
@@ -1817,7 +1456,6 @@ pub async fn forward_to_exit_tunnel(
     reconstructed_payload: &[u8],
     exit_node_fingerprint: &str,
 ) -> bool {
-    // Resolve the exit node's address via the peer registry
     let exit_addr = match peer_addrs.get(exit_node_fingerprint) {
         Some(e) => *e.value(),
         None => {
@@ -1829,7 +1467,6 @@ pub async fn forward_to_exit_tunnel(
         }
     };
 
-    // Get session to the exit node
     let session_entry = match sessions.get(exit_node_fingerprint) {
         Some(s) => s,
         None => {
@@ -1841,17 +1478,11 @@ pub async fn forward_to_exit_tunnel(
         }
     };
 
-    // The ratchet's epoch key and a fresh 96-bit nonce, drawn once for
-    // this message so all three shards share it (they are pieces of one AEAD
-    // ciphertext, and spending a nonce per shard would encrypt the same plaintext
-    // three times under the same key).
     let material = session_entry.seal_material();
     let sh = session_entry.session_hash;
     let use_bulk = session_entry.use_bulk;
     drop(session_entry);
 
-    // The reconstructed payload is already the decrypted inner content.
-    // We re-encrypt it for the exit node and dispatch with a rotated egress IP.
     let mut framed = reconstructed_payload.to_vec();
     let needs_padding = if !framed.len().is_multiple_of(2) {
         1
@@ -1862,9 +1493,6 @@ pub async fn forward_to_exit_tunnel(
         framed.push(0);
     }
 
-    // The jitter tail is authenticated as AEAD associated data, so it
-    // has to exist *before* the seal and then travel in the frame. A bulk frame
-    // carries no tail, and therefore no associated data either.
     let tail = if use_bulk {
         [0u8; crate::ghost::net::JITTER_MAX]
     } else {
@@ -1882,7 +1510,6 @@ pub async fn forward_to_exit_tunnel(
     )
     .expect("sealing an owned buffer cannot fail");
 
-    // Extract auth tag from the last 16 bytes of the ciphertext
     let tag = if framed.len() >= 16 {
         let mut t = [0u8; 16];
         if let Some(slice) = framed.get(framed.len().saturating_sub(16)..) {
@@ -1895,14 +1522,10 @@ pub async fn forward_to_exit_tunnel(
         [0u8; 16]
     };
 
-    // RS-encode the encrypted frame into 3 shards
     let shards = l4_rs::encode(&mut framed);
 
-    // Select a rotated egress IP for this outbound dispatch
-    // (The exit node will use this to bind its outbound connection)
     let _egress_addr = exit_rotator.get_next_socket_addr(0);
 
-    // Send all 3 shards to the exit node
     for (i, shard) in shards.iter().take(3).enumerate() {
         let shard_data = frame_shard(shard);
         let header = GtfV2Header {
@@ -1929,11 +1552,6 @@ pub async fn forward_to_exit_tunnel(
     true
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Spawn Mesh Background Tasks
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Spawn all mesh background tasks.
 pub fn spawn_mesh_tasks(
     sock: Arc<UdpSocket>,
     sessions: Arc<DashMap<String, Session>>,
@@ -1941,7 +1559,6 @@ pub fn spawn_mesh_tasks(
 ) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::new();
 
-    // Task 1: NAT keepalive sender
     let s1 = Arc::clone(&sock);
     let m1 = Arc::clone(&mesh);
     handles.push(tokio::spawn(async move {
@@ -1951,7 +1568,6 @@ pub fn spawn_mesh_tasks(
         }
     }));
 
-    // Task 2: Reciprocity audit cycle
     let s2 = sessions;
     let m2 = Arc::clone(&mesh);
     handles.push(tokio::spawn(async move {
@@ -1960,7 +1576,6 @@ pub fn spawn_mesh_tasks(
             let to_evict = m2.tft.audit_cycle(&s2).await;
             for fp in to_evict {
                 m2.tft.evict(&fp);
-                // Remove session
                 if let Some((_, _session)) = s2.remove(&fp) {
                     info!("Evicted {} — session torn down", fp);
                 }
@@ -1968,12 +1583,10 @@ pub fn spawn_mesh_tasks(
         }
     }));
 
-    // Task 3: Periodic path metric decay
     let _m3 = Arc::clone(&mesh);
     handles.push(tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(300)).await; // Every 5 minutes
-                                                   // Fitness naturally decays — old metrics become less relevant
             debug!("Mesh: path metrics aging cycle");
         }
     }));
@@ -1990,7 +1603,6 @@ mod tests {
         let puncher = NatHolePuncher::new();
         let addr: SocketAddr = "1.2.3.4:5678".parse().unwrap();
         puncher.register_peer("test_fp", addr, addr);
-        // Mark as connected as hole-punching would
         if let Some(mut s) = puncher.peers.get_mut("test_fp") {
             s.connected = true;
         }
@@ -2001,14 +1613,12 @@ mod tests {
     #[test]
     fn test_path_metrics_fitness() {
         let mut metrics = PathMetrics::default();
-        // Good path
         metrics.observe(10_000.0, false);
         metrics.observe(12_000.0, false);
         metrics.observe(11_000.0, false);
         let good_fitness = metrics.fitness();
         assert!(good_fitness > 0.5, "Good path should have high fitness");
 
-        // Bad path with loss
         for _ in 0..10 {
             metrics.observe(200_000.0, true);
         }
@@ -2021,9 +1631,6 @@ mod tests {
 
     #[test]
     fn a_loss_is_not_an_rtt_sample() {
-        // The bug this pins: recording a loss as `observe(0.0, true)` mixed a
-        // 0 µs "round trip" into the RTT average, so every lost packet made the
-        // path look *faster* — and the shard router then preferred it.
         let mut m = PathMetrics::default();
         m.observe_rtt(80_000.0);
         m.observe_rtt(80_000.0);
@@ -2061,8 +1668,6 @@ mod tests {
         m.observe_rtt(40_000.0);
         let start = m.rate_bps();
         assert!(start > 0.0, "a measured path has an estimate");
-        // Ten windows of delivery over the measured RTT. The window grows
-        // additively, and the rate follows the window.
         let tick = Duration::from_millis(40);
         for _ in 0..10 {
             m.observe_delivery(m.cwnd, tick);
@@ -2095,7 +1700,6 @@ mod tests {
         let mut m = PathMetrics::default();
         m.observe_rtt(10_000.0);
         assert!(m.measured());
-        // A path that has gone quiet is not evidence of a fast path.
         m.last_updated = Instant::now() - (PathMetrics::STALE_AFTER + Duration::from_secs(1));
         assert!(!m.measured());
         assert_eq!(m.rate_bps(), 0.0);
@@ -2136,7 +1740,6 @@ mod tests {
         ];
         let now = 1_000.0;
         let mut plan = ContactPlan::default();
-        // Measure every link from a real round trip; latency is half of it.
         plan.observe_link(
             "me",
             "direct_fast",
@@ -2162,7 +1765,6 @@ mod tests {
             60.0,
             0.0,
         );
-        // "shadow" is only reachable through that same relay.
         plan.observe_link(
             "relay_a",
             "shadow",
@@ -2174,16 +1776,11 @@ mod tests {
 
         let targets = router.select_shard_targets_routed("me", &available, &plan, now, 4);
         assert_eq!(targets.len(), 4);
-        // 3 ms of light time through the relay beats the 10 ms direct link: CGR
-        // minimises arrival, not hop count.
         assert_eq!(targets[0].0, "via_relay_a");
         assert_eq!(targets[1].0, "direct_fast");
         assert_eq!(targets[2].0, "direct_slow");
-        // …and the peer whose only route would reuse the relay's transit node is
-        // kept, but placed last rather than sharing a path with a shard.
         assert_eq!(targets[3].0, "shadow");
 
-        // The first three targets are three separate paths.
         let routes = router.assign_shards(&targets[..3]);
         assert_eq!(routes.len(), 3);
         let peers: std::collections::HashSet<&str> =
@@ -2213,7 +1810,6 @@ mod tests {
 
         let routes = router.assign_shards(&targets);
         assert_eq!(routes.len(), 3, "Should assign all 3 shards");
-        // Shard indices should be 0, 1, 2
         let indices: Vec<u8> = routes.iter().map(|r| r.shard_index).collect();
         assert!(indices.contains(&0));
         assert!(indices.contains(&1));
@@ -2225,14 +1821,12 @@ mod tests {
         let rep = Arc::new(PoissonReputationMatrix::new());
         let tft = TitForTatEnforcer::new("self".to_string(), rep);
 
-        // Simulate a leecher: they forward very little for us
         tft.forwarded_by("leecher", 100);
         tft.forwarded_by("leecher", 50);
         tft.forwarded_for("leecher", 10_000);
 
         assert!(tft.ratio_with("leecher") < 0.3, "Leech ratio should be low");
 
-        // Simulate a fair peer
         tft.forwarded_by("fair", 10_000);
         tft.forwarded_for("fair", 10_000);
         assert!(
@@ -2246,7 +1840,6 @@ mod tests {
         let rep = Arc::new(PoissonReputationMatrix::new());
         let tft = TitForTatEnforcer::new("self".to_string(), rep);
 
-        // 5G/CGNAT mobile client: 50 KB forwarded for them, 0 for us -> NOT evicted
         tft.forwarded_for("mobile_cgnat", 50_000);
         assert!(
             !tft.should_evict("mobile_cgnat").await,
@@ -2254,18 +1847,15 @@ mod tests {
         );
         assert_eq!(tft.rate_limit_factor("mobile_cgnat"), 1.0);
 
-        // At 200 KB asymmetric, graceful rate-limit applies instead of eviction
         tft.forwarded_for("mobile_cgnat", 150_000);
         assert!(!tft.should_evict("mobile_cgnat").await);
         assert!(tft.rate_limit_factor("mobile_cgnat") < 1.0);
 
-        // Exempt `--relay-only` peer is never evicted or throttled even above 10 MB
         tft.set_peer_exempt("relay_only_peer", true);
         tft.forwarded_for("relay_only_peer", 15_000_000);
         assert!(!tft.should_evict("relay_only_peer").await);
         assert_eq!(tft.rate_limit_factor("relay_only_peer"), 1.0);
 
-        // Non-exempt abusive peer above 10 MB with < 0.1 ratio IS evicted
         tft.forwarded_for("abusive_leecher", 11_000_000);
         assert!(tft.should_evict("abusive_leecher").await);
     }
@@ -2292,7 +1882,6 @@ mod tests {
         ];
         let routes = mesh.assign_shards(&targets);
         assert_eq!(routes.len(), 3);
-        // Fast peer should get shard 0 (highest priority)
         assert_eq!(routes[0].peer_fingerprint, "fast_peer");
         assert_eq!(routes[0].shard_index, 0);
     }

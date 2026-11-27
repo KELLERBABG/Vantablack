@@ -30,19 +30,14 @@ use std::sync::OnceLock;
 use vantablack::ghost::net::discovery::{BlindMailboxClient, PeerDescriptorV2};
 use vantablack::ghost::net::rendezvous::{DhtRoutingTable, NodeId, PeerContact};
 
-/// How many slots the swarm is spread over in one epoch.
 pub(crate) const SLOT_COUNT: u32 = 3;
-/// How many of them one node publishes to. Must satisfy `2 * PUBLISH_SLOTS > SLOT_COUNT`.
 pub(crate) const PUBLISH_SLOTS: usize = 2;
-/// Descriptor skew tolerance. Matches the default client's own tolerance.
 const SKEW_SECS: u64 = 7200;
 
-/// Whether slot rendezvous is on.
 pub(crate) fn enabled() -> bool {
     vantablack::ghost::net::rendezvous::is_enabled()
 }
 
-/// A node's id in the routing table: `SHA256(fingerprint)`.
 fn node_id(fingerprint: &str) -> NodeId {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -51,8 +46,6 @@ fn node_id(fingerprint: &str) -> NodeId {
     hasher.finalize().into()
 }
 
-/// Rank one slot for one node. Deterministic, so the same node always picks the
-/// same slots within an epoch's secret.
 fn slot_rank(fingerprint: &str, slot: u32) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -62,8 +55,6 @@ fn slot_rank(fingerprint: &str, slot: u32) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// The slots this node publishes to: the `PUBLISH_SLOTS` lowest-ranked of
-/// `SLOT_COUNT`. Sorted for a stable publish order.
 pub(crate) fn publish_slots(fingerprint: &str) -> Vec<u32> {
     let mut slots: Vec<u32> = (0..SLOT_COUNT).collect();
     slots.sort_by_key(|slot| (slot_rank(fingerprint, *slot), *slot));
@@ -72,12 +63,10 @@ pub(crate) fn publish_slots(fingerprint: &str) -> Vec<u32> {
     slots
 }
 
-/// Every slot a searcher asks.
 pub(crate) fn query_slots() -> Vec<u32> {
     (0..SLOT_COUNT).collect()
 }
 
-/// Current epoch hour, matching the epoch the mailbox slots are derived for.
 fn epoch_hour() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -86,11 +75,6 @@ fn epoch_hour() -> u64 {
         / 3600
 }
 
-/// Publish our descriptor to this node's slots and collect what the other slots
-/// hold, deduplicated by fingerprint and never including ourselves.
-///
-/// A failure in one slot is logged and skipped: the point of publishing to two and
-/// querying three is that one silent slot is survivable.
 pub(crate) async fn sync(
     base_url: &str,
     swarm_secret: &[u8],
@@ -144,8 +128,6 @@ pub(crate) async fn sync(
     found
 }
 
-// ── Routing table ────────────────────────────────────────────────────────
-
 struct Table {
     our_fingerprint: String,
     table: DhtRoutingTable,
@@ -161,10 +143,6 @@ fn table(our_fingerprint: &str) -> &'static parking_lot::Mutex<Table> {
     })
 }
 
-/// Record a verified descriptor's contact details for this node.
-///
-/// Called from the ordinary install path, so the table holds exactly the peers
-/// whose descriptors we have already accepted.
 pub(crate) fn note_descriptor(our_fingerprint: &str, desc: &PeerDescriptorV2) {
     if !enabled() {
         return;
@@ -174,15 +152,12 @@ pub(crate) fn note_descriptor(our_fingerprint: &str, desc: &PeerDescriptorV2) {
     note_contact(our_fingerprint, &desc.fingerprint(), addresses);
 }
 
-/// Record one contact (used by [`note_descriptor`] and by tests).
 pub(crate) fn note_contact(our_fingerprint: &str, fingerprint: &str, addresses: Vec<SocketAddr>) {
     if addresses.is_empty() {
         return;
     }
     let table = table(our_fingerprint);
     let guard = table.lock();
-    // One table per process: it is created with the first fingerprint that touches
-    // it, and a later different fingerprint is a programming error, not a node.
     if guard.our_fingerprint != our_fingerprint {
         return;
     }
@@ -193,8 +168,6 @@ pub(crate) fn note_contact(our_fingerprint: &str, fingerprint: &str, addresses: 
     ));
 }
 
-/// The `count` known contacts closest to us, as addresses. Empty when the toggle is
-/// off or nothing has been learned yet.
 pub(crate) fn closest_addrs(our_fingerprint: &str, count: usize) -> Vec<SocketAddr> {
     if !enabled() || our_fingerprint.is_empty() {
         return Vec::new();
@@ -209,7 +182,6 @@ pub(crate) fn closest_addrs(our_fingerprint: &str, count: usize) -> Vec<SocketAd
         .collect()
 }
 
-/// How many contacts the table holds, for the discovery log line.
 pub(crate) fn contact_count(our_fingerprint: &str) -> usize {
     if our_fingerprint.is_empty() {
         return 0;
@@ -225,11 +197,6 @@ mod tests {
 
     #[test]
     fn two_nodes_always_share_a_publish_or_query_slot() {
-        // Rendezvous hashing with 2 of 3 slots: for any pair, the union of their
-        // publish sets plus any single query set must meet. Check the stronger and
-        // operationally relevant property: every node's publish set is non-empty,
-        // distinct and inside the slot range, and two nodes share at least one slot
-        // when both publish.
         let mut pairs_checked = 0;
         for i in 0..64 {
             let a = format!("peer-{i}");
@@ -240,8 +207,6 @@ mod tests {
             assert!(pa.iter().all(|s| *s < SLOT_COUNT));
             assert_eq!(pa, publish_slots(&a), "deterministic per node");
             let shared = pa.iter().any(|slot| pb.contains(slot));
-            // A publisher is found by any searcher that queries every slot, which
-            // `query_slots` guarantees; the pair check documents the pigeonhole.
             assert!(
                 shared
                     || query_slots()
@@ -283,7 +248,6 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert!(found.contains(&a) && found.contains(&b));
 
-        // One table per process, keyed to the first fingerprint that touches it.
         assert_eq!(contact_count(me), 2);
         vantablack::ghost::net::rendezvous::set_enabled(false);
     }

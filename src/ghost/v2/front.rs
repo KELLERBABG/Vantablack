@@ -27,7 +27,6 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::ghost::v2::reality::{BorrowedOrigin, RealityKnock};
 
-/// What the first ClientHello told us.
 #[derive(Debug, Clone)]
 pub struct HelloInfo {
     pub sni: Option<String>,
@@ -35,7 +34,6 @@ pub struct HelloInfo {
     pub random: [u8; 32],
 }
 
-/// Parse the first TLS record far enough to read SNI, ALPN and the random.
 pub fn parse_client_hello(buf: &[u8]) -> Option<HelloInfo> {
     if buf.len() < 6 || buf[0] != 0x16 {
         return None;
@@ -69,7 +67,6 @@ pub fn parse_client_hello(buf: &[u8]) -> Option<HelloInfo> {
         let data = body.get(p + 4..p + 4 + len)?;
         match kind {
             0x0000 => {
-                // server_name_list: u16 length, then entries.
                 if data.len() >= 5 && data[2] == 0 {
                     let n = u16::from_be_bytes([data[3], data[4]]) as usize;
                     if let Some(name) = data.get(5..5 + n) {
@@ -97,7 +94,6 @@ pub fn parse_client_hello(buf: &[u8]) -> Option<HelloInfo> {
     Some(HelloInfo { sni, alpn, random })
 }
 
-/// Read (without consuming) until a full ClientHello record is buffered.
 async fn peek_hello(stream: &TcpStream) -> Option<HelloInfo> {
     let mut buf = vec![0u8; 16_384];
     for _ in 0..200 {
@@ -181,8 +177,6 @@ async fn serve_tunnel(
     {
         http_page(sni, &version, &cipher).into_bytes()
     } else if let Some(hex) = request.strip_prefix(b"CAPSULE ") {
-        // RFC 9297 datagram capsule: decode, prove the payload crossed, wrap the
-        // answer in a capsule of the same framing.
         let hex = String::from_utf8_lossy(hex).trim().to_string();
         let raw = hex::decode(&hex).unwrap_or_default();
         match crate::ghost::v2::reality::decode_datagram_capsule(&raw) {
@@ -204,47 +198,29 @@ async fn serve_tunnel(
     Ok(())
 }
 
-/// A TLS connection the front admitted to the tunnel.
-///
-/// The listener does not decide what an admitted stream carries: it hands the
-/// established TLS session to whoever consumes the channel. `run_cli` serves the
-/// demo page/echo; the daemon bridges GTFv2 frames (see `daemon::reality_front`).
 pub struct Admitted {
     pub stream: tokio_rustls::server::TlsStream<TcpStream>,
     pub sni: String,
     pub peer: SocketAddr,
 }
 
-/// How the front decides whether a probe is a peer.
 #[derive(Clone)]
 pub enum Admission {
-    /// Legacy: the first SNI label is the shared token in cleartext.
     SniLabel(String),
-    /// Hidden knock: the token rides in the ClientHello random field.
     Knock(RealityKnock),
 }
 
-/// Everything a front listener needs.
 pub struct FrontConfig {
     pub listen: SocketAddr,
     pub origin: BorrowedOrigin,
     pub admission: Admission,
 }
 
-/// Build the TLS 1.3 acceptor the front presents.
 pub fn tls_acceptor(origin_sni: &str) -> Result<TlsAcceptor> {
     let cfg = Arc::new(build_tls_config(origin_sni)?);
     Ok(TlsAcceptor::from(cfg))
 }
 
-/// Derive the 32-byte value a hidden knock is bound to.
-///
-/// The ClientHello random field is 32 bytes, and the knock blob is 24, so the
-/// client picks the **last 8 bytes** freely, derives the token over those (plus
-/// the SNI and the timestamp), and then writes the 24-byte token over the first
-/// 24 bytes — which leaves the tail it was bound to untouched and recoverable on
-/// the receiving side. Without that rule a token placed inside the random would
-/// be bound to itself and could never verify.
 pub fn knock_binding(random: &[u8; 32]) -> [u8; 32] {
     let mut bound = [0u8; 32];
     for i in 0..4 {
@@ -253,18 +229,15 @@ pub fn knock_binding(random: &[u8; 32]) -> [u8; 32] {
     bound
 }
 
-/// The 24-byte hidden knock for this hello.
 pub fn knock_token(knock: &RealityKnock, sni: &str, random: &[u8; 32], now: u64) -> [u8; 24] {
     knock.token(sni, &knock_binding(random), now)
 }
 
-/// Whether a hello's random field carries a valid hidden knock.
 pub fn knock_admits(knock: &RealityKnock, sni: &str, random: &[u8; 32], now: u64) -> bool {
     knock.verify(sni, &knock_binding(random), &random[..24], now)
 }
 
 impl Admission {
-    /// Whether the picked-apart hello is a peer.
     fn admits(&self, hello: &HelloInfo, now: u64) -> bool {
         match self {
             Admission::SniLabel(token) => hello
@@ -282,7 +255,6 @@ impl Admission {
     }
 }
 
-/// Parse `host[:port]` into a borrowed origin (port 443 when omitted).
 fn origin_from_addr(raw: &str) -> BorrowedOrigin {
     match raw.rsplit_once(':') {
         Some((host, port)) if port.parse::<u16>().is_ok() => BorrowedOrigin {
@@ -294,7 +266,6 @@ fn origin_from_addr(raw: &str) -> BorrowedOrigin {
     }
 }
 
-/// A bound REALITY front listener.
 pub struct FrontListener {
     listener: TcpListener,
     acceptor: TlsAcceptor,
@@ -305,8 +276,6 @@ pub struct FrontListener {
 }
 
 impl FrontListener {
-    /// Bind the listener. The TLS certificate is issued for the borrowed origin's
-    /// SNI, so a prober sees the certificate of the site it asked for.
     pub async fn bind(cfg: FrontConfig) -> Result<Self> {
         let acceptor = tls_acceptor(&cfg.origin.sni)?;
         let listener = TcpListener::bind(cfg.listen)
@@ -336,11 +305,6 @@ impl FrontListener {
         self.peer
     }
 
-    /// Accept forever, handing each admitted TLS stream to `admitted`.
-    ///
-    /// Every connection that does not authenticate is spliced byte-for-byte to
-    /// the borrowed origin — never answered, never reset, because a refusal is
-    /// the fingerprint this front exists to avoid.
     pub async fn run(self, admitted: mpsc::Sender<Admitted>) -> Result<()> {
         loop {
             let (stream, peer) = match self.listener.accept().await {
@@ -397,7 +361,6 @@ impl FrontListener {
     }
 }
 
-/// Run the TLS front. Returns only on listener failure or Ctrl-C.
 pub async fn run_cli(listen: String, origin: String, token: String) -> Result<()> {
     let origin = origin_from_addr(&origin);
     let addr: SocketAddr = listen
@@ -434,12 +397,6 @@ pub async fn run_cli(listen: String, origin: String, token: String) -> Result<()
     Ok(())
 }
 
-/// Dial the front as a client.
-///
-/// The certificate is not verified here on purpose: the front presents the
-/// borrowed origin's certificate, which this side has no chain for, and the
-/// identity that matters — the peer's post-quantum fingerprint — is bound at the
-/// GTF session layer inside the tunnel, exactly as `net::quic` does it.
 pub async fn dial(
     addr: SocketAddr,
     sni: &str,
@@ -458,8 +415,6 @@ pub async fn dial(
     Ok(connector.connect(name, tcp).await?)
 }
 
-/// Certificate verifier for the dialer: the tunnel authenticates at the frame
-/// layer, so the TLS certificate is a cover artefact, not a trust anchor.
 #[derive(Debug)]
 struct AcceptAnyCertificate;
 
@@ -502,10 +457,6 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCertificate {
     }
 }
 
-/// Frames on the front stream: `[u32 big-endian length][bytes]`.
-///
-/// The daemon's unit on this carrier is one GTF datagram, so the bridge preserves
-/// datagram boundaries instead of re-framing the tunnel.
 pub const FRONT_FRAME_MAX: usize = 64 * 1024;
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &[u8]) -> Result<()> {
@@ -520,7 +471,6 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, frame: &[u8]) ->
     Ok(())
 }
 
-/// Read one frame. `Ok(None)` means the peer closed on a frame boundary.
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
     match reader.read_exact(&mut len).await {
@@ -611,8 +561,6 @@ mod tests {
         assert!(parse_client_hello(&h[..h.len() - 5]).is_none());
     }
 
-    /// The hidden knock as a client builds it: the tail of the random is fixed
-    /// first, the token is derived over it, then the token overwrites the head.
     fn hello_with_knock(knock: &RealityKnock, sni: &str, now: u64) -> ([u8; 32], Vec<u8>) {
         let mut random = [0x33u8; 32];
         random[24..32].copy_from_slice(&[0x7A, 1, 2, 3, 4, 5, 6, 7]);
@@ -627,15 +575,12 @@ mod tests {
         let sni = "cdn.example";
         let (random, _) = hello_with_knock(&knock, sni, 1_000);
         assert!(knock_admits(&knock, sni, &random, 1_000));
-        // The SNI is the borrowed origin's name; nothing about the token is in it.
         assert!(!sni.contains("token"));
-        // Bound to the hello: another SNI, another tail, another timestamp all fail.
         assert!(!knock_admits(&knock, "evil.example", &random, 1_000));
         let mut other = random;
         other[31] ^= 0xFF;
         assert!(!knock_admits(&knock, sni, &other, 1_000));
         assert!(!knock_admits(&knock, sni, &random, 9_999));
-        // And a plain hello (no token in the random) never admits.
         let plain = [0u8; 32];
         assert!(!knock_admits(&knock, sni, &plain, 1_000));
     }

@@ -39,10 +39,8 @@ use std::time::Duration;
 
 use vantablack::ghost::net::diffusion::{DiffusionAction, DiffusionPacket, DiffusionRouter};
 
-/// How long a diffusion id is remembered for duplicate suppression.
 const SEEN_TTL: Duration = Duration::from_secs(300);
 
-/// Whether emergency diffusion is on for this node.
 pub(crate) fn enabled() -> bool {
     vantablack::ghost::net::diffusion::is_enabled()
 }
@@ -58,14 +56,10 @@ fn router() -> &'static parking_lot::Mutex<DiffusionRouter> {
     })
 }
 
-/// Whether `payload` is a diffusion envelope. Checked before anything else reads
-/// the frame, so a `DIFF` packet can never be mistaken for a control message.
 pub(crate) fn looks_like(payload: &[u8]) -> bool {
     payload.len() >= 24 && &payload[..4] == vantablack::ghost::net::diffusion::DIFFUSION_MAGIC
 }
 
-/// A diffusion id for one datagram: derived, so re-flooding the same datagram from
-/// the same node collapses in the seen cache instead of multiplying.
 pub(crate) fn diffusion_id(our_fp: &str, datagram: &[u8]) -> [u8; 16] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -78,11 +72,6 @@ pub(crate) fn diffusion_id(our_fp: &str, datagram: &[u8]) -> [u8; 16] {
     id
 }
 
-/// Flood one sealed datagram to up to `fanout` peers that hold a session with us.
-///
-/// Returns how many neighbours actually received it. A neighbour with no session is
-/// skipped: we cannot seal the hop envelope for a peer we have no key with, and
-/// sending it clear would hand the whole datagram to the network.
 pub(crate) async fn flood(
     nc: &Arc<GhostNode>,
     peers: &DashMap<String, SocketAddr>,
@@ -96,8 +85,6 @@ pub(crate) async fn flood(
         vantablack::ghost::net::diffusion::DEFAULT_MAX_DIFFUSION_HOPS,
         datagram.to_vec(),
     );
-    // The seeder has "seen" its own packet; record it so an echo returning to us
-    // is suppressed instead of being forwarded a second time.
     {
         let router = router().lock();
         router.prune_seen_cache(SEEN_TTL);
@@ -107,11 +94,6 @@ pub(crate) async fn flood(
     forward_to(nc, &packet, &neighbours).await
 }
 
-/// Handle a received diffusion envelope. Returns `true` when the payload was one.
-///
-/// Forwards it within the hop/fanout bounds, and — when the enclosed datagram is
-/// addressed to a session this node holds — feeds it back into `ingest`, where it
-/// joins the same reassembly spool as any other shard.
 pub(crate) async fn handle(rx: &RxContext, payload: &[u8], from: SocketAddr) -> bool {
     if !looks_like(payload) {
         return false;
@@ -124,7 +106,6 @@ pub(crate) async fn handle(rx: &RxContext, payload: &[u8], from: SocketAddr) -> 
         tracing::debug!(peer = %from, "Diffusion: malformed envelope dropped");
         return true;
     };
-    // One envelope: a peer must not be able to nest amplification.
     if looks_like(&packet.payload) {
         tracing::debug!(peer = %from, "Diffusion: nested envelope dropped");
         return true;
@@ -163,10 +144,6 @@ pub(crate) async fn handle(rx: &RxContext, payload: &[u8], from: SocketAddr) -> 
         DiffusionAction::Disabled => return true,
     }
 
-    // Local delivery: if the enclosed datagram belongs to one of our sessions, put
-    // it through the ordinary receive path. The address we hand it is the peer's
-    // own (looked up from the session), not the forwarder's, so a reply goes to the
-    // peer rather than to whichever node relayed the flood.
     let inner = &packet.payload;
     if net::parse_gtf_v2_header(inner).is_some() {
         let session = net::parse_session_hash(inner);
@@ -185,10 +162,6 @@ pub(crate) async fn handle(rx: &RxContext, payload: &[u8], from: SocketAddr) -> 
     true
 }
 
-/// Peers we can seal a hop envelope for: they have a session and a known address.
-///
-/// Kept as `(fingerprint, address)` pairs because the session table is keyed by
-/// fingerprint while the neighbour list diffusion reasons about is addresses.
 fn neighbours_with_sessions(
     nc: &Arc<GhostNode>,
     peers: &DashMap<String, SocketAddr>,
@@ -202,11 +175,6 @@ fn neighbours_with_sessions(
     out
 }
 
-/// Seal `packet` for each neighbour and send it. Returns how many were reached.
-///
-/// The envelope is a whole message, so it takes the same split-or-single framing
-/// every other payload does: a bulk-sized envelope travels as one self-contained
-/// frame, anything larger as the three RS carriers.
 async fn forward_to(
     nc: &Arc<GhostNode>,
     packet: &DiffusionPacket,
@@ -253,7 +221,6 @@ async fn forward_to(
     reached
 }
 
-/// The address of the peer whose session hash matches `session`.
 fn session_peer_addr(
     nc: &Arc<GhostNode>,
     peers: &DashMap<String, SocketAddr>,
@@ -287,7 +254,6 @@ mod tests {
         assert!(looks_like(&bytes));
         assert!(!looks_like(b"GHOST_HANDSHAKE_"), "a handshake is not one");
         assert!(!looks_like(&bytes[..20]), "a truncated envelope is not one");
-        // An inner envelope is refused by `handle` before it is forwarded.
         let nested = DiffusionPacket::new([8u8; 16], 4, bytes.clone()).to_bytes();
         assert!(looks_like(&nested));
     }
@@ -300,8 +266,6 @@ mod tests {
         assert_ne!(diffusion_id("aa", d), diffusion_id("aa", b"another"));
     }
 
-    /// The egress half for real: a datagram is sealed once per neighbour and the
-    /// neighbour can open it and read the same inner bytes back.
     #[tokio::test]
     async fn flood_seals_one_envelope_per_neighbour_that_has_a_session() {
         let node = Arc::new(GhostNode::new("127.0.0.1:0").await.expect("a node"));

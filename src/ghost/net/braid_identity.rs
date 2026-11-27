@@ -24,9 +24,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
-/// Magic prefix of a transition certificate.
 pub const BRAID_MAGIC: &[u8; 8] = b"VB-BRAID";
-/// Wire size of one transition certificate: `8 + 8 + 32 + 32 + 32 + 64 + 24`.
 pub const TRANSITION_BYTES: usize = 200;
 
 const BRAID_GENESIS_DOMAIN: &[u8] = b"VB-BRAID-GENESIS-V1";
@@ -51,10 +49,6 @@ fn braid_step(previous: &[u8; 32], next_pk: &[u8; 32], transcript: &[u8]) -> [u8
     hasher.finalize().into()
 }
 
-/// One signed key-rotation certificate.
-///
-/// `parent_pk` is the key that signed the rotation, `next_pk` the key it hands
-/// authority to, and `braid` the hash chain state after the rotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transition {
     pub height: u64,
@@ -65,7 +59,6 @@ pub struct Transition {
 }
 
 impl Transition {
-    /// True when `parent_pk` really signed this rotation.
     pub fn verify(&self) -> bool {
         let Ok(key) = VerifyingKey::from_bytes(&self.parent_pk) else {
             return false;
@@ -85,7 +78,6 @@ impl Transition {
         out[48..80].copy_from_slice(&self.next_pk);
         out[80..112].copy_from_slice(&self.braid);
         out[112..176].copy_from_slice(&self.signature);
-        // out[176..200] stays zero: reserved, and re-encoding is canonical.
         out
     }
 
@@ -117,7 +109,6 @@ impl Transition {
     }
 }
 
-/// Two valid rotations out of one key: an epidemic clone-suicide proof.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloneProof {
     pub a: Transition,
@@ -125,9 +116,6 @@ pub struct CloneProof {
 }
 
 impl CloneProof {
-    /// Accept the pair only if both halves verify under the same key and they
-    /// are genuinely different rotations. Identical bytes are a replay, not a
-    /// fork.
     pub fn new(a: Transition, b: Transition) -> Option<Self> {
         if a.height != b.height || a.parent_pk != b.parent_pk {
             return None;
@@ -141,7 +129,6 @@ impl CloneProof {
         Some(Self { a, b })
     }
 
-    /// The key that equivocated — the identity to revoke.
     pub fn equivocating_key(&self) -> [u8; 32] {
         self.a.parent_pk
     }
@@ -154,7 +141,6 @@ impl CloneProof {
     }
 }
 
-/// A rotating identity: current signing key plus the braid hash and height.
 pub struct BraidLock {
     key: SigningKey,
     braid: [u8; 32],
@@ -168,7 +154,6 @@ impl BraidLock {
         seed
     }
 
-    /// Deterministic construction, for tests and for restoring from disk.
     pub fn from_seed(mut seed: [u8; 32]) -> Self {
         let key = SigningKey::from_bytes(&seed);
         let identity = key.verifying_key().to_bytes();
@@ -199,8 +184,6 @@ impl BraidLock {
         self.height
     }
 
-    /// `(secret key, braid, height)` — persist this **before** sending the
-    /// transition it belongs to.
     pub fn secret_state(&self) -> ([u8; 32], [u8; 32], u64) {
         (self.key.to_bytes(), self.braid, self.height)
     }
@@ -211,7 +194,6 @@ impl BraidLock {
         Self { key, braid, height }
     }
 
-    /// Rotate the identity, braiding the session transcript into the chain.
     pub fn advance(&mut self, transcript: &[u8]) -> Transition {
         let mut seed = Self::fresh_seed();
         let next = SigningKey::from_bytes(&seed);
@@ -241,22 +223,15 @@ impl BraidLock {
     }
 }
 
-/// What a peer learned from a transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BraidVerdict {
-    /// A fresh, correctly signed rotation.
     Extended,
-    /// The same certificate seen before.
     Stale,
-    /// Two different rotations out of one key: the identity is dead.
     Fork(Box<CloneProof>),
-    /// Already revoked at an earlier fork.
     Revoked([u8; 32]),
-    /// Signature or encoding check failed.
     Invalid,
 }
 
-/// The per-peer verifier: one accepted child per parent key, forever.
 #[derive(Debug, Default)]
 pub struct BraidChain {
     children: HashMap<[u8; 32], Transition>,
@@ -276,20 +251,10 @@ impl BraidChain {
         self.revoked.len()
     }
 
-    /// Mark `identity` revoked without a proof pair.
-    ///
-    /// Used when restoring verifier state that was journaled earlier: the fork
-    /// proof was checked when it was first seen, and replaying the certificate
-    /// would require keeping both halves forever. Idempotent.
     pub fn revoke(&mut self, identity: &[u8; 32]) {
         self.revoked.insert(*identity);
     }
 
-    /// Ingest a gossiped transition.
-    ///
-    /// A parent key may have exactly one child. A second, different child is a
-    /// fork whether it claims the same height or a later one, so a clone that
-    /// skips ahead cannot dodge detection by rotating twice.
     pub fn accept(&mut self, transition: &Transition) -> BraidVerdict {
         if !transition.verify() {
             return BraidVerdict::Invalid;
@@ -331,11 +296,6 @@ fn hex16(bytes: &[u8; 32]) -> String {
     bytes[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Epidemic collision rounds for the clone-suicide bound:
-/// `R <= (ln N + ln ln(1/delta)) / (2 ln f)`.
-///
-/// `None` for a fanout below 2 (two random walks never mix), fewer than two
-/// peers, or a delta outside `(0, 1)`.
 pub fn gossip_rounds_to_collision(peers: usize, fanout: usize, delta: f64) -> Option<f64> {
     if peers < 2 || fanout < 2 || !delta.is_finite() || delta <= 0.0 || delta >= 1.0 {
         return None;
@@ -375,7 +335,6 @@ mod tests {
 
     #[test]
     fn two_transitions_from_one_key_are_a_self_authenticating_proof() {
-        // Clone the node at height 0: both copies hold the same secret key.
         let mut real = lock();
         let mut clone = BraidLock::restore(real.secret_state().0, real.braid(), real.height());
         assert_eq!(real.identity(), clone.identity());
@@ -395,7 +354,6 @@ mod tests {
         assert!(proof.a.verify() && proof.b.verify());
         assert!(chain.is_revoked(&a.parent_pk));
 
-        // Once revoked, even the honest half is dead: revocation is monotone.
         assert_eq!(
             chain.accept(&a),
             BraidVerdict::Revoked(a.parent_pk),
@@ -446,8 +404,6 @@ mod tests {
         let mut node = lock();
         let transition = node.advance(b"revoked elsewhere");
 
-        // What a journal replay rebuilds: the revocation, without the two
-        // proofs that originally established it.
         let mut restored = BraidChain::new();
         restored.revoke(&transition.parent_pk);
         restored.revoke(&transition.parent_pk); // idempotent
@@ -489,18 +445,14 @@ mod tests {
 
     #[test]
     fn the_collision_bound_is_the_theorem_bound() {
-        // N = 10^6, f = 4, delta = 10^-6:
-        // (ln 10^6 + ln ln 10^6) / (2 ln 4) = 5.93...
         let rounds = gossip_rounds_to_collision(1_000_000, 4, 1e-6).expect("valid bound");
         assert!((rounds - 5.93).abs() < 0.01, "got {rounds}");
 
-        // More fanout mixes faster; more peers take longer.
         let faster = gossip_rounds_to_collision(1_000_000, 8, 1e-6).unwrap();
         assert!(faster < rounds);
         let larger = gossip_rounds_to_collision(1_000_000_000, 4, 1e-6).unwrap();
         assert!(larger > rounds);
 
-        // A tighter delta needs more rounds, logarithmically.
         let tighter = gossip_rounds_to_collision(1_000_000, 4, 1e-12).unwrap();
         assert!(tighter > rounds);
         assert!(tighter - rounds < 3.0);

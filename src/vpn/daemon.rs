@@ -27,7 +27,6 @@ pub enum VpnMode {
 #[derive(Clone)]
 pub enum VpnMode {}
 
-/// Exports VPN Prometheus metrics, status string, and JSON telemetry.
 #[cfg(feature = "vpn")]
 pub fn vpn_export(mode: &Option<VpnMode>) -> (&'static str, String, serde_json::Value) {
     match mode {
@@ -106,7 +105,6 @@ pub fn vpn_export(_mode: &Option<VpnMode>) -> (&'static str, String, serde_json:
     ("disabled", String::new(), serde_json::json!({}))
 }
 
-/// Initializes the VPN subsystem with optional ExitIpRotator based on environment or exit-node flag.
 pub fn init_vpn_mode_with_rotator(
     rotator: Option<Arc<vantablack::ghost::net::mesh::ExitIpRotator>>,
 ) -> anyhow::Result<Option<VpnMode>> {
@@ -269,7 +267,6 @@ pub fn init_vpn_mode_with_rotator(
                 let cfg = VpnConfig {
                     role: VpnRole::Hub,
                     lan_subnet: (subnet, prefix),
-                    // Default to Quad9/Cloudflare Privacy DNS (1.1.1.1) to eliminate ISP DNS leaks
                     dns_server: std::env::var("GHOST_VPN_DNS")
                         .ok()
                         .and_then(|v| v.parse().ok())
@@ -277,7 +274,6 @@ pub fn init_vpn_mode_with_rotator(
                     search_domain: std::env::var("GHOST_VPN_SEARCH")
                         .ok()
                         .filter(|x| !x.is_empty()),
-                    // If GHOST_VPN_CLIENTS is not set, allow all authenticated mesh peers (exit mode)
                     allowed_fingerprints: std::env::var("GHOST_VPN_CLIENTS")
                         .ok()
                         .map(|v| {
@@ -309,7 +305,6 @@ pub fn init_vpn_mode_with_rotator(
     }
 }
 
-/// Backward-compatible wrapper without rotator.
 #[allow(dead_code)]
 pub fn init_vpn_mode() -> anyhow::Result<Option<VpnMode>> {
     init_vpn_mode_with_rotator(None)

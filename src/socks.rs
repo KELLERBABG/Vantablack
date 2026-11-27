@@ -16,12 +16,6 @@ use vantablack::ghost::net::coalesce::CoalescedShard;
 use vantablack::ghost::net::reassembly::ReassemblyBuffer;
 use vantablack::ghost::net::relay::{build_encrypted_onion_route, AsnDiversityConstraint};
 
-/// Emergency diffusion (`exp_diffusion`): when the ordinary path reports that no
-/// route could carry the carriers, flood each of them as an opaque hop envelope.
-///
-/// Gated on the toggle and on `Unroutable`, so a working path never pays for this
-/// and a disabled toggle leaves the send path exactly as it was. The carriers stay
-/// sealed to their session: a hop forwarding the flood cannot read them.
 async fn diffuse_unroutable(
     nc: &Arc<GhostNode>,
     peers: &Arc<DashMap<String, SocketAddr>>,
@@ -52,8 +46,6 @@ async fn diffuse_unroutable(
 static NEXT_STREAM_ID: AtomicU32 = AtomicU32::new(1);
 static PINNED_GUARD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-/// Select `hop_count` (2 or 3) diverse hops ending at `exit_fp` using
-/// deterministic sorting, persistent Guard pinning, and [`AsnDiversityConstraint`].
 pub fn select_diverse_hops(
     candidates: &[String],
     exit_fp: &str,
@@ -85,7 +77,6 @@ pub fn select_diverse_hops(
     let exit_asn = asn_for(exit_fp, 999);
     constraint.assign_shard_asn((hop_count - 1) as u8, exit_asn);
 
-    // Pick Guard (or Relay in 2-hop) with persistent Guard pinning
     let mut guard_guard = pinned_guard.lock().ok()?;
     let guard_fp = if let Some(ref pinned) = *guard_guard {
         if other_peers.contains(pinned) && constraint.is_asn_permitted(0, asn_for(pinned, 1)) {
@@ -116,7 +107,6 @@ pub fn select_diverse_hops(
         return Some(vec![guard_fp, exit_fp.to_string()]);
     }
 
-    // Pick Middle hop with distinct ASN from Guard and Exit
     let middle_fp = other_peers
         .iter()
         .enumerate()
@@ -128,16 +118,10 @@ pub fn select_diverse_hops(
     Some(vec![guard_fp, middle_fp, exit_fp.to_string()])
 }
 
-/// Maximum stream flow credit (64 KB window) to prevent congestion and bufferbloat.
 pub const MAX_STREAM_CREDIT: usize = 65536;
 
-/// Maximum TCP payload bytes coalesced into a single tunnel frame so that
-/// `[stream_id (4B) || payload]` plus optional multi-hop `RLY!` + XChaCha20 E2E
-/// headers always fit inside a single 2-data + 1-parity RS(2,1) coding group.
 const MAX_STREAM_COALESCE_BYTES: usize = 850;
 
-/// Seal `payload` end-to-end for `exit_fp` using XChaCha20-Poly1305 and wrap it
-/// in the `RLY!` onion headers for `route` (`[guard, exit]` or `[guard, middle, exit]`).
 fn wrap_onion_e2e(
     nn: &GhostNode,
     exit_fp: &str,
@@ -186,22 +170,14 @@ fn wrap_onion_e2e(
     build_encrypted_onion_route(&route_refs, &hop_keys, &inner)
 }
 
-/// Hop and routing policy for SOCKS5 connections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HopPolicy {
-    /// Port :1080 (Auto Mode): dynamically chooses hop count based on active swarm size.
-    /// N >= 3 -> 3-hop onion; N == 2 -> 2-hop circuit; N == 1 -> 1-hop direct fast path.
     Auto,
-    /// Port :1081 (1-Hop Fast Path): direct Client -> Exit low-latency high-bandwidth path.
     OneHop,
-    /// Port :1082 (2-Hop Circuit): Client -> Relay -> Exit.
     TwoHop,
-    /// Port :1083 (Strict 3-Hop Onion): Client -> Guard -> Middle -> Exit.
-    /// If active swarm size N < 3, refuses connection (0x05) instead of silently degrading privacy.
     StrictThreeHop,
 }
 
-/// Copy bytes from `r` to `w` until the reader closes.
 pub async fn pump<R, W>(mut r: R, mut w: W) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -219,9 +195,6 @@ where
     Ok(())
 }
 
-/// Answer a SOCKS5 CONNECT with success and relay the client to an upstream
-/// socket we already opened locally. Used by split tunneling, where the target
-/// is deliberately *not* sent through the mesh.
 pub async fn socks_relay_direct(s: tokio::net::TcpStream, upstream: tokio::net::TcpStream) {
     let mut s = s;
     if s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_err() {
@@ -234,7 +207,6 @@ pub async fn socks_relay_direct(s: tokio::net::TcpStream, upstream: tokio::net::
     let _ = tokio::join!(up, down);
 }
 
-/// Handle a single incoming SOCKS5 connection under a specified HopPolicy.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_socks5_connection(
     mut s: tokio::net::TcpStream,
@@ -292,7 +264,6 @@ pub async fn handle_socks5_connection(
     }
     let port = u16::from_be_bytes(pb);
 
-    // ── Ad & tracker blocking (works immediately even with 0 mesh peers) ──
     if vantablack::ghost::net::adblock::is_shielded_target(&addr)
         || vantablack::ghost::net::adblock::is_blocked_port(port)
     {
@@ -302,7 +273,6 @@ pub async fn handle_socks5_connection(
         return;
     }
 
-    // ── Split tunneling bypass ───────────────────────────────────────
     if cs2.read().should_bypass(&addr) {
         let dest_direct = format!("{addr}:{port}");
         tracing::info!(dest = %dest_direct, "SOCKS5: bypassing mesh (split tunnel)");
@@ -316,7 +286,6 @@ pub async fn handle_socks5_connection(
         return;
     }
 
-    // ── Swarm Policy Verification ────────────────────────────────────
     let active_sessions = nn.sessions.len();
     match policy {
         HopPolicy::StrictThreeHop => {
@@ -350,11 +319,6 @@ pub async fn handle_socks5_connection(
         }
     }
 
-    // ── Exit Node Selection ──────────────────────────────────────────
-    // A pinned home exit (roadmap item 3) outranks any adaptive choice. If it is
-    // pinned but unreachable, refuse: silently using another exit would route
-    // the user's traffic through a node they did not choose, which is exactly
-    // what this feature exists to prevent.
     let pinned_home = vantablack::ghost::v2::boomerang::selected();
     let (fp, tgt) = match pinned_home {
         Some(home_fp) => {
@@ -402,10 +366,8 @@ pub async fn handle_socks5_connection(
         }
     };
 
-    // Allocate monotonic stream ID for this SOCKS5 TCP connection
     let stream_id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
 
-    // ── Circuit Route & First-Hop Resolution ─────────────────────────
     let effective_policy = match policy {
         HopPolicy::Auto => {
             if active_sessions >= 3 {
@@ -486,7 +448,6 @@ pub async fn handle_socks5_connection(
     let role = ss.role;
     drop(ss);
 
-    // Return traffic and OK!{stream_id}! from the exit arrive under `exit_sh`.
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     chh.insert((exit_sh, stream_id), tx);
 
@@ -552,7 +513,6 @@ pub async fn handle_socks5_connection(
         }
     }
 
-    // Wait for the exit's framed "OK!{stream_id}!" or "OK" (delivered via handle_pkt).
     let mut connected = false;
     for _ in 0..50 {
         if ak2
@@ -575,14 +535,12 @@ pub async fn handle_socks5_connection(
         return;
     }
     tracing::info!(stream_id = stream_id, "SOCKS5 CONNECT_OK established");
-    // RACS: real traffic is flowing, so cover yields for the yield window.
     vantablack::ghost::v2::racs::note_real_traffic();
     if s.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await.is_err() {
         chh.remove(&(exit_sh, stream_id));
         return;
     }
 
-    // ── Ingress & Egress Data Pump with Credit-Based Flow Control ─────
     let (mut rd, mut wr) = s.into_split();
     let nn2 = Arc::clone(&nn);
     let first_hop_out = first_hop_fp.clone();
@@ -606,10 +564,6 @@ pub async fn handle_socks5_connection(
     let stream_credit = Arc::new(AtomicUsize::new(MAX_STREAM_CREDIT));
     let credit_in = Arc::clone(&stream_credit);
 
-    // Client -> Mesh pumping task: coalesces small TCP writes within a 200 µs
-    // window up to MAX_STREAM_COALESCE_BYTES and dispatches each batch as a
-    // single SIMD RS(2,1) coding group (zero double-RS amplification, zero
-    // request-response deadlock).
     tokio::spawn(async move {
         let mut rbuf = vec![0u8; MAX_STREAM_COALESCE_BYTES];
         let mut coalesce_buf: Vec<u8> = Vec::with_capacity(4 + MAX_STREAM_COALESCE_BYTES);
@@ -734,7 +688,6 @@ pub async fn handle_socks5_connection(
             }
         }
 
-        // Flush any remaining buffered bytes on stream EOF
         if !coalesce_buf.is_empty() {
             let c = nn2
                 .sessions
@@ -791,7 +744,6 @@ pub async fn handle_socks5_connection(
             diffuse_unroutable(&nn2, &aa_proxy, &ctx_out, &f, &tag, routed).await;
         }
 
-        // Send CLOSE notification to exit node
         let close_msg = format!("CLOSE!{stream_id}!");
         let close_payload = match onion_route_out.as_ref() {
             Some(route) => wrap_onion_e2e(
@@ -851,8 +803,6 @@ pub async fn handle_socks5_connection(
         ak2_out.remove(&(exit_sh_out, stream_id));
     });
 
-    // Mesh -> Client pumping task: delivers reassembled exit chunks and replenishes flow credits.
-    // Note: `handle_pkt` already strips the 4-byte `stream_id` header before pushing to `sessions_rx`.
     let mut reassembly_buf = ReassemblyBuffer::new();
     while let Some(chunk) = rx.recv().await {
         let len = chunk.len();
@@ -865,18 +815,12 @@ pub async fn handle_socks5_connection(
         } else if wr.write_all(&chunk).await.is_err() {
             break;
         }
-        // Replenish credit window
         stream_credit.fetch_add(len, Ordering::Relaxed);
     }
     chh.remove(&(exit_sh, stream_id));
     ak2.remove(&(exit_sh, stream_id));
 }
 
-/// Spawns the port-multiplexed SOCKS5 proxy server listeners:
-/// - `:1080` (Auto Mode): dynamically selects hop count based on active swarm size.
-/// - `:1081` (1-Hop Fast Path): direct Client -> Exit.
-/// - `:1082` (2-Hop Circuit): Client -> Relay -> Exit.
-/// - `:1083` (Strict 3-Hop Onion): Client -> Guard -> Middle -> Exit (rejects if N < 3).
 pub fn spawn_socks5_server(
     socks_port: u16,
     nc: Arc<GhostNode>,
@@ -890,8 +834,6 @@ pub fn spawn_socks5_server(
     fallback_routes: Arc<fallback::Fallback>,
     carrier: Arc<net::carrier::Carrier>,
     turn_path: Option<Arc<TurnPath>>,
-    // A configured regime replaces the four fixed ports with the one listener
-    // and hop policy that regime names.
     regime_policy: Option<HopPolicy>,
 ) {
     let port_policies: Vec<(u16, HopPolicy, &str)> = match regime_policy {
@@ -1025,7 +967,6 @@ mod tests {
             stream.read_exact(&mut resp).await.expect("read handshake");
             assert_eq!(resp, [5, 0], "SOCKS5 handshake must succeed on {port}");
 
-            // Send CONNECT 127.0.0.1:8080
             stream
                 .write_all(&[5, 1, 0, 1, 127, 0, 0, 1, 0x1F, 0x90])
                 .await
@@ -1071,12 +1012,10 @@ mod tests {
         )
         .expect("3-hop onion envelope must build");
 
-        // Guard peels outer RLY! layer -> points to middle_fp_002 with remaining_hops == 2
         let hop1 = vantablack::ghost::net::relay::parse_relay_header(&onion)
             .expect("guard layer must parse");
         assert_eq!(hop1.next_hop_fingerprint, "middle_fp_002");
         assert_eq!(hop1.remaining_hops, 2);
-        // Guard must NOT be able to read the Exit fingerprint in cleartext
         assert!(
             !hop1
                 .inner_payload
@@ -1085,7 +1024,6 @@ mod tests {
             "Guard must not see Exit fingerprint in cleartext"
         );
 
-        // Middle peels its per-hop encrypted layer, then parses RLY! -> points to exit_fp_00003
         let middle_key = exit_key;
         let middle_plain = vantablack::ghost::net::relay::peel_encrypted_relay_layer(
             &middle_key,
@@ -1097,7 +1035,6 @@ mod tests {
         assert_eq!(hop2.next_hop_fingerprint, "exit_fp_00003");
         assert_eq!(hop2.remaining_hops, 1);
 
-        // Exit unwraps inner [dctr (8B)][wire_nonce (12B)][xchacha_seal([len u16][payload])]
         let inner = &hop2.inner_payload;
         assert!(inner.len() >= 20 + 16);
         let mut wire_nonce = [0u8; 12];
@@ -1131,13 +1068,11 @@ mod tests {
             "exit_z".to_string(),
         ];
 
-        // 1. First 3-hop selection pins peer_a (sorted first) as Guard, skips peer_b (same ASN), picks peer_c as Middle
         let route1 = select_diverse_hops(&candidates, "exit_z", 3, &asns, &pinned)
             .expect("diverse 3-hop route");
         assert_eq!(route1, vec!["peer_a", "peer_c", "exit_z"]);
         assert_eq!(pinned.lock().unwrap().as_deref(), Some("peer_a"));
 
-        // 2. Even if a new peer_0 appears, Guard remains pinned to peer_a
         let candidates2 = vec![
             "peer_0".to_string(),
             "peer_a".to_string(),
@@ -1149,7 +1084,6 @@ mod tests {
             .expect("pinned guard route");
         assert_eq!(route2[0], "peer_a");
 
-        // 3. 2-hop selection also respects pinned guard and ASN diversity
         let route_2hop =
             select_diverse_hops(&candidates2, "exit_z", 2, &asns, &pinned).expect("2-hop route");
         assert_eq!(route_2hop, vec!["peer_a", "exit_z"]);

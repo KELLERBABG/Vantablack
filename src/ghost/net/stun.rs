@@ -42,28 +42,20 @@ use rand::RngCore;
 use sha1::Sha1;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-/// The fixed STUN magic cookie. Its top 16 bits double as the XOR mask for the
-/// port in `XOR-MAPPED-ADDRESS`.
 pub const MAGIC_COOKIE: u32 = 0x2112_A442;
 
-/// Fixed header size: type(2) + length(2) + cookie(4) + transaction ID(12).
 pub const HEADER_LEN: usize = 20;
 
-/// Returns `true` if `buf` matches the RFC 8489 STUN/ICE datagram prefix:
-/// at least 20 bytes, top two bits zero (`0b00`), and magic cookie `0x2112A442`.
 #[inline]
 pub fn is_stun_packet(buf: &[u8]) -> bool {
     buf.len() >= HEADER_LEN && (buf[0] & 0xC0) == 0 && buf[4..8] == [0x21, 0x12, 0xA4, 0x42]
 }
 
-/// `FINGERPRINT` is the CRC-32 of the message XORed with this constant
-/// (RFC 8489 §14.7).
 const FINGERPRINT_XOR: u32 = 0x5354_554E;
 
 const FINGERPRINT_SIZE: usize = 8; // 4 header + 4 CRC
 const INTEGRITY_SIZE: usize = 24; // 4 header + 20 HMAC-SHA1
 
-// Attribute type codes (RFC 8489 §18.2 / RFC 8445 §19 / RFC 8656 §18).
 mod attr {
     pub const MAPPED_ADDRESS: u16 = 0x0001;
     pub const USERNAME: u16 = 0x0006;
@@ -88,18 +80,11 @@ mod attr {
     pub const ICE_CONTROLLING: u16 = 0x802A;
 }
 
-/// TURN `REQUESTED-TRANSPORT` protocol number for UDP (RFC 8656 §18.9).
 pub const TRANSPORT_UDP: u8 = 17;
 
-/// TURN channel numbers live in `0x4000..=0x7FFF` (RFC 8656 §12).
 pub const CHANNEL_NUMBER_MIN: u16 = 0x4000;
 pub const CHANNEL_NUMBER_MAX: u16 = 0x7FFF;
 
-/// Derive the `MESSAGE-INTEGRITY` key for long-term credentials
-/// (RFC 8489 §9.2.2): `MD5(username ":" realm ":" password)`.
-///
-/// Short-term credentials (ICE) use the password directly; TURN servers always
-/// use the long-term form.
 pub fn long_term_key(username: &str, realm: &str, password: &str) -> [u8; 16] {
     let cap = username
         .len()
@@ -115,11 +100,8 @@ pub fn long_term_key(username: &str, realm: &str, password: &str) -> [u8; 16] {
     md5::compute(&input).into()
 }
 
-/// Address family byte in `MAPPED-ADDRESS` / `XOR-MAPPED-ADDRESS`.
 const FAMILY_IPV4: u8 = 0x01;
 const FAMILY_IPV6: u8 = 0x02;
-
-// ── Errors ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StunError {
@@ -151,9 +133,6 @@ pub enum StunError {
     Malformed(&'static str),
 }
 
-// ── Message type ────────────────────────────────────────────────────
-
-/// Class of a STUN message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Request,
@@ -173,38 +152,23 @@ impl Class {
     }
 }
 
-/// STUN method. Kept as a `u16` newtype rather than an enum so an unknown
-/// method parses instead of failing — a forward-compatible parser matters once
-/// TURN and future extensions are in play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Method(pub u16);
 
 impl Method {
     pub const BINDING: Method = Method(0x001);
-    /// TURN `Allocate` (RFC 8656 §4).
     pub const ALLOCATE: Method = Method(0x003);
-    /// TURN `Refresh`.
     pub const REFRESH: Method = Method(0x004);
-    /// TURN `Send` indication.
     pub const SEND: Method = Method(0x006);
-    /// TURN `Data` indication.
     pub const DATA: Method = Method(0x007);
-    /// TURN `CreatePermission`.
     pub const CREATE_PERMISSION: Method = Method(0x008);
-    /// TURN `ChannelBind`.
     pub const CHANNEL_BIND: Method = Method(0x009);
 }
 
-/// A 14-bit STUN message type: method and class interleaved on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageType(pub u16);
 
 impl MessageType {
-    /// Interleave method and class into the wire type (RFC 8489 §5).
-    ///
-    /// The class bits are *split* around the method bits, which is the part
-    /// that makes hand-written STUN codecs fail: class bit 0 lands at type bit
-    /// 4 and class bit 1 at type bit 8.
     pub fn new(method: Method, class: Class) -> Self {
         let m = method.0;
         let c = class.bits();
@@ -231,22 +195,16 @@ impl MessageType {
     }
 }
 
-// ── Transaction ID ──────────────────────────────────────────────────
-
-/// 96-bit transaction ID. Also the XOR mask tail for IPv6
-/// `XOR-MAPPED-ADDRESS`, which is why it must be carried alongside attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TransactionId(pub [u8; 12]);
 
 impl TransactionId {
-    /// Cryptographically random transaction ID (`OsRng`).
     pub fn random() -> Self {
         let mut b = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut b);
         TransactionId(b)
     }
 
-    /// Deterministic ID, for tests and for callers that already own entropy.
     pub fn from_bytes(b: [u8; 12]) -> Self {
         TransactionId(b)
     }
@@ -256,9 +214,6 @@ impl TransactionId {
     }
 }
 
-// ── Attributes ──────────────────────────────────────────────────────
-
-/// A decoded STUN attribute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attribute {
     MappedAddress(SocketAddr),
@@ -269,33 +224,22 @@ pub enum Attribute {
         code: u16,
         reason: String,
     },
-    /// ICE check priority (RFC 8445 §7.1.1).
     Priority(u32),
-    /// ICE nomination flag (RFC 8445 §7.1.2).
     UseCandidate,
-    /// Tie-breaker for a controlled agent.
     IceControlled(u64),
-    /// Tie-breaker for a controlling agent.
     IceControlling(u64),
     Software(String),
     Fingerprint(u32),
-    /// TURN: the peer address a permission/channel/data applies to.
     XorPeerAddress(SocketAddr),
-    /// TURN: the address the server allocated for us.
     XorRelayedAddress(SocketAddr),
-    /// TURN: opaque application payload carried by Send/Data indications.
     Data(Vec<u8>),
     Realm(String),
     Nonce(String),
-    /// TURN `REQUESTED-TRANSPORT` protocol number.
     RequestedTransport(u8),
     Lifetime(u32),
     ChannelNumber(u16),
-    /// STUN/TURN: attributes the peer could not understand.
     UnknownAttributes(Vec<u16>),
     DontFragment,
-    /// Comprehension-optional attribute we don't model. Preserved so a
-    /// re-encode does not silently drop a peer's extension.
     Unknown {
         kind: u16,
         value: Vec<u8>,
@@ -330,7 +274,6 @@ impl Attribute {
         }
     }
 
-    /// Encode this attribute's *value* (no TLV header, no padding).
     fn encode_value(&self, txid: &TransactionId) -> Vec<u8> {
         match self {
             Attribute::MappedAddress(a) => encode_address(*a, txid, false),
@@ -338,7 +281,6 @@ impl Attribute {
             Attribute::Username(u) => u.clone(),
             Attribute::MessageIntegrity(h) => h.to_vec(),
             Attribute::ErrorCode { code, reason } => {
-                // 4-byte header: 2 reserved-zero bytes, class, number.
                 let mut v = Vec::with_capacity(4 + reason.len());
                 v.push(0);
                 v.push(0);
@@ -359,7 +301,6 @@ impl Attribute {
             Attribute::Realm(s) | Attribute::Nonce(s) => s.as_bytes().to_vec(),
             Attribute::RequestedTransport(proto) => vec![*proto, 0, 0, 0],
             Attribute::Lifetime(secs) => secs.to_be_bytes().to_vec(),
-            // Channel number occupies the first 2 bytes; the next 2 are reserved.
             Attribute::ChannelNumber(n) => {
                 let mut v = n.to_be_bytes().to_vec();
                 v.extend_from_slice(&[0, 0]);
@@ -377,7 +318,6 @@ impl Attribute {
         }
     }
 
-    /// Write this attribute as TLV, padded to a 4-byte boundary.
     fn encode_into(&self, txid: &TransactionId, out: &mut Vec<u8>) {
         let value = self.encode_value(txid);
         out.extend_from_slice(&self.kind().to_be_bytes());
@@ -389,11 +329,6 @@ impl Attribute {
     }
 }
 
-/// Encode an address for `MAPPED-ADDRESS` / `XOR-MAPPED-ADDRESS`.
-///
-/// `xor` selects the obfuscated form: the port is XORed with the top 16 bits of
-/// the magic cookie, the IPv4 address with the whole cookie, and the IPv6
-/// address with (cookie ‖ transaction ID).
 fn encode_address(addr: SocketAddr, txid: &TransactionId, xor: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(20);
     out.push(0); // reserved
@@ -433,7 +368,6 @@ fn encode_address(addr: SocketAddr, txid: &TransactionId, xor: bool) -> Vec<u8> 
     out
 }
 
-/// Decode an address attribute value (8 bytes for IPv4, 20 for IPv6).
 fn decode_address(value: &[u8], txid: &TransactionId, xor: bool) -> Result<SocketAddr, StunError> {
     if value.len() < 4 {
         return Err(StunError::Malformed(
@@ -482,9 +416,6 @@ fn decode_address(value: &[u8], txid: &TransactionId, xor: bool) -> Result<Socke
     }
 }
 
-// ── Message ─────────────────────────────────────────────────────────
-
-/// A parsed or under-construction STUN message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub typ: MessageType,
@@ -501,24 +432,18 @@ impl Message {
         }
     }
 
-    /// A Binding request carrying `SOFTWARE`.
     pub fn binding_request(txid: TransactionId) -> Self {
         let mut m = Message::new(Method::BINDING, Class::Request, txid);
         m.attributes.push(Attribute::Software(software()));
         m
     }
 
-    /// A Binding indication — the ICE keepalive (RFC 8445 §11).
-    ///
-    /// An indication gets no response, so it refreshes a NAT mapping without
-    /// adding a round-trip or leaving any state behind on the peer.
     pub fn binding_indication(txid: TransactionId) -> Self {
         let mut m = Message::new(Method::BINDING, Class::Indication, txid);
         m.attributes.push(Attribute::Software(software()));
         m
     }
 
-    /// A Binding success response echoing `txid` and reporting `mapped`.
     pub fn binding_success(txid: TransactionId, mapped: SocketAddr) -> Self {
         let mut m = Message::new(Method::BINDING, Class::SuccessResponse, txid);
         m.attributes.push(Attribute::XorMappedAddress(mapped));
@@ -535,7 +460,6 @@ impl Message {
         self.attributes.iter().find(|a| a.kind() == kind)
     }
 
-    /// The peer's reflexive (public) address, if the message carried one.
     pub fn xor_mapped_address(&self) -> Option<SocketAddr> {
         match self.get(attr::XOR_MAPPED_ADDRESS) {
             Some(Attribute::XorMappedAddress(a)) => Some(*a),
@@ -546,7 +470,6 @@ impl Message {
         }
     }
 
-    /// TURN: the address the server allocated for us.
     pub fn xor_relayed_address(&self) -> Option<SocketAddr> {
         match self.get(attr::XOR_RELAYED_ADDRESS) {
             Some(Attribute::XorRelayedAddress(a)) => Some(*a),
@@ -554,7 +477,6 @@ impl Message {
         }
     }
 
-    /// TURN: the peer a permission, channel or data indication refers to.
     pub fn xor_peer_address(&self) -> Option<SocketAddr> {
         match self.get(attr::XOR_PEER_ADDRESS) {
             Some(Attribute::XorPeerAddress(a)) => Some(*a),
@@ -562,7 +484,6 @@ impl Message {
         }
     }
 
-    /// TURN: the opaque payload of a Send/Data indication.
     pub fn data(&self) -> Option<&[u8]> {
         match self.get(attr::DATA) {
             Some(Attribute::Data(d)) => Some(d.as_slice()),
@@ -584,7 +505,6 @@ impl Message {
         }
     }
 
-    /// TURN: lifetime in seconds.
     pub fn lifetime(&self) -> Option<u32> {
         match self.get(attr::LIFETIME) {
             Some(Attribute::Lifetime(s)) => Some(*s),
@@ -599,7 +519,6 @@ impl Message {
         }
     }
 
-    /// TURN: `REQUESTED-TRANSPORT` protocol number (`TRANSPORT_UDP` for UDP).
     pub fn requested_transport(&self) -> Option<u8> {
         match self.get(attr::REQUESTED_TRANSPORT) {
             Some(Attribute::RequestedTransport(p)) => Some(*p),
@@ -607,7 +526,6 @@ impl Message {
         }
     }
 
-    /// Attributes a peer reported as ununderstood.
     pub fn unknown_attributes(&self) -> &[u16] {
         match self.get(attr::UNKNOWN_ATTRIBUTES) {
             Some(Attribute::UnknownAttributes(list)) => list.as_slice(),
@@ -622,7 +540,6 @@ impl Message {
         }
     }
 
-    /// Encode without `MESSAGE-INTEGRITY` or `FINGERPRINT`.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(64);
         self.write_header(&mut out, 0);
@@ -634,14 +551,6 @@ impl Message {
         out
     }
 
-    /// Encode with `MESSAGE-INTEGRITY` (HMAC-SHA1 keyed by the ICE short-term
-    /// credential) followed by `FINGERPRINT`.
-    ///
-    /// The length field is rewritten *before* each digest because both digests
-    /// cover the header, including the length. `MESSAGE-INTEGRITY` covers
-    /// everything up to itself and its length counts itself; `FINGERPRINT`
-    /// covers everything up to itself and its length counts itself and the
-    /// integrity attribute.
     pub fn encode_with_integrity(&self, key: &[u8]) -> Result<Vec<u8>, StunError> {
         let mut stripped = self.clone();
         stripped.attributes.retain(|a| {
@@ -657,7 +566,6 @@ impl Message {
             a.encode_into(&stripped.txid, &mut out);
         }
 
-        // MESSAGE-INTEGRITY: length counts the attribute we are about to add.
         let mi_total = out
             .len()
             .saturating_sub(HEADER_LEN)
@@ -671,7 +579,6 @@ impl Message {
         out.extend_from_slice(&(20u16).to_be_bytes());
         out.extend_from_slice(&tag);
 
-        // FINGERPRINT: length now counts the integrity and fingerprint attrs.
         let fp_total = out
             .len()
             .saturating_sub(HEADER_LEN)
@@ -683,7 +590,6 @@ impl Message {
         out.extend_from_slice(&crc.to_be_bytes());
 
         debug_assert_eq!(out.len() % 4, 0);
-        // The header length must equal the real attribute bytes.
         debug_assert_eq!(
             u16::from_be_bytes([out[2], out[3]]) as usize,
             out.len() - HEADER_LEN
@@ -699,9 +605,6 @@ impl Message {
         debug_assert_eq!(out.len(), HEADER_LEN);
     }
 
-    /// Parse a datagram. `FINGERPRINT` / `MESSAGE-INTEGRITY` are decoded as
-    /// attributes but *not* verified here — use [`verify_integrity`] and
-    /// [`verify_fingerprint`] on the raw bytes for that.
     pub fn parse(buf: &[u8]) -> Result<Message, StunError> {
         if buf.len() < HEADER_LEN {
             return Err(StunError::TooShort);
@@ -726,8 +629,6 @@ impl Message {
                 actual: available,
             });
         }
-        // A UDP datagram may legally carry padding beyond the STUN message, so
-        // only the declared region is parsed.
         let body = &buf[HEADER_LEN..HEADER_LEN + declared];
 
         let mut attributes = Vec::new();
@@ -744,7 +645,6 @@ impl Message {
             }
             let value = &rest[4..value_end];
             attributes.push(decode_attribute(kind, value, &txid)?);
-            // Advance past the value plus its 4-byte padding.
             let padded = (len + 3) & !3;
             let advance = 4 + padded;
             if advance > rest.len() {
@@ -865,9 +765,6 @@ fn software() -> String {
     format!("GhostNet/{}", env!("CARGO_PKG_VERSION"))
 }
 
-// ── Verification ────────────────────────────────────────────────────
-
-/// Locate an attribute in a raw datagram, returning (value offset, value len).
 fn find_raw_attribute(buf: &[u8], want: u16) -> Option<(usize, usize)> {
     let declared = u16::from_be_bytes([buf.get(2).copied()?, buf.get(3).copied()?]) as usize;
     let mut pos = HEADER_LEN;
@@ -884,16 +781,6 @@ fn find_raw_attribute(buf: &[u8], want: u16) -> Option<(usize, usize)> {
     None
 }
 
-/// Verify `MESSAGE-INTEGRITY` against the short-term credential `key`.
-/// Verify `MESSAGE-INTEGRITY` (RFC 8489 §14.5).
-///
-/// The digest is defined over the message *up to* the MESSAGE-INTEGRITY
-/// attribute, with the header length field set to reach the end of that
-/// attribute. When a FINGERPRINT follows, the length field on the wire is
-/// larger than that — because the wire field must describe the whole message
-/// (§6) — so the covered value has to be **reconstructed**, not compared
-/// against what arrived. Comparing instead makes every message that carries both
-/// attributes fail verification, which is the classic way this codec is wrong.
 pub fn verify_integrity(buf: &[u8], key: &[u8]) -> Result<(), StunError> {
     let (off, _) =
         find_raw_attribute(buf, attr::MESSAGE_INTEGRITY).ok_or(StunError::MissingIntegrity)?;
@@ -904,7 +791,6 @@ pub fn verify_integrity(buf: &[u8], key: &[u8]) -> Result<(), StunError> {
         return Err(StunError::BadIntegrity);
     }
     let covered_len = (off - HEADER_LEN + INTEGRITY_SIZE) as u16;
-    // Two-part update rather than a patched copy: no allocation on the check path.
     let mut mac =
         Hmac::<Sha1>::new_from_slice(key).map_err(|_| StunError::Malformed("bad HMAC key"))?;
     mac.update(&buf[..2]);
@@ -924,11 +810,6 @@ pub fn verify_integrity(buf: &[u8], key: &[u8]) -> Result<(), StunError> {
     }
 }
 
-/// Verify `FINGERPRINT` (CRC-32 of the message up to the attribute).
-///
-/// As with `MESSAGE-INTEGRITY` the covered length is reconstructed from the
-/// attribute's position rather than read from the wire, so a message with
-/// trailing bytes cannot smuggle a fingerprint in.
 pub fn verify_fingerprint(buf: &[u8]) -> Result<(), StunError> {
     let (off, _) =
         find_raw_attribute(buf, attr::FINGERPRINT).ok_or(StunError::MissingFingerprint)?;
@@ -950,10 +831,6 @@ pub fn verify_fingerprint(buf: &[u8]) -> Result<(), StunError> {
     }
 }
 
-/// CRC-32/ISO-HDLC (reflected, polynomial `0xEDB88320`).
-///
-/// Bitwise rather than table-driven: STUN messages are small, and this is the
-/// version that is hard to get subtly wrong.
 pub fn crc32_ieee(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
@@ -965,8 +842,6 @@ pub fn crc32_ieee(data: &[u8]) -> u32 {
     }
     !crc
 }
-
-// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1000,7 +875,6 @@ mod tests {
             Some("198.51.100.22:51820".parse().unwrap())
         );
 
-        // The relayed address uses the same XOR form as the mapped address.
         let mut ok = Message::new(Method::ALLOCATE, Class::SuccessResponse, txid());
         ok.push(Attribute::XorRelayedAddress(
             "203.0.113.5:49152".parse().unwrap(),
@@ -1022,7 +896,6 @@ mod tests {
         let mut data = Message::new(Method::DATA, Class::Indication, txid());
         data.push(Attribute::Data(vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01]));
         let parsed = Message::parse(&data.encode()).unwrap();
-        // An odd-length DATA must survive the 4-byte padding.
         assert_eq!(parsed.data(), Some(&[0xDE, 0xAD, 0xBE, 0xEF, 0x01][..]));
     }
 
@@ -1042,8 +915,6 @@ mod tests {
         assert_ne!(a, long_term_key("user2", "example.org", "secret-password"));
         assert_ne!(a, long_term_key("user", "example.com", "secret-password"));
         assert_ne!(a, long_term_key("user", "example.org", "other-password"));
-        // MD5("user:example.org:secret-password") — 16 bytes, and the fields are
-        // colon-joined, so a colon inside an input cannot be re-split silently.
         assert_eq!(a.len(), 16);
     }
 
@@ -1055,13 +926,11 @@ mod tests {
         assert_eq!(m.typ.method(), Method::BINDING);
         let parsed = Message::parse(&m.encode()).unwrap();
         assert_eq!(parsed.typ.class(), Class::Indication);
-        // An indication must never carry MESSAGE-INTEGRITY: nobody acknowledges it.
         assert!(parsed.get(attr::MESSAGE_INTEGRITY).is_none());
     }
 
     #[test]
     fn crc32_matches_the_standard_vector() {
-        // The canonical CRC-32/ISO-HDLC check value.
         assert_eq!(crc32_ieee(b"123456789"), 0xCBF4_3926);
         assert_eq!(crc32_ieee(b""), 0x0000_0000);
     }
@@ -1076,7 +945,6 @@ mod tests {
 
     #[test]
     fn class_bits_are_split_around_the_method_bits() {
-        // The classic trap: class 0b10 is not type `method | 0b1000`.
         let success = MessageType::new(Method::BINDING, Class::SuccessResponse);
         assert_eq!(success.0, 0x0101);
         assert_eq!(success.class(), Class::SuccessResponse);
@@ -1089,7 +957,6 @@ mod tests {
         assert_eq!(indication.0, 0x0011);
         assert_eq!(indication.class(), Class::Indication);
 
-        // Every class round-trips for a non-trivial method too.
         for m in [Method::BINDING, Method::ALLOCATE, Method::DATA] {
             for c in [
                 Class::Request,
@@ -1125,9 +992,7 @@ mod tests {
         let encoded = encode_address(addr, &txid(), true);
         assert_eq!(encoded[0], 0);
         assert_eq!(encoded[1], FAMILY_IPV4);
-        // 32853 == 0x8055, XOR 0x2112 == 0xA147
         assert_eq!(u16::from_be_bytes([encoded[2], encoded[3]]), 0xA147);
-        // 192.0.2.1 == 0xC0000201, XOR 0x2112A442 == 0xE112A643
         assert_eq!(&encoded[4..8], &[0xE1, 0x12, 0xA6, 0x43]);
 
         assert_eq!(decode_address(&encoded, &txid(), true).unwrap(), addr);
@@ -1140,8 +1005,6 @@ mod tests {
         assert_eq!(encoded[1], FAMILY_IPV6);
         assert_eq!(decode_address(&encoded, &txid(), true).unwrap(), addr);
 
-        // A different transaction ID must decode to a different address, which
-        // is exactly why the mask has to be threaded through decode.
         let other = TransactionId::from_bytes([0u8; 12]);
         assert_ne!(decode_address(&encoded, &other, true).unwrap(), addr);
     }
@@ -1191,13 +1054,11 @@ mod tests {
 
         verify_integrity(&raw, key).expect("integrity must verify");
         verify_fingerprint(&raw).expect("fingerprint must verify");
-        // The wrong credential must fail.
         assert_eq!(
             verify_integrity(&raw, b"wrong-password"),
             Err(StunError::BadIntegrity)
         );
 
-        // Flip one bit of the address attribute value: both digests must notice.
         let mut tampered = raw.clone();
         let (off, _) = find_raw_attribute(&tampered, attr::XOR_MAPPED_ADDRESS).unwrap();
         tampered[off + 4] ^= 0x01;
@@ -1215,9 +1076,6 @@ mod tests {
         let (off, _) = find_raw_attribute(&raw, attr::MESSAGE_INTEGRITY).unwrap();
         let (fp_off, _) = find_raw_attribute(&raw, attr::FINGERPRINT).unwrap();
 
-        // The header length on the wire describes the whole message (RFC 8489
-        // §6), and FINGERPRINT is last, so it also equals the fingerprint's
-        // covered length.
         assert_eq!(
             u16::from_be_bytes([raw[2], raw[3]]) as usize,
             raw.len() - HEADER_LEN
@@ -1227,10 +1085,6 @@ mod tests {
             fp_off - HEADER_LEN + FINGERPRINT_SIZE
         );
 
-        // MESSAGE-INTEGRITY is *computed* with the length pointing at its own
-        // end, which is 8 bytes short of the wire value once a FINGERPRINT
-        // follows. A codec that hashes the wire value instead produces a digest
-        // that no conforming peer would accept, so pin down that they differ…
         let key = b"pw";
         let mut naive = raw[..off].to_vec();
         naive[2..4].copy_from_slice(&((raw.len() - HEADER_LEN) as u16).to_be_bytes());
@@ -1243,7 +1097,6 @@ mod tests {
             "the wire length must not be the hashed length"
         );
 
-        // …and that the real digest, over the reconstructed length, verifies.
         verify_integrity(&raw, key).expect("the patched-length digest must verify");
     }
 
@@ -1307,13 +1160,10 @@ mod tests {
         let ind = Message::binding_indication(txid()).encode();
         assert!(is_stun_packet(&ind));
 
-        // Too short
         assert!(!is_stun_packet(&req[..19]));
-        // Top two bits non-zero
         let mut non_zero_top = req.clone();
         non_zero_top[0] |= 0x40;
         assert!(!is_stun_packet(&non_zero_top));
-        // Wrong magic cookie (e.g. GTF frame)
         let mut bad_cookie = req.clone();
         bad_cookie[4..8].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
         assert!(!is_stun_packet(&bad_cookie));

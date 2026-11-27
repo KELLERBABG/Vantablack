@@ -13,7 +13,6 @@ pub fn run_tray(nc: Arc<GhostNode>) {
         use tray_icon::menu::{CheckMenuItem, Menu, MenuItem};
         use tray_icon::{Icon, TrayIconBuilder};
 
-        // The real application icon, embedded in the binary.
         let Some(icon) =
             icon::ui_icon(32).and_then(|i| Icon::from_rgba(i.rgba, i.width, i.height).ok())
         else {
@@ -39,9 +38,6 @@ pub fn run_tray(nc: Arc<GhostNode>) {
 
         let menu_rx = tray_icon::menu::MenuEvent::receiver();
         let tray_rx = tray_icon::TrayIconEvent::receiver();
-        // This loop lives on a spawned thread, which tao rejects on Windows
-        // unless we opt in explicitly. Without this the tray build panicked at
-        // startup and never showed an icon.
         let mut builder = tao::event_loop::EventLoopBuilder::new();
         #[cfg(target_os = "windows")]
         {

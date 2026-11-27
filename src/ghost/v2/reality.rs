@@ -28,18 +28,12 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Bytes that mark a frame as a REALITY knock, carried ahead of the ClientHello
-/// body inside the random field.
 pub const KNOCK_MAGIC: &[u8; 4] = b"GNK!";
 
-/// Default acceptance window for a knock timestamp, in seconds. A knock is
-/// replayable inside the window, which is harmless: it only authenticates a
-/// handshake that then performs a full post-quantum key exchange.
 pub const KNOCK_WINDOW_SECS: u64 = 60;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Computes and checks REALITY knocks.
 #[derive(Clone)]
 pub struct RealityKnock {
     key: [u8; 32],
@@ -73,8 +67,6 @@ impl RealityKnock {
         mac_bytes
     }
 
-    /// The 24-byte knock blob to place in a ClientHello: magic, 8-byte
-    /// timestamp, 12 bytes of MAC.
     pub fn token(&self, sni: &str, client_random: &[u8; 32], now: u64) -> [u8; 24] {
         let full = self.mac(sni, client_random, now);
         let mut out = [0u8; 24];
@@ -84,7 +76,6 @@ impl RealityKnock {
         out
     }
 
-    /// Verify a knock against the SNI and ClientHello random it is bound to.
     pub fn verify(&self, sni: &str, client_random: &[u8; 32], token: &[u8], now: u64) -> bool {
         if token.len() != 24 || &token[0..4] != KNOCK_MAGIC {
             return false;
@@ -95,7 +86,6 @@ impl RealityKnock {
             return false;
         }
         let expected = self.mac(sni, client_random, ts);
-        // Constant-time compare of the truncated MAC.
         let mut diff = 0u8;
         for (a, b) in expected[..12].iter().zip(&token[12..24]) {
             diff |= a ^ b;
@@ -104,36 +94,23 @@ impl RealityKnock {
     }
 }
 
-/// What arrived on the listening port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeKind {
-    /// A TLS record whose random carried a valid knock.
     RealityKnock,
-    /// TLS that did not authenticate. Splice it; do not answer it.
     TlsClientHello,
-    /// Plain HTTP — a browser, a scanner, or a censorship middlebox.
     Http,
-    /// Anything else.
     Unknown,
 }
 
-/// What the listener should do with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpliceAction {
-    /// Authenticated: carry this connection into the mesh.
     OpenTunnel,
-    /// Unauthenticated: relay to the borrowed origin so the prober sees a real
-    /// site. This is the whole point of REALITY — a refusal is a fingerprint.
     SpliceToOrigin,
 }
 
-/// Classify the first bytes of a connection.
 pub fn classify(first: &[u8]) -> ProbeKind {
     if first.len() >= 3 && first[0] == 0x16 && first[1] == 0x03 && (0x01..=0x04).contains(&first[2])
     {
-        // A complete TLS record whose body carries the knock magic in its first
-        // bytes is the authenticated case. The full check happens against the
-        // parsed SNI and random in `RealityKnock::verify`.
         if first.len() >= 15 && &first[11..15] == KNOCK_MAGIC {
             return ProbeKind::RealityKnock;
         }
@@ -146,9 +123,6 @@ pub fn classify(first: &[u8]) -> ProbeKind {
     ProbeKind::Unknown
 }
 
-/// Decide the action. Anything that is not an authenticated knock is spliced —
-/// including HTTP and garbage. There is deliberately no `Reject` variant: an RST
-/// or a 403 is the signal a censor is looking for.
 pub fn decide(kind: ProbeKind) -> SpliceAction {
     match kind {
         ProbeKind::RealityKnock => SpliceAction::OpenTunnel,
@@ -156,9 +130,6 @@ pub fn decide(kind: ProbeKind) -> SpliceAction {
     }
 }
 
-/// A borrowed origin: where unauthenticated probes are sent, and the SNI the
-/// node presents. Should be a popular site reachable from the censored region,
-/// not something the operator controls — otherwise the certificate is a tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BorrowedOrigin {
     pub host: String,
@@ -180,7 +151,6 @@ impl BorrowedOrigin {
     }
 }
 
-/// The routing decision plus what to do with the first bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontDecision {
     pub action: SpliceAction,
@@ -202,9 +172,6 @@ impl RealityFront {
         &self.origin
     }
 
-    /// Inspect a connection's first bytes. `sni`/`random` are only available when
-    /// the caller parsed the ClientHello; without them a knock cannot verify and
-    /// the connection is spliced, which is the safe default.
     pub fn inspect(
         &self,
         first: &[u8],
@@ -237,15 +204,9 @@ impl RealityFront {
     }
 }
 
-// ── MASQUE / CONNECT-UDP capsules (RFC 9297) ──────────────────────────────
-
-/// Capsule type for a QUIC DATAGRAM payload inside CONNECT-UDP.
 pub const CAPSULE_DATAGRAM: u64 = 0x00;
-/// Capsule type for a compressed `CLOSE` — unused here but named so the parser
-/// can identify and skip it rather than mistaking it for a datagram.
 pub const CAPSULE_CLOSE: u64 = 0x02;
 
-/// Encode a QUIC variable-length integer.
 pub fn encode_varint(value: u64) -> Option<Vec<u8>> {
     if value < 64 {
         Some(vec![value as u8])
@@ -260,7 +221,6 @@ pub fn encode_varint(value: u64) -> Option<Vec<u8>> {
     }
 }
 
-/// Decode a QUIC variable-length integer; returns `(value, bytes_consumed)`.
 pub fn decode_varint(buf: &[u8]) -> Option<(u64, usize)> {
     let first = *buf.first()?;
     let len = 1usize << (first >> 6);
@@ -274,7 +234,6 @@ pub fn decode_varint(buf: &[u8]) -> Option<(u64, usize)> {
     Some((value, len))
 }
 
-/// Wrap a payload as `[type=0x00][length][payload]`.
 pub fn encode_datagram_capsule(payload: &[u8]) -> Option<Vec<u8>> {
     let mut out = encode_varint(CAPSULE_DATAGRAM)?;
     out.extend_from_slice(&encode_varint(payload.len() as u64)?);
@@ -282,7 +241,6 @@ pub fn encode_datagram_capsule(payload: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Pull the payload out of one datagram capsule.
 pub fn decode_datagram_capsule(buf: &[u8]) -> Option<&[u8]> {
     let (kind, n) = decode_varint(buf)?;
     if kind != CAPSULE_DATAGRAM {
@@ -294,19 +252,9 @@ pub fn decode_datagram_capsule(buf: &[u8]) -> Option<&[u8]> {
     buf.get(start..end)
 }
 
-// ── SRTP / RTP shaping ────────────────────────────────────────────────────
-
-/// Opus dynamic payload type used by Chrome's WebRTC stack.
 pub const RTP_PT_OPUS: u8 = 111;
-/// RTP header length with no CSRC and no extension.
 pub const RTP_HEADER_LEN: usize = 12;
 
-/// Wrap a frame in an RTP-looking header.
-///
-/// `seq` and `timestamp` come from the caller's media clock: at 48 kHz with 20 ms
-/// packets, `timestamp` advances by 960 per packet and `seq` by 1, which is what
-/// makes the stream look like a call rather than a tunnel. Padding is appended so
-/// the total is a multiple of four, as RTP requires.
 pub fn srtp_shape(payload: &[u8], seq: u16, timestamp: u32, ssrc: u32) -> Vec<u8> {
     let pad = (4 - ((RTP_HEADER_LEN + payload.len()) % 4)) % 4;
     let total = RTP_HEADER_LEN + payload.len() + pad;
@@ -321,22 +269,15 @@ pub fn srtp_shape(payload: &[u8], seq: u16, timestamp: u32, ssrc: u32) -> Vec<u8
     out
 }
 
-/// Remove the RTP header and padding, returning the frame.
 pub fn srtp_unshape(frame: &[u8]) -> Option<&[u8]> {
     if frame.len() < RTP_HEADER_LEN || frame[0] >> 6 != 2 {
         return None;
     }
-    // The shaper pads with zeros and records no padding length, so the receiver
-    // recovers the frame from its own length prefix rather than from RTP's
-    // padding-count field. Return everything after the header; the tunnel's
-    // 2-byte length prefix decides where the frame actually ends.
     Some(&frame[RTP_HEADER_LEN..])
 }
 
-/// Timestamp advance for a 20 ms Opus packet at 48 kHz.
 pub const RTP_TS_STEP_20MS: u32 = 960;
 
-/// Current Unix time, for knock timestamps.
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -417,10 +358,8 @@ mod tests {
         assert_eq!(d.action, SpliceAction::OpenTunnel);
         assert_eq!(d.origin, "cdn.example:443");
 
-        // Same bytes, wrong SNI: spliced.
         let d = front.inspect(&hello, Some(("evil.example", &random)), 500);
         assert_eq!(d.action, SpliceAction::SpliceToOrigin);
-        // No parsed hello: spliced, never trusted.
         let d = front.inspect(&hello, None, 500);
         assert_eq!(d.action, SpliceAction::SpliceToOrigin);
     }
@@ -434,7 +373,6 @@ mod tests {
             assert_eq!(decoded.len(), size);
             assert!(decoded.iter().all(|b| *b == 0xAB));
         }
-        // A truncated capsule is refused rather than read out of bounds.
         let enc = encode_datagram_capsule(b"hello").unwrap();
         assert!(decode_datagram_capsule(&enc[..enc.len() - 1]).is_none());
     }

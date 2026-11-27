@@ -31,25 +31,16 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::ghost::net::discovery::CAP_HOME_EXIT;
 
-/// How long a signed home-exit descriptor is accepted.
 pub const DESCRIPTOR_MAX_AGE_SECS: u64 = 900;
 
-/// One mesh node that can take part in a circuit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayDescriptor {
-    /// Node identifier, 16 bytes, hex on the wire.
     pub node_id: String,
-    /// Ed25519 public key, hex.
     pub node_pk: String,
-    /// Reachable `host:port`.
     pub endpoint: String,
-    /// Autonomous system number, when known. `0` = unknown.
     pub asn: u32,
-    /// The /16 (v4) or /32 (v6) prefix the node sits in, for coarse diversity.
     pub prefix: u16,
-    /// True when this node offers exit service from a residential address.
     pub home_exit: bool,
-    /// Unix seconds when the descriptor was published.
     pub seen_at: u64,
 }
 
@@ -72,9 +63,6 @@ impl RelayDescriptor {
         out
     }
 
-    /// Coarse network identity. Nodes in the same ASN *or* the same prefix are
-    /// treated as one network for diversity purposes: either alone is enough to
-    /// put two hops behind one operator.
     fn network_key(&self) -> (u32, u16) {
         (self.asn, self.prefix)
     }
@@ -84,7 +72,6 @@ impl RelayDescriptor {
     }
 }
 
-/// A home exit is a descriptor plus the home node's signature over it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HomeExit {
     pub descriptor: RelayDescriptor,
@@ -92,8 +79,6 @@ pub struct HomeExit {
 }
 
 impl HomeExit {
-    /// Sign a descriptor. Only the node that holds the private key matching
-    /// `descriptor.node_pk` can publish itself as a home exit.
     pub fn sign(descriptor: RelayDescriptor, signing: &SigningKey) -> Self {
         let sig = signing.sign(&descriptor.canonical_bytes());
         Self {
@@ -130,17 +115,11 @@ impl HomeExit {
     }
 }
 
-/// Why a circuit could not be planned. Each variant is a real deployment
-/// condition, not a generic error: the caller can tell the operator what to fix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanError {
-    /// Fewer usable home exits than needed (at least one, plus two relays).
     NotEnoughCandidates { have: usize, need: usize },
-    /// Two selected hops are the same node.
     DuplicateHop,
-    /// Two hops share a network, so one operator would see most of the circuit.
     InsufficientDiversity { a: String, b: String },
-    /// No candidate passed signature or freshness checks.
     NoVerifiedHomeExit,
 }
 
@@ -164,22 +143,17 @@ impl std::fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
-/// A built circuit: the two intermediate hops and the home exit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CircuitPlan {
     pub guard: RelayDescriptor,
     pub middle: RelayDescriptor,
     pub home: RelayDescriptor,
-    /// Always 3 for a home-exit circuit.
     pub hops: u8,
-    /// Distinct networks actually covered.
     pub distinct_networks: usize,
-    /// The epoch the choice was seeded from, exposed so two devices can agree.
     pub epoch: u64,
 }
 
 impl CircuitPlan {
-    /// Render the path for the dashboard.
     pub fn path_label(&self) -> String {
         format!(
             "phone → guard {} → middle {} → home {} → internet",
@@ -198,9 +172,6 @@ fn short(id: &str) -> &str {
     }
 }
 
-/// Deterministic per-epoch ordering. Uses SHA-256 of the epoch and node id, so
-/// the shuffle is reproducible across devices without a shared RNG and changes
-/// every epoch.
 fn epoch_rank(epoch: u64, node_id: &str) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -210,10 +181,6 @@ fn epoch_rank(epoch: u64, node_id: &str) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// Plan `guard → middle → home` from the available signed descriptors.
-///
-/// `candidates` may include ordinary relays and home exits; only verified,
-/// fresh descriptors are used, and exactly one must be a home exit.
 pub fn plan(
     candidates: &[HomeExit],
     plain_relays: &[RelayDescriptor],
@@ -231,8 +198,6 @@ pub fn plan(
     }
     homes.sort_by_key(|h| epoch_rank(epoch, &h.descriptor.node_id));
 
-    // Intermediate hops: every fresh descriptor we know about, home exits
-    // excluded — the exit is a destination, not a relay.
     let mut relays: Vec<RelayDescriptor> = plain_relays
         .iter()
         .filter(|r| {
@@ -312,22 +277,10 @@ fn count_new_networks(others: &[&RelayDescriptor]) -> usize {
     count
 }
 
-// ── Live advertisement, selection and routing ─────────────────────────────
-//
-// The planner above decides *which* circuit to build from signed descriptors.
-// This half is what makes a home exit real on a running node: a peer that
-// advertises `CAP_HOME_EXIT` in its signed [`crate::ghost::net::discovery::PeerDescriptorV2`]
-// is remembered here, an operator (or the client itself) selects one, and the
-// SOCKS5 initiator binds its exit to that fingerprint. Nothing here silently
-// falls back: if the selected home exit has no session, the proxy refuses the
-// connection rather than routing through an unrelated exit.
-
-/// A peer that advertised home-exit service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PeerHomeExit {
     pub fingerprint: String,
     pub endpoint: String,
-    /// Unix seconds when this node last saw the advertisement.
     pub seen_at: u64,
 }
 
@@ -340,7 +293,6 @@ struct Runtime {
     last_circuit: Option<LastCircuit>,
 }
 
-/// The last onion route the SOCKS5 proxy actually assembled, for live telemetry.
 #[derive(Debug, Clone)]
 pub struct LastCircuit {
     pub route: Vec<String>,
@@ -348,9 +300,6 @@ pub struct LastCircuit {
     pub recorded_unix: u64,
 }
 
-/// Record the route a connection was just built on. Called by the SOCKS5 proxy
-/// after hop selection, so `/api/v2/home-exit` reports observed circuit state
-/// instead of a plan.
 pub fn record_circuit(route: &[String], policy: &str) {
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
     rt.last_circuit = Some(LastCircuit {
@@ -360,16 +309,10 @@ pub fn record_circuit(route: &[String], policy: &str) {
     });
 }
 
-/// Hop count of the last circuit the SOCKS5 proxy actually assembled.
-///
-/// This is a measured route, not the regime's requested hop count: `None` until
-/// a circuit exists in this process.
 pub fn last_circuit_hops() -> Option<u8> {
     last_circuit_measurement().map(|(hops, _)| hops)
 }
 
-/// `(hops, recorded_unix)` of the last assembled circuit. The ledger wraps this
-/// in a decaying witness, so a route from hours ago cannot satisfy a live check.
 pub fn last_circuit_measurement() -> Option<(u8, u64)> {
     let rt = runtime().read().unwrap_or_else(|e| e.into_inner());
     rt.last_circuit
@@ -382,16 +325,7 @@ fn runtime() -> &'static RwLock<Runtime> {
     RUNTIME.get_or_init(|| RwLock::new(Runtime::default()))
 }
 
-/// Record a verified peer descriptor's home-exit capability.
-///
-/// Called from the descriptor install path (beacons, PEX, `vb://2.` invites), so
-/// the registry only ever holds peers whose signed descriptor actually claimed
-/// the capability. A descriptor without `CAP_HOME_EXIT` also *removes* a stale
-/// entry: an operator who turned the service off must stop being a candidate.
 pub fn note_peer(fingerprint: &str, capabilities: u8, endpoint: &str) {
-    // Every caller reaches this point only after a signed descriptor verified,
-    // so this is also the one place a peer becomes a ledger witness for
-    // CAP_RELAY and its routing-domain cluster.
     super::xray::note_verified_peer(fingerprint, capabilities, endpoint);
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
     if capabilities & CAP_HOME_EXIT == 0 {
@@ -411,7 +345,6 @@ pub fn note_peer(fingerprint: &str, capabilities: u8, endpoint: &str) {
     );
 }
 
-/// Drop a peer that disconnected or re-advertised without exit service.
 pub fn forget_peer(fingerprint: &str) {
     super::xray::forget_verified_peer(fingerprint);
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
@@ -421,7 +354,6 @@ pub fn forget_peer(fingerprint: &str) {
     }
 }
 
-/// Home exits this node currently knows about, newest first.
 pub fn candidates() -> Vec<PeerHomeExit> {
     let rt = runtime().read().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<PeerHomeExit> = rt.peers.values().cloned().collect();
@@ -433,11 +365,6 @@ pub fn candidates() -> Vec<PeerHomeExit> {
     out
 }
 
-/// Bind the exit path to `fingerprint`.
-///
-/// Refuses when the peer was never seen advertising `CAP_HOME_EXIT`: selecting
-/// an arbitrary peer as a "home exit" would be exactly the silent downgrade this
-/// feature exists to prevent.
 pub fn select(fingerprint: &str) -> Result<PeerHomeExit, String> {
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
     let peer = rt.peers.get(fingerprint).cloned().ok_or_else(|| {
@@ -455,20 +382,17 @@ pub fn selected() -> Option<String> {
         .clone()
 }
 
-/// Stop pinning the exit path. Returns the fingerprint that was pinned.
 pub fn clear_selection() -> Option<String> {
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
     rt.selected.take()
 }
 
-/// Record whether *this* node advertises home-exit service, for `/api/v2/home-exit`.
 pub fn set_local_advertisement(endpoint: &str, active: bool) {
     let mut rt = runtime().write().unwrap_or_else(|e| e.into_inner());
     rt.local_endpoint = Some(endpoint.to_string());
     rt.local_active = active;
 }
 
-/// JSON view consumed by `/api/v2/home-exit` and the dashboard.
 pub fn view(node_fingerprint: &str) -> serde_json::Value {
     let rt = runtime().read().unwrap_or_else(|e| e.into_inner());
     serde_json::json!({
@@ -480,9 +404,6 @@ pub fn view(node_fingerprint: &str) -> serde_json::Value {
         },
         "selected": rt.selected,
         "candidates": rt.peers.values().cloned().collect::<Vec<_>>(),
-        // The route the proxy actually assembled for the last connection. `none`
-        // means no onion route has been built since this daemon started; it does
-        // not imply the capability is missing.
         "planned_circuit": match &rt.last_circuit {
             Some(c) => serde_json::json!({
                 "state": "live",
@@ -516,8 +437,6 @@ mod tests {
     }
 
     fn signed_home(desc: RelayDescriptor) -> HomeExit {
-        // Sign with a key that matches the descriptor's public key so `verify`
-        // exercises the real path.
         let sk = SigningKey::from_bytes(&[9u8; 32]);
         let mut desc = desc;
         desc.node_pk = hex::encode(sk.verifying_key().to_bytes());
@@ -610,7 +529,6 @@ mod tests {
         );
         assert!(select("fp-home").is_ok());
         assert_eq!(selected().as_deref(), Some("fp-home"));
-        // A later descriptor without the bit withdraws the advertisement.
         note_peer("fp-home", 0, "192.0.2.7:2270");
         assert_eq!(selected(), None);
         assert!(candidates().is_empty());

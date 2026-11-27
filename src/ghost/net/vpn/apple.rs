@@ -18,11 +18,6 @@ unsafe extern "C" {
     fn ggn_vpn_apple_stop(user_data: *mut c_void);
 }
 
-/// Start the core from a signed Network Extension host.
-///
-/// The caller must retain `user_data` until [`stop`] returns. No packet data is
-/// accepted through this ABI until the host has authenticated and configured the
-/// corresponding `VpnConfig`.
 #[cfg(target_os = "macos")]
 pub unsafe fn start(user_data: *mut c_void) -> Result<(), i32> {
     let status = ggn_vpn_apple_start(user_data);

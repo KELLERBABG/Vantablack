@@ -24,28 +24,19 @@ use parking_lot::Mutex;
 use super::netstack::Netstack;
 use super::{seal_datagram, FlowKey, LeaseTable, OpenOutcome, UdpFlowTable, VpnConfig, VpnIngress};
 
-/// Magic prefix marking a VPN tunnel payload inside a decrypted session frame.
 pub const VPN_PAYLOAD_MAGIC: &[u8; 5] = b"GVPN1";
 
-/// Single-AEAD VPN tunnel payload (`[epoch u32][ctr u64][ip_packet]`) used inside
-/// an already-authenticated session frame.
 pub const VPN_PAYLOAD_V2_MAGIC: &[u8; 5] = b"GVPN2";
 
-/// Authenticated goodbye / reroute control notification sent when a node
-/// disconnects or deactivates the mesh.
 pub const GHOST_BYE_MAGIC: &[u8; 14] = b"GHOST_BYE_____";
 
-/// Egress unit: a sealed tunnel datagram plus the session routing info.
 pub struct EgressUnit {
     pub fingerprint: String,
     pub session_hash: [u8; 4],
     pub endpoint: SocketAddr,
-    /// Bare tunnel datagram (epoch || ctr || ciphertext || tag) — the caller
-    /// wraps it as `[GVPN1][wire]` inside the session-encrypted frame.
     pub wire: Vec<u8>,
 }
 
-/// Per-client session material the hub caches for egress sealing.
 #[derive(Clone)]
 struct ClientSession {
     master_key: [u8; 32],
@@ -53,27 +44,20 @@ struct ClientSession {
     endpoint: SocketAddr,
 }
 
-/// The hub-side VPN context. Handlers are synchronous; main.rs drives the
-/// async egress pumps around them.
 pub struct VpnHub {
     pub cfg: VpnConfig,
     pub leases: LeaseTable,
     pub flows: Arc<UdpFlowTable>,
     pub netstack: Netstack,
     sessions: Mutex<HashMap<String, ClientSession>>,
-    /// Flows we already spawned a reader thread for (dedup across packets).
     readers_spawned: Mutex<HashSet<FlowKey>>,
     ingress: VpnIngress,
-    /// Inner-epoch per fingerprint (mirror of the lease epoch for fast checks).
     ingress_epochs: Mutex<HashMap<String, u32>>,
-    /// Hub→client tunnel counters (per fingerprint), widened to u64.
     tx_counters: Mutex<HashMap<String, u64>>,
-    /// Egress queue: (fingerprint, bare tunnel wire). Bounded (rule 3).
     egress: Mutex<std::sync::mpsc::Receiver<(String, Vec<u8>)>>,
     egress_tx: std::sync::mpsc::SyncSender<(String, Vec<u8>)>,
     stats_in: AtomicU32,
     stats_out: AtomicU32,
-    /// Reader idle limit (production default; injected for churn gates).
     reader_idle_limit: Duration,
     stats_dropped: AtomicU32,
 }
@@ -83,7 +67,6 @@ impl VpnHub {
         Self::start_with_rotator(cfg, None)
     }
 
-    /// Start VPN hub with optional ExitIpRotator for round-robin egress IP rotation.
     pub fn start_with_rotator(
         cfg: VpnConfig,
         rotator: Option<Arc<crate::ghost::net::mesh::ExitIpRotator>>,
@@ -92,8 +75,6 @@ impl VpnHub {
         Self::start_with_flows_and_rotator(cfg, flows, Duration::from_secs(10), rotator)
     }
 
-    /// Test constructor: inject the flow table (which carries its own TTLs)
-    /// and the reader idle limit — churn-gate timing, no runtime knobs.
     pub fn start_with_flows(
         cfg: VpnConfig,
         flows: Arc<UdpFlowTable>,
@@ -129,9 +110,6 @@ impl VpnHub {
         })
     }
 
-    /// Fresh handshake from a client (precedence 1 of the re-anchor ladder):
-    /// allocate/refresh the lease, re-anchor unconditionally, zero the tunnel
-    /// window, and evict all per-epoch state. Never consults V_MAX.
     pub fn on_handshake(&self, fp: &str, endpoint: SocketAddr) {
         if !self.authorized(fp) {
             return;
@@ -147,8 +125,6 @@ impl VpnHub {
         }
     }
 
-    /// Evict all per-client state (lease, UDP flows, replay window, session cache)
-    /// when a peer sends an authenticated `GHOST_BYE_____` disconnect notification.
     pub fn on_disconnect(&self, fp: &str) {
         let had_lease = self.leases.evict(fp);
         let evicted_flows = self.flows.evict_for(fp);
@@ -166,7 +142,6 @@ impl VpnHub {
         }
     }
 
-    /// Return all active client endpoints cached by the hub.
     pub fn active_endpoints(&self) -> Vec<(String, SocketAddr)> {
         self.sessions
             .lock()
@@ -175,7 +150,6 @@ impl VpnHub {
             .collect()
     }
 
-    /// Evict all clients when the hub itself deactivates.
     pub fn evict_all(&self) {
         let fps: Vec<String> = self.sessions.lock().keys().cloned().collect();
         for fp in fps {
@@ -189,7 +163,6 @@ impl VpnHub {
         self.readers_spawned.lock().clear();
     }
 
-    /// Is `fp` allowed to use this hub?
     pub fn authorized(&self, fp: &str) -> bool {
         self.cfg
             .allowed_fingerprints
@@ -197,9 +170,6 @@ impl VpnHub {
             .any(|a| a == fp || a == "any" || a == "*")
     }
 
-    /// Handle a decrypted `GVPN1` payload from a client.
-    /// `fp` is the verified peer fingerprint; `master_key`/`session_hash`
-    /// come from the session the frame arrived in; `src` is the wire address.
     pub fn handle_tunnel_payload(
         self: &Arc<Self>,
         fp: &str,
@@ -224,10 +194,6 @@ impl VpnHub {
             },
         );
 
-        // Authenticate a candidate epoch before adopting it. Previously the
-        // epoch/lease/replay state was rotated from the clear tunnel header
-        // before AEAD verification, so a malformed packet could evict the
-        // working mobility state and black-hole the next valid packet.
         let epoch = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
         let ctr = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
         let current_epoch = self.ingress_epochs.lock().get(fp).copied();
@@ -235,15 +201,11 @@ impl VpnHub {
             tracing::debug!(peer = %fp, epoch, current = ?current_epoch, "VPN stale epoch dropped");
             return;
         }
-        // A forward epoch is a legitimate authenticated mobility/re-key
-        // candidate; open it in its own replay namespace, then retain only it.
         let expected = epoch;
         let outcome = self.ingress.open(master_key, fp, expected, payload);
         self.handle_tunnel_outcome(fp, epoch, ctr, src, current_epoch, outcome);
     }
 
-    /// Handle a single-AEAD `GVPN2` payload from a client (already authenticated by
-    /// the outer session frame).
     pub fn handle_tunnel_payload_v2(
         self: &Arc<Self>,
         fp: &str,
@@ -306,8 +268,6 @@ impl VpnHub {
         }
     }
 
-    /// Route one decrypted inner IP packet: TCP → netstack, UDP → flow table,
-    /// ICMP echo to the hub → direct reply, else drop.
     fn route_inner(self: &Arc<Self>, fp: &str, epoch: u32, pkt: Vec<u8>) {
         if pkt.len() < 20 || pkt[0] >> 4 != 4 {
             return;
@@ -317,11 +277,8 @@ impl VpnHub {
         let src_ip = Ipv4Addr::new(pkt[12], pkt[13], pkt[14], pkt[15]);
         let dst = Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]);
 
-        // The client configured its own TUN: adopt its self-chosen
-        // overlay IP as the lease hint for all protocols (auto-assign only on clash).
         let (overlay, _) = self.leases.lease_for_hint(fp, Some(src_ip));
 
-        // Threat Shield CIDR / IP blocking across all outbound IPv4 traffic (TCP, UDP, etc.).
         if crate::ghost::net::threat_shield::blocks_ip(IpAddr::V4(dst)) {
             crate::ghost::net::adblock::record_blocked();
             self.stats_dropped.fetch_add(1, Ordering::Relaxed);
@@ -350,7 +307,6 @@ impl VpnHub {
                         }
                     }
                 }
-                // TCP: feed the netstack (NAT front-end handles addressing).
                 let _ = self.netstack.try_feed(pkt);
             }
             17 => {
@@ -359,7 +315,6 @@ impl VpnHub {
                 }
                 let sport = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
                 let dport = u16::from_be_bytes([pkt[ihl + 2], pkt[ihl + 3]]);
-                // If client queries the hub overlay directly on port 53 (DNS), redirect to configured privacy DNS
                 let is_hub_dns = (dst == super::netstack::HUB_ADDR
                     || dst == Ipv4Addr::new(10, 66, 0, 1))
                     && dport == 53;
@@ -379,13 +334,11 @@ impl VpnHub {
                 if pkt.len() > payload_start {
                     let udp_payload = pkt[payload_start..].to_vec();
 
-                    // Block DoQ/DoT bypass port (853) when adblock + DoH guard are active
                     if crate::ghost::net::adblock::is_blocked_port(dport) {
                         crate::ghost::net::adblock::record_blocked();
                         return;
                     }
 
-                    // Ad & tracker DNS blocking (returns NXDOMAIN before forwarding upstream)
                     if is_hub_dns || dport == 53 {
                         if let Some(qname) =
                             crate::ghost::net::adblock::extract_dns_qname(&udp_payload)
@@ -412,10 +365,6 @@ impl VpnHub {
                         }
                     }
 
-                    // Anti-leak protection: if client queries AAAA (IPv6) on port 53, immediately reply
-                    // with standard RFC NOERROR/NODATA (0 answers). This prevents dual-stack clients from
-                    // attempting IPv6 connections that would bypass the mesh tunnel or stall, eliminating
-                    // IPv6 traces and guaranteeing all traffic flows through the post-quantum mesh.
                     if (is_hub_dns || dport == 53) && is_dns_aaaa_query(&udp_payload) {
                         if let Some(nodata) = build_dns_nodata_response(&udp_payload) {
                             if let Some(reply_pkt) = build_udp_packet(
@@ -432,8 +381,6 @@ impl VpnHub {
                     }
 
                     let dst_addr = SocketAddr::from((effective_dst, dport));
-                    // The query itself is sent from THIS (packet-handling)
-                    // context — never a per-packet thread.
                     if let Err(e) = flow.socket.send_to(&udp_payload, dst_addr) {
                         if e.kind() != std::io::ErrorKind::WouldBlock {
                             tracing::debug!(error = %e, "UDP flow send failed");
@@ -441,34 +388,24 @@ impl VpnHub {
                     } else {
                         tracing::info!(peer = %fp, dst = %dst_addr, bytes = udp_payload.len(), "VPN UDP sent to WAN/LAN");
                     }
-                    // When resolving via the hub overlay DNS (10.66.0.1:53) with default settings,
-                    // also send to 9.9.9.9:53 so networks filtering 1.1.1.1 still resolve without delay.
                     if is_hub_dns && effective_dst == Ipv4Addr::new(1, 1, 1, 1) {
                         let _ = flow.socket.send_to(
                             &udp_payload,
                             SocketAddr::from((Ipv4Addr::new(9, 9, 9, 9), 53)),
                         );
                     }
-                    // One reader thread per live flow; the reader drops its
-                    // dedup key on exit so post-idle queries re-spawn.
                     if self.readers_spawned.lock().insert(key.clone()) {
                         self.spawn_flow_reader(key, flow.clone());
                     }
                 }
             }
             1 => {
-                // ICMP: answer echo requests addressed to the hub overlay IP.
                 self.answer_icmp(fp, epoch, &pkt);
             }
             _ => {}
         }
     }
 
-    /// Reader loop for one UDP flow: relays LAN replies back into the tunnel.
-    /// Exits after `reader_idle_limit` of silence; on exit it drops the
-    /// reader-dedup key so the next packet on this tuple re-spawns a reader
-    /// (attached to this same socket if the flow has not been swept yet).
-    /// The socket fd is dropped with the thread.
     fn spawn_flow_reader(self: &Arc<Self>, key: FlowKey, flow: Arc<super::UdpFlow>) {
         let key_out = key.clone();
         let fp = key.fp.clone();
@@ -484,10 +421,6 @@ impl VpnHub {
         let _ = std::thread::Builder::new()
             .name("ggn-udp-flow".into())
             .spawn(move || {
-                // 4096 bytes: an EDNS0 DNS response can approach 4 KB, and `recv`
-                // into a too-small buffer truncates *silently* — the client would
-                // receive a malformed reply with no error logged anywhere.
-                // (PROTOTYPE.md flaw #2: this was 2048.)
                 let mut buf = vec![0u8; 4096];
                 let mut quiet = Duration::ZERO;
                 loop {
@@ -508,8 +441,6 @@ impl VpnHub {
                                 client_port,
                                 reply_payload,
                             ) {
-                                // Flaw #4: Enqueue unsealed raw IP packet. Sealing happens at drain time
-                                // in poll_egress, preventing stale epochs/counters on mid-queue re-anchor.
                                 if replies.send((fp.clone(), ip)).is_err() {
                                     break;
                                 }
@@ -517,8 +448,6 @@ impl VpnHub {
                         }
                         Ok(_) => {}
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            // Poll cadence: 10 Hz; exit after `reader_idle_limit`
-                            // of total silence so reader and flow lifecycles agree.
                             quiet += Duration::from_millis(100);
                             if quiet >= idle_limit {
                                 break;
@@ -536,21 +465,14 @@ impl VpnHub {
                         }
                     }
                 }
-                // Lifecycle agreement: a dead reader must not block a respawn —
-                // drop the dedup key so the next packet on this tuple re-spawns
-                // a reader for the (possibly successor) flow socket.
                 this.readers_spawned.lock().remove(&key_out);
             });
     }
 
-    /// ICMP echo → echo reply (for the hub's own overlay address).
     fn answer_icmp(&self, fp: &str, epoch: u32, pkt: &[u8]) {
         if pkt.len() < 28 {
             return;
         }
-        // Scope: only echoes addressed to the hub's own overlay IP. Echoes
-        // aimed at real LAN devices are dropped (counted) — a synthetic reply
-        // would mask real reachability, which is what a ping must measure.
         if Ipv4Addr::new(pkt[16], pkt[17], pkt[18], pkt[19]) != self.cfg.hub_overlay {
             self.stats_dropped.fetch_add(1, Ordering::Relaxed);
             return;
@@ -576,15 +498,10 @@ impl VpnHub {
         self.enqueue_to_client(fp, epoch, reply);
     }
 
-    /// Queue an IP packet for a client into the egress pump (Flaw #4: seal-at-drain).
     fn enqueue_to_client(&self, fp: &str, _epoch: u32, ip_packet: Vec<u8>) {
         let _ = self.egress_tx.try_send((fp.to_string(), ip_packet));
     }
 
-    /// Seal an IP packet for a client → bare tunnel datagram (no magic).
-    /// The epoch is the one ADOPTED from the client's wire header
-    /// (`ingress_epochs`) — never `lease.epoch`, which increments on both
-    /// handshake rotation AND adoption and would desync from the client.
     fn seal_for_client(&self, fp: &str, ip_packet: Vec<u8>) -> Option<Vec<u8>> {
         let info = self.sessions.lock().get(fp).cloned()?;
         let epoch = self.ingress_epochs.lock().get(fp).copied().unwrap_or(0);
@@ -596,8 +513,6 @@ impl VpnHub {
         } else {
             *slot = next;
         }
-        // U64 counter space is effectively inexhaustible (~585 years at
-        // 1 Gpps), so this alarm exists only as a defensive sanity check.
         const CTR_REKEY_AT: u64 = u64::MAX - 10_000_000;
         if *slot >= CTR_REKEY_AT {
             tracing::warn!(
@@ -610,10 +525,6 @@ impl VpnHub {
         Some(wire)
     }
 
-    /// Drain one pending egress item. Returns an `EgressUnit` the caller
-    /// sends over the mesh (session-encrypted, GVPN1-wrapped).
-    /// Seals at drain time rather than at produce time, reading the current session
-    /// key, epoch, and counter when handing the unit to the wire.
     pub fn poll_egress(&self) -> Option<EgressUnit> {
         loop {
             let (fp, ip_packet) = self.egress.lock().try_recv().ok()?;
@@ -635,8 +546,6 @@ impl VpnHub {
         }
     }
 
-    /// Drain netstack egress (TCP): one NAT-egress IP packet, sealed for the
-    /// client that owns its destination overlay IP. Call in a loop until None.
     pub fn poll_netstack_egress(&self) -> Option<EgressUnit> {
         let pkt = self.netstack.poll_outgoing()?;
         if pkt.len() < 20 {
@@ -666,7 +575,6 @@ impl VpnHub {
         })
     }
 
-    /// 1 Hz housekeeping: expire UDP flows.
     pub fn sweep(&self) -> usize {
         self.flows.sweep()
     }
@@ -686,10 +594,6 @@ impl VpnHub {
         self.leases.snapshot()
     }
 
-    /// Per-lease detail for the console `VPN STATUS` view.
-    ///
-    /// Each lock is taken and released on its own (never nested), so this can
-    /// never invert lock order against the seal/ingest paths.
     pub fn lease_views(&self) -> Vec<LeaseView> {
         let leases = self.leases.snapshot();
         let mut views = Vec::with_capacity(leases.len());
@@ -715,12 +619,6 @@ impl VpnHub {
         views
     }
 
-    /// Metrics snapshot for `/metrics` and `/healthz`.
-    ///
-    /// `counter_headroom_min` is the operationally important one: how close the
-    /// busiest lease is to exhausting its per-epoch tunnel counter — a state
-    /// that was unrecoverable before the re-key trigger existed (PROTOTYPE.md
-    /// flaw #1). Exporting it lets a dashboard alert *before* it bites.
     pub fn metrics(&self) -> VpnHubMetrics {
         let ns = self.netstack.stats();
         let counter_headroom_min = self
@@ -742,7 +640,6 @@ impl VpnHub {
     }
 }
 
-/// Point-in-time VPN hub counters for the monitoring endpoints.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VpnHubMetrics {
     pub frames_in: u32,
@@ -751,36 +648,21 @@ pub struct VpnHubMetrics {
     pub leases: usize,
     pub tcp_flows: usize,
     pub udp_flows: usize,
-    /// Smallest remaining tunnel-counter headroom across leases
-    /// (`u64::MAX` when no lease has spent a counter yet).
     pub counter_headroom_min: u64,
 }
 
-/// One lease as rendered by the console `VPN STATUS` view.
-///
-/// The lease table alone cannot answer "which client is holding flows?" or "how
-/// close is this client to a counter re-key?" — which is what you actually want
-/// mid-incident — so this joins the lease, its UDP flow count and its
-/// per-epoch counter headroom into a single row.
 #[derive(Debug, Clone)]
 pub struct LeaseView {
     pub fingerprint: String,
     pub overlay_ip: Ipv4Addr,
     pub endpoint: SocketAddr,
     pub epoch: u32,
-    /// Seconds since an authenticated packet from the current endpoint.
     pub idle_secs: f32,
-    /// Highest tunnel counter accepted from this client in this epoch.
     pub tunnel_v_max: u32,
-    /// Live UDP flow bindings owned by this fingerprint.
     pub udp_flows: usize,
-    /// Remaining per-epoch tunnel-counter headroom (`u64::MAX` = untouched).
     pub counter_headroom: u64,
 }
 
-// ── IP/UDP packet construction (LAN → client replies) ───────────────
-
-/// Build a raw IPv4+UDP packet (both checksums correct) from a LAN reply.
 pub fn build_udp_packet(
     src_ip: IpAddr,
     src_port: u16,
@@ -810,7 +692,6 @@ pub fn build_udp_packet(
     pkt[26..28].copy_from_slice(&0u16.to_be_bytes()); // csum placeholder
     pkt[28..].copy_from_slice(payload);
     fix_ip_checksum(&mut pkt, 20);
-    // UDP checksum with pseudo-header (IPv4)
     let mut buf = Vec::with_capacity(12 + udp_len);
     buf.extend_from_slice(&s4.octets());
     buf.extend_from_slice(&d4.octets());
@@ -824,7 +705,6 @@ pub fn build_udp_packet(
     Some(pkt)
 }
 
-/// Zero + recompute the IPv4 header checksum in place.
 fn fix_ip_checksum(pkt: &mut [u8], ihl: usize) {
     pkt[10] = 0;
     pkt[11] = 0;
@@ -849,12 +729,10 @@ pub(crate) fn internet_checksum(buf: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-/// Check if a DNS packet is a standard query for AAAA (IPv6) records.
 pub fn is_dns_aaaa_query(payload: &[u8]) -> bool {
     if payload.len() < 12 {
         return false;
     }
-    // Check QR bit: 0 = query
     if (payload[2] & 0x80) != 0 {
         return false;
     }
@@ -862,7 +740,6 @@ pub fn is_dns_aaaa_query(payload: &[u8]) -> bool {
     if qdcount == 0 {
         return false;
     }
-    // Walk QNAME to find QTYPE
     let mut idx: usize = 12;
     while idx < payload.len() {
         let len = payload[idx] as usize;
@@ -886,22 +763,17 @@ pub fn is_dns_aaaa_query(payload: &[u8]) -> bool {
     false
 }
 
-/// Construct a standard RFC NOERROR / NODATA response for an AAAA query.
 pub fn build_dns_nodata_response(query: &[u8]) -> Option<Vec<u8>> {
     if query.len() < 12 {
         return None;
     }
     let mut resp = query.to_vec();
-    // Flags: Response (0x80), Recursion Desired (0x01), Recursion Available (0x80), NoError (0x00) -> 0x8180
     resp[2] = 0x81;
     resp[3] = 0x80;
-    // ANCOUNT = 0
     resp[6] = 0;
     resp[7] = 0;
-    // NSCOUNT = 0
     resp[8] = 0;
     resp[9] = 0;
-    // ARCOUNT = 0
     resp[10] = 0;
     resp[11] = 0;
 
@@ -953,7 +825,6 @@ mod tests {
 
     #[test]
     fn icvmp_echo_reply_flips_and_recomputes() {
-        // An echo request to the hub: src 10.66.0.10 → dst 10.66.0.1
         let mut req = vec![0u8; 20 + 8];
         req[0] = 0x45;
         req[8] = 64;
@@ -979,7 +850,6 @@ mod tests {
 
     #[test]
     fn counters_skip_zero_on_wrap() {
-        // Structural check of the wrap rule used in seal_for_client.
         let slot: u32 = 0xFFFF_FFFF;
         let next = slot.wrapping_add(1);
         assert_eq!(next, 0);
@@ -989,7 +859,6 @@ mod tests {
 
     #[test]
     fn dns_aaaa_leak_prevention_builds_nodata_reply() {
-        // Construct query: ID=0x4242, QR=0, QDCOUNT=1, "example.com", TYPE=28 (AAAA), CLASS=1 (IN)
         let mut query = vec![
             0x42, 0x42, // ID
             0x01, 0x00, // Flags: RD=1
@@ -997,20 +866,17 @@ mod tests {
             0x00, 0x00, // ANCOUNT=0
             0x00, 0x00, // NSCOUNT=0
             0x00, 0x00, // ARCOUNT=0
-            // QNAME: 7example3com0
             7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 0x00,
             0x1C, // QTYPE=28 (AAAA)
             0x00, 0x01, // QCLASS=1 (IN)
         ];
         assert!(is_dns_aaaa_query(&query));
 
-        // Construct A query (TYPE=1) -> must NOT be treated as AAAA
         let a_query_len = query.len();
         query[a_query_len - 4] = 0x00;
         query[a_query_len - 3] = 0x01;
         assert!(!is_dns_aaaa_query(&query));
 
-        // Switch back to AAAA and verify NODATA response
         query[a_query_len - 3] = 0x1C;
         let resp = build_dns_nodata_response(&query).expect("build nodata");
         assert_eq!(&resp[0..2], &[0x42, 0x42]); // Same ID

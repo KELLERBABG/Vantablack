@@ -9,35 +9,18 @@ mod platform {
     use std::sync::Arc;
     use tracing::{info, warn};
 
-    /// Wintun adapter handle — wraps the raw wintun FFI pointer.
-    ///
-    /// # Safety
-    /// Wintun operations involve FFI calls to the wintun.dll driver.
-    /// This struct ensures thread-safe access via atomic running flag.
     pub struct TunAdapter {
-        /// Whether the adapter is actively capturing.
         running: Arc<AtomicBool>,
-        /// Session handle (wintun session for read/write).
         session: Option<Box<dyn TunSession>>,
-        /// Adapter name.
         name: String,
     }
 
-    /// Trait abstracting over wintun session operations for testability.
     pub trait TunSession: Send {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
         fn write(&self, buf: &[u8]) -> std::io::Result<usize>;
     }
 
     impl TunAdapter {
-        /// Create a new wintun adapter and start a capture session.
-        ///
-        /// This requires:
-        /// - Administrator privileges on Windows
-        /// - `wintun.dll` accessible in the executable's directory or PATH
-        ///
-        /// Returns an error if wintun cannot be loaded or the adapter
-        /// fails to initialize.
         pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(dir) = exe.parent() {
@@ -87,11 +70,9 @@ mod platform {
                     info!("Found wintun.dll at: {}", dll_path.display());
                     #[cfg(feature = "vpn")]
                     {
-                        // Attempt real Wintun initialization via WintunTun
                         use crate::ghost::net::vpn::tun::{TunDevice, WintunTun};
                         use std::net::Ipv4Addr;
 
-                        // Default overlay IP 10.66.0.2 / 255.255.255.0 for the TUN adapter interface
                         let addr = Ipv4Addr::new(10, 66, 0, 2);
                         let mask = Ipv4Addr::new(255, 255, 255, 0);
 
@@ -139,10 +120,6 @@ mod platform {
             }
         }
 
-        /// Read the next raw IP frame from the TUN device.
-        ///
-        /// The buffer should be large enough for a full Ethernet MTU (1500)
-        /// plus any additional headers. Returns the number of bytes read.
         pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             if let Some(ref mut session) = self.session {
                 session.read(buf)
@@ -154,7 +131,6 @@ mod platform {
             }
         }
 
-        /// Write a raw IP frame to the TUN device (inject into OS network stack).
         pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
             if let Some(ref session) = self.session {
                 session.write(buf)
@@ -166,18 +142,15 @@ mod platform {
             }
         }
 
-        /// Check if the adapter is running.
         pub fn is_running(&self) -> bool {
             self.running.load(Ordering::Relaxed)
         }
 
-        /// Shut down the TUN adapter.
         pub fn shutdown(&self) {
             self.running.store(false, Ordering::Relaxed);
             info!("TUN adapter shutdown");
         }
 
-        /// Get the adapter name.
         pub fn name(&self) -> &str {
             &self.name
         }
@@ -189,8 +162,6 @@ mod platform {
         }
     }
 }
-
-// ── Cross-platform stubs & adapters ──────────────────────────────
 
 #[cfg(target_os = "windows")]
 pub use platform::TunAdapter;
@@ -204,8 +175,6 @@ pub fn is_wintun_installed() -> bool {
 pub fn find_wintun_dll() -> Option<std::path::PathBuf> {
     platform::TunAdapter::find_wintun_dll()
 }
-
-// ── Linux: /dev/net/tun kernel driver ─────────────────────────────
 
 #[cfg(target_os = "linux")]
 mod linux_platform {
@@ -308,8 +277,6 @@ mod linux_platform {
 
 #[cfg(target_os = "linux")]
 pub use linux_platform::TunAdapter;
-
-// ── macOS: utun kernel control socket ──────────────────────────────
 
 #[cfg(target_os = "macos")]
 mod macos_platform {

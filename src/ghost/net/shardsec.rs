@@ -44,7 +44,6 @@ fn shard_nonce(base: &[u8; 12], index: u8) -> [u8; 12] {
     nonce
 }
 
-/// Seal one already RS-encoded shard with its independent key.
 pub fn seal_shard(
     master: &[u8; 32],
     epoch: u64,
@@ -74,11 +73,6 @@ pub fn seal_shard(
     }
 }
 
-/// Honey-Shards — Adversarial Tamper Traps.
-///
-/// Seals a shard with a deliberately poisoned trap tag derived from [`HONEY_TRAP_LABEL`].
-/// A Byzantine on-path relay that alters bytes will produce an authentication
-/// anomaly that isolates the adversary on the reputation matrix.
 pub fn seal_honey_shard(
     master: &[u8; 32],
     epoch: u64,
@@ -111,8 +105,6 @@ pub fn seal_honey_shard(
     }
 }
 
-/// Verifies whether a honey shard arrived intact with its expected trap tag.
-/// Returns Ok(true) if the honey shard was untampered, Ok(false) if tampered by Byzantine relay.
 pub fn verify_honey_shard(
     master: &[u8; 32],
     epoch: u64,
@@ -134,7 +126,6 @@ pub fn verify_honey_shard(
     xchacha_open(&key, &shard_nonce, epoch, direction, &mut ciphertext).is_ok()
 }
 
-/// Authenticate and open one independently sealed shard.
 pub fn open_shard(
     master: &[u8; 32],
     epoch: u64,
@@ -155,7 +146,6 @@ pub fn open_shard(
     Ok(ciphertext)
 }
 
-/// RS-encode and independently seal every shard.
 pub fn seal_message(
     master: &[u8; 32],
     epoch: u64,
@@ -176,7 +166,6 @@ pub fn seal_message(
         .collect()
 }
 
-/// Authenticate/decrypt available shards and reconstruct after at least two pass.
 pub fn open_message(
     master: &[u8; 32],
     epoch: u64,
@@ -216,24 +205,12 @@ pub fn open_message(
     Ok(framed[2..].to_vec())
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Time-as-the-4th-Shard (Scheduled Shard Dispatch)
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// A shard scheduled for temporal egress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledShard {
     pub shard: SealedShard,
-    /// Delay offset in milliseconds relative to T_0.
     pub delay_ms: u64,
 }
 
-/// Temporal dispatch scheduler for Reed-Solomon shards.
-///
-/// Dispatches shards not only across space (independent routes) but scheduled
-/// across time (T_0, T_0 + delta, next beacon epoch).
-/// An adversary who intercepts traffic over a limited capture window (e.g. < delta)
-/// captures fewer than 2 shards and cannot reconstruct the plaintext.
 #[derive(Debug, Clone)]
 pub struct TemporalShardScheduler {
     pub base_delay_ms: u64,
@@ -257,10 +234,6 @@ impl TemporalShardScheduler {
         }
     }
 
-    /// Schedule egress flights for a 3-shard message.
-    /// Shard 0: T_0 (0 ms delay)
-    /// Shard 1: T_0 + base_delay_ms (e.g. 200 ms)
-    /// Shard 2: T_0 + 2 * base_delay_ms (e.g. 400 ms)
     pub fn schedule(&self, shards: Vec<SealedShard>) -> Vec<ScheduledShard> {
         shards
             .into_iter()
@@ -273,8 +246,6 @@ impl TemporalShardScheduler {
             .collect()
     }
 
-    /// Simulates what an attacker captures given an observation window `[window_start_ms, window_end_ms]`.
-    /// Returns only the shards dispatched within that temporal window.
     pub fn intercept_window(
         scheduled: &[ScheduledShard],
         window_start_ms: u64,
@@ -293,11 +264,6 @@ impl TemporalShardScheduler {
     }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// Spatio-Temporal Erosion Codes (Deliberate Data Fading)
-// ══════════════════════════════════════════════════════════════════
-
-/// A shard bound to a specific space-time coordinate (shard_index, epoch_slot).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpaceTimeShard {
     pub index: u8,
@@ -305,21 +271,9 @@ pub struct SpaceTimeShard {
     pub sealed_shard: SealedShard,
 }
 
-/// Spatio-Temporal Erosion Codec.
-///
-/// Encodes a message such that reconstruction requires presence across BOTH space (disjoint paths)
-/// and time (distinct epoch intervals). Old shards deliberately erode over time: as an epoch expires
-/// (§4 Self-Destructing Epochs), its decryption key is wiped from memory, rendering past wire captures
-/// un-openable.
-/// An adversary who raids a server or harvests traffic at one snapshot in time cannot recover
-/// the secret without having captured live keys across at least 2 distinct epoch windows.
 pub struct SpatioTemporalErosionCodec;
 
 impl SpatioTemporalErosionCodec {
-    /// Encode and seal message across a space-time ladder:
-    /// - Shard 0 @ Epoch E
-    /// - Shard 1 @ Epoch E + 1
-    /// - Shard 2 @ Epoch E + 2
     pub fn encode_space_time(
         epoch_master_keys: &[[u8; 32]; 3],
         base_epoch: u64,
@@ -350,9 +304,6 @@ impl SpatioTemporalErosionCodec {
             .collect()
     }
 
-    /// Reconstruct from available surviving space-time shards.
-    /// Requires that at least 2 shards have valid keys from their respective epochs.
-    /// If an epoch has decayed/eroded (key wiped/unavailable), that shard cannot be opened.
     pub fn reconstruct_space_time(
         available_epoch_keys: &[Option<[u8; 32]>; 3],
         _base_epoch: u64,
@@ -467,17 +418,14 @@ mod tests {
         let dir = NonceDirection::InitiatorToResponder;
         let payload = b"trap_payload_shard_data".to_vec();
 
-        // Legitimate honey shard verifies intact
         let honey = seal_honey_shard(&master, epoch, &nonce, dir, 1, payload);
         assert!(honey.is_honey);
         assert!(verify_honey_shard(&master, epoch, &nonce, dir, &honey));
 
-        // Tampering with the honey shard payload fails canary verification
         let mut tampered = honey.clone();
         tampered.ciphertext[0] ^= 0x01;
         assert!(!verify_honey_shard(&master, epoch, &nonce, dir, &tampered));
 
-        // Normal shard is not a honey shard
         let normal = seal_shard(&master, epoch, &nonce, dir, 0, b"normal".to_vec(), &[]);
         assert!(!normal.is_honey);
         assert!(!verify_honey_shard(&master, epoch, &nonce, dir, &normal));
@@ -501,19 +449,16 @@ mod tests {
         assert_eq!(scheduled[1].delay_ms, 200);
         assert_eq!(scheduled[2].delay_ms, 400);
 
-        // Adversary with short capture window (0ms to 100ms) only intercepts shard 0
         let partial_capture = TemporalShardScheduler::intercept_window(&scheduled, 0, 100);
         assert!(partial_capture[0].is_some());
         assert!(partial_capture[1].is_none());
         assert!(partial_capture[2].is_none());
-        // Fewer than 2 shards must fail to open
         let open_res = open_message(&master, epoch, &nonce, dir, &partial_capture);
         assert!(
             open_res.is_err(),
             "Partial temporal capture (1 shard) must not reconstruct"
         );
 
-        // Adversary or recipient with full window (0ms to 500ms) receives all shards and reconstructs
         let full_capture = TemporalShardScheduler::intercept_window(&scheduled, 0, 500);
         let reconstructed = open_message(&master, epoch, &nonce, dir, &full_capture)
             .expect("Full temporal window must reconstruct");
@@ -543,7 +488,6 @@ mod tests {
         assert_eq!(st_shards[1].epoch_slot, base_epoch + 1);
         assert_eq!(st_shards[2].epoch_slot, base_epoch + 2);
 
-        // Case 1: Attacker at single snapshot only holds key for Epoch 0 (Epoch 1 & 2 keys uncompromised)
         let single_epoch_capture = [Some(key_e0), None, None];
         let failed_open = SpatioTemporalErosionCodec::reconstruct_space_time(
             &single_epoch_capture,
@@ -557,7 +501,6 @@ mod tests {
             "Single epoch key must open 0 bytes of secret"
         );
 
-        // Case 2: Legitimate peer holds keys across at least 2 epochs (e.g. Epoch 0 and Epoch 2)
         let multi_epoch_holder = [Some(key_e0), None, Some(key_e2)];
         let opened = SpatioTemporalErosionCodec::reconstruct_space_time(
             &multi_epoch_holder,

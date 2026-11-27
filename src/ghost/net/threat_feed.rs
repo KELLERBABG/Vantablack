@@ -58,46 +58,28 @@ use ed25519_dalek::{Signature, VerifyingKey};
 
 use super::threat_shield::{self, Shield, ThreatKind, Verdict};
 
-/// Domain-separation label mixed into every signed canonical body.
 const FEED_LABEL: &str = "vantablack-threat-feed";
-/// The only snapshot format this loader understands.
 const FEED_VERSION: &str = "1";
 
-/// The pinned key's environment variable: hex-encoded 32-byte Ed25519 public key.
 pub const PINNED_KEY_ENV: &str = "GHOST_THREAT_FEED_KEY";
-/// Optional HTTPS URL for automatic signed feed refresh.
 pub const FEED_URL_ENV: &str = "GHOST_THREAT_FEED_URL";
-/// Maximum accepted signed feed snapshot size (16 MiB).
 const MAX_FEED_BYTES: usize = 16 * 1024 * 1024;
 
-/// Most recent unix second a snapshot was installed at, for observability.
 static LAST_INSTALL: AtomicU64 = AtomicU64::new(0);
 
-/// Why a snapshot could not be parsed, verified or installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FeedError {
-    /// The file does not start with the expected format marker.
     Unsupported(String),
-    /// A header or entry line is malformed.
     Parse(String),
-    /// A required header is missing.
     Missing(&'static str),
-    /// No pinned key is configured, so nothing can be verified yet.
     Unpinned,
-    /// The snapshot carries no signature.
     Unsigned,
-    /// The pinned key is not a valid Ed25519 public key.
     BadKey(String),
-    /// The signature does not verify against the canonical body.
     BadSignature,
-    /// The snapshot's own `expires` has already passed.
     Expired {
-        /// The moment the snapshot stopped being valid.
         expires: u64,
-        /// The moment the install was attempted.
         now: u64,
     },
-    /// The file could not be read.
     Io(String),
 }
 
@@ -124,34 +106,23 @@ impl std::fmt::Display for FeedError {
 
 impl std::error::Error for FeedError {}
 
-/// A parsed snapshot, verified or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    /// When the feed was published (unix seconds).
     pub issued: u64,
-    /// When the feed stops being valid — and when its CIDR rules stop applying.
     pub expires: u64,
-    /// Domain rules, in file order.
     pub domains: Vec<(String, ThreatKind)>,
-    /// Netblock rules, in file order.
     pub cidrs: Vec<(IpAddr, u8, ThreatKind)>,
-    /// Decoded Ed25519 signature over [`Self::canonical_body`], if present.
     pub signature: Option<[u8; 64]>,
 }
 
-/// What an install changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Installed {
     pub domains: usize,
     pub cidrs: usize,
-    /// Unix second the rules stop applying (`cidr` entries only).
     pub expires: u64,
 }
 
 impl Snapshot {
-    /// Parse a snapshot. Signature verification is a separate step: parsing must be
-    /// possible so a *broken* signature can be reported as such instead of as a
-    /// syntax error.
     pub fn parse(text: &str) -> Result<Self, FeedError> {
         let mut first_line = true;
         let mut issued: Option<u64> = None;
@@ -258,7 +229,6 @@ impl Snapshot {
         })
     }
 
-    /// The bytes the signature covers: header plus entries, in file order.
     pub fn canonical_body(&self) -> Vec<u8> {
         let mut body = String::new();
         body.push_str(&format!("{FEED_LABEL} {FEED_VERSION}\n"));
@@ -273,7 +243,6 @@ impl Snapshot {
         body.into_bytes()
     }
 
-    /// Verify the signature against `key`. Fails closed: no signature is an error.
     pub fn verify(&self, key: &VerifyingKey) -> Result<(), FeedError> {
         let Some(bytes) = self.signature else {
             return Err(FeedError::Unsigned);
@@ -283,13 +252,11 @@ impl Snapshot {
             .map_err(|_| FeedError::BadSignature)
     }
 
-    /// Whether the snapshot is still valid at `now`.
     pub fn is_live_at(&self, now: u64) -> bool {
         now < self.expires
     }
 }
 
-/// Parse a pinned key from a hex string.
 pub fn pinned_key(hex_key: &str) -> Result<VerifyingKey, FeedError> {
     let bytes = hex::decode(hex_key.trim()).map_err(|_| FeedError::BadKey("not hex".into()))?;
     let bytes: [u8; 32] = bytes
@@ -298,7 +265,6 @@ pub fn pinned_key(hex_key: &str) -> Result<VerifyingKey, FeedError> {
     VerifyingKey::from_bytes(&bytes).map_err(|e| FeedError::BadKey(e.to_string()))
 }
 
-/// The pinned key from the environment, if this node has one.
 pub fn pinned_key_from_env() -> Result<VerifyingKey, FeedError> {
     let raw = std::env::var(PINNED_KEY_ENV).map_err(|_| FeedError::Unpinned)?;
     if raw.trim().is_empty() {
@@ -307,16 +273,11 @@ pub fn pinned_key_from_env() -> Result<VerifyingKey, FeedError> {
     pinned_key(&raw)
 }
 
-/// Verify a parsed snapshot against the pinned key and install it.
-///
-/// On any error nothing is installed: the previously loaded rules stay in force.
 pub fn install_verified(snapshot: &Snapshot, now: u64) -> Result<Installed, FeedError> {
     let key = pinned_key_from_env()?;
     install_with_key(snapshot, &key, now)
 }
 
-/// Verify against an explicit key and install. The seam the tests use, and what a
-/// refresh task with its own key handling would call.
 pub fn install_with_key(
     snapshot: &Snapshot,
     key: &VerifyingKey,
@@ -332,11 +293,6 @@ pub fn install_with_key(
     Ok(install(snapshot, now))
 }
 
-/// Install an already-verified snapshot, replacing whatever was loaded before.
-///
-/// Domains and netblocks both come from this snapshot: a refresh must not leave a
-/// rule from the previous snapshot in force, or a de-listed host would stay blocked
-/// forever. CIDR entries expire with the snapshot.
 pub fn install(snapshot: &Snapshot, now: u64) -> Installed {
     let installed = threat_shield::with_shield(|shield| {
         shield.clear_domains();
@@ -366,13 +322,11 @@ pub fn install(snapshot: &Snapshot, now: u64) -> Installed {
     installed
 }
 
-/// Parse `text`, verify against the pinned key, and install.
 pub fn load_and_install(text: &str, now: u64) -> Result<Installed, FeedError> {
     let key = pinned_key_from_env()?;
     load_and_install_with_key(text, &key, now)
 }
 
-/// Parse `text`, verify against `key`, and install.
 pub fn load_and_install_with_key(
     text: &str,
     key: &VerifyingKey,
@@ -382,16 +336,11 @@ pub fn load_and_install_with_key(
     install_with_key(&snapshot, key, now)
 }
 
-/// Read, verify and install a snapshot from disk — a refresh.
-///
-/// Safe to call repeatedly: each successful call replaces the previous rules, and a
-/// failed one leaves them untouched.
 pub fn refresh_from_path(path: &Path, now: u64) -> Result<Installed, FeedError> {
     let key = pinned_key_from_env()?;
     refresh_from_path_with_key(path, &key, now)
 }
 
-/// Read and install with an explicit key.
 pub fn refresh_from_path_with_key(
     path: &Path,
     key: &VerifyingKey,
@@ -450,13 +399,11 @@ async fn fetch_feed_text(url: &str) -> Result<String, FeedError> {
     String::from_utf8(bytes.to_vec()).map_err(|e| FeedError::Io(e.to_string()))
 }
 
-/// Download, verify against the pinned key from [`PINNED_KEY_ENV`], and install.
 pub async fn refresh_from_url(url: &str, now: u64) -> Result<Installed, FeedError> {
     let key = pinned_key_from_env()?;
     refresh_from_url_with_key(url, &key, now).await
 }
 
-/// Download, verify against `key`, and install. Fails closed on any error.
 pub async fn refresh_from_url_with_key(
     url: &str,
     key: &VerifyingKey,
@@ -466,8 +413,6 @@ pub async fn refresh_from_url_with_key(
     load_and_install_with_key(&text, key, now)
 }
 
-/// Download, verify against [`PINNED_KEY_ENV`], install, and optionally cache
-/// the verified snapshot to `cache_path` (only written after verification succeeds).
 pub async fn refresh_from_url_to_cache(
     url: &str,
     cache_path: Option<&Path>,
@@ -487,13 +432,10 @@ pub async fn refresh_from_url_to_cache(
     Ok(installed)
 }
 
-/// Drop netblock rules whose expiry has passed. Called by the refresh path, and
-/// exposed so a long-lived process can prune without a new snapshot.
 pub fn prune_expired(now: u64) -> usize {
     threat_shield::with_shield(|shield| shield.prune_expired(now))
 }
 
-/// The unix second of the last successful install, if any.
 pub fn last_install_at() -> Option<u64> {
     match LAST_INSTALL.load(Ordering::Relaxed) {
         0 => None,
@@ -501,8 +443,6 @@ pub fn last_install_at() -> Option<u64> {
     }
 }
 
-/// Classify a domain or literal address exactly as the shield will, without
-/// recording a block — the read-only view a UI or a test wants.
 pub fn classify(host: &str, now: u64) -> Option<Verdict> {
     threat_shield::with_shield_read(|shield: &Shield| {
         if let Ok(ip) = host.trim().parse::<IpAddr>() {
@@ -512,12 +452,10 @@ pub fn classify(host: &str, now: u64) -> Option<Verdict> {
     })
 }
 
-/// Classify a SOCKS-style `host:port` destination.
 pub fn classify_host_port(target: &str, now: u64) -> Option<Verdict> {
     if let Ok(addr) = target.parse::<SocketAddr>() {
         return classify(&addr.ip().to_string(), now);
     }
-    // A hostname with a port: the index is keyed on the name alone.
     let host = if let Some(rest) = target.strip_prefix('[') {
         rest.split_once(']').map(|(host, _)| host).unwrap_or(target)
     } else {
@@ -677,20 +615,17 @@ mod tests {
         let _guard = guard();
         let signed = sign(BODY, 1);
 
-        // Signed by a key this node does not pin.
         assert_eq!(
             load_and_install_with_key(&signed, &key(2).verifying_key(), 2000).unwrap_err(),
             FeedError::BadSignature
         );
 
-        // Tampered after signing: one rule swapped for a broader block.
         let tampered = signed.replace("203.0.113.0/24", "203.0.0.0/16");
         assert_eq!(
             load_and_install_with_key(&tampered, &key(1).verifying_key(), 2000).unwrap_err(),
             FeedError::BadSignature
         );
 
-        // Nothing from either attempt was installed.
         assert_eq!(threat_shield::with_shield(|s| s.cidr_count()), 0);
     }
 
@@ -747,7 +682,6 @@ mod tests {
         assert!(classify("bad.example.net", 2000).is_some());
         assert!(classify("203.0.113.9", 2000).is_some());
 
-        // A newer snapshot that de-lists the old host and netblock.
         let newer = "vantablack-threat-feed 1\nissued 3000\nexpires 8000\n\
              domain malware new.example.org\ncidr c2 192.0.2.0/24\n";
         let installed = load_and_install_with_key(&sign(newer, 1), &key(1).verifying_key(), 3000)
@@ -769,20 +703,15 @@ mod tests {
         let signed = sign(BODY, 1);
         load_and_install_with_key(&signed, &key(1).verifying_key(), 2000).expect("install");
 
-        // Live just before expiry...
         assert!(classify("203.0.113.9", 4999).is_some());
-        // ...and not one second later, so a snapshot that stops refreshing stops
-        // blocking addresses that may since have been reassigned.
         assert!(classify("203.0.113.9", 5000).is_none());
         assert!(classify("203.0.113.9", 99_999).is_none());
 
-        // Domain rules are deliberately not on the C2 TTL.
         assert!(
             classify("bad.example.net", 5000).is_some(),
             "a malicious domain is stable; only the address behind it rotates"
         );
 
-        // The expired netblocks are pruned rather than kept around forever.
         assert_eq!(prune_expired(5000), 2);
         assert_eq!(threat_shield::with_shield(|s| s.cidr_count()), 0);
         assert_eq!(threat_shield::with_shield(|s| s.domain_count()), 2);
@@ -801,7 +730,6 @@ mod tests {
                 now: 5000
             }
         );
-        // The previous rules are still in force.
         assert!(classify("203.0.113.9", 4000).is_some());
     }
 
@@ -829,7 +757,6 @@ mod tests {
         assert!(classify("bad.example.net", 3000).is_none());
         assert!(classify("only.example", 3000).is_some());
 
-        // A corrupt file must leave the working rules alone.
         std::fs::write(&path, "vantablack-threat-feed 1\nissued 1\n").expect("write junk");
         assert!(refresh_from_path_with_key(&path, &vk, 3000).is_err());
         assert!(classify("only.example", 3000).is_some());
@@ -903,7 +830,6 @@ mod tests {
         assert_eq!(installed.domains, 2);
         assert_eq!(installed.cidrs, 2);
 
-        // Second request serves unsigned BODY; must fail closed and keep prior rules.
         let err = refresh_from_url_with_key(&url, &vk, 2000)
             .await
             .expect_err("unsigned snapshot must be rejected");

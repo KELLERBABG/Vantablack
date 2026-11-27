@@ -1,4 +1,3 @@
-// HPACK/QPACK Huffman code table (RFC 7541 Appendix B), used by the QPACK decoder.
 
 #[allow(clippy::unreadable_literal)]
 pub const CODES: [u32; 257] = [

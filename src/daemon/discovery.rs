@@ -7,28 +7,21 @@ use crate::*;
 
 pub(crate) fn is_virtual_or_link_local(ip: std::net::Ipv4Addr) -> bool {
     let oct = ip.octets();
-    // Loopback or 0.0.0.0
     if oct[0] == 127 || oct[0] == 0 {
         return true;
     }
-    // APIPA / link-local
     if oct[0] == 169 && oct[1] == 254 {
         return true;
     }
-    // Vantablack mesh TUN overlay subnet (10.66.0.0/24)
     if oct[0] == 10 && oct[1] == 66 && oct[2] == 0 {
         return true;
     }
-    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255) is heavily used by Hyper-V / WSL2 / Docker
     if oct[0] == 172 && (16..=31).contains(&oct[1]) {
         return true;
     }
     false
 }
 
-/// Best-effort LAN address of this machine, used to build the pairing URI and LAN discovery.
-/// Queries OS routing table against public WAN endpoints first so any router subnet works,
-/// while excluding virtual/overlay adapters (WSL/Hyper-V/Docker/TUN).
 pub(crate) fn detect_lan_ip() -> String {
     let candidates = [
         "1.1.1.1:80",
@@ -84,14 +77,12 @@ pub(crate) fn record_active_peer(sa: SocketAddr) {
     }
 }
 
-/// True when this node opted into advertising home-exit service.
 pub(crate) fn home_exit_enabled() -> bool {
     std::env::var("GHOST_HOME_EXIT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
-/// Map [`vantablack::ghost::net::mesh::NatType`] to the `PeerDescriptorV2` wire byte.
 pub(crate) fn nat_type_to_wire(nt: vantablack::ghost::net::mesh::NatType) -> u8 {
     use vantablack::ghost::net::discovery::{
         NAT_CONE, NAT_DIRECT, NAT_RESTRICTED, NAT_SYMMETRIC, NAT_UNKNOWN,
@@ -106,8 +97,6 @@ pub(crate) fn nat_type_to_wire(nt: vantablack::ghost::net::mesh::NatType) -> u8 
     }
 }
 
-/// Front capability bits for a listener that is (or is not) running with (or
-/// without) knock-only admission.
 #[cfg(feature = "reality-front")]
 fn front_caps(enabled: bool, knock_only: bool) -> u8 {
     use vantablack::ghost::net::discovery::{CAP_REALITY_FRONT, CAP_REALITY_FRONT_KNOCK};
@@ -122,8 +111,6 @@ fn front_caps(enabled: bool, knock_only: bool) -> u8 {
         }
 }
 
-/// Build and sign this node's [`PeerDescriptorV2`] carrying current public endpoint,
-/// LAN addresses, mesh port, NAT classification, capabilities, and `IceOffer`.
 pub(crate) fn build_local_descriptor_v2(
     nc: &GhostNode,
     mesh_port: u16,
@@ -140,11 +127,6 @@ pub(crate) fn build_local_descriptor_v2(
         .parse()
         .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
     let lan_sa = SocketAddr::new(lan_ip, mesh_port);
-    // `GHOST_ADVERTISE_ADDR` is an operator override for nodes behind manual
-    // port forwarding or a stable DNS name, and it is what makes several nodes
-    // on one host testable: each can bind and advertise a distinct loopback
-    // address, which `is_single_device_ip` correctly treats as separate peers.
-    // Without it the public STUN address wins, which is right for real WAN use.
     let advertised_override = std::env::var("GHOST_ADVERTISE_ADDR")
         .ok()
         .and_then(|raw| match raw.trim().parse::<SocketAddr>() {
@@ -157,8 +139,6 @@ pub(crate) fn build_local_descriptor_v2(
     let endpoint = advertised_override
         .or(wan_snap.public_addr)
         .unwrap_or(lan_sa);
-    // With an explicit address, advertise exactly that candidate: the detected
-    // LAN address is a different interface and is not reachable at that endpoint.
     let lan_candidates = if advertised_override.is_some() {
         vec![endpoint]
     } else {
@@ -170,11 +150,6 @@ pub(crate) fn build_local_descriptor_v2(
     }
     if exit_enabled {
         caps |= CAP_EXIT;
-        // Boomerang home exit (roadmap item 3). The capability is separate from
-        // `CAP_EXIT` so a client can require a deliberately chosen residential
-        // endpoint instead of accepting any exit. The flag is only ever set for a
-        // node that actually runs exit service: advertising it otherwise would
-        // be a promise the packet path cannot keep.
         if home_exit_enabled() {
             caps |= CAP_HOME_EXIT;
         }
@@ -185,10 +160,6 @@ pub(crate) fn build_local_descriptor_v2(
     if cfg!(feature = "quic") {
         caps |= CAP_QUIC;
     }
-    // Advertised only when this process actually runs the listener: a capability
-    // bit is a promise the packet path has to be able to keep. A knock-only front
-    // also says so, because a peer's dialer admits only by SNI label and would
-    // otherwise burn a dial discovering that.
     #[cfg(feature = "reality-front")]
     {
         caps |= front_caps(
@@ -213,7 +184,6 @@ pub(crate) fn build_local_descriptor_v2(
     )
 }
 
-/// Persist all verified v2 peer descriptors in `known_descriptors` to `peers.bin`.
 pub(crate) fn persist_peer_cache_v2(
     known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
 ) {
@@ -230,8 +200,6 @@ pub(crate) fn persist_peer_cache_v2(
     }
 }
 
-/// Install a verified [`PeerDescriptorV2`] into `known_descriptors`, `nat_puncher`,
-/// `fallback_routes` / `known_relays`, and initiate handshake / ICE punch if not yet connected.
 pub(crate) async fn install_peer_descriptor_v2(
     node: &Arc<GhostNode>,
     sock: &UdpSocket,
@@ -249,13 +217,9 @@ pub(crate) async fn install_peer_descriptor_v2(
     if fp == node.fingerprint() || !desc.verify(86400 * 7) {
         return;
     }
-    // Rendezvous (`exp_rendezvous`): a verified descriptor is also a contact for
-    // the routing table, which is what the node falls back to when no slot answers.
     super::rendezvous::note_descriptor(&node.fingerprint(), &desc);
     let is_relay = (desc.capabilities & vantablack::ghost::net::discovery::CAP_RELAY) != 0;
     let is_exit = (desc.capabilities & vantablack::ghost::net::discovery::CAP_EXIT) != 0;
-    // Remember (or withdraw) this peer's home-exit advertisement. Only a signed
-    // descriptor that carries `CAP_HOME_EXIT` becomes a selectable exit.
     vantablack::ghost::v2::boomerang::note_peer(&fp, desc.capabilities, &desc.endpoint.to_string());
 
     if let Some(kd) = known_descriptors {
@@ -311,8 +275,6 @@ pub(crate) async fn install_peer_descriptor_v2(
     }
 }
 
-/// Sync per-peer WAN/transport telemetry from `nat_puncher` and `fallback_routes`
-/// into the control-plane snapshot consumed by `GET /api/topology`.
 pub(crate) fn sync_peer_topology_telemetry(
     addrs: &DashMap<String, SocketAddr>,
     nat_puncher: &vantablack::ghost::net::mesh::NatHolePuncher,
@@ -416,8 +378,6 @@ pub(crate) fn resolve_swarm_secret_for_discovery() -> Option<String> {
     Some(swarm_secret)
 }
 
-/// Publish this node's signed [`PeerDescriptorV2`] to `GHOST_RENDEZVOUS_URL` and
-/// fetch/install swarm peers via [`BlindMailboxClient`].
 pub(crate) async fn blind_rendezvous_sync(
     rendezvous_url: &str,
     nc: &Arc<GhostNode>,
@@ -451,9 +411,6 @@ pub(crate) async fn blind_rendezvous_sync(
         vpn_hub,
         offer_text,
     );
-    // Rendezvous (`exp_rendezvous`): publish to 2 of 3 slots and query all three,
-    // instead of one shared slot per epoch. The plain path below is unchanged when
-    // the toggle is off.
     if super::rendezvous::enabled() {
         let descriptors = super::rendezvous::sync(
             rendezvous_url,
@@ -523,9 +480,6 @@ pub(crate) async fn blind_rendezvous_sync(
     }
 }
 
-/// Send a Peer Exchange (PEX) gossip message to `dest_fp` over their session,
-/// sending signed `GHOST_PEX2____` batches of `PeerDescriptorV2` when available
-/// alongside backward-compatible `GHOST_PEX_____` v1 frames.
 pub(crate) async fn send_pex(
     node: &Arc<GhostNode>,
     sock: &Arc<UdpSocket>,
@@ -534,9 +488,6 @@ pub(crate) async fn send_pex(
     known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
 ) {
     let Some(sess) = node.sessions.get(dest_fp) else {
-        // DTN (`exp_dtn_reconcile`): the peer is between sessions. A signed
-        // descriptor batch is additive and self-verifying, so it is worth keeping;
-        // `dtn::flush_all` delivers it when the session returns.
         if super::dtn::enabled() {
             if let Some(payload_v2) = pex_v2_payload(known_descriptors, dest_fp) {
                 super::dtn::store(dest_fp, &payload_v2);
@@ -551,13 +502,9 @@ pub(crate) async fn send_pex(
     let ctx = SealCtx::from_session(&sess);
     drop(sess);
 
-    // Tier 1 research gossip rides the same beat: the current braid tip, this
-    // round's entropy share (with the sender's beacon grid), and a bandwidth
-    // voucher when a new epoch needs one.
     #[cfg(feature = "research")]
     super::research_hooks::gossip_beat(node, sock.as_ref(), &dest_addr, None, dest_fp).await;
 
-    // PEX v2: batches of signed PeerDescriptorV2 bounded to <= 2200B per frame.
     if let Some(payload_v2) = pex_v2_payload(known_descriptors, dest_fp) {
         let count_v2 = payload_v2[GHOST_PEX_V2_MAGIC.len()];
         let (f, tag) = enc_split(&ctx, &payload_v2);
@@ -565,7 +512,6 @@ pub(crate) async fn send_pex(
         tracing::debug!(to = %dest_fp, peers = count_v2, "PEX v2: sent signed descriptor batch");
     }
 
-    // Piggyback BTCr ticket wallet & Fleet revocation gossip over the same session.
     let btcr_batch = vantablack::ghost::v2::btcr::export_gossip_batch(16);
     if !btcr_batch.is_empty() {
         let mut msg = GHOST_BTCR_GOSSIP_MAGIC.to_vec();
@@ -581,10 +527,6 @@ pub(crate) async fn send_pex(
         send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
     }
 
-    // Census epoch announcement. The receiver does not trust the claimed cell:
-    // it counts the routing domain it observed the frame arrive from, so a live
-    // swarm produces a real population estimate without anyone disclosing an
-    // address on the wire.
     let epoch = vantablack::ghost::v2::xray::census::current_epoch();
     let census = vantablack::ghost::v2::xray::census::announcement(
         &node.identity.long_term_signing,
@@ -598,7 +540,6 @@ pub(crate) async fn send_pex(
     let (f, tag) = enc_split(&ctx, &msg);
     send3_mixed(Arc::clone(sock), &dest_addr, &ctx, &f, &tag).await;
 
-    // Build legacy PEX v1 payload for backward compatibility: [GHOST_PEX_____][count u8][fp_hex 16B + addr_str + NUL ...]
     let mut payload = GHOST_PEX_MAGIC.to_vec();
     let peer_list: Vec<(String, SocketAddr)> = peers
         .iter()
@@ -625,9 +566,6 @@ pub(crate) async fn send_pex(
     tracing::debug!(to = %dest_fp, peers = peer_list.len(), "PEX: sent peer list");
 }
 
-/// Announcements in a PEX census frame that belong to the peer the frame came
-/// from. A relayed entry is dropped: without its observed endpoint there is no
-/// cell to count, and accepting the claim would let anyone name a cell.
 pub(crate) fn census_entries_for_peer(
     body: &[u8],
     peer_fp: &str,
@@ -638,11 +576,6 @@ pub(crate) fn census_entries_for_peer(
         .collect()
 }
 
-/// Ingest a PEX census frame received over `peer_fp`'s session.
-///
-/// `peer_endpoint` is the address the encrypted frame actually arrived from; the
-/// cell is derived from it, never from the announcement. Returns how many cells
-/// the sketch accepted.
 pub(crate) fn ingest_census_gossip(
     body: &[u8],
     peer_fp: &str,
@@ -661,8 +594,6 @@ pub(crate) fn ingest_census_gossip(
     merged
 }
 
-/// Build one signed PEX v2 batch for `dest_fp`, or `None` when there is nothing
-/// to send. Extracted so the DTN producer buffers exactly what the live path sends.
 fn pex_v2_payload(
     known_descriptors: &DashMap<String, vantablack::ghost::net::discovery::PeerDescriptorV2>,
     dest_fp: &str,
@@ -697,9 +628,6 @@ fn pex_v2_payload(
     Some(payload_v2)
 }
 
-/// Broadcast an authenticated `GHOST_BYE_____` notification to all active peers
-/// so they immediately evict our session and reroute traffic elsewhere, then
-/// tear down local session/peer state.
 pub(crate) fn broadcast_goodbye(nc: &GhostNode, addrs: &DashMap<String, SocketAddr>) {
     let targets: Vec<(String, SocketAddr)> = addrs
         .iter()
@@ -726,7 +654,6 @@ pub(crate) fn broadcast_goodbye(nc: &GhostNode, addrs: &DashMap<String, SocketAd
     addrs.clear();
 }
 
-/// Tier-1 authenticated peer cache loader (`peers.bin` v2 -> legacy v1 -> plaintext `peers.cache`).
 pub(crate) fn load_tier1_peer_cache() -> (
     Vec<vantablack::ghost::net::discovery::PeerDescriptorV2>,
     Vec<SocketAddr>,
@@ -771,8 +698,6 @@ pub(crate) fn load_tier1_peer_cache() -> (
     (Vec::new(), Vec::new())
 }
 
-/// Last-resort bootstrap (`exp_rendezvous`): the contacts already learned through
-/// verified descriptors, closest to us first. Empty when the toggle is off.
 fn rendezvous_bootstrap(node_fp: Option<&str>) -> Vec<SocketAddr> {
     let Some(fp) = node_fp else {
         return Vec::new();
@@ -787,10 +712,7 @@ fn rendezvous_bootstrap(node_fp: Option<&str>) -> Vec<SocketAddr> {
     known
 }
 
-/// Zero-Knowledge 3-Tier bootstrap: checks authenticated local disk cache (`peers.bin`)
-/// first, then falls back to legacy HTTP bootstrap when `GHOST_RENDEZVOUS_URL` is unset.
 pub(crate) async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec<SocketAddr> {
-    // Tier 1: Local authenticated disk cache (zero network footprint)
     let (v2_cached, legacy_addrs) = load_tier1_peer_cache();
     if !v2_cached.is_empty() {
         return v2_cached.into_iter().map(|d| d.endpoint).collect();
@@ -806,7 +728,6 @@ pub(crate) async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec
         return Vec::new();
     }
 
-    // Tier 3: Zero-knowledge blinded rendezvous discovery
     let Some(swarm_secret) = resolve_swarm_secret_for_discovery() else {
         return Vec::new();
     };
@@ -868,8 +789,6 @@ pub(crate) async fn http_bootstrap(mesh_port: u16, node_fp: Option<&str>) -> Vec
     }
 }
 
-/// Autonomous LAN discovery sweep: broadcasts beacons to 255.255.255.255 on 2270 and mesh_port,
-/// and actively probes all hosts in the local /24 subnet (and common home subnets).
 pub(crate) async fn sweep_lan_subnet(
     nc: &Arc<GhostNode>,
     pending_hs: &Arc<DashMap<String, PendingHandshake>>,
@@ -878,7 +797,6 @@ pub(crate) async fn sweep_lan_subnet(
 ) {
     let local_ip_str = detect_lan_ip();
 
-    // Collect all local IPv4 addresses so we never probe ourselves.
     let local_ips: std::collections::HashSet<std::net::Ipv4Addr> = {
         let mut set = std::collections::HashSet::new();
         if let Ok(ip) = local_ip_str.parse::<std::net::Ipv4Addr>() {
@@ -929,8 +847,6 @@ pub(crate) async fn sweep_lan_subnet(
         }
     }
 
-    // 1. Broadcast signed beacons from the main mesh socket so the reply port
-    //    is always the real mesh port (55225) — not an ephemeral port.
     {
         let pq_commit = nc.identity.pq_commitment();
         let beacon_pkt = build_beacon_packet(
@@ -953,7 +869,6 @@ pub(crate) async fn sweep_lan_subnet(
                 targets.push(t);
             }
         }
-        // Also send to the global broadcast addresses
         if let Ok(t) = "255.255.255.255:2270".parse::<SocketAddr>() {
             targets.push(t);
         }
@@ -965,7 +880,6 @@ pub(crate) async fn sweep_lan_subnet(
         }
     }
 
-    // 2. Active subnet probes: Send handshake probe to hosts in all detected subnets
     if std::env::var("GHOST_BEACON").is_ok_and(|v| v.eq_ignore_ascii_case("off") || v == "0") {
         return;
     }
@@ -980,7 +894,6 @@ pub(crate) async fn sweep_lan_subnet(
                 continue;
             }
             let target_sa = SocketAddr::new(std::net::IpAddr::V4(target_ip), mesh_port);
-            // Skip actively connected peers so we don't disrupt their sessions or trigger re-handshake storms
             if addrs
                 .iter()
                 .any(|p| *p.value() == target_sa || p.value().ip() == target_sa.ip())
@@ -1002,9 +915,6 @@ mod tests {
     use super::*;
     use vantablack::ghost::net::discovery::{CAP_REALITY_FRONT, CAP_REALITY_FRONT_KNOCK};
 
-    /// A capability bit is a promise the packet path can keep, so a knock-only
-    /// front must advertise the mode: a dialer admits only by SNI label and would
-    /// otherwise spend a dial to find out it cannot be reached.
     #[test]
     fn a_knock_only_front_advertises_that_it_cannot_be_dialed() {
         assert_eq!(front_caps(false, false), 0, "no listener, no promise");

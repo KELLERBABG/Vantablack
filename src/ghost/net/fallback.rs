@@ -41,34 +41,19 @@ use tracing::{debug, info, warn};
 use super::relay::{self, DerpRelay, DropReason};
 use super::turn::{self, TurnClient, TurnError, TurnInbound};
 
-/// How we are reaching a peer that could not be reached directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FallbackPath {
-    /// A validated ICE path — no relay involved.
     Direct,
-    /// Through a mesh peer that advertised relay capability.
     MeshRelay {
         relay_fp: String,
         relay_addr: SocketAddr,
     },
-    /// Through TURN: `peer_relayed` is the address the peer's own allocation
-    /// gave it (advertised as a relay candidate in its ICE offer), and our
-    /// allocation is what carries the datagram there.
     Turn { peer_relayed: SocketAddr },
-    /// Through atmospheric ionospheric skywave (NVIS) via ABOS SDR.
     Skywave { nvis_freq_khz: u32 },
-    /// Through the peer's own HTTP/3 MASQUE endpoint, carrying GTF frames as
-    /// datagram capsules. `peer` is the peer's mesh address — the key every send
-    /// path already holds — not the MASQUE port, which the stream itself records.
     Masque { peer: SocketAddr },
 }
 
 impl FallbackPath {
-    /// Whether traffic on this path passes a third party.
-    ///
-    /// A MASQUE endpoint is the peer itself, so it is a direct path in the sense
-    /// that matters here: relaying frames it could carry would add a third party
-    /// to a path that does not need one.
     pub fn is_relayed(&self) -> bool {
         !matches!(
             self,
@@ -76,11 +61,8 @@ impl FallbackPath {
         )
     }
 
-    /// The address datagrams for the target must be sent to.
     pub fn egress_addr(&self) -> Option<SocketAddr> {
         match self {
-            // MASQUE is a QUIC stream, not a UDP destination: there is no address
-            // a datagram could be handed to.
             FallbackPath::Direct | FallbackPath::Skywave { .. } | FallbackPath::Masque { .. } => {
                 None
             }
@@ -89,7 +71,6 @@ impl FallbackPath {
         }
     }
 
-    /// A short label for logs and dashboards.
     pub fn label(&self) -> &'static str {
         match self {
             FallbackPath::Direct => "direct",
@@ -101,20 +82,6 @@ impl FallbackPath {
     }
 }
 
-/// Choose the cheapest fallback that can actually carry traffic to `target_fp`.
-///
-/// The order is deliberate. A mesh peer is tried before TURN because it is
-/// already a member of the same encrypted mesh — using it costs no extra
-/// infrastructure and the traffic it forwards is accounted (and repaid) through
-/// the tit-for-tat ledger, whereas a TURN server is the operator's last resort.
-///
-/// A candidate that *is* us, or *is* the target, is never chosen: the first would
-/// be a loop and the second is not a relay at all.
-/// `turn` is the *peer's* relayed address, taken from the relay candidate it
-/// advertises, not our own allocation's address: ours is how we send, theirs is
-/// where the datagram has to arrive. A peer that advertises no relay candidate is
-/// not reachable through TURN at all, because nothing of ours can create a
-/// mapping in its NAT toward a server it never contacted.
 pub(crate) fn is_lan_addr(addr: &SocketAddr) -> bool {
     match addr.ip() {
         std::net::IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
@@ -122,10 +89,6 @@ pub(crate) fn is_lan_addr(addr: &SocketAddr) -> bool {
     }
 }
 
-/// Choose the fallback path for a peer (no skywave carrier configured).
-///
-/// Thin wrapper over [`choose_fallback_with_skywave`] for callers that do not
-/// operate an SDR bridge.
 pub fn choose_fallback(
     our_fp: &str,
     target_fp: &str,
@@ -135,23 +98,6 @@ pub fn choose_fallback(
     choose_fallback_with_skywave(our_fp, target_fp, relay_candidates, turn, None)
 }
 
-/// Choose the fallback path for a peer, with the skywave carrier available.
-///
-/// Prefers external WAN relays over local LAN peers so that outbound WAN traffic
-/// goes directly to the destination or external relay rather than bouncing through
-/// other LAN nodes.
-///
-/// The full ladder is:
-///
-/// 1. **Mesh relay** — a mesh peer that advertised relay capability (WAN first);
-/// 2. **TURN** — the operator's own relay allocation;
-/// 3. **Skywave** — the ABOS SDR bridge, *only* when `skywave` reports the
-///    bridge active with the NVIS frequency it is tuned to.
-///
-/// Skywave is the last resort because it is slow (100 bps – 12 kbps) and
-/// half-duplex: it beats silence, but anything faster beats it. `skywave` is
-/// `Some(nvis_freq_khz)` exactly when the daemon runs with an active skywave
-/// bridge (feature `sdr`, or the synthetic loopback carrier for tests).
 pub fn choose_fallback_with_skywave(
     our_fp: &str,
     target_fp: &str,
@@ -180,12 +126,6 @@ pub fn choose_fallback_with_skywave(
     skywave.map(|nvis_freq_khz| FallbackPath::Skywave { nvis_freq_khz })
 }
 
-/// The per-peer fallback route table.
-///
-/// Only peers that cannot be reached directly appear here. Absence means "try
-/// direct", which is why a recovered path must be [`Self::clear`]ed rather than
-/// overwritten with [`FallbackPath::Direct`] — the two would then be
-/// indistinguishable from a peer never seen before.
 #[derive(Debug, Default)]
 pub struct FallbackRoutes {
     routes: DashMap<String, FallbackPath>,
@@ -196,7 +136,6 @@ impl FallbackRoutes {
         Self::default()
     }
 
-    /// Record the path a peer is reachable by.
     pub fn set(&self, peer_fp: &str, path: FallbackPath) {
         if matches!(path, FallbackPath::Direct) {
             self.clear(peer_fp);
@@ -205,17 +144,14 @@ impl FallbackRoutes {
         self.routes.insert(peer_fp.to_string(), path);
     }
 
-    /// Forget a peer's fallback — it is direct again (or unknown again).
     pub fn clear(&self, peer_fp: &str) {
         self.routes.remove(peer_fp);
     }
 
-    /// The fallback for a peer, if it needs one.
     pub fn path(&self, peer_fp: &str) -> Option<FallbackPath> {
         self.routes.get(peer_fp).map(|p| p.clone())
     }
 
-    /// Whether a peer's traffic has to be relayed.
     pub fn is_relayed(&self, peer_fp: &str) -> bool {
         self.routes.contains_key(peer_fp)
     }
@@ -228,8 +164,6 @@ impl FallbackRoutes {
         self.routes.is_empty()
     }
 
-    /// Every relayed peer, ordered by fingerprint so a dashboard does not
-    /// reshuffle between polls.
     pub fn snapshot(&self) -> Vec<(String, FallbackPath)> {
         let mut out: Vec<(String, FallbackPath)> = self
             .routes
@@ -240,8 +174,6 @@ impl FallbackRoutes {
         out
     }
 
-    /// Peers currently relayed through a specific mesh peer — used to drop the
-    /// routes when that relay's session ends.
     pub fn relayed_via(&self, relay_fp: &str) -> Vec<String> {
         let mut out: Vec<String> = self
             .routes
@@ -259,19 +191,10 @@ impl FallbackRoutes {
     }
 }
 
-/// Everything the tunnel needs to know about how it currently reaches peers that
-/// have no direct path: the route table, and the TURN allocation that carries the
-/// routes that need one.
-///
-/// One value rather than two parameters threaded through the receive path, and it
-/// makes one invariant enforceable in a single place: a TURN route is only ever
-/// recorded when this node actually holds an allocation to send through.
 #[derive(Default)]
 pub struct Fallback {
     routes: FallbackRoutes,
     turn: Option<Arc<TurnPath>>,
-    /// Relay-capable peers discovered on the mesh, tracked on every node
-    /// regardless of whether this node itself serves as a relay (`GHOST_RELAY`).
     known_relays: DashMap<String, SocketAddr>,
 }
 
@@ -284,17 +207,14 @@ impl Fallback {
         }
     }
 
-    /// Record or update a discovered relay-capable peer's mesh address.
     pub fn record_relay(&self, relay_fp: &str, mesh_addr: SocketAddr) {
         self.known_relays.insert(relay_fp.to_string(), mesh_addr);
     }
 
-    /// Remove a peer from the discovered relay table.
     pub fn remove_relay(&self, relay_fp: &str) {
         self.known_relays.remove(relay_fp);
     }
 
-    /// All discovered relay candidates, sorted deterministically by fingerprint.
     pub fn relay_candidates(&self) -> Vec<(String, SocketAddr)> {
         let mut out: Vec<(String, SocketAddr)> = self
             .known_relays
@@ -305,16 +225,10 @@ impl Fallback {
         out
     }
 
-    /// Number of discovered relay candidates.
     pub fn relay_count(&self) -> usize {
         self.known_relays.len()
     }
 
-    /// Record a peer's fallback path.
-    ///
-    /// Returns `false` when the path cannot carry a datagram: a TURN route with no
-    /// allocation on our side would silently black-hole the peer, so it is refused
-    /// here rather than logged at every send.
     pub fn set(&self, peer_fp: &str, path: FallbackPath) -> bool {
         if matches!(path, FallbackPath::Turn { .. }) && self.turn.is_none() {
             self.routes.clear(peer_fp);
@@ -352,9 +266,6 @@ impl Fallback {
         self.routes.relayed_via(relay_fp)
     }
 
-    /// Evict a dead/stale peer from relay candidates, clear its own route, and
-    /// clear any routes that were relaying through it, returning affected peers
-    /// for failover (A6).
     pub fn evict_dead_peer(&self, dead_fp: &str) -> Vec<String> {
         self.remove_relay(dead_fp);
         self.clear(dead_fp);
@@ -365,40 +276,25 @@ impl Fallback {
         affected
     }
 
-    /// The allocation that carries TURN routes, when one is configured.
     pub fn turn(&self) -> Option<&Arc<TurnPath>> {
         self.turn.as_ref()
     }
 
-    /// Our own relayed address, when we hold an allocation.
     pub fn turn_relayed_addr(&self) -> Option<SocketAddr> {
         self.turn.as_ref().map(|t| t.relayed_addr())
     }
 }
 
-/// Wrap an already-sealed frame for delivery to `target_fp` through a relay.
-///
-/// The input is the *complete* GTF frame, not a payload: the target has to parse
-/// it out of the relayed datagram exactly as it would off the wire, so the frame
-/// travels intact and the relay only ever handles ciphertext.
 pub fn blind_envelope(target_fp: &str, sealed_frame: &[u8]) -> Vec<u8> {
     relay::wrap_blind_frame(target_fp, sealed_frame)
 }
 
-/// What a relay should emit for a decrypted datagram.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayHop {
-    /// The address the frame is addressed to.
     pub dest: SocketAddr,
-    /// The sealed frame, verbatim.
     pub bytes: Vec<u8>,
 }
 
-/// Relay role: decide what to do with a decrypted payload.
-///
-/// Returns the datagram to emit, or the reason to refuse. Refusals are counted by
-/// [`DerpRelay`] itself, so this merely surfaces the decision to the caller that
-/// owns the socket.
 pub fn relay_hop(relay: &DerpRelay, from_fp: &str, payload: &[u8]) -> Result<RelayHop, DropReason> {
     match relay.forward(from_fp, payload) {
         relay::Forwarded::Deliver { dest, bytes } => Ok(RelayHop { dest, bytes }),
@@ -406,29 +302,13 @@ pub fn relay_hop(relay: &DerpRelay, from_fp: &str, payload: &[u8]) -> Result<Rel
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// TURN egress
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// Commands to the TURN task. All allocation state (permissions, channels, the
-/// nonce) lives in that task, so nothing here has to hold a lock across an await.
 enum TurnCmd {
     Send { peer: SocketAddr, frame: Vec<u8> },
 }
 
-/// A live TURN allocation, driving a socket we own.
-///
-/// TURN traffic gets its own socket on purpose. An allocation is bound to the
-/// 5-tuple that created it, and the mesh socket is a shared resource: running the
-/// transactions on it would mean the allocation's replies race the packet
-/// receiver, and a transaction would have to hold the socket while it waited.
-/// Nothing is lost by separating them — the relayed address the server hands back
-/// is an address *we* receive on, and peers are told about it directly.
 pub struct TurnPath {
     server: SocketAddr,
     relayed: SocketAddr,
-    /// Frames until the allocation expires; half the granted lifetime, refreshed
-    /// in the task.
     granted: Duration,
     tx: mpsc::UnboundedSender<TurnCmd>,
     sent: Arc<std::sync::atomic::AtomicU64>,
@@ -436,12 +316,6 @@ pub struct TurnPath {
 }
 
 impl TurnPath {
-    /// Establish an allocation and start the task that owns it.
-    ///
-    /// `inbox` receives `(peer, sealed frame)` for every datagram the server
-    /// relays to us: the caller feeds those into the same receive path as mesh
-    /// traffic, because the peer sealed them for us exactly as if they had been
-    /// sent directly.
     pub async fn establish(
         server: SocketAddr,
         username: impl Into<String>,
@@ -451,8 +325,6 @@ impl TurnPath {
     ) -> Result<Arc<TurnPath>, TurnError> {
         let sock = Arc::new(UdpSocket::bind(("0.0.0.0", 0)).await?);
         let mut client = TurnClient::new(server, username, password).with_timeout(timeout);
-        // Nothing else reads this socket yet, so no callback is needed: there is
-        // no traffic to lose.
         let relayed = client.allocate(&sock, turn::DEFAULT_LIFETIME, None).await?;
         let granted = client
             .allocation()
@@ -475,7 +347,6 @@ impl TurnPath {
         Ok(path)
     }
 
-    /// The address peers should send to for us to receive it through the relay.
     pub fn relayed_addr(&self) -> SocketAddr {
         self.relayed
     }
@@ -484,12 +355,10 @@ impl TurnPath {
         self.server
     }
 
-    /// The granted allocation lifetime (refreshed at half of it).
     pub fn granted_lifetime(&self) -> Duration {
         self.granted
     }
 
-    /// `(frames handed to the server, frames the server refused)`.
     pub fn stats(&self) -> (u64, u64) {
         (
             self.sent.load(std::sync::atomic::Ordering::Relaxed),
@@ -497,11 +366,6 @@ impl TurnPath {
         )
     }
 
-    /// Hand a sealed frame to the server for delivery to `peer`.
-    ///
-    /// Kept synchronous: the send path already holds a `Send` future and should
-    /// not also wait on a relay transaction. The frame is dropped, and counted,
-    /// if the task has stopped.
     pub fn send_sealed(&self, peer: SocketAddr, frame: Vec<u8>) {
         if self.tx.send(TurnCmd::Send { peer, frame }).is_err() {
             self.refused
@@ -511,7 +375,6 @@ impl TurnPath {
     }
 }
 
-/// The task that owns the socket, the client, and therefore all TURN state.
 async fn turn_task(
     sock: Arc<UdpSocket>,
     mut client: TurnClient,
@@ -521,12 +384,9 @@ async fn turn_task(
     sent: Arc<std::sync::atomic::AtomicU64>,
     refused: Arc<std::sync::atomic::AtomicU64>,
 ) {
-    // Refresh at half the lifetime: a renewal that arrives late still has half a
-    // lifetime of slack, whereas one at 90% has a network hiccup's worth.
     let refresh_after = (granted / 2).max(Duration::from_secs(30));
     let mut next_refresh = tokio::time::Instant::now() + refresh_after;
     let mut buf = vec![0u8; 2048];
-    // Peer we have installed a permission and channel for, with when.
     let mut ready: HashMap<IpAddr, Instant> = HashMap::new();
 
     loop {
@@ -549,10 +409,6 @@ async fn turn_task(
                                     continue;
                                 }
                             }
-                            // A channel costs 4 bytes per datagram where a Send
-                            // indication costs ~40, so bind one when the peer
-                            // will take more than one frame. Failure here is not
-                            // fatal: `send` falls back to a Send indication.
                             if let Err(e) = client.channel_bind(&sock, peer, None).await {
                                 debug!(peer = %peer, "TURN: channel bind failed, using indications: {e}");
                             }
@@ -573,9 +429,6 @@ async fn turn_task(
                 match client.refresh(&sock, turn::DEFAULT_LIFETIME, None).await {
                     Ok(lifetime) if !lifetime.is_zero() => {
                         next_refresh = tokio::time::Instant::now() + (lifetime / 2).max(Duration::from_secs(30));
-                        // Permissions and channels expire independently of the
-                        // allocation, so re-arm them rather than assuming the
-                        // refresh covered them.
                         ready.clear();
                     }
                     Ok(_) => {
@@ -584,8 +437,6 @@ async fn turn_task(
                     }
                     Err(e) => {
                         warn!("TURN: refresh failed: {e}");
-                        // Retry sooner than the next scheduled refresh: an
-                        // allocation that lapsed is unusable until it is renewed.
                         next_refresh = tokio::time::Instant::now() + Duration::from_secs(10);
                     }
                 }
@@ -593,9 +444,6 @@ async fn turn_task(
             recv = sock.recv_from(&mut buf) => {
                 match recv {
                     Ok((n, _from)) => {
-                        // The socket carries only TURN traffic, so an unrecognised
-                        // datagram is not ours to interpret — most often a stray
-                        // STUN request from the server.
                         if let Some(inbound) = client.decode_inbound(&buf[..n]) {
                             let Some((peer, payload)) = inbound_peer(&client, inbound) else {
                                 debug!("TURN: ChannelData for an unknown channel");
@@ -617,11 +465,6 @@ async fn turn_task(
     }
 }
 
-/// Resolve an inbound TURN datagram to `(peer address, payload)`.
-///
-/// A `Data` indication names the peer; ChannelData carries only the channel, so
-/// the binding installed by [`TurnClient::channel_bind`] is the only way to
-/// attribute it — hence the lookup rather than a guess.
 fn inbound_peer(client: &TurnClient, inbound: TurnInbound) -> Option<(SocketAddr, Vec<u8>)> {
     match inbound {
         TurnInbound::Data { peer, payload } => Some((peer, payload)),
@@ -638,8 +481,6 @@ mod tests {
 
     #[test]
     fn a_turn_route_is_refused_without_an_allocation() {
-        // Without an allocation there is no transport, and recording the route
-        // anyway would turn every send to that peer into a silent drop.
         let fallback = Fallback::new(None);
         assert!(!fallback.set(
             "bob",
@@ -651,7 +492,6 @@ mod tests {
         assert!(!fallback.is_relayed("bob"));
         assert_eq!(fallback.turn_relayed_addr(), None);
 
-        // A mesh relay needs no allocation, and is accepted.
         assert!(fallback.set(
             "bob",
             FallbackPath::MeshRelay {
@@ -703,8 +543,6 @@ mod tests {
             }
         );
         assert_eq!(path.label(), "turn");
-        // No relay peer and no allocation: nothing can carry this peer's traffic,
-        // and inventing a path would be the bug this module exists to fix.
         assert_eq!(choose_fallback("alice", "bob", &[], None), None);
     }
 
@@ -737,9 +575,6 @@ mod tests {
         assert_eq!(routes.relayed_via("helper"), vec!["bob".to_string()]);
         assert!(routes.relayed_via("other").is_empty());
 
-        // Direct is the absence of a route, not a route of its own: leaving a
-        // `Direct` entry behind would make "needs a relay" and "recovered"
-        // indistinguishable at every call site.
         routes.set("bob", FallbackPath::Direct);
         assert!(!routes.is_relayed("bob"));
         assert!(routes.path("bob").is_none());
@@ -761,8 +596,6 @@ mod tests {
         relay.authorize("bob", addr("198.51.100.20:40000"));
         let envelope = blind_envelope("bob", b"sealed");
 
-        // Unknown sender: authorized only if it has a session, which is how the
-        // mesh knows a peer at all.
         assert_eq!(
             relay_hop(&relay, "mallory", &envelope),
             Err(DropReason::UnauthorizedSender)
@@ -772,16 +605,12 @@ mod tests {
             relay_hop(&relay, "alice", &envelope),
             Ok(RelayHop {
                 dest: addr("198.51.100.20:40000"),
-                // The frame the target parses, not the relay's envelope: the
-                // header is relay-layer addressing and does not travel on.
                 bytes: b"sealed".to_vec(),
             })
         );
 
-        // And it refuses to be a reflector.
         let back = blind_envelope("alice", b"sealed");
         assert_eq!(relay_hop(&relay, "alice", &back), Err(DropReason::Loop));
-        // A datagram that is not an envelope is not a forwarding request either.
         assert_eq!(
             relay_hop(&relay, "alice", b"plain mesh traffic"),
             Err(DropReason::NotAnEnvelope)
@@ -790,9 +619,6 @@ mod tests {
 
     #[test]
     fn a_multi_hop_onion_is_not_the_blind_paths_business() {
-        // The onion path re-encrypts at each hop; the blind path must never touch
-        // someone else's ciphertext. Keeping them apart is what makes the relay
-        // unable to read the traffic it forwards.
         let relay = DerpRelay::new(Arc::new(super::super::FlowController::new(100)));
         relay.authorize("alice", addr("198.51.100.10:30000"));
         relay.authorize("bob", addr("198.51.100.20:40000"));
@@ -801,10 +627,6 @@ mod tests {
             relay_hop(&relay, "alice", &onion),
             Err(DropReason::NotBlindForward)
         );
-        // The drop counter is left alone: it counts relay *requests* that failed
-        // (unknown target, no session, quota, a loop). An onion is not a blind
-        // request at all, and folding the two together would make a legitimate
-        // multi-hop path indistinguishable from abuse on the dashboard.
         assert_eq!(relay.stats(), (0, 0, 0));
     }
 

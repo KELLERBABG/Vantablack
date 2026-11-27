@@ -15,34 +15,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// Whether experimental local-port TCP forwarding over the mesh is enabled.
 pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Enable or disable experimental local-port TCP forwarding over the mesh.
 pub fn set_enabled(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
 }
 
-/// Flag bits for Universal Shard-Tunnel frame headers.
 pub const FLAG_SYN: u8 = 0x01;
 pub const FLAG_ACK: u8 = 0x02;
 pub const FLAG_FIN: u8 = 0x04;
 pub const FLAG_DATA: u8 = 0x08;
 
-/// Privacy frame payload maximum size for tunnel chunks (fitting within 576B GTF).
 pub const MAX_TUNNEL_PAYLOAD_CHUNK: usize = 512;
 
-/// Protocol transported by the tunnel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelProtocol {
     Tcp,
     Udp,
 }
 
-/// Header for sequenced tunnel frames.
-/// Layout: [stream_id:4][seq_num:4][flags:1][payload_len:2] = 11 bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TunnelFrameHeader {
     pub stream_id: u32,
@@ -80,7 +73,6 @@ impl TunnelFrameHeader {
     }
 }
 
-/// Chunks arbitrary application byte streams into 576-byte GTF privacy frames.
 #[derive(Debug, Clone)]
 pub struct UniversalTunnelChunker {
     pub stream_id: u32,
@@ -95,13 +87,11 @@ impl UniversalTunnelChunker {
         }
     }
 
-    /// Slices an application byte buffer into sequenced, constant-size GTF tunnel frames.
     pub fn chunk_payload(&mut self, payload: &[u8], is_final: bool) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
         let chunks: Vec<&[u8]> = payload.chunks(MAX_TUNNEL_PAYLOAD_CHUNK).collect();
 
         if chunks.is_empty() {
-            // Empty payload (e.g. bare FIN)
             let flags = if is_final { FLAG_FIN } else { FLAG_ACK };
             let hdr = TunnelFrameHeader {
                 stream_id: self.stream_id,
@@ -142,7 +132,6 @@ impl UniversalTunnelChunker {
         frames
     }
 
-    /// Parses a received 576-byte GTF tunnel frame back into header and payload.
     pub fn parse_frame(frame: &[u8]) -> Option<(TunnelFrameHeader, Vec<u8>)> {
         let hdr = TunnelFrameHeader::from_bytes(frame)?;
         let start = TunnelFrameHeader::HEADER_LEN;
@@ -155,10 +144,8 @@ impl UniversalTunnelChunker {
     }
 }
 
-/// Reassembles sequenced, out-of-order tunnel frames for a stream.
 #[derive(Debug, Default)]
 pub struct UniversalTunnelReassembler {
-    /// Buffered received chunks keyed by sequence number.
     buffered: BTreeMap<u32, (TunnelFrameHeader, Vec<u8>)>,
     expected_seq: u32,
     pub is_finished: bool,
@@ -169,14 +156,11 @@ impl UniversalTunnelReassembler {
         Self::default()
     }
 
-    /// Ingests a frame, handling out-of-order delivery.
-    /// Returns any contiguous in-order payload bytes ready for forwarding to the target application.
     pub fn ingest_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>, &'static str> {
         let (hdr, payload) =
             UniversalTunnelChunker::parse_frame(frame).ok_or("malformed universal tunnel frame")?;
 
         if hdr.seq_num < self.expected_seq {
-            // Duplicate/stale frame
             return Ok(Vec::new());
         }
 
@@ -199,7 +183,6 @@ impl UniversalTunnelReassembler {
     }
 }
 
-/// Universal Shard-Tunnel Configuration.
 #[derive(Debug, Clone)]
 pub struct UniversalTunnelConfig {
     pub local_listen_addr: SocketAddr,
@@ -227,7 +210,6 @@ mod tests {
     #[test]
     fn test_universal_shard_tunnel_chunking_and_reassembly() {
         let mut chunker = UniversalTunnelChunker::new(777);
-        // Arbitrary payload (e.g. gRPC or RDP binary stream) exceeding 1 chunk
         let mut original_payload = Vec::new();
         for i in 0..1200 {
             original_payload.push((i % 256) as u8);
@@ -243,25 +225,20 @@ mod tests {
             assert_eq!(f.len(), 576, "Every tunnel frame must be exactly 576 bytes");
         }
 
-        // Simulate out-of-order arrival: deliver frame 1, frame 0, then frame 2
         let mut reassembler = UniversalTunnelReassembler::new();
 
-        // Deliver frame 1 (out of order) -> no contiguous bytes yielded yet
         let out1 = reassembler.ingest_frame(&frames[1]).expect("ingest");
         assert!(out1.is_empty());
         assert!(!reassembler.is_finished);
 
-        // Deliver frame 0 -> yields frame 0 + frame 1 contiguous bytes!
         let out0 = reassembler.ingest_frame(&frames[0]).expect("ingest");
         assert_eq!(out0.len(), 512 + 512);
         assert!(!reassembler.is_finished);
 
-        // Deliver frame 2 (with FIN) -> yields final bytes and sets is_finished
         let out2 = reassembler.ingest_frame(&frames[2]).expect("ingest");
         assert_eq!(out2.len(), 1200 - 1024);
         assert!(reassembler.is_finished);
 
-        // Verify assembled byte integrity
         let mut full_assembled = Vec::new();
         full_assembled.extend_from_slice(&out0);
         full_assembled.extend_from_slice(&out2);

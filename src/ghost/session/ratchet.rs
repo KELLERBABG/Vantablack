@@ -45,63 +45,29 @@ use std::time::{Duration, Instant};
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 use zeroize::Zeroize;
 
-/// Datagrams one epoch key may seal before the session is due to ratchet.
-///
-/// This is the number that bounds the wire nonce's collision risk: with a random
-/// 96-bit nonce, `n` frames under one key collide with probability `n²/2^97`, so
-/// one million frames give ~2⁻⁷⁰ — far below the 2⁻³² that would matter, and the
-/// ratchet replaces the key long before a real link could accumulate the 2⁴⁸
-/// frames where a random-96-bit-nonce birthday collision becomes likely.
 pub const RATCHET_INTERVAL: u64 = 1_000_000;
 
-/// Maximum wall-clock lifetime of a single epoch before a ratchet is due,
-/// ensuring low-volume sessions still rotate keys regularly.
 pub const RATCHET_TIME_CEILING: Duration = Duration::from_secs(15 * 60);
 
-/// How many *previous* epochs keep their keys so frames in flight across a step
-/// still open. One is enough for a step; two covers a step that raced with a
-/// retransmission and keeps the window honest when an ACK is lost.
 pub const RATCHET_RETAINED_EPOCHS: usize = 2;
 
-/// The largest forward jump an open will pay for.
 pub const MAX_SKIP: u64 = 1024;
 
-/// What opening one counter should do, computed **without mutating anything**.
-///
-/// The receive path needs "plan, then commit": because the counter is unauthenticated,
-/// the derivation is computed first and applied only once the AEAD has verified the
-/// frame. A plan that is never committed leaves the chain exactly as it was, so a
-/// forgery costs at most [`MAX_SKIP`] hashes and changes nothing.
 pub enum OpenPlan {
-    /// Derive forward. Use `key`; on commit install `new_chain`/`new_pos` and cache the
-    /// keys passed over, so a straggler arriving later can still open.
     Forward {
         key: [u8; 32],
         new_chain: [u8; 32],
         new_pos: u64,
         cache: Vec<(u64, [u8; 32])>,
     },
-    /// A key already held for an out-of-order counter. Commit consumes (deletes) it, so
-    /// a second frame claiming the same counter cannot open.
     Cached { counter: u64, key: [u8; 32] },
-    /// Too far ahead to pay for, or a past counter whose key is already gone.
     Refused,
 }
 
-/// One direction's **per-message** chain.
-///
-/// An epoch key used to seal every frame of its epoch — up to a million messages under
-/// one key. This advances once per *message* instead: the key a frame is sealed under is
-/// a [`kdf_ck`] step key, and the chain moves past it, so a compromise of the state
-/// cannot reach a message already sealed. That only holds if the epoch key is the seed
-/// and is **not** retained beside the chain — a seed kept in the same struct would derive
-/// every message key and make this cosmetic.
 #[derive(Clone)]
 pub struct MsgChain {
     chain: [u8; 32],
     pos: u64,
-    /// Keys for counters jumped over, kept so out-of-order arrivals still open. Bounded
-    /// by [`MAX_SKIP`] entries, oldest evicted.
     skipped: std::collections::BTreeMap<u64, [u8; 32]>,
 }
 
@@ -115,7 +81,6 @@ impl Drop for MsgChain {
 }
 
 impl MsgChain {
-    /// Start a chain for one epoch from that epoch's derived seed key.
     pub fn seed(seed: &[u8; 32]) -> Self {
         Self {
             chain: *seed,
@@ -140,20 +105,15 @@ impl MsgChain {
         key
     }
 
-    /// Work out how to open `counter`, changing nothing.
     pub fn plan(&self, counter: u64) -> OpenPlan {
         if counter < self.pos {
             return match self.skipped.get(&counter) {
                 Some(key) => OpenPlan::Cached { counter, key: *key },
-                // Gone: either already consumed or never held. Either way the honest
-                // answer is that the key is not here, rather than a guess.
                 None => OpenPlan::Refused,
             };
         }
         let gap = counter - self.pos;
         if gap > MAX_SKIP {
-            // Bounded work, and *no* advance: refusing must not move the state, or an
-            // unauthenticated packet could walk the receiver past real traffic.
             return OpenPlan::Refused;
         }
         let mut chain = self.chain;
@@ -171,13 +131,11 @@ impl MsgChain {
         OpenPlan::Forward {
             key,
             new_chain: chain,
-            // The counter is peer-supplied, so a checked build must not overflow here.
             new_pos: counter.saturating_add(1),
             cache,
         }
     }
 
-    /// Apply a plan. The caller does this only *after* the frame has authenticated.
     pub fn commit(&mut self, plan: OpenPlan) {
         match plan {
             OpenPlan::Forward {
@@ -194,7 +152,6 @@ impl MsgChain {
                         self.skipped.entry(counter).or_insert(key);
                     }
                 }
-                // Evict oldest if > MAX_SKIP
                 while self.skipped.len() > MAX_SKIP as usize {
                     let oldest = *self.skipped.keys().next().expect("non-empty");
                     if let Some(mut dead) = self.skipped.remove(&oldest) {
@@ -203,8 +160,6 @@ impl MsgChain {
                 }
             }
             OpenPlan::Cached { counter, .. } => {
-                // Single use: consuming it is what makes a replay of the same counter
-                // fail rather than open twice.
                 if let Some(mut spent) = self.skipped.remove(&counter) {
                     spent.zeroize();
                 }
@@ -214,17 +169,13 @@ impl MsgChain {
     }
 }
 
-/// One direction's chain: the one-way key it advances from, and its per-message chain.
 #[derive(Clone)]
 struct ChainState {
-    /// The chain key. Every epoch key is derived from it and it never goes back.
     chain: [u8; 32],
-    /// Per-message chain for this direction.
     msg_chain: MsgChain,
 }
 
 impl ChainState {
-    /// Seed a chain and start its message chain, zeroizing the intermediate epoch key.
     fn seed(chain_key: [u8; 32], epoch: u64) -> Self {
         let (chain, _) = kdf_ck(&chain_key);
         let mut epoch_seed = derive_epoch_key(&chain, epoch);
@@ -240,17 +191,13 @@ impl Drop for ChainState {
     }
 }
 
-/// A retired epoch's message chains, retained only so frames already on the wire can open.
 #[derive(Clone)]
 pub struct RatchetEpoch {
     pub epoch: u64,
-    /// Message chain for initiator→responder traffic in this epoch.
     pub to_resp: MsgChain,
-    /// Message chain for responder→initiator traffic in this epoch.
     pub to_init: MsgChain,
 }
 
-/// A ratchet step that has been derived but **not installed**.
 #[derive(Clone)]
 struct PreparedEpoch {
     epoch: u64,
@@ -265,33 +212,19 @@ impl Drop for PreparedEpoch {
     }
 }
 
-/// The live ratchet state of one session.
 pub struct SessionRatchet {
-    /// Root key: re-mixed by every DH step. The next step's salt.
     root_key: [u8; 32],
-    /// Chain for initiator→responder traffic.
     to_resp: ChainState,
-    /// Chain for responder→initiator traffic.
     to_init: ChainState,
-    /// Current ratchet generation, counted from 0.
     epoch: u64,
-    /// How many ratchet steps this session has taken (monotonic, for status).
     steps: u64,
-    /// Frames sealed in the current epoch, which is what triggers the step.
     frames_in_epoch: u64,
-    /// When the current epoch began, enforcing [`RATCHET_TIME_CEILING`].
     epoch_started_at: Instant,
-    /// Retired epochs, newest first.
     retired: VecDeque<RatchetEpoch>,
-    /// A step derived but not installed (see [`PreparedEpoch`]).
     pending: Option<PreparedEpoch>,
 }
 
 impl SessionRatchet {
-    /// Start a ratchet from the hybrid handshake's master key.
-    ///
-    /// Epoch 0's keys are already one chain step away from the handshake key, so
-    /// compromising the handshake secret alone does not immediately read epoch 0.
     pub fn new(master_key: [u8; 32]) -> Self {
         let (to_resp, to_init) = seed_ratchet_chains(&master_key);
         Self {
@@ -307,28 +240,22 @@ impl SessionRatchet {
         }
     }
 
-    /// The current ratchet generation.
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
-    /// Steps taken in this session's lifetime.
     pub fn steps(&self) -> u64 {
         self.steps
     }
 
-    /// Frames sealed under the current epoch key.
     pub fn frames_in_epoch(&self) -> u64 {
         self.frames_in_epoch
     }
 
-    /// The root key a step is about to mix into. Exposed because the step PDU has
-    /// to be signed over it by the caller.
     pub fn root_key(&self) -> [u8; 32] {
         self.root_key
     }
 
-    /// Take the next message key for sealing and advance the chain. Returns `(counter, key)`.
     pub fn advance_seal(&mut self, direction: NonceDirection) -> (u64, [u8; 32]) {
         let chain = match direction {
             NonceDirection::InitiatorToResponder => &mut self.to_resp.msg_chain,
@@ -339,7 +266,6 @@ impl SessionRatchet {
         (counter, key)
     }
 
-    /// The key the current epoch would next seal under (without advancing).
     pub fn seal_key(&self, direction: NonceDirection) -> [u8; 32] {
         let chain = match direction {
             NonceDirection::InitiatorToResponder => &self.to_resp.msg_chain,
@@ -352,7 +278,6 @@ impl SessionRatchet {
         }
     }
 
-    /// Plan how to open `counter` in `epoch` and `direction`, without mutating state.
     pub fn plan_open(&self, epoch: u64, direction: NonceDirection, counter: u64) -> OpenPlan {
         if let Some(p) = self.pending.as_ref() {
             if p.epoch == epoch {
@@ -377,7 +302,6 @@ impl SessionRatchet {
         OpenPlan::Refused
     }
 
-    /// Apply an open plan after the frame authenticates.
     pub fn commit_open(&mut self, epoch: u64, direction: NonceDirection, plan: OpenPlan) {
         if let Some(p) = self.pending.as_mut() {
             if p.epoch == epoch {
@@ -403,7 +327,6 @@ impl SessionRatchet {
         }
     }
 
-    /// The AEAD key for a *named* epoch, direction, and counter — what to *open* with.
     pub fn open_key(
         &self,
         epoch: u64,
@@ -417,7 +340,6 @@ impl SessionRatchet {
         }
     }
 
-    /// Whether an unopenable frame's counter exceeded MAX_SKIP past our chain position.
     pub fn gap_exceeds_max_skip(
         &self,
         epoch: u64,
@@ -449,8 +371,6 @@ impl SessionRatchet {
         counter > pos && (counter - pos) > MAX_SKIP
     }
 
-    /// Derive a step's epoch **without installing it**, and return the key the
-    /// *peer* will seal in, for the confirmation tag.
     pub fn prepare_step(
         &mut self,
         secrets: &StepSecrets,
@@ -480,7 +400,6 @@ impl SessionRatchet {
         (epoch, key)
     }
 
-    /// Install a prepared epoch. Returns `false` if nothing is prepared for it.
     pub fn activate(&mut self, epoch: u64) -> bool {
         if self.pending.as_ref().map(|p| p.epoch) != Some(epoch) {
             return false;
@@ -511,36 +430,28 @@ impl SessionRatchet {
         true
     }
 
-    /// The epoch a step is prepared for, if any.
     pub fn prepared_epoch(&self) -> Option<u64> {
         self.pending.as_ref().map(|p| p.epoch)
     }
 
-    /// The epoch this ratchet is *sealing* on.
     pub fn sealed_epoch(&self) -> u64 {
         self.epoch
     }
 
-    /// Whether the current epoch has reached either [`RATCHET_INTERVAL`] or
-    /// [`RATCHET_TIME_CEILING`].
     pub fn is_ratchet_due(&self) -> bool {
         self.frames_in_epoch >= RATCHET_INTERVAL
             || self.epoch_started_at.elapsed() >= RATCHET_TIME_CEILING
     }
 
-    /// Count a frame sealed in the current epoch; `true` means the session is due
-    /// to ratchet.
     pub fn count_seal(&mut self) -> bool {
         self.frames_in_epoch = self.frames_in_epoch.saturating_add(1);
         self.is_ratchet_due()
     }
 
-    /// Frames still available under the current epoch key.
     pub fn epoch_capacity_left(&self) -> u64 {
         RATCHET_INTERVAL.saturating_sub(self.frames_in_epoch)
     }
 
-    /// The message key a step *would* produce at counter 0, without applying it.
     pub fn preview_step_key(
         &self,
         secrets: &StepSecrets,
@@ -560,8 +471,6 @@ impl SessionRatchet {
         (epoch, msg_key_0)
     }
 
-    /// Perform a DH-ratchet step: mix `secrets` into the root key, reseed both
-    /// directional chains, and open a new epoch.
     pub fn step(&mut self, secrets: &StepSecrets) -> u64 {
         self.pending = None;
         let (new_root, chain_to_resp, chain_to_init) =
@@ -591,15 +500,6 @@ impl SessionRatchet {
         next
     }
 
-    /// Mix out-of-band entropy (a QEL/QKD-derived quantum key) into the ratchet.
-    ///
-    /// Both peers must call this with the **same** quantum key, in the same
-    /// epoch, or their chains diverge — the caller is responsible for delivery
-    /// over the already-authenticated session (the same rule as the ratchet
-    /// step PDU itself). Retired epochs stay openable through the normal grace
-    /// window, so in-flight frames survive the reseed.
-    ///
-    /// Returns the new epoch number.
     pub fn mix_quantum_entropy(&mut self, quantum_key: &[u8; 32]) -> u64 {
         self.pending = None;
         let (new_root, chain_to_resp, chain_to_init) =
@@ -627,13 +527,6 @@ impl SessionRatchet {
         next
     }
 
-    /// Derive the epoch a quantum mix would produce **without installing it**, and
-    /// return the key the peer will seal in, for the confirmation tag.
-    ///
-    /// The quantum twin of [`Self::prepare_step`]: a different KDF input (a
-    /// QEL/QKD key instead of a DH+KEM secret) over identical epoch bookkeeping.
-    /// Both halves of the exchange must agree on the epoch *and* on the key, so
-    /// this deliberately returns the same `(epoch, key)` shape the step path does.
     pub fn prepare_quantum_mix(
         &mut self,
         quantum_key: &[u8; 32],
@@ -663,13 +556,6 @@ impl SessionRatchet {
         (epoch, key)
     }
 
-    /// The message key a quantum mix *would* produce at counter 0, without applying
-    /// it and without touching any state.
-    ///
-    /// This is what lets the answering side check that both peers derived the same
-    /// quantum key **before** it prepares an epoch: if the tags disagree the mix is
-    /// refused and the live epoch is untouched, whereas preparing first would leave a
-    /// divergent epoch installed on one side only.
     pub fn preview_quantum_mix_key(
         &self,
         quantum_key: &[u8; 32],
@@ -688,8 +574,6 @@ impl SessionRatchet {
         (epoch, msg_key_0)
     }
 
-    /// Epochs still openable: the sealed one, a prepared one (if a step is mid-
-    /// flight), then the retained grace window. Newest first.
     pub fn openable_epochs(&self) -> Vec<u64> {
         let mut v = vec![self.epoch];
         if let Some(p) = self.pending.as_ref() {
@@ -706,8 +590,6 @@ impl Drop for SessionRatchet {
     }
 }
 
-/// The shared secrets one ratchet step contributes: an X25519 Diffie-Hellman
-/// output and an ML-KEM-512 shared secret.
 pub struct StepSecrets {
     pub dh: [u8; 32],
     pub kem: Vec<u8>,
@@ -726,13 +608,6 @@ impl Drop for StepSecrets {
     }
 }
 
-/// One side's ephemeral material for a ratchet step.
-///
-/// The exchange is the same hybrid shape as the handshake — X25519 plus ML-KEM-512
-/// — but *ephemeral and per-step*, which is what makes it a ratchet rather than a
-/// second handshake: nothing here is signed by the long-term identity, because the
-/// session that carries it is already authenticated, and re-signing every million
-/// datagrams would make the identity key a hot key.
 pub struct RatchetStep {
     x_secret: Option<EphemeralSecret>,
     x_public: X25519PublicKey,
@@ -741,7 +616,6 @@ pub struct RatchetStep {
 }
 
 impl RatchetStep {
-    /// Generate fresh ephemeral X25519 and ML-KEM-768 material.
     pub fn generate() -> Self {
         let (x_secret, x_public) = generate_x25519_keypair();
         let (kem_ek, kem_dk) = generate_kyber768_keypair();
@@ -753,22 +627,14 @@ impl RatchetStep {
         }
     }
 
-    /// This side's X25519 ephemeral public key, to go in the step PDU.
     pub fn x_public_bytes(&self) -> [u8; 32] {
         *self.x_public.as_bytes()
     }
 
-    /// This side's ML-KEM-768 encapsulation key, to go in the step PDU.
     pub fn kem_public_bytes(&self) -> Vec<u8> {
         self.kem_ek.to_bytes().to_vec()
     }
 
-    /// *Responder* side of a step: take the initiator's material, encapsulate
-    /// against it, and return `(secrets, ciphertext_to_return)`.
-    ///
-    /// The responder encapsulates rather than the initiator because that is the
-    /// direction the existing re-key PDU already moves key material, and reusing
-    /// the shape keeps one parser instead of two.
     pub fn respond(
         mut self,
         peer_x_pub: &[u8; 32],
@@ -781,8 +647,6 @@ impl RatchetStep {
         Some((StepSecrets::new(*dh.as_bytes(), kem), ct))
     }
 
-    /// *Initiator* side of a step: open the responder's ciphertext and produce the
-    /// same secrets the responder did.
     pub fn finish(mut self, peer_x_pub: &[u8; 32], kem_ct: &[u8; 1088]) -> Option<StepSecrets> {
         let secret = self.x_secret.take()?;
         let dh = secret.diffie_hellman(&X25519PublicKey::from(*peer_x_pub));
@@ -791,24 +655,14 @@ impl RatchetStep {
     }
 }
 
-/// Replay-Resistant Chronology — Causal Order Monotonicity.
-///
-/// Replaces external wall-clock time with a causal monotonic counter vector for
-/// cross-partition replay rejection and epoch expiry. Even under arbitrary clock skew
-/// or time-rollback attacks, frames or epoch supersessions that are causally obsolete
-/// are rejected deterministically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CausalMonotonicCounter {
-    /// Local node causal sequence component
     local_seq: u64,
-    /// Highest observed causal sequence from remote peer
     observed_remote_seq: u64,
-    /// Causal epoch generation
     causal_epoch: u64,
 }
 
 impl CausalMonotonicCounter {
-    /// Create a new causal counter at epoch 0
     pub fn new() -> Self {
         Self {
             local_seq: 0,
@@ -817,13 +671,11 @@ impl CausalMonotonicCounter {
         }
     }
 
-    /// Monotonically advance local causal sequence for an outbound event/message
     pub fn advance_local(&mut self) -> (u64, u64, u64) {
         self.local_seq = self.local_seq.saturating_add(1);
         (self.causal_epoch, self.local_seq, self.observed_remote_seq)
     }
 
-    /// Advance the causal epoch (superseding all previous causal epochs)
     pub fn advance_epoch(&mut self) -> u64 {
         self.causal_epoch = self.causal_epoch.saturating_add(1);
         self.local_seq = 0;
@@ -831,20 +683,15 @@ impl CausalMonotonicCounter {
         self.causal_epoch
     }
 
-    /// Verify an inbound message's causal chronology.
-    /// Returns Ok(()) and records observed sequence if causal order is preserved,
-    /// or Err(&'static str) if the event is causally obsolete (replay / stale partition).
     pub fn verify_and_observe(
         &mut self,
         msg_causal_epoch: u64,
         msg_seq: u64,
     ) -> Result<(), &'static str> {
-        // 1. Reject if from an older, superseded causal epoch
         if msg_causal_epoch < self.causal_epoch {
             return Err("Causally obsolete epoch: rejected");
         }
 
-        // 2. If same epoch, sequence must strictly advance beyond what was observed
         if msg_causal_epoch == self.causal_epoch {
             if msg_seq <= self.observed_remote_seq {
                 return Err("Causally obsolete sequence: replay detected");
@@ -852,14 +699,12 @@ impl CausalMonotonicCounter {
             self.observed_remote_seq = msg_seq;
             Ok(())
         } else {
-            // New epoch observed causally forward
             self.causal_epoch = msg_causal_epoch;
             self.observed_remote_seq = msg_seq;
             Ok(())
         }
     }
 
-    /// Get current causal state: (epoch, local_seq, observed_remote_seq)
     pub fn state(&self) -> (u64, u64, u64) {
         (self.causal_epoch, self.local_seq, self.observed_remote_seq)
     }
@@ -878,12 +723,8 @@ mod tests {
     use crate::ghost::layers::l2_aead::{xchacha_open, xchacha_seal};
 
     fn master() -> [u8; 32] {
-        // A real handshake produces this; for ratchet tests any fixed key is fine
-        // as long as every participant derives it the same way.
         [0x5Au8; 32]
     }
-
-    // ── Per-message chains ─────────────────────────────────────
 
     #[test]
     fn msg_chain_advances_one_step_per_message_and_never_repeats_a_key() {
@@ -904,9 +745,6 @@ mod tests {
 
     #[test]
     fn state_captured_after_sealing_cannot_reach_the_messages_already_sealed() {
-        // This *is* per-message chaining. Under the old scheme a snapshot of the epoch key opened every
-        // frame of the epoch; here the keys were derived and dropped, and the one-way
-        // chain has no route back to them.
         let mut chain = MsgChain::seed(&master());
         let sent: Vec<[u8; 32]> = (0..8).map(|_| chain.advance()).collect();
         for counter in 0..8u64 {
@@ -915,7 +753,6 @@ mod tests {
                 "counter {counter} was sealed by us and is now unreachable"
             );
         }
-        // What it can produce from here is new material, not the old keys.
         let next = chain.advance();
         assert!(!sent.contains(&next));
     }
@@ -926,7 +763,6 @@ mod tests {
         let keys: Vec<[u8; 32]> = (0..8).map(|_| sender.advance()).collect();
 
         let mut receiver = MsgChain::seed(&master());
-        // Counter 5 arrives first.
         let plan = receiver.plan(5);
         let OpenPlan::Forward { key, .. } = plan else {
             panic!("5 is ahead of 0, so it is a forward plan")
@@ -935,7 +771,6 @@ mod tests {
         receiver.commit(plan);
         assert_eq!(receiver.pos(), 6, "the chain now expects 6");
 
-        // 2 and 3 were jumped over, so they must come from the cache.
         for counter in [2u64, 3] {
             let plan = receiver.plan(counter);
             let OpenPlan::Cached { key, .. } = plan else {
@@ -945,7 +780,6 @@ mod tests {
             receiver.commit(plan);
         }
 
-        // And 6, now in order, needs no cache at all.
         let plan = receiver.plan(6);
         let OpenPlan::Forward { key, .. } = plan else {
             panic!("6 is the next counter")
@@ -969,7 +803,6 @@ mod tests {
         assert_eq!(key, keys[1]);
         receiver.commit(plan);
 
-        // Consuming it is what makes the replay fail rather than open twice.
         assert!(matches!(receiver.plan(1), OpenPlan::Refused));
     }
 
@@ -977,10 +810,7 @@ mod tests {
     fn a_gap_beyond_the_cap_is_refused_without_advancing() {
         let receiver = MsgChain::seed(&master());
         assert!(matches!(receiver.plan(MAX_SKIP + 1), OpenPlan::Refused));
-        // Refusing must not move the chain: an unauthenticated packet must not be able
-        // to walk the receiver past real traffic.
         assert_eq!(receiver.pos(), 0, "a refused plan changes nothing");
-        // The boundary itself is payable, so the cap is not off by one.
         assert!(matches!(receiver.plan(MAX_SKIP), OpenPlan::Forward { .. }));
     }
 
@@ -997,8 +827,6 @@ mod tests {
 
     #[test]
     fn an_uncommitted_plan_leaves_the_chain_exactly_where_it_was() {
-        // Tentative commit: a forged counter may be *planned* and cost bounded work, but
-        // it must not persist anything.
         let receiver = MsgChain::seed(&master());
         let plan = receiver.plan(500);
         assert!(matches!(plan, OpenPlan::Forward { .. }));
@@ -1006,7 +834,6 @@ mod tests {
         assert_eq!(receiver.pos(), 0);
     }
 
-    /// Both peers, each stepped the same number of times.
     fn stepped(n: usize) -> SessionRatchet {
         let mut r = SessionRatchet::new(master());
         for i in 0..n {
@@ -1042,8 +869,6 @@ mod tests {
         assert_eq!(r.epoch(), 1);
         assert_eq!(r.steps(), 1);
         assert_ne!(r.seal_key(NonceDirection::InitiatorToResponder), before);
-        // The retired epoch is still openable, and answers with the *old* key —
-        // that is the grace window that keeps in-flight frames readable.
         assert_eq!(
             r.open_key(0, NonceDirection::InitiatorToResponder, 0),
             Some(before)
@@ -1052,9 +877,6 @@ mod tests {
 
     #[test]
     fn test_a_prepared_epoch_can_be_opened_but_not_sealed_on() {
-        // The property the transport depends on: the responder can read the
-        // initiator's first frame in the new epoch while it is still sealing on
-        // the old one, so a lost answer cannot put the two a key apart.
         let mut r = SessionRatchet::new(master());
         let old = r.seal_key(NonceDirection::InitiatorToResponder);
         let (epoch, peer_key) = r.prepare_step(
@@ -1065,15 +887,12 @@ mod tests {
         assert_eq!(r.sealed_epoch(), 0, "prepare must not advance the ratchet");
         assert_eq!(r.prepared_epoch(), Some(1));
         assert_eq!(r.seal_key(NonceDirection::InitiatorToResponder), old);
-        // Openable under the new epoch, and it is the key the peer reports.
         assert_eq!(
             r.open_key(1, NonceDirection::InitiatorToResponder, 0),
             Some(peer_key)
         );
         assert!(r.openable_epochs().contains(&1));
 
-        // Installing it moves the seal key, retires the old epoch, and clears the
-        // prepared slot.
         assert!(r.activate(1));
         assert_eq!(r.sealed_epoch(), 1);
         assert_eq!(r.prepared_epoch(), None);
@@ -1091,7 +910,6 @@ mod tests {
 
     #[test]
     fn test_prepare_step_does_not_match_a_preview_of_other_secrets() {
-        // The confirmation must not accept a different step's key.
         let mut r = SessionRatchet::new(master());
         let (_, honest) = r.prepare_step(
             &StepSecrets::new([0x01u8; 32], vec![0x02u8; 32]),
@@ -1144,13 +962,11 @@ mod tests {
         assert!(r
             .open_key(99, NonceDirection::InitiatorToResponder, 0)
             .is_none());
-        // Only the current epoch plus the retained grace window answer.
         assert_eq!(r.openable_epochs().len(), RATCHET_RETAINED_EPOCHS + 1);
     }
 
     #[test]
     fn test_both_peers_agree_after_the_same_step() {
-        // The load-bearing property: one hybrid exchange, two ratchets, one key.
         let mut a = SessionRatchet::new(master());
         let mut b = SessionRatchet::new(master());
 
@@ -1176,9 +992,6 @@ mod tests {
 
     #[test]
     fn test_second_peer_with_wrong_secrets_diverges() {
-        // A third party who watched the exchange but holds neither ephemeral secret
-        // cannot produce the epoch key. This is what makes the step authentic
-        // without a per-step signature.
         let watcher = RatchetStep::generate();
         let (secrets, _ct) = watcher.respond(&[0x77u8; 32], &[0x88u8; 1184]).unwrap();
         let mut a = SessionRatchet::new(master());
@@ -1193,10 +1006,6 @@ mod tests {
 
     #[test]
     fn test_double_ratchet_forward_secrecy() {
-        // The gate this test pins.
-        //
-        // Three things have to hold, and each is checked against real AEAD output
-        // rather than against the shape of the code:
         use crate::ghost::layers::l2_aead::random_xnonce;
 
         let mut r = SessionRatchet::new(master());
@@ -1217,9 +1026,6 @@ mod tests {
             r.step(&StepSecrets::new([epoch as u8; 32], vec![epoch as u8; 32]));
         }
 
-        // (1) The current state holds no key that opens a *retired* epoch: the key
-        // is erased and the API says so, instead of trial-decrypting until
-        // something works.
         assert!(r
             .open_key(0, NonceDirection::InitiatorToResponder, 0)
             .is_none());
@@ -1237,24 +1043,19 @@ mod tests {
             "today's key must not open yesterday's frame"
         );
 
-        // (2) Epoch keys are all distinct: no epoch reuses another's keystream.
         let keys: std::collections::HashSet<[u8; 32]> =
             historical.iter().map(|(k, _, _)| *k).collect();
         assert_eq!(keys.len(), historical.len());
 
-        // (3) A frame sealed at the *current* epoch is unreadable by a party who
-        // took a copy of the state before the step (break-in recovery).
         let mut victim = SessionRatchet::new(master());
         for e in 0..3u8 {
             victim.step(&StepSecrets::new([e; 32], vec![e; 32]));
         }
         let attacker = stepped(3);
-        // Attacker must hold the post-compromise state exactly (they read memory).
         assert_eq!(
             attacker.seal_key(NonceDirection::InitiatorToResponder),
             victim.seal_key(NonceDirection::InitiatorToResponder),
         );
-        // Now a step happens whose secrets the attacker never saw.
         let stolen_nonce = random_xnonce();
         let attacker_epoch = attacker.epoch();
         victim.step(&StepSecrets::new([0xAAu8; 32], vec![0xBBu8; 32]));
@@ -1267,8 +1068,6 @@ mod tests {
             b"post-compromise secret",
         )
         .expect("seal");
-        // The attacker's epoch is the pre-step one, so they cannot even name the
-        // epoch the frame came from, let alone hold its key.
         assert_eq!(attacker_epoch, new_epoch - 1);
         assert!(attacker
             .open_key(new_epoch, NonceDirection::InitiatorToResponder, 0)
@@ -1289,7 +1088,6 @@ mod tests {
     fn test_ratchet_interval_bounds_the_epoch() {
         let mut r = SessionRatchet::new(master());
         assert_eq!(r.epoch_capacity_left(), RATCHET_INTERVAL);
-        // Not a million iterations of work: the counter is what the caller bumps.
         r.frames_in_epoch = RATCHET_INTERVAL - 2;
         assert!(!r.count_seal(), "the epoch still has one frame left in it");
         assert!(
@@ -1301,8 +1099,6 @@ mod tests {
 
     #[test]
     fn test_preview_step_key_matches_the_step_it_previews() {
-        // Confirmation depends on this: the initiator computes the key without
-        // committing, so the preview must be exactly what `step` would install.
         let previewed = {
             let r = SessionRatchet::new(master());
             let secrets = StepSecrets::new([0x01u8; 32], vec![0x02u8; 32]);
@@ -1369,13 +1165,10 @@ mod tests {
 
     #[test]
     fn quantum_entropy_mix_is_symmetric_and_opens_the_next_epoch() {
-        // Both sides mix the same QEL key: identical epoch keys on both ends,
-        // and the mixed state is one epoch ahead.
         let quantum_key = [0xA5u8; 32];
         let mut alice = SessionRatchet::new(master());
         let mut bob = SessionRatchet::new(master());
 
-        // Epoch 0 keys match before the mix.
         assert_eq!(
             alice.seal_key(NonceDirection::InitiatorToResponder),
             bob.seal_key(NonceDirection::InitiatorToResponder)
@@ -1392,7 +1185,6 @@ mod tests {
             "both sides derive identical post-mix epoch keys"
         );
 
-        // Old-epoch frames stay openable through the grace window.
         let e0 = alice
             .open_key(0, NonceDirection::InitiatorToResponder, 0)
             .expect("epoch 0 still openable");
@@ -1401,10 +1193,6 @@ mod tests {
 
     #[test]
     fn prepared_quantum_mix_matches_a_direct_mix_and_a_preview() {
-        // The confirmation tag both peers compare is derived from the key at
-        // counter 0 of the new epoch. Preparing, previewing, and mixing directly
-        // must all name that same epoch and that same key, or one side would
-        // commit to an epoch the other never derived.
         let quantum_key = [0x5Au8; 32];
         let mut prepared = SessionRatchet::new(master());
         let mut direct = SessionRatchet::new(master());
@@ -1418,7 +1206,6 @@ mod tests {
         assert_eq!(preview.0, epoch, "preview and prepare name the same epoch");
         assert_eq!(preview.1, key, "and derive the same confirmation key");
 
-        // Preparing must not install: the live epoch is unchanged until activate.
         assert_eq!(prepared.epoch(), 0);
         assert_eq!(prepared.prepared_epoch(), Some(epoch));
         assert_eq!(
@@ -1439,9 +1226,6 @@ mod tests {
 
     #[test]
     fn a_preview_of_a_different_quantum_key_does_not_match_the_mix() {
-        // What the answering side checks before it prepares anything: the tags
-        // only agree when both peers derived the same key. A peer that computed
-        // a different key must be refused rather than half-committing an epoch.
         let r = SessionRatchet::new(master());
         let (_, honest) =
             r.preview_quantum_mix_key(&[0x01u8; 32], NonceDirection::InitiatorToResponder);
@@ -1457,9 +1241,6 @@ mod tests {
 
     #[test]
     fn a_quantum_mix_previews_the_key_for_the_starter_sealing_direction() {
-        // Both halves must agree on *which* chain the confirmation tag covers,
-        // no matter which session role started the mix: the starter's own sealing
-        // direction, which the answerer reaches via `peer_direction()`.
         for starter_dir in [
             NonceDirection::InitiatorToResponder,
             NonceDirection::ResponderToInitiator,
@@ -1468,9 +1249,6 @@ mod tests {
             let mut from_starter = SessionRatchet::new(master());
             let from_answerer = SessionRatchet::new(master());
 
-            // The answerer sits in the complementary role, so its own sealing
-            // direction is the starter's opposite -- and mapping back through
-            // `peer_direction()` lands on the chain the starter used.
             let answerer_dir = starter_dir.peer_direction();
             assert_eq!(answerer_dir.peer_direction(), starter_dir);
 
@@ -1486,9 +1264,6 @@ mod tests {
 
     #[test]
     fn quantum_mix_changes_the_key_and_is_one_way() {
-        // A different quantum key must derive a different epoch (it is entropy,
-        // not a no-op) — and knowing the quantum key alone must not reproduce
-        // the mixed keys without the prior root.
         let mut r = SessionRatchet::new(master());
         let before = r.seal_key(NonceDirection::InitiatorToResponder);
         r.mix_quantum_entropy(&[0x11u8; 32]);
@@ -1503,7 +1278,6 @@ mod tests {
             "different quantum keys must diverge"
         );
 
-        // An attacker holding ONLY the quantum key derives nothing.
         let mut attacker = SessionRatchet::new([0u8; 32]);
         attacker.mix_quantum_entropy(&[0x11u8; 32]);
         assert_ne!(
@@ -1515,9 +1289,6 @@ mod tests {
 
     #[test]
     fn test_secrets_are_actually_used() {
-        // A step must depend on BOTH halves, or the ratchet is only as strong as
-        // X25519 — which a quantum adversary breaks, making "forward secrecy"
-        // meaningless against the adversary it exists for.
         let mut a = SessionRatchet::new(master());
         let mut b = SessionRatchet::new(master());
         let mut c = SessionRatchet::new(master());
@@ -1533,8 +1304,6 @@ mod tests {
 
     #[test]
     fn test_ratchet_separates_from_the_handshake_kdf() {
-        // A ratchet step must not reproduce the handshake key, or a peer who
-        // captured the handshake would hold every epoch.
         let dh = [0x31u8; 32];
         let kem = vec![0x32u8; 8];
         let handshake = derive_hybrid_master_key(&dh, &kem);
@@ -1547,18 +1316,12 @@ mod tests {
 
     #[test]
     fn test_pq_double_ratchet_post_compromise_recovery() {
-        // Post-Compromise Security (PCS) via ephemeral hybrid ratchet exchange.
-        // Even if an attacker learns the exact root_key at epoch N, after a fresh
-        // ephemeral hybrid exchange (ML-KEM-512 + X25519) between Alice and Bob,
-        // the attacker cannot derive the epoch N+1 keys or decrypt traffic.
         let mut alice = SessionRatchet::new(master());
         let mut bob = SessionRatchet::new(master());
 
-        // Epoch 0 compromised: attacker steals root_key
         let compromised_root_epoch0 = alice.root_key();
         assert_eq!(compromised_root_epoch0, master());
 
-        // Alice and Bob generate ephemeral ratchet step
         let alice_step = RatchetStep::generate();
         let bob_step = RatchetStep::generate();
         let bob_x_pub = bob_step.x_public_bytes();
@@ -1568,23 +1331,17 @@ mod tests {
             .expect("respond");
         let alice_secrets = alice_step.finish(&bob_x_pub, &ct).expect("finish");
 
-        // Step both sides to Epoch 1
         let epoch_alice = alice.step(&alice_secrets);
         let epoch_bob = bob.step(&bob_secrets);
         assert_eq!(epoch_alice, 1);
         assert_eq!(epoch_bob, 1);
 
-        // Verify keys match between Alice and Bob
         let alice_seal_key = alice.seal_key(NonceDirection::InitiatorToResponder);
         let bob_open_key = bob
             .open_key(1, NonceDirection::InitiatorToResponder, 0)
             .expect("bob can open");
         assert_eq!(alice_seal_key, bob_open_key);
 
-        // Attacker attempts to forge/derive epoch 1 without knowing the private ephemeral keys:
-        // Attacker has compromised root key and observes on-wire public keys & ciphertext:
-        // But attacker cannot decapsulate ML-KEM-512 ct or complete X25519 DH.
-        // If attacker guesses/fabricates secrets:
         let fake_secrets = StepSecrets::new([0x00u8; 32], vec![0u8; 32]);
         let mut attacker_ratchet = SessionRatchet::new(compromised_root_epoch0);
         attacker_ratchet.step(&fake_secrets);
@@ -1601,35 +1358,28 @@ mod tests {
         let mut node_a = CausalMonotonicCounter::new();
         let mut node_b = CausalMonotonicCounter::new();
 
-        // Local sequences advance monotonically
         let (epoch_a, seq1, _) = node_a.advance_local();
         assert_eq!((epoch_a, seq1), (0, 1));
         let (_, seq2, _) = node_a.advance_local();
         assert_eq!(seq2, 2);
 
-        // Remote node observes and verifies message 1
         assert!(node_b.verify_and_observe(epoch_a, seq1).is_ok());
 
-        // Replay of message 1 must be rejected regardless of wall clock
         let replay_err = node_b.verify_and_observe(epoch_a, seq1);
         assert_eq!(
             replay_err,
             Err("Causally obsolete sequence: replay detected")
         );
 
-        // In-order delivery of message 2 succeeds
         assert!(node_b.verify_and_observe(epoch_a, seq2).is_ok());
 
-        // Epoch advancement supersedes prior epoch messages
         let new_epoch = node_a.advance_epoch();
         assert_eq!(new_epoch, 1);
         let (epoch1, epoch1_seq1, _) = node_a.advance_local();
         assert_eq!((epoch1, epoch1_seq1), (1, 1));
 
-        // Node B accepts epoch 1 message
         assert!(node_b.verify_and_observe(epoch1, epoch1_seq1).is_ok());
 
-        // Replayed message from old epoch 0 is rejected causally
         let stale_epoch_err = node_b.verify_and_observe(0, 9999);
         assert_eq!(stale_epoch_err, Err("Causally obsolete epoch: rejected"));
     }

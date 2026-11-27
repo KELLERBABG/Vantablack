@@ -64,8 +64,6 @@ pub struct TelemetryState {
     pub frame_standard: String,
 }
 
-// ── Peer Discovery: DNS Seed, Multicast Beacon, and Disk Cache ─────
-
 pub async fn resolve_dns_seed(seed_str: &str) -> Vec<SocketAddr> {
     let host_port = if seed_str.contains(':') {
         seed_str.to_string()
@@ -172,9 +170,6 @@ pub fn start_beacon_listener(local_pk: [u8; 32]) {
     });
 }
 
-// ── L5 Traffic Shaping & Canonical 512-Byte GTF Framing ────────────
-
-/// L5 Traffic Shaping: Adds random jitter noise (16-64B) beyond the 512-byte canonical GTF base
 fn apply_l5_jitter_padding(data: &mut Vec<u8>) -> usize {
     use rand::Rng;
     let jitter_len = rand::thread_rng().gen_range(16..64);
@@ -209,7 +204,6 @@ fn enc_split(
     (raw, t)
 }
 
-/// Encapsulate a payload into 3 canonical 512-byte GTF privacy frames with L5 randomized jitter noise
 fn enc_split_gtf(
     key: &[u8; 32],
     ctr: u32,
@@ -222,7 +216,6 @@ fn enc_split_gtf(
     for (i, shard) in shards.iter().enumerate() {
         let framed_shard = frame_shard(shard);
         let mut frame = build_gtf_frame(*session_hash, ctr, i as u8, &framed_shard, &tag, false);
-        // build_gtf_frame creates base 512B + jitter. Ensure minimum 512B GTF standard
         if frame.len() < GTF_BASE_SIZE {
             frame.resize(GTF_BASE_SIZE, 0);
         }
@@ -232,10 +225,6 @@ fn enc_split_gtf(
     (gtf_shards, tag)
 }
 
-/// Reconstructs and decrypts payload using Reed-Solomon RS(2,1) and ChaCha20-Poly1305 AEAD.
-/// If 3 shards are present but corrupted by a Byzantine intermediary, evaluates combinations
-/// of 2 shards to isolate, identify, and discard the forged shard.
-/// Returns (Option<payload>, Option<corrupted_shard_idx>).
 fn dec_join_tamper_resistant(
     key: &[u8; 32],
     ctr: u32,
@@ -257,7 +246,6 @@ fn dec_join_tamper_resistant(
         return (None, None);
     }
 
-    // Helper closure to attempt reconstruction and AEAD decryption for a pair of shards (idx_a, idx_b)
     let try_pair = |idx_a: usize, idx_b: usize| -> Option<Vec<u8>> {
         if idx_a >= shards.len() || idx_b >= shards.len() {
             return None;
@@ -295,39 +283,27 @@ fn dec_join_tamper_resistant(
         None
     };
 
-    // If all 3 shards arrived, first test all 3 combinations of pairs:
-    // Pair (0, 1): excludes Shard 2
-    // Pair (0, 2): excludes Shard 1
-    // Pair (1, 2): excludes Shard 0
     if shards[0].is_some() && shards[1].is_some() && shards[2].is_some() {
         let res_01 = try_pair(0, 1);
         let res_02 = try_pair(0, 2);
         let res_12 = try_pair(1, 2);
 
-        // If all 3 pairs succeed, all shards are clean and uncorrupted
         if res_01.is_some() && res_02.is_some() && res_12.is_some() {
             return (res_01, None);
         }
 
-        // If Shard 1 was tampered with:
-        // Pair (0, 2) succeeds! Pair (0, 1) and (1, 2) fail AEAD Poly1305 check.
         if res_02.is_some() && res_01.is_none() && res_12.is_none() {
             return (res_02, Some(1));
         }
 
-        // If Shard 0 was tampered with:
-        // Pair (1, 2) succeeds!
         if res_12.is_some() && res_01.is_none() && res_02.is_none() {
             return (res_12, Some(0));
         }
 
-        // If Shard 2 was tampered with:
-        // Pair (0, 1) succeeds!
         if res_01.is_some() && res_02.is_none() && res_12.is_none() {
             return (res_01, Some(2));
         }
     } else {
-        // Exactly 2 shards arrived (e.g. one path dropped or severed by chaos monkey)
         let i = present_indices[0];
         let j = present_indices[1];
         if let Some(payload) = try_pair(i, j) {
@@ -361,8 +337,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Level 2 Multi-Hop Carrier Relay
-/// Reads hop header: [hops_remaining_u8][next_ip_4_bytes][next_port_2_bytes][payload...]
 async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Error>> {
     let tamper_enabled = env::var("BYZANTINE_TAMPER").unwrap_or_else(|_| "0".to_string()) == "1";
     println!("[CARRIER] Active. Multi-hop packet relay initialized under Linux tc netem.");
@@ -383,8 +357,6 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
 
             let mut payload = buf[7..len].to_vec();
 
-            // Byzantine Tampering Simulation:
-            // Corrupt in-flight shard payload every 3 packets to demonstrate cryptographic tamper isolation
             let p_len = payload.len();
             if tamper_enabled && pkt_counter.is_multiple_of(3) && p_len >= 10 {
                 println!("!!! [BYZANTINE ATTACK] Intercepted in-flight shard packet! Injected 4-byte corruption into encrypted payload...");
@@ -395,7 +367,6 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
             }
 
             if hops_remaining > 1 {
-                // Decrement hops remaining and forward to next intermediary hop
                 let mut forwarded = vec![hops_remaining - 1];
                 forwarded.extend_from_slice(&payload);
                 let _ = socket.send_to(&forwarded, next_addr).await;
@@ -406,7 +377,6 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
                     hops_remaining - 1
                 );
             } else {
-                // Final hop delivery (e.g. into Exit node or Client)
                 let _ = socket.send_to(&payload, next_addr).await;
                 println!(
                     "[CARRIER] Final-hop relay: {} bytes delivered to ENDPOINT {}",
@@ -418,7 +388,6 @@ async fn run_carrier(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::E
     }
 }
 
-/// Exit Role: Reconstructs inbound shards, queries Google, and routes responses back across multi-hop paths.
 async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Error>> {
     println!("[EXIT] Ready. Waiting for multi-hop RS shards & Post-Quantum handshake...");
     let identity = GhostIdentity::generate_fresh();
@@ -427,8 +396,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
         hex::encode(&identity.public_key_bytes()[..8])
     );
 
-    // Start local discovery beacon announcer. The announcer signs with the same
-    // identity as the node (both keys: see `GhostIdentity`).
     start_beacon_announcer(identity.clone());
 
     let exit_rotator = ExitIpRotator::new(vec![
@@ -442,7 +409,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
     let mut replay_blocked_total: u64 = 0;
     let mut buf = vec![0u8; 4096];
 
-    // Ephemeral Post-Quantum ML-KEM-512 + X25519 Session State
     let mut session_key: [u8; 32] = [0x42u8; 32];
     let mut current_session_hash: [u8; 4] = [0x5A, 0x11, 0xCA, 0x01];
     let mut handshake_established = false;
@@ -457,7 +423,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
             if let Ok(Ok((len, src))) =
                 tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await
             {
-                // Check if this is a Post-Quantum Handshake PDU from Client
                 if len >= 16 && &buf[..16] == b"GHOST_HANDSHAKE_" {
                     if let Some(parsed_hs) = parse_handshake_pdu(&buf[..len]) {
                         println!(
@@ -487,7 +452,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                             println!("[EXIT PQ-KEM] Handshake derived Master Key: {}... Session Hash: {}",
                                 hex::encode(&session_key[..8]), hex::encode(current_session_hash));
 
-                            // Reply with GHOST_RESPONSE__ directly to client
                             let _ = socket.send_to(&resp_pdu, src).await;
                             println!("[EXIT PQ-KEM] Dispatched Post-Quantum Response PDU to Client at {}", src);
                             continue;
@@ -495,7 +459,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                     }
                 }
 
-                // Shard packet format: [cycle_u64_be_8_bytes][shard_idx_1_byte][gtf_payload...]
                 if len >= 9 {
                     let packet_cycle = u64::from_be_bytes([
                         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
@@ -549,7 +512,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                 println!("!!! [EXIT SECURITY ALERT] BYZANTINE DATA CORRUPTION DETECTED ON INBOUND SHARD #{}! Discarded forged shard; authenticated & reconstructed via valid shards.", bad_idx);
             }
 
-            // Layer 6 Session Guard: Anti-Replay Sliding Window Bitmask Check
             if !session_guard.check_and_update(tx_ctr) {
                 replay_blocked_total = replay_blocked_total.saturating_add(1);
                 println!("!!! [EXIT REPLAY DEFENSE ALERT #{}] REPLAY ATTACK BLOCKED! Counter {} already registered in sliding window bitmask. Packet dropped.",
@@ -594,21 +556,15 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                     &google_resp,
                 );
 
-                // Multi-Hop Return Dispatch
-                // Path 0: Exit -> Carrier 4 -> Carrier 1 -> Client (2 hops)
-                // Path 1: Exit -> Carrier 2 -> Client (1 hop)
-                // Path 2: Exit -> Carrier 3 -> Client (1 hop)
                 let c4_addr = "172.28.1.14:8000".parse::<SocketAddr>()?;
                 let c2_addr = "172.28.1.12:8000".parse::<SocketAddr>()?;
                 let c3_addr = "172.28.1.13:8000".parse::<SocketAddr>()?;
                 let c5_addr = "172.28.1.15:8000".parse::<SocketAddr>()?;
 
-                // Shard 0 via 2-hop chain: Carrier 4 -> Carrier 1 -> Client (172.28.1.10)
                 let shaped_shard_0 = ret_shards[0].clone();
                 let mut pkt_0 = vec![2]; // 2 hops
                 pkt_0.extend_from_slice(&[172, 28, 1, 11]); // Next hop: Carrier 1
                 pkt_0.extend_from_slice(&8000u16.to_be_bytes());
-                // Nested hop for Carrier 1 to forward to Client
                 pkt_0.extend_from_slice(&[172, 28, 1, 10]); // Final dest: Client
                 pkt_0.extend_from_slice(&8000u16.to_be_bytes());
                 pkt_0.extend_from_slice(&current_cycle.to_be_bytes());
@@ -616,7 +572,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                 pkt_0.extend_from_slice(&shaped_shard_0);
                 let _ = socket.send_to(&pkt_0, c4_addr).await;
 
-                // Shard 1 via Carrier 2 directly to Client
                 let shaped_shard_1 = ret_shards[1].clone();
                 let mut pkt_1 = vec![1]; // 1 hop
                 pkt_1.extend_from_slice(&[172, 28, 1, 10]); // Final: Client
@@ -626,7 +581,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
                 pkt_1.extend_from_slice(&shaped_shard_1);
                 let _ = socket.send_to(&pkt_1, c2_addr).await;
 
-                // Shard 2 via Carrier 3 (or C5) to Client
                 let shaped_shard_2 = ret_shards[2].clone();
                 let target_c = if current_cycle % 10 >= 5 {
                     c5_addr
@@ -647,7 +601,6 @@ async fn run_exit(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Erro
     }
 }
 
-/// Client: Adaptive Shard Routing with Chaos Monkey Failover
 async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Error>> {
     println!("[CLIENT] Starting Level 2 Multi-Hop Mesh Client with Adaptive Router & Post-Quantum KEM...");
 
@@ -658,11 +611,9 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         hex::encode(&local_pk[..8])
     );
 
-    // Start discovery listeners & announcers
     start_beacon_announcer(identity.clone());
     start_beacon_listener(local_pk);
 
-    // Bootstrap Peer Discovery: DNS seed, peers.cache, and static subnet carriers
     let mut discovery_sources: Vec<String> = Vec::new();
     let mut discovered_peers: Vec<SocketAddr> = Vec::new();
 
@@ -688,7 +639,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
     discovery_sources.push("Docker WAN Subnet (172.28.1.0/24)".to_string());
     let discovery_source_label = discovery_sources.join(" + ");
 
-    // Save known topology peers to disk cache
     let initial_carriers = vec![
         "172.28.1.11:8000".parse::<SocketAddr>()?,
         "172.28.1.12:8000".parse::<SocketAddr>()?,
@@ -752,7 +702,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         ..Default::default()
     }));
 
-    // Dashboard Server
     let telem_web = Arc::clone(&telemetry);
     tokio::spawn(async move {
         if let Ok(listener) = TcpListener::bind("0.0.0.0:8080").await {
@@ -788,7 +737,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         }
     });
 
-    // SOCKS5 Proxy
     tokio::spawn(async move {
         if let Ok(listener) = TcpListener::bind("0.0.0.0:1080").await {
             while let Ok((mut stream, _)) = listener.accept().await {
@@ -870,7 +818,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
     let mut rekey_count: u64 = 0;
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // Ephemeral Post-Quantum KEM State
     let mut session_key: [u8; 32] = [0x42u8; 32];
     let mut session_hash: [u8; 4] = [0x5A, 0x11, 0xCA, 0x01];
     let mut pq_handshake_done = false;
@@ -897,7 +844,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             "================================================================================"
         );
 
-        // Path candidate setup
         let peers = vec![
             (
                 "carrier-1".to_string(),
@@ -917,7 +863,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             ),
         ];
 
-        // Feed router telemetry
         if is_carrier_3_severed {
             router.record_loss("carrier-3");
             router.record_success("carrier-5", 55_000.0);
@@ -939,7 +884,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             );
         }
 
-        // Post-Quantum ML-KEM-512 + X25519 Handshake (Bootstrapped or periodic rekeying every 500 cycles)
         if !pq_handshake_done || cycle % 500 == 1 {
             println!(
                 "[CLIENT PQ-KEM] Initiating ML-KEM-512 + X25519 Handshake with Exit Node ({})...",
@@ -955,7 +899,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
                 &c_ky_ek,
             );
 
-            // Send handshake PDU to exit node
             if socket.send_to(&hs_pdu, exit_addr).await.is_ok() {
                 let mut resp_buf = vec![0u8; 2048];
                 match tokio::time::timeout(
@@ -1027,7 +970,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         let tx_ctr = (cycle * 10 + 2) as u32;
         let target_dest = b"www.google.com:80";
 
-        // Construct 3 canonical 512-byte GTF privacy frames with L5 randomized jitter noise
         let (gtf_shards, _) = enc_split_gtf(
             &session_key,
             tx_ctr,
@@ -1043,11 +985,9 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             .sum();
         println!("[TRAFFIC SHAPING] Strict 512-byte GTF + L5 Random Jitter Padding: +{} bytes wire cover", total_jitter);
 
-        // Shard 0: 2-HOP ROUTE via Carrier 1 -> Carrier 4 -> Exit
         let mut pkt_0 = vec![2]; // 2 hops
         pkt_0.extend_from_slice(&[172, 28, 1, 14]); // Hop 2: Carrier 4
         pkt_0.extend_from_slice(&8000u16.to_be_bytes());
-        // Nested final destination: Exit (172.28.1.20)
         pkt_0.extend_from_slice(&[172, 28, 1, 20]);
         pkt_0.extend_from_slice(&8000u16.to_be_bytes());
         pkt_0.extend_from_slice(&cycle.to_be_bytes());
@@ -1056,7 +996,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
         socket.send_to(&pkt_0, "172.28.1.11:8000").await?;
         println!("[CLIENT] Shard 0 -> 2-Hop Chain: Client -> Carrier 1 -> Carrier 4 -> Exit (GTF {} bytes)", pkt_0.len());
 
-        // Shard 1: 1-HOP ROUTE via Carrier 2 -> Exit
         let mut pkt_1 = vec![1]; // 1 hop
         pkt_1.extend_from_slice(&[172, 28, 1, 20]); // Final: Exit
         pkt_1.extend_from_slice(&8000u16.to_be_bytes());
@@ -1069,7 +1008,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             pkt_1.len()
         );
 
-        // Shard 2: ADAPTIVE ROUTE via Carrier 3 (or Carrier 5 when severed)
         let active_c3_or_c5 = if is_carrier_3_severed {
             "172.28.1.15:8000"
         } else {
@@ -1099,8 +1037,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             client_session_guard.v_max
         );
 
-        // Scenario 2: Active Replay Attack Injection
-        // Every 4 cycles, launch a rogue clone of Shard 0 with a stale counter to verify Exit drops it
         if cycle.is_multiple_of(4) {
             println!(">>> [ATTACK SIMULATOR] Injecting DUPLICATE REPLAY SHARD with stale counter to test L6 Anti-Replay Guard...");
             let _ = socket.send_to(&pkt_0, "172.28.1.11:8000").await;
@@ -1110,7 +1046,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             );
         }
 
-        // Await Return Shards
         let mut rx_buf = vec![0u8; 4096];
         let mut return_shards: Vec<Option<Vec<u8>>> = vec![None, None, None];
         let mut rx_count: usize = 0;
@@ -1198,7 +1133,6 @@ async fn run_client(socket: Arc<UdpSocket>) -> Result<(), Box<dyn std::error::Er
             "FAULT_TOLERANCE_TEST".to_string()
         };
 
-        // Update telemetry
         {
             let mut state = telemetry.write();
             state.cycle = cycle;

@@ -14,7 +14,6 @@ use dashmap::DashMap;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
-/// Cryptographic proof demonstrating valid erasure repair of a lost Reed-Solomon shard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErasureRepairProof {
     pub input_shard_hashes: [[u8; 32]; 2],
@@ -25,7 +24,6 @@ pub struct ErasureRepairProof {
 }
 
 impl ErasureRepairProof {
-    /// Compute unique proof identifier binding the repair transaction.
     pub fn proof_id(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"GGN_ERASURE_REPAIR_PROOF_V1");
@@ -37,7 +35,6 @@ impl ErasureRepairProof {
         hasher.finalize().into()
     }
 
-    /// Mint a signed repair proof.
     pub fn mint(
         signing_key: &SigningKey,
         input_shard_hashes: [[u8; 32]; 2],
@@ -65,7 +62,6 @@ impl ErasureRepairProof {
         }
     }
 
-    /// Verify signature and structural integrity.
     pub fn verify(&self) -> bool {
         let Ok(vk) = VerifyingKey::from_bytes(&self.worker_pk) else {
             return false;
@@ -87,12 +83,9 @@ impl ErasureRepairProof {
     }
 }
 
-/// Ledger tracking energy currency balances earned via proof-of-erasure-repair.
 #[derive(Debug, Default)]
 pub struct EnergyCreditLedger {
-    /// worker_pk -> balance
     balances: DashMap<[u8; 32], u64>,
-    /// Set of already-credited proof IDs to prevent double-minting
     credited_proofs: DashMap<[u8; 32], u64>,
 }
 
@@ -101,7 +94,6 @@ impl EnergyCreditLedger {
         Self::default()
     }
 
-    /// Credits fixed reward (e.g. 10 energy credits) to worker upon validating proof.
     pub fn credit_repair(&self, proof: &ErasureRepairProof) -> Result<u64, &'static str> {
         if !proof.verify() {
             return Err("invalid erasure repair signature or malformed proof");
@@ -118,7 +110,6 @@ impl EnergyCreditLedger {
         Ok(*bal)
     }
 
-    /// Spend credits to acquire priority QoS forwarding tier (Level 1: 10 credits, Level 2: 25 credits).
     pub fn spend_for_priority(
         &self,
         worker_pk: &[u8; 32],
@@ -143,7 +134,6 @@ impl EnergyCreditLedger {
         Ok(priority_tier)
     }
 
-    /// Check balance for worker.
     pub fn balance_of(&self, worker_pk: &[u8; 32]) -> u64 {
         self.balances.get(worker_pk).map(|b| *b).unwrap_or(0)
     }
@@ -170,16 +160,13 @@ mod tests {
 
         let ledger = EnergyCreditLedger::new();
 
-        // 1. Initial credit mint succeeds: balance becomes 10
         let bal = ledger.credit_repair(&proof).expect("credit succeeds");
         assert_eq!(bal, 10);
         assert_eq!(ledger.balance_of(&worker_pk), 10);
 
-        // 2. Duplicate mint of same proof MUST be rejected
         let dup_res = ledger.credit_repair(&proof);
         assert!(dup_res.is_err(), "duplicate minting must be rejected");
 
-        // 3. Second distinct repair succeeds: balance becomes 20
         let proof2 = ErasureRepairProof::mint(
             &worker_signing_key,
             [[0x44u8; 32], [0x55u8; 32]],
@@ -191,14 +178,12 @@ mod tests {
             .expect("second credit succeeds");
         assert_eq!(bal2, 20);
 
-        // 4. Spend 10 credits for Priority Tier 1
         let priority = ledger
             .spend_for_priority(&worker_pk, 10)
             .expect("spend succeeds");
         assert_eq!(priority, 1);
         assert_eq!(ledger.balance_of(&worker_pk), 10);
 
-        // 5. Attempting to spend more than remaining balance fails
         let overspend = ledger.spend_for_priority(&worker_pk, 25);
         assert!(overspend.is_err());
         assert_eq!(ledger.balance_of(&worker_pk), 10);

@@ -33,22 +33,14 @@ pub const EROSION_MASK_DOMAIN: &[u8] = b"VB-EROSION-MASK-V1";
 pub const EROSION_TAG_DOMAIN: &[u8] = b"VB-EROSION-TAG-V1";
 pub const EROSION_DLEQ_DOMAIN: &[u8] = b"VB-EROSION-DLEQ-V1";
 
-/// Why a bundle cannot be sealed, unsealed, or a partial evaluation combined.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErosionError {
-    /// The bundle's expiry epoch has passed, or the committee forgot its shares.
     Expired,
-    /// Fewer than `t` partial evaluations are available.
     TooFewShares,
-    /// A partial evaluation names a committee member that does not exist.
     UnknownMember(usize),
-    /// A partial evaluation is not a canonical Ristretto point.
     NotOnCurve,
-    /// A partial evaluation's DLEQ does not tie it to the member's commitment.
     BadProof,
-    /// The unwrapped key does not match the bundle it claims to be.
     Mismatch,
-    /// The requested committee shape is invalid.
     Shape(&'static str),
 }
 
@@ -78,7 +70,6 @@ fn scalar_from_bytes(bytes: &[u8; 32]) -> Option<Scalar> {
     Option::<Scalar>::from(Scalar::from_canonical_bytes(*bytes))
 }
 
-/// Hash a bundle identifier to the group element whose mask the committee owns.
 pub fn bundle_point(bundle_id: &[u8; 32]) -> RistrettoPoint {
     let mut hasher = Sha512::new();
     hasher.update(EROSION_H2G_DOMAIN);
@@ -104,10 +95,6 @@ fn tag_for(mask: &[u8; 32], bundle_id: &[u8; 32], die_at: u64) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-// ── DLEQ ────────────────────────────────────────────────────────────────────
-
-/// Chaum–Pedersen proof that a partial evaluation used the member's own share:
-/// `log_G C_j == log_B E_j`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErosionDleq {
     pub c: [u8; 32],
@@ -162,32 +149,22 @@ impl ErosionDleq {
     }
 }
 
-// ── Committee ───────────────────────────────────────────────────────────────
-
-/// One member's blinded evaluation plus the proof binding it to its share.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartialEvaluation {
-    /// Zero-based committee member index.
     pub index: usize,
-    /// `s_j * B`, compressed.
     pub evaluation: [u8; 32],
     pub proof: ErosionDleq,
 }
 
-/// `n` peers holding `(t, n)` Shamir shares of an epoch secret.
 #[derive(Debug, Clone)]
 pub struct EphemerizerCommittee {
     threshold: usize,
     deadline: u64,
     commitments: Vec<RistrettoPoint>,
-    /// Shares stay in canonical scalar bytes so `expire` is a real wipe rather
-    /// than a reference drop.
     shares: Vec<Option<[u8; 32]>>,
 }
 
 impl EphemerizerCommittee {
-    /// Deal `(threshold, members)` shares of `secret`. Returns the committee and
-    /// the published `K = secret * G`.
     pub fn from_secret(
         threshold: usize,
         members: usize,
@@ -236,26 +213,14 @@ impl EphemerizerCommittee {
         self.deadline
     }
 
-    /// Published per-member commitments `C_j = s_j * G`.
     pub fn commitments(&self) -> &[RistrettoPoint] {
         &self.commitments
     }
 
-    /// This member's share, for the peer that will host it.
-    ///
-    /// The daemon spreads one share per host so that no single machine holds a
-    /// threshold of them, which is what makes a seizure of this node reveal no
-    /// bundle key. `None` means the member already wiped its share.
     pub fn share_bytes(&self, index: usize) -> Option<[u8; 32]> {
         self.shares.get(index).copied().flatten()
     }
 
-    /// Rebuild a committee from the shares that survived on their hosts.
-    ///
-    /// Commitments are recomputed as `s_j * G` for the shares present, which is
-    /// exactly what the dealer published for those members, so their partial
-    /// evaluations still verify. Absent members get the identity point, which no
-    /// evaluation can match.
     pub fn from_shares(
         threshold: usize,
         members: usize,
@@ -292,20 +257,14 @@ impl EphemerizerCommittee {
         })
     }
 
-    /// How many shares this member set still holds. Read this after `expire`.
     pub fn retained_shares(&self) -> usize {
         self.shares.iter().filter(|s| s.is_some()).count()
     }
 
-    /// A committee is dead once its epoch passed or it can no longer reach
-    /// threshold by itself.
     pub fn is_dead(&self, now: u64) -> bool {
         now >= self.deadline || self.retained_shares() < self.threshold
     }
 
-    /// Blinded partial evaluation `s_j * B` with a DLEQ against `C_j`.
-    ///
-    /// `None` means this member has already wiped its share.
     pub fn evaluate(&self, index: usize, blinded: &RistrettoPoint) -> Option<PartialEvaluation> {
         let bytes = self.shares.get(index)?.as_ref()?;
         let share = scalar_from_bytes(bytes)?;
@@ -319,7 +278,6 @@ impl EphemerizerCommittee {
         })
     }
 
-    /// Volatile-zeroize one member's share.
     pub fn retire(&mut self, index: usize) {
         if let Some(slot) = self.shares.get_mut(index) {
             if let Some(bytes) = slot.as_mut() {
@@ -329,7 +287,6 @@ impl EphemerizerCommittee {
         }
     }
 
-    /// The expiry epoch: every member wipes its share.
     pub fn expire(&mut self) {
         for index in 0..self.shares.len() {
             self.retire(index);
@@ -345,10 +302,6 @@ fn evaluate_polynomial(coefficients: &[Scalar], x: Scalar) -> Scalar {
     acc
 }
 
-/// Lagrange-interpolate `t` verified partial evaluations at zero.
-///
-/// Each evaluation is checked against the member's published commitment before
-/// its weight is applied, so a single dishonest member cannot move the result.
 pub fn combine_partials(
     commitments: &[RistrettoPoint],
     threshold: usize,
@@ -398,8 +351,6 @@ pub fn combine_partials(
     Ok(combined)
 }
 
-/// The shared mask `k_tau * M` round-trip: blind, collect threshold partials,
-/// interpolate, unblind. The committee only ever sees `r * M`.
 fn threshold_mask(
     committee: &EphemerizerCommittee,
     bundle_id: &[u8; 32],
@@ -432,21 +383,14 @@ fn threshold_mask(
     Ok(mask_for(&unblinded, bundle_id, die_at))
 }
 
-// ── Bundles ─────────────────────────────────────────────────────────────────
-
-/// A bundle key wrapped under an epoch the committee will forget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealedBundle {
     pub bundle_id: [u8; 32],
     pub die_at: u64,
     pub wrapped_key: [u8; 32],
-    /// `H(mask || bundle_id || die_at)`: lets the receiver tell "wrong epoch"
-    /// apart from "wrong bundle" without ever exposing the mask.
     pub tag: [u8; 32],
 }
 
-/// Wrap `message_key` so that it is readable only before `die_at` and only
-/// while the committee still holds `threshold` shares.
 pub fn seal_bundle(
     committee: &EphemerizerCommittee,
     bundle_id: &[u8; 32],
@@ -474,8 +418,6 @@ pub fn seal_bundle(
     })
 }
 
-/// Recover the bundle key, or refuse because the epoch — not the authority —
-/// has ended.
 pub fn open_bundle(
     committee: &EphemerizerCommittee,
     bundle: &SealedBundle,
@@ -525,8 +467,6 @@ mod tests {
             open_bundle(&committee, &sealed, NOW + 300).expect("before expiry"),
             key
         );
-        // At the deadline the bundle is mathematically gone, whatever the
-        // committee still holds.
         assert_eq!(
             open_bundle(&committee, &sealed, NOW + 600),
             Err(ErosionError::Expired)
@@ -544,15 +484,12 @@ mod tests {
         let key = [0x5Cu8; 32];
         let sealed = seal_bundle(&committee, &bundle_id, NOW + 900, &key, NOW).expect("seals");
 
-        // One member wiping leaves threshold reachable: the bundle still opens.
         committee.retire(2);
         assert_eq!(
             open_bundle(&committee, &sealed, NOW + 100).expect("two shares survive"),
             key
         );
 
-        // A second wipe drops below threshold: oblivion, with the ciphertext
-        // still sitting in the archive.
         committee.retire(1);
         assert_eq!(committee.retained_shares(), 1);
         assert_eq!(
@@ -587,8 +524,6 @@ mod tests {
 
         let p0 = committee.evaluate(0, &blinded).expect("member 0");
         let p1 = committee.evaluate(1, &blinded).expect("member 1");
-        // Re-label member 1's valid evaluation as member 0's: the point is on
-        // the curve and the proof is well-formed, but it is for another share.
         let impostor = PartialEvaluation {
             index: 0,
             evaluation: p1.evaluation,
@@ -613,8 +548,6 @@ mod tests {
             Err(ErosionError::Mismatch)
         );
 
-        // The DLEQ path is deterministic in the group: both seal and open
-        // derive the same mask from the same bundle, so the tag matches.
         assert_eq!(
             open_bundle(&committee, &sealed, NOW + 100).expect("open"),
             key

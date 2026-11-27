@@ -44,20 +44,13 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-/// The process-wide bridge, installed once at daemon boot. Egress paths and
-/// the control plane read this instead of threading a handle through every
-/// signature; `None` means the run has no skywave carrier and every skywave
-/// route fails honestly.
 static BRIDGE: OnceLock<Arc<SkywaveBridge>> = OnceLock::new();
 
-/// Telemetry metrics for the Skywave ionospheric radio interface.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkywaveTelemetry {
     pub sdr_active: bool,
-    /// `Some(addr)` when the virtual UDP carrier is bound.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub virtual_carrier: Option<SocketAddr>,
-    /// Address outbound virtual-carrier datagrams are shipped to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub virtual_carrier_peer: Option<SocketAddr>,
     pub carrier_freq_hz: u64,
@@ -65,7 +58,6 @@ pub struct SkywaveTelemetry {
     pub dsss_processing_gain_db: f64,
     pub tx_packet_count: u64,
     pub rx_packet_count: u64,
-    /// Bytes pushed through the TX path (DSP chain in `sdr` builds).
     pub tx_dsp_bytes: u64,
     pub meteor_burst_window_open: bool,
 }
@@ -87,7 +79,6 @@ impl Default for SkywaveTelemetry {
     }
 }
 
-/// Errors occurring across the SDR ionospheric bridge.
 #[derive(Debug, thiserror::Error)]
 pub enum SdrBridgeError {
     #[error("SDR feature not compiled into this build (compile with --features sdr)")]
@@ -100,17 +91,8 @@ pub enum SdrBridgeError {
     ProtocolError(String),
 }
 
-/// Environment override for the virtual skywave carrier bind address.
-///
-/// Unset/empty → loopback ephemeral. One `<addr:port>` → bind there *and*
-/// loop outbound datagrams back to the same socket (single-node testing).
-/// `<bind>|<peer>` → asymmetric two-node carrier: bind the first, ship to the
-/// second.
 pub const SKYWAVE_UDP_ENV: &str = "GHOST_SKYWAVE_UDP";
 
-/// Soft bound on queued skywave ingress. The channel is unbounded — a stuck
-/// receiver must never stall the carrier loop — but the daemon drains it every
-/// receive tick, so steady state stays far below this.
 const INGRESS_SOFT_CAPACITY: usize = 256;
 
 fn parse_socket_addr(s: &str) -> Option<SocketAddr> {
@@ -123,11 +105,6 @@ fn default_carrier_bind() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
 }
 
-/// Resolve the virtual-carrier endpoints from `GHOST_SKYWAVE_UDP`.
-///
-/// Returns `(bind, peer)`. The default is loopback ephemeral with no peer —
-/// outbound datagrams go nowhere unless a peer is configured, and the listener
-/// is never reachable off this machine.
 fn virtual_carrier_endpoints() -> (SocketAddr, Option<SocketAddr>) {
     let fallback = || {
         warn!("skywave: cannot parse {SKYWAVE_UDP_ENV} — virtual carrier disabled");
@@ -147,7 +124,6 @@ fn virtual_carrier_endpoints() -> (SocketAddr, Option<SocketAddr>) {
                     }
                 }
                 None => match parse_socket_addr(&spec) {
-                    // Single address: bind it and loop back to it (self-loop).
                     Some(a) => (a, Some(a)),
                     None => fallback(),
                 },
@@ -157,15 +133,11 @@ fn virtual_carrier_endpoints() -> (SocketAddr, Option<SocketAddr>) {
     }
 }
 
-/// The bridge controller managing ionospheric SDR communication.
-///
-/// `Clone` is cheap: everything behind it is an `Arc`.
 #[derive(Clone)]
 pub struct SkywaveBridge {
     telemetry: Arc<parking_lot::RwLock<SkywaveTelemetry>>,
     ingress_tx: mpsc::UnboundedSender<Vec<u8>>,
     ingress_rx: Arc<parking_lot::Mutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
-    /// Persistent outbound socket for the virtual carrier, if started.
     carrier_sock: Arc<parking_lot::RwLock<Option<Arc<tokio::net::UdpSocket>>>>,
 }
 
@@ -178,23 +150,18 @@ impl std::fmt::Debug for SkywaveBridge {
 }
 
 impl SkywaveBridge {
-    /// Install this bridge as the process-wide carrier (daemon boot).
-    /// Returns `false` if a bridge was already installed.
     pub fn install_global(self: &Arc<Self>) -> bool {
         BRIDGE.set(self.clone()).is_ok()
     }
 
-    /// The process-wide bridge, if one was installed.
     pub fn global() -> Option<&'static Arc<SkywaveBridge>> {
         BRIDGE.get()
     }
 
-    /// Initialize a new SkywaveBridge instance (virtual carrier included).
     pub async fn new() -> Result<Self, SdrBridgeError> {
         Self::with_virtual_carrier(true).await
     }
 
-    /// Initialize the bridge, optionally starting the virtual UDP carrier.
     pub async fn with_virtual_carrier(bind_carrier: bool) -> Result<Self, SdrBridgeError> {
         let (ingress_tx, ingress_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let bridge = Self::build(ingress_tx, ingress_rx).await?;
@@ -217,22 +184,12 @@ impl SkywaveBridge {
         })
     }
 
-    /// Mark the synthetic carrier as active for the fallback ladder.
-    ///
-    /// Used by tests and by operators who want the skywave rung without the
-    /// `sdr` feature. The production build flips this on when an ABOS system
-    /// attaches; synthetic activation is always explicit.
     pub fn activate_synthetic(&self, carrier_freq_hz: u64) {
         let mut telem = self.telemetry.write();
         telem.sdr_active = true;
         telem.carrier_freq_hz = carrier_freq_hz;
     }
 
-    /// Bind the virtual UDP carrier socket and start its receive loop.
-    ///
-    /// Default bind is `127.0.0.1:0` (loopback, ephemeral port) so no
-    /// unauthenticated listener ever appears on an external interface unless
-    /// `GHOST_SKYWAVE_UDP` explicitly says so.
     pub async fn start_virtual_carrier(&self) {
         let (bind, peer) = virtual_carrier_endpoints();
         let sock = match tokio::net::UdpSocket::bind(bind).await {
@@ -277,29 +234,19 @@ impl SkywaveBridge {
         });
     }
 
-    /// Ship a datagram to the configured carrier peer (if any).
     async fn ship_to_carrier(&self, data: &[u8]) {
         let sock = self.carrier_sock.read().clone();
         let peer = self.telemetry.read().virtual_carrier_peer;
         if let (Some(sock), Some(peer)) = (sock, peer) {
-            // Best effort: a lost skywave frame is a lost radio packet; the
-            // upper layers treat the carrier as lossy by design.
             let _ = sock.send_to(data, peer).await;
         }
     }
 
-    /// Point the virtual carrier at `peer` after the fact (tests, or an
-    /// operator who learns the peer's carrier address at runtime).
     pub fn ship_to_peer(&self, peer: SocketAddr) -> bool {
         self.telemetry.write().virtual_carrier_peer = Some(peer);
         true
     }
 
-    /// Feed a datagram that "arrived over the air" into the ingress queue.
-    ///
-    /// This is the seam every future physical receiver plugs into: an SDR RX
-    /// thread calls this with decoded payloads, exactly as the virtual UDP
-    /// carrier does.
     pub fn rx_from_carrier(&self, data: &[u8]) {
         if data.is_empty() {
             return;
@@ -310,7 +257,6 @@ impl SkywaveBridge {
         let _ = self.ingress_tx.send(data.to_vec());
     }
 
-    /// Take datagrams that arrived over the skywave (drains the ingress queue).
     pub fn try_rx(&self) -> Vec<Vec<u8>> {
         let mut rx = self.ingress_rx.lock();
         let mut out = Vec::new();
@@ -320,45 +266,27 @@ impl SkywaveBridge {
         out
     }
 
-    /// Whether an ingress datagram is waiting (non-blocking poll).
     pub fn has_inbound(&self) -> bool {
         !self.ingress_rx.lock().is_empty()
     }
 
-    /// Check if the SDR radio stack is currently active.
     pub fn is_active(&self) -> bool {
         self.telemetry.read().sdr_active
     }
 
-    /// The NVIS frequency the bridge is tuned to, in kHz — `Some` exactly when
-    /// the fallback ladder may select the skywave carrier.
     pub fn nvis_freq_khz(&self) -> Option<u32> {
         let t = self.telemetry.read();
         t.sdr_active.then(|| (t.carrier_freq_hz / 1_000) as u32)
     }
 
-    /// Query live skywave radio telemetry.
     pub fn telemetry(&self) -> SkywaveTelemetry {
         self.telemetry.read().clone()
     }
 
-    /// Transmit a Ghost Transport Frame or DTN bundle across the ionosphere via ABOS.
     pub async fn transmit(&self, data: &[u8]) -> Result<(), SdrBridgeError> {
         self.process_and_send(data).await.map(|_| ())
     }
 
-    /// Transmit a payload through the TX path.
-    ///
-    /// `feature = "sdr"` + online system: the payload is handed to the DSP
-    /// actor thread, which runs the full ABOS chain (shard split → bundle →
-    /// scramble → interleave → LDPC → OFDM/DSSS → burst build → SDR TX).
-    /// Synthetic mode: the frame is shipped over the virtual carrier unchanged.
-    /// Either way the datagram is also shipped to the virtual carrier peer when
-    /// one is configured, so loopback nodes and real radios converge on one
-    /// code path.
-    ///
-    /// Returns the payload as handed to the medium — the wire-level unit tests
-    /// round-trip against [`SkywaveBridge::rx_from_carrier`].
     pub async fn process_and_send(&self, payload: &[u8]) -> Result<Vec<u8>, SdrBridgeError> {
         debug!(
             len = payload.len(),
@@ -373,7 +301,6 @@ impl SkywaveBridge {
         Ok(payload.to_vec())
     }
 
-    /// Update cognitive ionospheric telemetry (critical frequency f0F2, meteor windows).
     pub fn update_iono_metrics(&self, f0f2_hz: f64, meteor_active: bool) {
         let mut telem = self.telemetry.write();
         telem.estimated_f0f2_hz = f0f2_hz;
@@ -393,7 +320,6 @@ mod tests {
         assert!(bridge.is_active());
         assert_eq!(bridge.nvis_freq_khz(), Some(5350));
 
-        // Wait for the bind to land in telemetry.
         for _ in 0..50 {
             if bridge.telemetry().virtual_carrier.is_some() {
                 break;
@@ -403,15 +329,9 @@ mod tests {
         let local = bridge.telemetry().virtual_carrier.expect("carrier bound");
         assert!(local.ip().is_loopback(), "default bind must be loopback");
 
-        // The carrier has to be *told* where to send: `ship_to_carrier` requires
-        // both a bound socket and a peer, and with neither the transmit path is a
-        // silent no-op. Point it at itself, which is the self-loop this test
-        // claims to exercise -- without this the round trip cannot happen at all
-        // and the assertion below would be about an unsent frame.
         assert!(bridge.ship_to_peer(local), "the carrier accepts a peer");
 
         bridge.process_and_send(b"ghost-frame").await.unwrap();
-        // Self-loop: the bound peer is the same socket, so the frame comes back.
         for _ in 0..50 {
             if bridge.has_inbound() {
                 break;

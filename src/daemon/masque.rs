@@ -50,8 +50,6 @@ use tokio::sync::mpsc;
 
 use vantablack::ghost::v2::masque::{self, Admission, Tunnel};
 
-/// One datagram from a MASQUE stream, and the address the daemon should treat as
-/// its source.
 type Inbound = (Vec<u8>, SocketAddr);
 
 fn paths() -> &'static DashMap<SocketAddr, mpsc::UnboundedSender<Vec<u8>>> {
@@ -64,26 +62,21 @@ fn sessions() -> &'static DashMap<[u8; 4], SocketAddr> {
     SESSIONS.get_or_init(DashMap::new)
 }
 
-/// Peers we are dialing or already carrying: one dial at a time per address, and
-/// no re-dial while a stream is up.
 fn dials() -> &'static DashMap<SocketAddr, ()> {
     static DIALS: OnceLock<DashMap<SocketAddr, ()>> = OnceLock::new();
     DIALS.get_or_init(DashMap::new)
 }
 
-/// Whether this process runs the MASQUE endpoint.
 pub(crate) fn enabled() -> bool {
     static RESOLVED: OnceLock<bool> = OnceLock::new();
     *RESOLVED.get_or_init(|| flag("GHOST_MASQUE"))
 }
 
-/// Whether this node dials a peer's endpoint when its UDP path fails.
 pub(crate) fn dial_enabled() -> bool {
     static RESOLVED: OnceLock<bool> = OnceLock::new();
     *RESOLVED.get_or_init(|| flag("GHOST_MASQUE_DIAL"))
 }
 
-/// The pure switch reader, so every env shape is testable.
 fn flag(name: &str) -> bool {
     flag_value(std::env::var(name).ok().as_deref())
 }
@@ -95,7 +88,6 @@ fn flag_value(value: Option<&str>) -> bool {
     }
 }
 
-/// The port a peer's endpoint listens on.
 pub(crate) fn dial_port() -> u16 {
     dial_port_from(std::env::var("GHOST_MASQUE_PORT").ok().as_deref())
 }
@@ -114,8 +106,6 @@ fn listen_addr() -> SocketAddr {
         .unwrap_or_else(|| "0.0.0.0:8444".parse().expect("a valid default bind"))
 }
 
-/// The SNI to present when dialing. A name, because QUIC's TLS stack refuses an
-/// IP literal as `server_name`.
 fn dial_sni() -> String {
     std::env::var("GHOST_MASQUE_SNI")
         .ok()
@@ -124,10 +114,6 @@ fn dial_sni() -> String {
         .unwrap_or_else(|| "masque.origin.test".into())
 }
 
-/// Try to carry `frame` over a MASQUE stream.
-///
-/// Returns `false` when the destination has no stream, which is the ordinary
-/// case: the caller then keeps to UDP.
 pub(crate) fn try_send(dst: &SocketAddr, frame: &[u8]) -> bool {
     if paths().is_empty() {
         return false;
@@ -149,10 +135,6 @@ pub(crate) fn try_send(dst: &SocketAddr, frame: &[u8]) -> bool {
     tx.send(frame.to_vec()).is_ok()
 }
 
-/// Whether a MASQUE stream already reaches this peer.
-///
-/// `send3_adaptive` uses this to skip a relay route chosen only because UDP
-/// failed: the stream goes to the peer itself.
 pub(crate) fn carries(dst: &SocketAddr, session: &[u8; 4]) -> bool {
     if paths().contains_key(dst) {
         return true;
@@ -160,8 +142,6 @@ pub(crate) fn carries(dst: &SocketAddr, session: &[u8; 4]) -> bool {
     *session != [0, 0, 0, 0] && sessions().contains_key(session)
 }
 
-/// The admission rule: the named peer must hold a live session with us and prove
-/// it with a signature over this connection's exporter value.
 fn admission(nc: Arc<GhostNode>) -> Admission {
     Admission::Session(Arc::new(move |fingerprint, binding, proof| {
         let signature: [u8; 64] = match proof.try_into() {
@@ -195,7 +175,6 @@ fn admission(nc: Arc<GhostNode>) -> Admission {
     }))
 }
 
-/// Start the endpoint when configured. Every admitted tunnel feeds `ingress`.
 pub(crate) fn spawn(
     nc: Arc<GhostNode>,
     ingress: mpsc::UnboundedSender<Inbound>,
@@ -206,9 +185,6 @@ pub(crate) fn spawn(
     Some(spawn_on(nc, ingress, listen_addr()))
 }
 
-/// Start the endpoint on an explicit address. The configured [`spawn`] and the
-/// end-to-end test share this, so the test exercises the same listener, admission
-/// and pump code the daemon runs.
 fn spawn_on(
     nc: Arc<GhostNode>,
     ingress: mpsc::UnboundedSender<Inbound>,
@@ -233,10 +209,6 @@ fn spawn_on(
     handle
 }
 
-/// Dial a peer's endpoint after its UDP path failed.
-///
-/// Returns `true` when a dial started. The caller keeps whatever route it has
-/// meanwhile; [`carries`] takes over the send path the moment a stream is up.
 pub(crate) fn try_dial(nc: &Arc<GhostNode>, peer: SocketAddr) -> bool {
     if !dial_enabled() {
         return false;
@@ -252,11 +224,6 @@ pub(crate) fn try_dial(nc: &Arc<GhostNode>, peer: SocketAddr) -> bool {
     )
 }
 
-/// Dial `target` for `peer`, registering the stream under the peer's mesh address.
-///
-/// Split from [`try_dial`] so the end-to-end test can name a loopback endpoint
-/// without depending on `GHOST_MASQUE_PORT`; the registration, pump and cleanup are
-/// the same code the daemon runs.
 fn dial(nc: &Arc<GhostNode>, peer: SocketAddr, target: SocketAddr, sni: String) -> bool {
     if dials().insert(peer, ()).is_some() {
         return false;
@@ -269,8 +236,6 @@ fn dial(nc: &Arc<GhostNode>, peer: SocketAddr, target: SocketAddr, sni: String) 
     paths().insert(peer, queue);
     tokio::spawn(async move {
         let (in_tx, mut in_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-        // Replies are addressed to the peer's mesh address: that is the only name
-        // the rest of the daemon holds for it.
         let pump = tokio::spawn(async move {
             while let Some(frame) = in_rx.recv().await {
                 let session = net::parse_session_hash(&frame);
@@ -296,8 +261,6 @@ fn dial(nc: &Arc<GhostNode>, peer: SocketAddr, target: SocketAddr, sni: String) 
     true
 }
 
-/// The ingress sink installed by the node, used by dialed streams (which are not
-/// children of the listener task).
 fn ingress_cell() -> &'static OnceLock<mpsc::UnboundedSender<Inbound>> {
     static INGRESS: OnceLock<mpsc::UnboundedSender<Inbound>> = OnceLock::new();
     &INGRESS
@@ -307,17 +270,10 @@ fn ingress_sender() -> Option<mpsc::UnboundedSender<Inbound>> {
     ingress_cell().get().cloned()
 }
 
-/// Install the frame sink once; a second call is ignored, which keeps it safe in
-/// tests and in a restarting supervisor.
 pub(crate) fn install_ingress(tx: mpsc::UnboundedSender<Inbound>) {
     let _ = ingress_cell().set(tx);
 }
 
-/// Bridge one admitted tunnel to the daemon's frame pipeline.
-///
-/// The stream is registered under the connection's address before the pump
-/// starts, so a frame the daemon sends the instant the peer's first frame arrives
-/// already has a stream to take instead of racing into the UDP fallback.
 async fn serve_tunnel(tunnel: Tunnel, ingress: mpsc::UnboundedSender<Inbound>) {
     let key = tunnel.peer;
     let identity = tunnel.identity.clone();
@@ -363,9 +319,6 @@ mod tests {
         assert_eq!(dial_port_from(Some("0")), 8444);
     }
 
-    /// The admission rule end to end: no session means no admission even with a
-    /// valid signature, and once the mesh session has pinned the peer's identity
-    /// only a proof over *this* connection is accepted.
     #[tokio::test]
     async fn admission_needs_a_pinned_session_and_a_proof_over_this_connection() {
         let node = Arc::new(GhostNode::new("127.0.0.1:0").await.expect("a test node"));
@@ -404,8 +357,6 @@ mod tests {
         );
     }
 
-    /// A real GTFv2 frame, sealed-shaped: the transport carries frames unchanged, so
-    /// a test frame is enough to prove the carrier does not rewrite them.
     fn gtf_frame(session: [u8; 4], shard: u8, payload: &[u8]) -> Vec<u8> {
         let header = net::GtfV2Header {
             session_hash: session,
@@ -420,13 +371,6 @@ mod tests {
         net::build_gtf_v2_frame(&header, payload, &[0u8; 16])
     }
 
-    /// End to end over loopback: a real HTTP/3 endpoint admits a real client by
-    /// session binding, and GTFv2 frames cross in both directions.
-    ///
-    /// Nothing here is simulated: the endpoint binds a socket, the client completes a
-    /// QUIC handshake and an HTTP/3 CONNECT with a proof over the connection's
-    /// exporter value, and both frames travel as datagram capsules on the request
-    /// stream.
     #[tokio::test]
     async fn a_localhost_endpoint_and_client_carry_gtf_frames_both_ways() {
         use std::time::Duration;
@@ -434,7 +378,6 @@ mod tests {
         let server_node = Arc::new(GhostNode::new("127.0.0.1:0").await.expect("a server node"));
         let client_node = Arc::new(GhostNode::new("127.0.0.1:0").await.expect("a client node"));
 
-        // The mesh handshake has already pinned the client's identity on the server.
         let session =
             Session::new_with_role([7u8; 32], client_node.fingerprint(), SessionRole::Responder);
         session.pin_peer_identity(client_node.identity.public_key_bytes());
@@ -442,7 +385,6 @@ mod tests {
             .sessions
             .insert(client_node.fingerprint(), session);
 
-        // A free loopback port for the endpoint: bind, learn, release.
         let listen: SocketAddr = {
             let probe = std::net::UdpSocket::bind("127.0.0.1:0").expect("a probe socket");
             probe.local_addr().expect("a bound probe")
@@ -453,7 +395,6 @@ mod tests {
         let (client_in_tx, mut client_in) = mpsc::unbounded_channel::<Inbound>();
         install_ingress(client_in_tx);
 
-        // The peer's mesh address is the only name the daemon holds for it.
         let peer: SocketAddr = "127.0.0.1:39002".parse().expect("the peer's mesh address");
         assert!(
             dial(&client_node, peer, listen, "masque.origin.test".into()),
@@ -496,8 +437,6 @@ mod tests {
         endpoint.abort();
     }
 
-    /// The proof is bound to the connection, so the same session cannot reuse a
-    /// captured proof on another stream: the message carries the exporter value.
     #[test]
     fn a_proof_carries_the_connection_binding_and_the_fingerprint() {
         let a = masque::proof_message(&[1u8; 32], "aabbccddeeff0011");

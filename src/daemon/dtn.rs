@@ -30,10 +30,8 @@ use std::time::Duration;
 
 use vantablack::ghost::net::dtn_reconcile::{DtnBundle, DtnMerkleTree};
 
-/// How many undelivered bundles one peer may have queued.
 const MAX_PENDING: usize = 64;
 
-/// Whether store-and-forward is on.
 pub(crate) fn enabled() -> bool {
     vantablack::ghost::net::dtn_reconcile::is_enabled()
 }
@@ -61,8 +59,6 @@ impl PeerStore {
         self.tree.compute_missing_from(&self.delivered_ids())
     }
 
-    /// Rebuild from the pending set once the tree carries mostly delivered
-    /// bundles, so a long-lived peer does not grow without bound.
     fn compact(&mut self) {
         if self.tree.len() <= MAX_PENDING * 2 {
             return;
@@ -81,7 +77,6 @@ fn stores() -> &'static DashMap<String, parking_lot::Mutex<PeerStore>> {
     STORES.get_or_init(DashMap::new)
 }
 
-/// A stable id for one payload aimed at one peer.
 fn bundle_id(peer_fp: &str, payload: &[u8]) -> [u8; 16] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -94,8 +89,6 @@ fn bundle_id(peer_fp: &str, payload: &[u8]) -> [u8; 16] {
     id
 }
 
-/// Queue one payload in `store`. Returns `false` for a duplicate, a full queue or an
-/// empty payload — the three cases where buffering would be wrong rather than late.
 fn queue(store: &mut PeerStore, peer_fp: &str, payload: &[u8]) -> bool {
     if payload.is_empty() {
         return false;
@@ -114,9 +107,6 @@ fn queue(store: &mut PeerStore, peer_fp: &str, payload: &[u8]) -> bool {
     let sequence = store.next_sequence;
     store.next_sequence = store.next_sequence.saturating_add(1);
 
-    // Tier 1 wiring: with the vault on, the tree holds a descriptor and the
-    // bytes live in blind dead-drop chunks under an erosion epoch. The
-    // descriptor is what `flush_all` hands to `research_hooks::vault::open`.
     #[cfg(feature = "research")]
     if super::research_hooks::vault::enabled() {
         let Some(descriptor) = super::research_hooks::vault::deposit(peer_fp, payload) else {
@@ -134,10 +124,6 @@ fn queue(store: &mut PeerStore, peer_fp: &str, payload: &[u8]) -> bool {
     true
 }
 
-/// Buffer one payload for a peer that cannot be reached right now.
-///
-/// Returns `true` when it was stored, `false` when the toggle is off, the payload
-/// was already buffered, or the peer's queue is full. Never blocks and never sends.
 pub(crate) fn store(peer_fp: &str, payload: &[u8]) -> bool {
     if !enabled() || payload.is_empty() {
         return false;
@@ -158,7 +144,6 @@ pub(crate) fn store(peer_fp: &str, payload: &[u8]) -> bool {
     stored
 }
 
-/// Number of undelivered bundles waiting for `peer_fp`.
 pub(crate) fn pending_for(peer_fp: &str) -> usize {
     stores()
         .get(peer_fp)
@@ -166,12 +151,7 @@ pub(crate) fn pending_for(peer_fp: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// Flush every peer that has a session now. Bundles reach the peer over its own
-/// session, sealed exactly like any other payload.
 pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, SocketAddr>) {
-    // Vault placement PDUs ride the same tick. This is independent of the DTN
-    // toggle: a bundle deposited before the toggle changed must still reach the
-    // hosts that are supposed to hold its pieces.
     #[cfg(feature = "research")]
     super::research_hooks::vault::flush_outbox(nc, peers).await;
     if !enabled() {
@@ -196,9 +176,6 @@ pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, Socke
         }
         let mut sent = Vec::new();
         for bundle in &pending {
-            // Recover the payload from the vault. A bundle whose erosion epoch
-            // passed cannot be opened at all; it is marked delivered so the
-            // queue does not retry a mathematically destroyed payload forever.
             #[cfg(feature = "research")]
             let body =
                 match super::research_hooks::vault::open_mesh(nc, peers, &bundle.payload).await {
@@ -222,7 +199,6 @@ pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, Socke
                 #[cfg(feature = "research")]
                 super::research_hooks::vault::forget(&bundle.payload);
             } else {
-                // The session disappeared mid-flush: keep the rest queued.
                 break;
             }
         }
@@ -245,12 +221,6 @@ pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, Socke
     }
 }
 
-/// Start the periodic flush: every `interval`, deliver whatever is pending for peers
-/// that hold a session now.
-///
-/// This is the loop `main` runs with second-scale ticks; the end-to-end test runs it
-/// with a short tick so it exercises the real timing path rather than calling
-/// [`flush_all`] by hand.
 pub(crate) fn spawn_flush_loop(
     nc: Arc<GhostNode>,
     peers: Arc<DashMap<String, SocketAddr>>,
@@ -262,8 +232,6 @@ pub(crate) fn spawn_flush_loop(
         loop {
             tick.tick().await;
             flush_all(&nc, &peers).await;
-            // One self-eating decay pass per flush tick. The observed error
-            // rate is derived from bundles the vault had to drop.
             #[cfg(feature = "research")]
             super::research_hooks::vault::collect_decay();
         }
@@ -349,9 +317,6 @@ mod tests {
         assert!(store.delivered.is_empty(), "delivered ids need no keeping");
     }
 
-    /// The delivery half for real: a payload buffered while the peer is down is
-    /// delivered when the session appears, by the same periodic loop `main` runs —
-    /// nothing here calls `flush_all`.
     #[tokio::test]
     async fn a_reconnected_peer_receives_the_queued_payload_exactly_once() {
         let node = Arc::new(GhostNode::new("127.0.0.1:0").await.expect("a node"));
@@ -374,8 +339,6 @@ mod tests {
         let payload = b"GHOST_PEX2____\x00\x01descriptor-batch".to_vec();
         assert!(store(&peer.fingerprint(), &payload), "buffered while away");
 
-        // The real loop, on a test-scale tick. While the peer has no session its
-        // queue must stay untouched: nothing can be delivered to an absent peer.
         let flush = spawn_flush_loop(
             Arc::clone(&node),
             Arc::clone(&peers),
@@ -390,7 +353,6 @@ mod tests {
         );
         assert_eq!(pending_for(&peer.fingerprint()), 1);
 
-        // Reconnect: the session and its address appear. The loop delivers.
         node.sessions.insert(peer.fingerprint(), ours);
         peers.insert(peer.fingerprint(), addr);
         let (n, _) = tokio::time::timeout(Duration::from_secs(5), sock.recv_from(&mut buf))
@@ -427,7 +389,6 @@ mod tests {
             "the queued bytes arrive unchanged"
         );
 
-        // And nothing is resent: the bundle is marked delivered.
         assert!(
             tokio::time::timeout(Duration::from_millis(250), sock.recv_from(&mut buf))
                 .await

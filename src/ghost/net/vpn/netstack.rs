@@ -44,37 +44,23 @@ use smoltcp::iface::{SocketHandle, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::wire::{IpAddress, IpCidr};
 
-// ── Address plan ────────────────────────────────────────────────────
-
-/// Overlay address clients use to reach the hub.
 pub const HUB_ADDR: Ipv4Addr = Ipv4Addr::new(10, 66, 0, 1);
-/// smoltcp interface address (link /30 with the NAT alias).
 pub const NETSTACK_ADDR: Ipv4Addr = Ipv4Addr::new(10, 200, 0, 1);
-/// NAT source address for rewritten client packets.
 pub const NAT_ADDR: Ipv4Addr = Ipv4Addr::new(10, 200, 0, 2);
 
-/// Exclusive end of the per-flow local port pool (20000..40000: 20k flows max).
 const LOCAL_PORT_END: u16 = 40000;
-
-// ── Capacity constants ──────────────────────────────────────────────
 
 const MAX_TCP_SOCKETS: usize = 512;
 const SOCK_BUF: usize = 512 * 1024;
 const RX_QUEUE: usize = 2048;
 const TX_QUEUE: usize = 2048;
 const FLOW_QUEUE: usize = 512;
-/// Cap on per-flow stack→LAN pending bytes (full proxy channel). Matches the
-/// channel bound × chunk size in spirit: bounded memory, never unbounded.
 const S2C_PENDING_CAP: usize = 512;
 const PAUSE_AT: f64 = 0.25;
 const RESUME_AT: f64 = 0.75;
 const POLL_CAP_MS: u64 = 2;
-/// Idle TCP flows are torn down after this long without traffic.
 const FLOW_IDLE: Duration = Duration::from_secs(300);
 
-// ── Signalling primitives (state-based, no missed wakeups) ──────────
-
-/// TX-headroom fraction (0.0..1.0) broadcast to the LAN reader.
 pub struct Headroom {
     v: Mutex<f64>,
     cv: Condvar,
@@ -94,11 +80,6 @@ impl Headroom {
     pub fn get(&self) -> f64 {
         *self.v.lock()
     }
-    /// Block until headroom >= `min` or shutdown.
-    ///
-    /// Uses a bounded wait so a teardown (`done.set()`) is observed within
-    /// WAKE_LATENCY even though `Done` has its own Condvar: the loop
-    /// re-checks BOTH conditions (state-based — no missed wakeups possible).
     pub fn wait_resume(&self, min: f64, done: &Done) {
         let mut g = self.v.lock();
         while *g < min && !done.is_set() {
@@ -107,10 +88,8 @@ impl Headroom {
     }
 }
 
-/// Max latency for observing a done-flag while blocked on headroom.
 const WAKE_LATENCY: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Teardown flag.
 pub struct Done {
     v: Mutex<bool>,
     cv: Condvar,
@@ -136,7 +115,6 @@ impl Done {
     pub fn is_set(&self) -> bool {
         *self.v.lock()
     }
-    /// Block until set.
     pub fn wait(&self) {
         let mut g = self.v.lock();
         while !*g {
@@ -145,15 +123,12 @@ impl Done {
     }
 }
 
-// ── Handle ──────────────────────────────────────────────────────────
-
 #[derive(Debug)]
 pub enum NetstackError {
     QueueFull,
     Stopped,
 }
 
-/// Statistics snapshot for the console.
 #[derive(Debug, Clone, Default)]
 pub struct NetstackStats {
     pub tcp_flows: u64,
@@ -174,7 +149,6 @@ struct DriverStats {
     bytes_s2c: AtomicU64,
 }
 
-/// Handle to a running netstack.
 pub struct Netstack {
     rx_tx: mpsc::SyncSender<Vec<u8>>,
     out_rx: Mutex<mpsc::Receiver<Vec<u8>>>,
@@ -184,12 +158,10 @@ pub struct Netstack {
 }
 
 impl Netstack {
-    /// Spawn the driver thread with default routing.
     pub fn start() -> Self {
         Self::start_with_rotator(None)
     }
 
-    /// Spawn the driver thread with optional ExitIpRotator for round-robin egress IP rotation.
     pub fn start_with_rotator(
         rotator: Option<Arc<crate::ghost::net::mesh::ExitIpRotator>>,
     ) -> Self {
@@ -214,9 +186,6 @@ impl Netstack {
         }
     }
 
-    /// Feed one decrypted mesh packet (raw IPv4, dst = hub overlay IP).
-    /// Non-blocking: a full RX queue drops the packet (IP is lossy by
-    /// design; inner TCP retransmits). This is the tunnel-datagram rule.
     pub fn try_feed(&self, packet: Vec<u8>) -> Result<(), NetstackError> {
         if self.stop.is_set() {
             return Err(NetstackError::Stopped);
@@ -231,7 +200,6 @@ impl Netstack {
         }
     }
 
-    /// Pop one emitted packet (stack → mesh). Non-blocking.
     pub fn poll_outgoing(&self) -> Option<Vec<u8>> {
         self.out_rx.lock().try_recv().ok()
     }
@@ -247,26 +215,20 @@ impl Netstack {
         }
     }
 
-    /// Stop the driver thread.
     pub fn shutdown(self) {
         self.stop.set();
         let _ = self.join.join();
     }
 }
 
-// ── Per-flow driver-side state ──────────────────────────────────────
-
 type Tuple = (std::net::Ipv4Addr, u16, std::net::Ipv4Addr, u16);
 
 struct Flow {
     handle: SocketHandle,
     tuple: Tuple,
-    /// LAN → stack (proxy thread pushes; driver drains into smoltcp).
     lan_in_rx: mpsc::Receiver<Vec<u8>>,
     lan_in_tx: mpsc::SyncSender<Vec<u8>>,
-    /// Stack → LAN (driver pushes; proxy drains to the OS socket).
     stack_out_tx: mpsc::SyncSender<Vec<u8>>,
-    /// Receiver handed to the proxy thread at spawn (taken once).
     stack_out_rx: Option<mpsc::Receiver<Vec<u8>>>,
     headroom: Arc<Headroom>,
     done: Arc<Done>,
@@ -275,16 +237,9 @@ struct Flow {
     last_activity: Instant,
     bytes_c2s: u64,
     bytes_s2c: u64,
-    /// Partially accepted LAN→stack chunk (ring was full mid-chunk).
-    /// Queued — dropping ACKed bytes would corrupt the inner stream.
     c2s_pending: VecDeque<Vec<u8>>,
-    /// Consumed-from-ring stack→LAN bytes when the proxy channel is full.
-    /// recv_slice already consumed them; the only alternatives are queueing
-    /// or stream corruption. Capped at S2C_PENDING_CAP.
     s2c_pending: VecDeque<Vec<u8>>,
 }
-
-// ── Driver loop ─────────────────────────────────────────────────────
 
 fn driver_loop(
     rx_q: mpsc::Receiver<Vec<u8>>,
@@ -314,7 +269,6 @@ fn driver_loop(
 
     while !stop.is_set() {
         let mut had_work = false;
-        // ── 1. Ingest mesh packets ──
         while let Ok(pkt) = rx_q.try_recv() {
             had_work = true;
             let Some((rewritten, tuple, is_syn, local_port)) =
@@ -360,7 +314,6 @@ fn driver_loop(
             device.rx_push(rewritten);
         }
 
-        // ── 2. Pump every flow ──
         let ports: Vec<u16> = flows.keys().copied().collect();
         for local_port in ports {
             let Some(f) = flows.get_mut(&local_port) else {
@@ -382,11 +335,6 @@ fn driver_loop(
                 }
             }
 
-            // LAN → stack. Pending remainder first: send_slice may accept
-            // less than a full chunk; the rest is queued (never dropped —
-            // these bytes are already ACKed to the phone). When can_send()
-            // goes false we stop; smoltcp's window to the phone closes and
-            // the LAN reader pauses on the headroom signal (rule 4).
             while sock.can_send() {
                 let data = if let Some(front) = f.c2s_pending.pop_front() {
                     front
@@ -406,7 +354,6 @@ fn driver_loop(
                 }
             }
 
-            // headroom state → LAN reader (hysteresis tracked here)
             let cap = sock.send_capacity() as f64;
             if cap > 0.0 {
                 let headroom = 1.0 - (sock.send_queue() as f64 / cap);
@@ -418,15 +365,9 @@ fn driver_loop(
                 f.headroom.set(headroom);
             }
 
-            // stack → LAN. Pending first, then freshly received bytes. On a
-            // full proxy channel the consumed bytes stay in s2c_pending
-            // (recv_slice already consumed them — dropping would corrupt the
-            // stream); the queue is capped, and overflowing it marks the flow
-            // dead rather than growing memory unboundedly.
             loop {
                 if f.s2c_pending.len() >= S2C_PENDING_CAP {
                     break; // proxy backed up: stop draining the ring — its
-                           // advertised window to the phone shrinks (rule 4)
                 }
                 let chunk = if let Some(front) = f.s2c_pending.pop_front() {
                     front
@@ -461,8 +402,6 @@ fn driver_loop(
             }
         }
 
-        // ── 3. GC: dead flows + idle teardown (BEFORE poll — a socket
-        // flagged dead must never serve another poll) ──
         let dead: Vec<u16> = flows
             .iter()
             .filter(|(_, f)| f.done.is_set() && f.last_activity.elapsed() > Duration::from_secs(2))
@@ -479,12 +418,8 @@ fn driver_loop(
         }
         flows.retain(|local_port, f| {
             if f.last_activity.elapsed() > FLOW_IDLE {
-                // Aggregate the flow's byte counters into the global stats
-                // (same as the dead path) — VPNSTATS must not undercount.
                 stats.bytes_c2s.fetch_add(f.bytes_c2s, Ordering::Relaxed);
                 stats.bytes_s2c.fetch_add(f.bytes_s2c, Ordering::Relaxed);
-                // Close the socket and free the tuple/port — same invariants
-                // as the dead path above (empty slot panics get_mut).
                 sockets.remove(f.handle);
                 nat.remove(&f.tuple);
                 reverse.lock().remove(local_port);
@@ -495,7 +430,6 @@ fn driver_loop(
         });
         stats.tcp_flows.store(flows.len() as u64, Ordering::Relaxed);
 
-        // ── 4. smoltcp poll (device RX → sockets → device TX → mesh queue) ──
         let t_ms = start_instant.elapsed().as_millis() as i64;
         let ts = smoltcp::time::Instant::from_millis(t_ms);
         let prev_tx = device.tx_count.load(Ordering::Relaxed);
@@ -506,7 +440,6 @@ fn driver_loop(
         }
         stats.packets_out.store(now_tx, Ordering::Relaxed);
 
-        // ── 5. Sleep capped by poll_delay ──
         let delay = iface.poll_delay(ts, &sockets);
         let sleep_for = match delay {
             Some(d) if d.total_millis() == 0 => Duration::ZERO,
@@ -518,7 +451,6 @@ fn driver_loop(
         if sleep_for.is_zero() || had_work {
             std::thread::yield_now();
         } else {
-            // wake early on stop
             let deadline = Instant::now() + sleep_for;
             while Instant::now() < deadline {
                 if stop.is_set() {
@@ -574,7 +506,6 @@ fn bind_and_connect(
         .or_else(|_| TcpStream::connect(target))
 }
 
-/// Spawn the LAN proxy thread for an established flow.
 fn spawn_proxy(
     tuple: Tuple,
     lan_in_tx: mpsc::SyncSender<Vec<u8>>,
@@ -607,7 +538,6 @@ fn spawn_proxy(
                 }
             };
             let done_r = Arc::clone(&done);
-            // LAN reader → stack
             let reader = std::thread::spawn(move || {
                 use std::io::Read;
                 let mut rd = rd;
@@ -625,8 +555,6 @@ fn spawn_proxy(
                     match rd.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            // bounded blocking send: backpressure into the
-                            // LAN socket; give up after ~500 ms or shutdown
                             let mut sent = false;
                             for _ in 0..50 {
                                 match lan_in_tx.try_send(buf[..n].to_vec()) {
@@ -651,7 +579,6 @@ fn spawn_proxy(
                 }
                 done_r.set();
             });
-            // stack → LAN writer
             {
                 use std::io::Write;
                 let mut wr = &lan;
@@ -668,12 +595,6 @@ fn spawn_proxy(
     drop(ok);
 }
 
-// ── MSS clamp (PMTUD blackhole guard) ───────────────────────────────
-
-/// Clamp the TCP MSS option of a SYN/SYN-ACK to OVERLAY_MSS. Only shrinks:
-/// a smaller advertised MSS is kept. Walks the TCP option list in place
-/// (kind 2), fixes the checksum, and leaves non-TCP or option-less packets
-/// untouched. Returns true when the packet was modified.
 fn clamp_mss(pkt: &mut [u8], ihl: usize) -> bool {
     let tcp_min = match ihl.checked_add(20) {
         Some(v) => v,
@@ -731,8 +652,6 @@ fn clamp_mss(pkt: &mut [u8], ihl: usize) -> bool {
     false
 }
 
-/// Rewrite client→hub: src C:p → NAT_ADDR:p, dst T:q → NETSTACK_ADDR:L.
-/// Allocates L for new tuples. Returns (packet, tuple, is_syn, L).
 fn nat_ingress(
     pkt: &[u8],
     next_port: &mut u16,
@@ -758,8 +677,6 @@ fn nat_ingress(
         let off = ihl + 13;
         pkt.len() > off && (pkt[off] & 0x12) == 0x02 && (pkt[off] & 0x10) == 0
     };
-    // New tuple → allocate a unique local port for this flow. Non-SYN packets
-    // for unknown tuples are dropped here (mid-flow race after GC).
     let local_port = match nat.get(&tuple) {
         Some(&l) => l,
         None if is_syn => {
@@ -780,16 +697,11 @@ fn nat_ingress(
     out[ihl + 3] = (local_port & 0xFF) as u8;
     fix_checksums(&mut out, ihl, proto == 6);
     if is_syn {
-        // PMTUD guard: the client's advertised MSS must fit the tunnel MTU
-        // (audit round 2, rule 3). Applied AFTER the port/addr rewrite.
         clamp_mss(&mut out, ihl);
     }
     Some((out, tuple, is_syn, local_port))
 }
 
-/// Rewrite hub→client: src NETSTACK_ADDR:L stays, src port L stays,
-/// dst NAT_ADDR:p → client C:p, src addr NETSTACK_ADDR → T:q... precisely:
-/// src T:q (the real target), dst C:p (the real client).
 pub fn nat_egress(pkt: &[u8], reverse: &HashMap<u16, Tuple>) -> Option<Vec<u8>> {
     if pkt.len() < 20 || pkt[0] >> 4 != 4 {
         return None;
@@ -802,7 +714,6 @@ pub fn nat_egress(pkt: &[u8], reverse: &HashMap<u16, Tuple>) -> Option<Vec<u8>> 
     if proto != 6 && proto != 17 {
         return None;
     }
-    // Demux key = reply SOURCE port (the unique local port of the flow).
     let local_port = u16::from_be_bytes([pkt[ihl], pkt[ihl + 1]]);
     let (c, cp, t, tp) = *reverse.get(&local_port)?;
     let mut out = pkt.to_vec();
@@ -813,9 +724,6 @@ pub fn nat_egress(pkt: &[u8], reverse: &HashMap<u16, Tuple>) -> Option<Vec<u8>> 
     out[ihl + 2] = (cp >> 8) as u8; // dst port = client port
     out[ihl + 3] = (cp & 0xFF) as u8;
     fix_checksums(&mut out, ihl, proto == 6);
-    // Defense-in-depth for the hub→client direction: smoltcp already derives
-    // its own MSS from the 1280 device MTU, but a LAN server's SYN-ACK that
-    // somehow carries a larger option must not survive egress.
     clamp_mss(&mut out, ihl);
     Some(out)
 }
@@ -871,10 +779,6 @@ fn internet_checksum(buf: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-// ── Virtual device ──────────────────────────────────────────────────
-
-/// smoltcp Device: RX from an internal queue, TX reverse-NATed into the
-/// mesh-bound bounded queue.
 pub struct VirtualDevice {
     rx: Arc<Mutex<std::collections::VecDeque<Vec<u8>>>>,
     reverse: Arc<Mutex<HashMap<u16, Tuple>>>,
@@ -900,7 +804,6 @@ impl VirtualDevice {
     fn emit(&self, pkt: Vec<u8>) {
         self.tx_count.fetch_add(1, Ordering::Relaxed);
         if let Some(tx) = &self.tx {
-            // bounded queue: full → drop (IP lossy; inner TCP retransmits)
             let _ = tx.try_send(pkt);
         }
     }
@@ -991,8 +894,6 @@ impl smoltcp::phy::TxToken for TxTok<'_> {
     }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,8 +921,6 @@ mod tests {
         let mut next_port = 20000u16;
         let mut nat = HashMap::new();
         let syn = tcp_packet(([10, 66, 0, 10], 51234), ([192, 168, 1, 50], 445), 0x02);
-        // first pass: unknown SYN tuple → nat_ingress allocates port 20000
-        // (first from the pool) and registers it.
         let tuple = (
             std::net::Ipv4Addr::new(10, 66, 0, 10),
             51234,
@@ -1034,11 +933,9 @@ mod tests {
         assert!(is_syn);
         assert_eq!(local_port, 20000);
         assert_eq!(nat.get(&tuple), Some(&20000));
-        // rewritten packet must carry a valid checksum
         assert_eq!(internet_checksum(&rewritten[..20]), 0);
         assert_eq!(rewritten[12..16], NAT_ADDR.octets());
         assert_eq!(rewritten[16..20], NETSTACK_ADDR.octets());
-        // egress of a reply restores the original 5-tuple
         let mut reply = rewritten.clone();
         reply[12..16].copy_from_slice(&NETSTACK_ADDR.octets());
         reply[16..20].copy_from_slice(&NAT_ADDR.octets());
@@ -1057,12 +954,10 @@ mod tests {
 
     #[test]
     fn nat_ingress_requires_registered_tuple() {
-        // non-SYN packets for unknown tuples are dropped (mid-flow race)
         let mut next_port = 20000u16;
         let mut nat = HashMap::new();
         let data = tcp_packet(([10, 66, 0, 10], 999), ([192, 168, 1, 1], 80), 0x18);
         assert!(nat_ingress(&data, &mut next_port, &mut nat).is_none());
-        // unknown SYN tuples are auto-allocated (the fix for dead flow creation)
         let syn = tcp_packet(([10, 66, 0, 10], 999), ([192, 168, 1, 1], 80), 0x02);
         let (_, _, is_syn, local_port) = nat_ingress(&syn, &mut next_port, &mut nat).unwrap();
         assert!(is_syn);
@@ -1098,9 +993,6 @@ mod tests {
 
     #[test]
     fn proxy_pump_end_to_end_localhost() {
-        // Real end-to-end through the proxy plumbing (no smoltcp):
-        // a local listener acts as the LAN target; bytes flow both ways and
-        // backpressure wakes correctly.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1139,9 +1031,6 @@ mod tests {
 
     #[test]
     fn netstack_syn_establish_echo() {
-        // The critical path the unit tests miss: a client SYN must create a
-        // flow, complete a handshake with smoltcp, spawn the LAN proxy, and
-        // deliver stack→client data through the real driver thread.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
@@ -1160,7 +1049,6 @@ mod tests {
         let cport = 40000u16;
         let cisn: u32 = 1000;
 
-        // 1. SYN → driver must create the flow and smoltcp must SYN-ACK.
         let mut syn = tcp_packet(
             (client_ip.octets(), cport),
             (target_ip.octets(), addr.port()),
@@ -1183,7 +1071,6 @@ mod tests {
         }
         let sisn = synack_seq.expect("no SYN-ACK from netstack — flow creation broken");
 
-        // 2. ACK the handshake (client seq cisn+1, ack sisn+1).
         let mut ack = tcp_packet(
             (client_ip.octets(), cport),
             (target_ip.octets(), addr.port()),
@@ -1195,7 +1082,6 @@ mod tests {
         ns.try_feed(ack).unwrap();
         std::thread::sleep(Duration::from_millis(50));
 
-        // 3. Push data: "hello" must reach the echo server and come back.
         let mut data = tcp_packet(
             (client_ip.octets(), cport),
             (target_ip.octets(), addr.port()),
@@ -1209,15 +1095,12 @@ mod tests {
         fix_checksums(&mut data, 20, true);
         ns.try_feed(data).unwrap();
 
-        // 4. Drain egress for the echoed payload (seq advances by 1+5).
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut got: Option<Vec<u8>> = None;
         while Instant::now() < deadline {
             while let Some(pkt) = ns.poll_outgoing() {
                 let ihl = ((pkt[0] & 0x0F) as usize) * 4;
                 if pkt.len() > ihl + 20 && pkt[ihl + 13] & 0x08 != 0 {
-                    // PSH-ACK from the stack side — extract payload after the
-                    // data offset.
                     let off = ((pkt[ihl + 12] >> 4) as usize) * 4;
                     let payload = &pkt[ihl + off..];
                     if payload == b"hello" {
@@ -1241,9 +1124,6 @@ mod tests {
         ns.shutdown();
     }
 
-    // ── MSS clamp ──
-
-    /// Build a TCP packet with an MSS option (data offset 6, 24-byte header).
     fn syn_with_mss(src: ([u8; 4], u16), dst: ([u8; 4], u16), mss: u16) -> Vec<u8> {
         let mut pkt = vec![0u8; 20 + 24];
         pkt[0] = 0x45;
@@ -1258,7 +1138,6 @@ mod tests {
         pkt[32] = 0x60; // data offset 6 → 4 bytes of options
         pkt[33] = 0x02; // SYN
         pkt[34..36].copy_from_slice(&0xFFFFu16.to_be_bytes());
-        // MSS option: kind 2, len 4, value
         pkt[40] = 2;
         pkt[41] = 4;
         pkt[42..44].copy_from_slice(&mss.to_be_bytes());
@@ -1272,12 +1151,10 @@ mod tests {
 
     #[test]
     fn clamp_mss_shrinks_oversized_and_keeps_smaller() {
-        // 1460 → 1240, checksum stays valid
         let mut pkt = syn_with_mss(([10, 66, 0, 10], 500), ([192, 168, 1, 1], 80), 1460);
         assert!(clamp_mss(&mut pkt, 20));
         assert_eq!(read_mss(&pkt), OVERLAY_MSS);
         assert_eq!(internet_checksum(&pkt[..20]), 0, "IP checksum");
-        // TCP checksum via pseudo-header
         let mut buf = Vec::new();
         buf.extend_from_slice(&pkt[12..20]);
         buf.extend_from_slice(&[0, 6]);
@@ -1285,7 +1162,6 @@ mod tests {
         buf.extend_from_slice(&pkt[20..]);
         assert_eq!(internet_checksum(&buf), 0, "TCP checksum");
 
-        // a smaller advertised MSS is kept (clamp only shrinks)
         let mut pkt = syn_with_mss(([10, 66, 0, 10], 500), ([192, 168, 1, 1], 80), 1000);
         assert!(!clamp_mss(&mut pkt, 20));
         assert_eq!(read_mss(&pkt), 1000);
@@ -1293,14 +1169,11 @@ mod tests {
 
     #[test]
     fn clamp_mss_ignores_non_tcp_and_optionless() {
-        // UDP packet: untouched
         let mut pkt = tcp_packet(([10, 66, 0, 10], 500), ([192, 168, 1, 1], 53), 0);
         pkt[9] = 17;
         assert!(!clamp_mss(&mut pkt, 20));
-        // TCP without options (doff 5): untouched
         let mut pkt = tcp_packet(([10, 66, 0, 10], 500), ([192, 168, 1, 1], 80), 0x02);
         assert!(!clamp_mss(&mut pkt, 20));
-        // malformed option length: left alone, no panic
         let mut pkt = syn_with_mss(([10, 66, 0, 10], 500), ([192, 168, 1, 1], 80), 1460);
         pkt[41] = 1; // bogus len < 2
         assert!(!clamp_mss(&mut pkt, 20));

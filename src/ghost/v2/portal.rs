@@ -33,23 +33,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Chunk size. 4 MiB is the point where a browser fetch, an AES-GCM decrypt and
-/// a disk write all stay comfortably inside a frame without holding much memory.
 pub const DEFAULT_CHUNK_SIZE: u32 = 4 * 1024 * 1024;
 
-/// Per-chunk overhead: AES-GCM's 16-byte tag.
 pub const CHUNK_TAG_LEN: usize = 16;
 
-/// Default port for the drop service.
 pub const DEFAULT_DROP_PORT: u16 = 8787;
 
-/// Default lifetime of a drop.
 pub const DEFAULT_DROP_TTL: Duration = Duration::from_secs(24 * 3600);
 
-/// Maximum request head this server will read.
 const MAX_HEAD: usize = 16 * 1024;
 
-/// A drop's public metadata. Contains no key material by construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DropManifest {
     pub id: String,
@@ -57,18 +50,14 @@ pub struct DropManifest {
     pub size: u64,
     pub chunk_size: u32,
     pub chunk_count: u32,
-    /// Hex of the 4-byte nonce prefix; the remaining 8 bytes are the chunk index.
     pub nonce_prefix: String,
-    /// SHA-256 of the plaintext, so the recipient can check what they saved.
     pub sha256: String,
     pub mime: String,
     pub created_at: u64,
     pub expires_at: u64,
-    /// `0` means unlimited.
     pub max_downloads: u32,
 }
 
-/// Options for [`DropSession::open`].
 #[derive(Debug, Clone)]
 pub struct DropOptions {
     pub ttl: Duration,
@@ -86,7 +75,6 @@ impl Default for DropOptions {
     }
 }
 
-/// One shared file, with its key held in memory only.
 pub struct DropSession {
     pub manifest: DropManifest,
     path: PathBuf,
@@ -98,8 +86,6 @@ pub struct DropSession {
 }
 
 impl DropSession {
-    /// Open `path` and prepare it for sharing. Hashes the plaintext once, in
-    /// 1 MiB reads, so the recipient can verify the file end to end.
     pub fn open(path: &Path, opts: DropOptions) -> std::io::Result<Self> {
         let meta = std::fs::metadata(path)?;
         if meta.is_dir() {
@@ -130,8 +116,6 @@ impl DropSession {
         let mut nonce_prefix = [0u8; 4];
         rand::thread_rng().fill_bytes(&mut nonce_prefix);
 
-        // The id is derived from the key, so two drops of the same file are
-        // unlinkable to each other and to the content.
         let mut id_hasher = Sha256::new();
         id_hasher.update(b"VB-DROP-ID-V1");
         id_hasher.update(key);
@@ -167,12 +151,10 @@ impl DropSession {
         })
     }
 
-    /// The key, for link construction. Never serialised into the manifest.
     pub fn key_hex(&self) -> String {
         hex::encode(self.key)
     }
 
-    /// `{base}/f/{id}#k={key}` — the key after `#` stays in the browser.
     pub fn link(&self, base: &str) -> String {
         format!(
             "{}/f/{}#k={}",
@@ -186,7 +168,6 @@ impl DropSession {
         serde_json::to_value(&self.manifest).unwrap_or(serde_json::Value::Null)
     }
 
-    /// Whether this drop may still be served.
     pub fn is_live(&self, now: Instant) -> bool {
         !self.exhausted.load(Ordering::Relaxed)
             && now.saturating_duration_since(self.created) < self.ttl
@@ -197,8 +178,6 @@ impl DropSession {
         crate::ghost::v2::now_secs() < self.manifest.expires_at
     }
 
-    /// Count the start of a download, enforcing `max_downloads`. Returns `false`
-    /// when the allowance is used up.
     pub fn begin_download(&self) -> bool {
         let max = self.manifest.max_downloads;
         if max == 0 {
@@ -217,8 +196,6 @@ impl DropSession {
         self.downloads.load(Ordering::Relaxed)
     }
 
-    /// Read and seal chunk `index`. The returned bytes are exactly
-    /// `plaintext_len + 16`.
     pub fn chunk(&self, index: u32) -> std::io::Result<Vec<u8>> {
         if index >= self.manifest.chunk_count {
             return Err(std::io::Error::new(
@@ -254,12 +231,9 @@ impl DropSession {
     }
 }
 
-/// The set of live drops in one process.
 #[derive(Default)]
 pub struct PortalRegistry {
     sessions: DashMap<String, Arc<DropSession>>,
-    // SDP-only signaling for the browser-to-browser DataChannel path. File
-    // bytes never enter this map; it holds offer/answer JSON and nothing else.
     signals: std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
@@ -268,14 +242,12 @@ impl PortalRegistry {
         Self::default()
     }
 
-    /// Store the latest SDP for one role (`sender` or `receiver`).
     pub fn put_signal(&self, id: &str, role: &str, value: serde_json::Value) {
         if let Ok(mut map) = self.signals.lock() {
             map.insert(format!("{id}:{role}"), value);
         }
     }
 
-    /// The latest SDP posted by `role`, if any.
     pub fn get_signal(&self, id: &str, role: &str) -> Option<serde_json::Value> {
         self.signals
             .lock()
@@ -305,7 +277,6 @@ impl PortalRegistry {
         self.sessions.is_empty()
     }
 
-    /// Drop expired or exhausted sessions.
     pub fn prune(&self, now: Instant) -> usize {
         let dead: Vec<String> = self
             .sessions
@@ -319,7 +290,6 @@ impl PortalRegistry {
         dead.len()
     }
 
-    /// Public metadata for every live drop (no keys).
     pub fn list(&self, now: Instant) -> Vec<serde_json::Value> {
         let mut out: Vec<serde_json::Value> = self
             .sessions
@@ -357,7 +327,6 @@ fn mime_for(path: &Path) -> &'static str {
     }
 }
 
-/// A response ready to be written as HTTP/1.1.
 pub struct HttpResponse {
     pub status: u16,
     pub content_type: &'static str,
@@ -443,14 +412,10 @@ fn route(path: &str) -> Route {
     }
 }
 
-/// Build the response for one parsed request. Pure: no socket, no logging of the
-/// path beyond the drop id, and no way to reach a file other than through a
-/// registered session.
 pub fn respond(registry: &PortalRegistry, method: &str, path: &str, now: Instant) -> HttpResponse {
     respond_with_body(registry, method, path, &[], now)
 }
 
-/// Same as [`respond`], with a request body for the SDP signaling endpoint.
 pub fn respond_with_body(
     registry: &PortalRegistry,
     method: &str,
@@ -579,9 +544,6 @@ fn security_headers() -> Vec<(String, String)> {
     ]
 }
 
-/// The recipient's page. The only interpolation is the id, which is validated
-/// hex before this is called; the key never appears in the document, only in
-/// `location.hash`.
 fn render_page(id: &str, mode: &str) -> String {
     PAGE_TEMPLATE
         .replace("__ID__", id)
@@ -629,8 +591,6 @@ const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
 function fail(m){$("#status").textContent=m;$("#status").className="err";}
 let meta=null,key=null;
 
-// ── WebRTC DataChannel: the drop page is the sending peer ──────────────
-// The server is used only to exchange SDP; file bytes never go through it.
 const P2P={state:"idle",bytes:0,sha:null,error:null,cache:null,pc:null,dc:null};
 window.__vb=P2P;
 async function postSDP(role,desc){
@@ -737,8 +697,6 @@ P2P.send=async()=>{
   if(P2P.state!=="connected") throw new Error("DataChannel is not open");
   const dc=P2P.dc;
   dc.send(JSON.stringify({name:meta.file_name,size:P2P.bytes,sha256:P2P.sha,chunks:P2P.cache.length}));
-  // SCTP messages have a size cap (commonly 256 KiB), so a 4 MiB drop chunk is
-  // split into fixed-size slices; the receiver concatenates them in order.
   const SLICE=64*1024;
   for(const p of P2P.cache){
     for(let off=0;off<p.byteLength;off+=SLICE){
@@ -812,9 +770,6 @@ $("#go").onclick=async()=>{
 };
 </script></body></html>"##;
 
-/// Serve the drop endpoints on an already-bound listener until the process
-/// exits. The `PortalRegistry` is shared so the CLI and the control center can
-/// add drops to the same node.
 pub async fn serve(registry: Arc<PortalRegistry>, listener: tokio::net::TcpListener) {
     loop {
         let Ok((mut stream, _peer)) = listener.accept().await else {
@@ -846,8 +801,6 @@ pub async fn serve(registry: Arc<PortalRegistry>, listener: tokio::net::TcpListe
             let method = parts.next().unwrap_or("");
             let path = parts.next().unwrap_or("/");
             let head_only = method == "HEAD";
-            // Signaling bodies are small JSON SDPs; anything larger is refused
-            // rather than buffered.
             let content_len = text
                 .lines()
                 .find_map(|line| {
@@ -890,15 +843,12 @@ pub async fn serve(registry: Arc<PortalRegistry>, listener: tokio::net::TcpListe
     }
 }
 
-/// Best-effort LAN address for the printed link, via a connected UDP socket.
-/// A routing decision, not a packet: nothing is sent.
 pub fn local_lan_ip() -> Option<std::net::IpAddr> {
     let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("1.1.1.1:80").ok()?;
     sock.local_addr().ok().map(|a| a.ip())
 }
 
-/// `ggn drop <file>`: publish one file and print its links.
 pub async fn run_cli(
     file: PathBuf,
     bind: String,
@@ -1042,7 +992,6 @@ mod tests {
             "key must not be in the path"
         );
         assert_eq!(after, format!("k={}", session.key_hex()));
-        // And it is absent from the metadata the server hands out.
         let manifest = session.manifest_json().to_string();
         assert!(!manifest.contains(&session.key_hex()));
     }
@@ -1087,7 +1036,6 @@ mod tests {
             respond(&registry, "GET", "/d/0000000000000000/meta", Instant::now()).status,
             404
         );
-        // A traversal-shaped id is not a valid id and never reaches the filesystem.
         assert_eq!(
             respond(&registry, "GET", "/d/../etc/passwd/meta", Instant::now()).status,
             404
@@ -1160,7 +1108,6 @@ mod tests {
         );
         let value: serde_json::Value = serde_json::from_slice(&got.body).unwrap();
         assert_eq!(value["sdp"], "v=0 fake offer");
-        // The other role is still waiting; GET does not echo a role's own SDP.
         let waiting = respond(
             &registry,
             "GET",
@@ -1171,7 +1118,6 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&waiting.body).unwrap()["waiting"],
             true
         );
-        // POST remains forbidden everywhere except signaling.
         assert_eq!(respond(&registry, "POST", "/", Instant::now()).status, 405);
 
         let send =

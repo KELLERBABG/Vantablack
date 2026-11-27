@@ -32,43 +32,24 @@ use sha2::{Digest, Sha256};
 
 use crate::ghost::layers::l0_identity::{verify_peer_signature, GhostIdentity};
 
-/// Prefix for out-of-band Vantablack peer URIs (v1 legacy and v2 base64url).
 pub const VB_URI_PREFIX: &str = "vb://";
-/// Prefix for compact v2 base64url peer descriptor URIs.
 pub const VB_V2_URI_PREFIX: &str = "vb://2.";
-/// Prefix for compact base64url network invite URIs.
 pub const VB_NET_URI_PREFIX: &str = "vb-net://";
 
-/// NAT traversal classification byte.
 pub const NAT_DIRECT: u8 = 0;
 pub const NAT_CONE: u8 = 1;
 pub const NAT_RESTRICTED: u8 = 2;
 pub const NAT_SYMMETRIC: u8 = 3;
 pub const NAT_UNKNOWN: u8 = 4;
 
-/// Node capability bitflags carried in [`PeerDescriptorV2`].
 pub const CAP_RELAY: u8 = 1 << 0;
 pub const CAP_EXIT: u8 = 1 << 1;
 pub const CAP_VPN_HUB: u8 = 1 << 2;
 pub const CAP_QUIC: u8 = 1 << 3;
-/// This node offers exit service from its own residential connection, i.e. it is
-/// a *home* exit (roadmap item 3). Clients require this bit, not merely
-/// [`CAP_EXIT`], before they will bind their exit path to it: a home exit is a
-/// deliberate, operator-owned endpoint, and choosing one by accident would send
-/// traffic through a stranger's house.
 pub const CAP_HOME_EXIT: u8 = 1 << 4;
-/// Runs a REALITY TLS 1.3 front (feature `reality-front`) whose admitted streams
-/// carry GTF frames; see `daemon::reality_front`.
 pub const CAP_REALITY_FRONT: u8 = 1 << 5;
-/// The front behind [`CAP_REALITY_FRONT`] admits **only hidden knocks** (a
-/// `GHOST_REALITY_KNOCK_PSK`), never a visible SNI label. A dialer cannot produce
-/// the knock — it lives in the ClientHello random, which the TLS stack generates
-/// itself — so such a front has no outbound path through that dialer. The bit is
-/// advertised beside [`CAP_REALITY_FRONT`] so a peer knows the mode before it
-/// dials, instead of learning it from a refused handshake.
 pub const CAP_REALITY_FRONT_KNOCK: u8 = 1 << 6;
 
-/// Fixed wire size for blind mailbox encrypted payloads (`12B nonce + 996B padded plaintext + 16B tag`).
 pub const BLIND_NONCE_LEN: usize = 12;
 pub const BLIND_TAG_LEN: usize = 16;
 pub const BLIND_MAILBOX_WIRE_LEN: usize = 1024;
@@ -82,12 +63,9 @@ const DEFAULT_BLIND_MAX_SKEW_SECS: u64 = 7200;
 const EPOCH_FALLBACK_WINDOW_SECS: u64 = 300;
 const CACHE_V2_MAX_AGE_SECS: u64 = 86400 * 30;
 
-// ── Pure-Rust URL-safe Base64 (no-pad) codec ─────────────────────────
-
 const B64URL_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-/// Encode bytes using unpadded URL-safe Base64 (RFC 4648 §5).
 pub fn base64url_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -129,12 +107,10 @@ fn decode_b64_char(c: u8, allow_standard: bool) -> Option<u8> {
     }
 }
 
-/// Decode unpadded URL-safe Base64 (RFC 4648 §5). Rejects malformed length and trailing non-zero bits.
 pub fn base64url_decode(input: &str) -> Option<Vec<u8>> {
     decode_b64_internal(input, false, false)
 }
 
-/// Decode either standard Base64 (with optional `=` padding) or URL-safe Base64.
 fn base64_decode_flexible(input: &str) -> Option<Vec<u8>> {
     decode_b64_internal(input, true, true)
 }
@@ -248,9 +224,6 @@ fn ml_kem_hash16(ml_kem_pk: &[u8]) -> [u8; 16] {
     out
 }
 
-// ── Legacy PeerDescriptor (v1) ───────────────────────────────────────
-
-/// Authenticated peer descriptor (v1) for out-of-band exchange and local disk caching.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerDescriptor {
     pub ed25519_pk: [u8; 32],
@@ -264,7 +237,6 @@ pub struct PeerDescriptor {
 impl PeerDescriptor {
     pub const MAGIC: &'static [u8; 4] = b"VBPD";
 
-    /// Create and sign a new peer descriptor for this node.
     pub fn sign_new(
         identity: &GhostIdentity,
         ml_kem_pk: &[u8],
@@ -306,7 +278,6 @@ impl PeerDescriptor {
         b
     }
 
-    /// Verify signature and timestamp of this descriptor.
     pub fn verify(&self, max_skew_secs: u64) -> bool {
         let now = current_unix_secs();
 
@@ -327,7 +298,6 @@ impl PeerDescriptor {
         verify_peer_signature(&self.ed25519_pk, &material, &self.signature)
     }
 
-    /// Binary serialization.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(140);
         b.extend_from_slice(Self::MAGIC);
@@ -340,7 +310,6 @@ impl PeerDescriptor {
         b
     }
 
-    /// Binary deserialization.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 4 + 32 + 16 + 1 + 4 + 2 + 1 + 8 + 64 || &bytes[..4] != Self::MAGIC {
             return None;
@@ -371,12 +340,10 @@ impl PeerDescriptor {
         })
     }
 
-    /// Encode into a legacy `vb://<hex>` URI for out-of-band manual exchange.
     pub fn to_uri(&self) -> String {
         format!("{}{}", VB_URI_PREFIX, hex::encode(self.to_bytes()))
     }
 
-    /// Parse a legacy `vb://<hex>` URI.
     pub fn from_uri(uri: &str) -> Option<Self> {
         let trimmed = uri.trim();
         let payload = trimmed.strip_prefix(VB_URI_PREFIX)?;
@@ -388,10 +355,6 @@ impl PeerDescriptor {
     }
 }
 
-// ── Unified Signed PeerDescriptorV2 ──────────────────────────────────
-
-/// Unified signed v2 peer descriptor carrying PQ identity commitment, LAN + WAN endpoints,
-/// capabilities, optional ICE offer, and Ed25519 signature over all preceding fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerDescriptorV2 {
     pub ed25519_pk: [u8; 32],
@@ -410,7 +373,6 @@ pub struct PeerDescriptorV2 {
 impl PeerDescriptorV2 {
     pub const MAGIC: &'static [u8; 4] = b"VBP2";
 
-    /// Create and sign a new v2 peer descriptor using the current Unix timestamp.
     pub fn sign_new(
         identity: &GhostIdentity,
         ml_kem_pk: &[u8],
@@ -434,7 +396,6 @@ impl PeerDescriptorV2 {
         )
     }
 
-    /// Create and sign a new v2 peer descriptor at an explicit Unix timestamp.
     pub fn sign_new_with_timestamp(
         identity: &GhostIdentity,
         ml_kem_pk: &[u8],
@@ -480,7 +441,6 @@ impl PeerDescriptorV2 {
         }
     }
 
-    /// 16-char hex node fingerprint (first 8 bytes of Ed25519 public key).
     pub fn fingerprint(&self) -> String {
         hex::encode(&self.ed25519_pk[..8])
     }
@@ -530,7 +490,6 @@ impl PeerDescriptorV2 {
         b
     }
 
-    /// Verify Ed25519 signature over all fields and timestamp freshness within `max_skew_secs`.
     pub fn verify(&self, max_skew_secs: u64) -> bool {
         let now = current_unix_secs();
         if self.timestamp > now.saturating_add(max_skew_secs) {
@@ -563,7 +522,6 @@ impl PeerDescriptorV2 {
         verify_peer_signature(&self.ed25519_pk, &material, &self.signature)
     }
 
-    /// Canonical binary serialization.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut b = Self::signing_bytes(
             &self.ed25519_pk,
@@ -581,7 +539,6 @@ impl PeerDescriptorV2 {
         b
     }
 
-    /// Strict binary deserialization (bounds-checked, rejects trailing bytes).
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 4 + 32 + 32 + 16 + 7 + 1 + 2 + 1 + 1 + 1 + 8 + 64
             || &bytes[..4] != Self::MAGIC
@@ -655,12 +612,10 @@ impl PeerDescriptorV2 {
         })
     }
 
-    /// Encode into compact URL-safe Base64 URI: `vb://2.<base64url>`.
     pub fn to_uri(&self) -> String {
         format!("{}{}", VB_V2_URI_PREFIX, base64url_encode(&self.to_bytes()))
     }
 
-    /// Decode from compact URL-safe Base64 URI: `vb://2.<base64url>`.
     pub fn from_uri(uri: &str) -> Option<Self> {
         let trimmed = uri.trim();
         let payload = trimmed.strip_prefix(VB_V2_URI_PREFIX)?;
@@ -669,14 +624,12 @@ impl PeerDescriptorV2 {
     }
 }
 
-/// Parsed out-of-band `vb://` peer URI (either legacy v1 or unified v2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedPeerUri {
     V1(PeerDescriptor),
     V2(PeerDescriptorV2),
 }
 
-/// Parse either `vb://2.<base64url>` or legacy `vb://<hex>`.
 pub fn parse_peer_uri(uri: &str) -> Option<ParsedPeerUri> {
     let trimmed = uri.trim();
     if trimmed.starts_with(VB_V2_URI_PREFIX) {
@@ -688,10 +641,6 @@ pub fn parse_peer_uri(uri: &str) -> Option<ParsedPeerUri> {
     }
 }
 
-// ── NetworkInvite (`vb-net://<base64url>`) ────────────────────────────
-
-/// Out-of-band private mesh invite sharing swarm secret, blind rendezvous URL,
-/// and an optional signed bootstrap [`PeerDescriptorV2`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkInvite {
     pub network_name: String,
@@ -703,7 +652,6 @@ pub struct NetworkInvite {
 impl NetworkInvite {
     pub const MAGIC: &'static [u8; 4] = b"VBN1";
 
-    /// Binary serialization.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(96);
         b.extend_from_slice(Self::MAGIC);
@@ -740,7 +688,6 @@ impl NetworkInvite {
         b
     }
 
-    /// Strict binary deserialization (rejects trailing bytes and invalid UTF-8).
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 4 + 2 + 32 + 1 + 1 || &bytes[..4] != Self::MAGIC {
             return None;
@@ -804,7 +751,6 @@ impl NetworkInvite {
         })
     }
 
-    /// Verify the embedded bootstrap peer signature and timestamp (returns `true` if none present).
     pub fn verify_bootstrap(&self, max_skew_secs: u64) -> bool {
         match &self.bootstrap_peer {
             Some(peer) => peer.verify(max_skew_secs),
@@ -812,7 +758,6 @@ impl NetworkInvite {
         }
     }
 
-    /// Encode into `vb-net://<base64url>` URI.
     pub fn to_uri(&self) -> String {
         format!(
             "{}{}",
@@ -821,7 +766,6 @@ impl NetworkInvite {
         )
     }
 
-    /// Decode from `vb-net://<base64url>` URI.
     pub fn from_uri(uri: &str) -> Option<Self> {
         let trimmed = uri.trim();
         let payload = trimmed.strip_prefix(VB_NET_URI_PREFIX)?;
@@ -830,13 +774,9 @@ impl NetworkInvite {
     }
 }
 
-// ── Tier 1: Local Disk Cache ─────────────────────────────────────────
-
-/// Tier 1: Local authenticated peer disk cache (`peers.bin`).
 pub struct LocalPeerCache;
 
 impl LocalPeerCache {
-    /// Save active v1 peer descriptors to local disk cache.
     pub fn save<P: AsRef<Path>>(path: P, peers: &[PeerDescriptor]) -> std::io::Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(b"VBPCACHE1");
@@ -849,7 +789,6 @@ impl LocalPeerCache {
         std::fs::write(path, buf)
     }
 
-    /// Load cached v1 peer descriptors from local disk.
     pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Vec<PeerDescriptor>> {
         let raw = std::fs::read(path)?;
         if raw.len() < 13 || &raw[..9] != b"VBPCACHE1" {
@@ -888,7 +827,6 @@ impl LocalPeerCache {
         Ok(peers)
     }
 
-    /// Save active v2 peer descriptors to local disk cache (`VBPCACHE2`).
     pub fn save_v2<P: AsRef<Path>>(path: P, peers: &[PeerDescriptorV2]) -> std::io::Result<()> {
         let mut buf = Vec::new();
         buf.extend_from_slice(b"VBPCACHE2");
@@ -908,14 +846,10 @@ impl LocalPeerCache {
         std::fs::write(path, buf)
     }
 
-    /// Load cached v2 peer descriptors from local disk (`VBPCACHE2`),
-    /// pruning entries older than 30 days or failing signature verification.
     pub fn load_v2<P: AsRef<Path>>(path: P) -> std::io::Result<Vec<PeerDescriptorV2>> {
         Self::load_v2_with_max_age(path, CACHE_V2_MAX_AGE_SECS)
     }
 
-    /// Load cached v2 peer descriptors from local disk (`VBPCACHE2`) with an explicit max age,
-    /// pruning expired or invalid-signature entries on load.
     pub fn load_v2_with_max_age<P: AsRef<Path>>(
         path: P,
         max_age_secs: u64,
@@ -958,13 +892,9 @@ impl LocalPeerCache {
     }
 }
 
-// ── Tier 3: Blind Ephemeral Rendezvous ───────────────────────────────
-
-/// Tier 3: Zero-knowledge blind rendezvous engine on Cloudflare Workers / BEP-44 DHT.
 pub struct BlindRendezvous;
 
 impl BlindRendezvous {
-    /// Compute deterministic epoch slot key for a shared swarm secret and hourly time epoch.
     pub fn derive_epoch_key(swarm_secret: &[u8], epoch_hour: u64) -> [u8; 32] {
         let hk = Hkdf::<Sha256>::new(Some(b"vb-rendezvous-v1"), swarm_secret);
         let mut okm = [0u8; 32];
@@ -973,7 +903,6 @@ impl BlindRendezvous {
         okm
     }
 
-    /// Compute deterministic blind slot ID for querying the public worker or DHT.
     pub fn derive_slot_id(epoch_key: &[u8; 32], slot_index: u32) -> [u8; 32] {
         let hk = Hkdf::<Sha256>::new(Some(b"vb-slot-v1"), epoch_key);
         let mut slot_id = [0u8; 32];
@@ -982,9 +911,6 @@ impl BlindRendezvous {
         slot_id
     }
 
-    /// Pad an arbitrary payload (`<= 994 B`) with random chaff to 996 B plaintext and encrypt
-    /// with a fresh random 12-byte nonce, yielding a fixed 1024-byte wire payload:
-    /// `[nonce: 12B][ciphertext(u16 len || payload || random chaff): 996B][tag: 16B]`.
     pub fn encrypt_blob(epoch_key: &[u8; 32], payload: &[u8]) -> Result<Vec<u8>, &'static str> {
         if payload.len() > BLIND_MAILBOX_MAX_PAYLOAD_LEN {
             return Err("payload exceeds 994-byte max for 1024B blind mailbox blob");
@@ -1008,7 +934,6 @@ impl BlindRendezvous {
         Ok(out)
     }
 
-    /// Decrypt a `[nonce: 12B][ciphertext + 16B tag]` blind mailbox blob and strip random chaff padding.
     pub fn decrypt_blob(epoch_key: &[u8; 32], ciphertext: &[u8]) -> Option<Vec<u8>> {
         if ciphertext.len() < BLIND_NONCE_LEN + BLIND_TAG_LEN {
             return None;
@@ -1026,7 +951,6 @@ impl BlindRendezvous {
         Some(plain[2..2 + len].to_vec())
     }
 
-    /// Encrypt a legacy v1 peer descriptor with a fresh random 12-byte nonce prepended to ciphertext.
     pub fn encrypt_descriptor(
         epoch_key: &[u8; 32],
         descriptor: &PeerDescriptor,
@@ -1046,7 +970,6 @@ impl BlindRendezvous {
         Ok(out)
     }
 
-    /// Decrypt a v1 blind rendezvous payload (`[nonce: 12B][ciphertext + 16B tag]`).
     pub fn decrypt_descriptor(epoch_key: &[u8; 32], ciphertext: &[u8]) -> Option<PeerDescriptor> {
         if ciphertext.len() < BLIND_NONCE_LEN + BLIND_TAG_LEN {
             return None;
@@ -1062,7 +985,6 @@ impl BlindRendezvous {
         }
     }
 
-    /// Encrypt and chaff-pad a [`PeerDescriptorV2`] into a fixed 1024-byte blind mailbox payload.
     pub fn encrypt_descriptor_v2(
         epoch_key: &[u8; 32],
         descriptor: &PeerDescriptorV2,
@@ -1070,7 +992,6 @@ impl BlindRendezvous {
         Self::encrypt_blob(epoch_key, &descriptor.to_bytes())
     }
 
-    /// Decrypt, unpad, parse, and verify a [`PeerDescriptorV2`] from a blind mailbox payload.
     pub fn decrypt_descriptor_v2(
         epoch_key: &[u8; 32],
         ciphertext: &[u8],
@@ -1085,13 +1006,6 @@ impl BlindRendezvous {
     }
 }
 
-// ── Blind Mailbox HTTP Client (B2) ───────────────────────────────────
-
-/// Zero-knowledge HTTP client for blind mailbox rendezvous workers.
-///
-/// Only transmits opaque 1024-byte AEAD ciphertexts under deterministic slot hashes
-/// (`PUT /v2/slot/<slot_hex>/<ephemeral_id>`, `GET /v2/slot/<slot_hex>`) with zero plaintext IP,
-/// fingerprint, or port query parameters.
 #[derive(Clone, Debug)]
 pub struct BlindMailboxClient {
     client: reqwest::Client,
@@ -1106,7 +1020,6 @@ impl Default for BlindMailboxClient {
 }
 
 impl BlindMailboxClient {
-    /// Construct a new blind mailbox HTTP client with a 10-second request timeout.
     pub fn new() -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -1118,7 +1031,6 @@ impl BlindMailboxClient {
         })
     }
 
-    /// Construct a client with explicit slot index and descriptor skew tolerance.
     pub fn with_options(slot_index: u32, max_skew_secs: u64) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
@@ -1130,7 +1042,6 @@ impl BlindMailboxClient {
         })
     }
 
-    /// Derive `(slot_hex, epoch_key)` for a given swarm secret, epoch hour, and slot index.
     pub fn slot_hex_for_epoch(
         swarm_secret: &[u8],
         epoch_hour: u64,
@@ -1141,7 +1052,6 @@ impl BlindMailboxClient {
         (hex::encode(slot_id), epoch_key)
     }
 
-    /// Encrypt and publish a [`PeerDescriptorV2`] to the current hourly blind mailbox slot.
     pub async fn publish_descriptor(
         &self,
         base_url: &str,
@@ -1153,15 +1063,12 @@ impl BlindMailboxClient {
             .await
     }
 
-    /// Generate a random 16-byte (32-hex-char) ephemeral subkey identifier.
     pub fn generate_ephemeral_id() -> String {
         let mut bytes = [0u8; 16];
         OsRng.fill_bytes(&mut bytes);
         hex::encode(bytes)
     }
 
-    /// Compute a 16-bit proof-of-work nonce (`X-VB-PoW` header) bound to
-    /// `(slot_hex, ephemeral_id, body)`.
     pub fn compute_pow_nonce(slot_hex: &str, ephemeral_id: &str, body: &[u8]) -> String {
         let prefix = format!(
             "{}:{}:",
@@ -1182,8 +1089,6 @@ impl BlindMailboxClient {
         }
     }
 
-    /// Verify a 16-bit proof-of-work nonce (`X-VB-PoW` header) against
-    /// `(slot_hex, ephemeral_id, body)`.
     pub fn verify_pow_nonce(
         slot_hex: &str,
         ephemeral_id: &str,
@@ -1209,7 +1114,6 @@ impl BlindMailboxClient {
         digest[0] == 0 && digest[1] == 0
     }
 
-    /// Encrypt and publish a [`PeerDescriptorV2`] to an explicit `epoch_hour` slot.
     pub async fn publish_descriptor_at_epoch(
         &self,
         base_url: &str,
@@ -1246,11 +1150,6 @@ impl BlindMailboxClient {
         Ok(())
     }
 
-    /// Fetch, decrypt, and verify valid [`PeerDescriptorV2`] descriptors from the blind mailbox.
-    ///
-    /// Queries `epoch_hour` and falls back to `epoch_hour - 1` during the first 5 minutes
-    /// of an hour (or whenever the current epoch slot yields no valid swarm descriptors).
-    /// Garbage blobs or blobs encrypted for other swarms are silently skipped.
     pub async fn fetch_descriptors(
         &self,
         base_url: &str,
@@ -1303,7 +1202,6 @@ impl BlindMailboxClient {
         Ok(merged.into_values().collect())
     }
 
-    /// Fetch, decrypt, and signature-verify descriptors from an explicit `epoch_hour` slot.
     pub async fn fetch_descriptors_at_epoch(
         &self,
         base_url: &str,
@@ -1363,13 +1261,8 @@ impl BlindMailboxClient {
     }
 }
 
-// ── Oblivious Multi-Substrate Rendezvous (OMR) ────────────────────────
-
-/// Hardcoded public genesis swarm secret; rejected by default unless explicitly opted in.
 pub const PUBLIC_GENESIS_SWARM_SECRET: &[u8] = b"vantablack-genesis-v1";
 
-/// Policy check: reject the hardcoded `"vantablack-genesis-v1"` fallback unless
-/// `allow_public_swarm` is explicitly enabled.
 pub fn validate_swarm_secret_policy(
     swarm_secret: &[u8],
     allow_public_swarm: bool,
@@ -1385,7 +1278,6 @@ pub fn validate_swarm_secret_policy(
     Ok(())
 }
 
-/// Configuration for 2-of-3 Oblivious Multi-Substrate Rendezvous (OMR).
 #[derive(Clone, Debug)]
 pub struct OmrSplitConfig {
     pub epoch_duration_secs: u64,
@@ -1405,10 +1297,6 @@ impl Default for OmrSplitConfig {
     }
 }
 
-/// Opaque per-substrate share envelope: 1 Shamir 2-of-3 key share + 1024B AEAD-encrypted descriptor.
-///
-/// A single substrate learns neither the descriptor nor the full social graph, because
-/// `key_share` is a single (2,3) Shamir share revealing zero information about the AEAD key.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OmrShareEnvelope {
     pub share_index: u8,
@@ -1416,7 +1304,6 @@ pub struct OmrShareEnvelope {
     pub encrypted_blob: Vec<u8>,
 }
 
-/// Pluggable transport substrate for OMR share publishing and fetching.
 pub trait OmrSubstrate: Send + Sync {
     fn name(&self) -> &'static str;
 
@@ -1434,7 +1321,6 @@ pub trait OmrSubstrate: Send + Sync {
     >;
 }
 
-/// Hardened `/v2/slot/` Worker substrate backed by [`BlindMailboxClient`].
 #[derive(Clone, Debug)]
 pub struct WorkerSlotSubstrate {
     pub base_url: String,
@@ -1526,8 +1412,6 @@ impl OmrSubstrate for WorkerSlotSubstrate {
     }
 }
 
-/// Cleaned NIP-01 ephemeral Nostr event (`kind = 20000`) for opaque OMR share transport.
-/// Uses `["d", slot_hex]` tags with zero plaintext `["fp", ...]` or `"vantablack_mesh"` tags.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OmrNostrEvent {
     pub id: String,
@@ -1576,7 +1460,6 @@ impl OmrNostrEvent {
     }
 }
 
-/// Transport trait for cleaned Nostr ephemeral `["d", slot_hex]` events.
 pub trait NostrRelayTransport: Send + Sync {
     fn publish_event<'a>(
         &'a self,
@@ -1591,7 +1474,6 @@ pub trait NostrRelayTransport: Send + Sync {
     >;
 }
 
-/// Cleaned Nostr ephemeral event substrate using `["d", slot_hex]` tags.
 pub struct NostrSlotSubstrate<T: NostrRelayTransport> {
     pub transport: T,
     pub nostr_pubkey: String,
@@ -1651,7 +1533,6 @@ impl<T: NostrRelayTransport> OmrSubstrate for NostrSlotSubstrate<T> {
     }
 }
 
-/// Transport trait for DoH-TXT or DHT opaque slot storage.
 pub trait DohDhtTransport: Send + Sync {
     fn put_record<'a>(
         &'a self,
@@ -1667,7 +1548,6 @@ pub trait DohDhtTransport: Send + Sync {
     >;
 }
 
-/// DoH-TXT / DHT substrate for OMR share transport.
 pub struct DohDhtSubstrate<T: DohDhtTransport> {
     pub transport: T,
 }
@@ -1714,8 +1594,6 @@ impl<T: DohDhtTransport> OmrSubstrate for DohDhtSubstrate<T> {
     }
 }
 
-/// Publishes a [`PeerDescriptorV2`] by encrypting it under a fresh 32-byte key and
-/// splitting that key 2-of-3 via [`crate::ghost::layers::l3_shamir`] across 3 substrates.
 pub struct OmrPublisher {
     pub config: OmrSplitConfig,
     pub substrates: Vec<Box<dyn OmrSubstrate>>,
@@ -1773,8 +1651,6 @@ impl OmrPublisher {
     }
 }
 
-/// Resolves [`PeerDescriptorV2`] records by fetching shares from independent substrates
-/// and reconstructing the AEAD key from any 2-of-3 Shamir shares.
 pub struct OmrResolver {
     pub config: OmrSplitConfig,
     pub substrates: Vec<Box<dyn OmrSubstrate>>,
@@ -1881,10 +1757,8 @@ mod tests {
         let enc1 = BlindRendezvous::encrypt_descriptor(&epoch_key, &desc).expect("encrypt failed");
         let enc2 = BlindRendezvous::encrypt_descriptor(&epoch_key, &desc).expect("encrypt failed");
 
-        // Fresh 12-byte random nonces produce distinct ciphertexts even for the identical payload & key
         assert_ne!(&enc1[..BLIND_NONCE_LEN], &enc2[..BLIND_NONCE_LEN]);
         assert_ne!(enc1, enc2);
-        // Cloudflare sees only random bytes:
         assert_ne!(&enc1[..4], PeerDescriptor::MAGIC);
         assert_ne!(
             &enc1[BLIND_NONCE_LEN..BLIND_NONCE_LEN + 4],
@@ -1968,7 +1842,6 @@ mod tests {
         assert!(parsed.verify(60));
         assert!(PeerDescriptor::from_uri(&uri).is_none());
 
-        // Tampering any signed field invalidates signature
         let mut bad_caps = parsed.clone();
         bad_caps.capabilities ^= CAP_EXIT;
         assert!(!bad_caps.verify(60));
@@ -2011,7 +1884,6 @@ mod tests {
             slot_hex, &eph1, &nonce_hex, &body
         ));
 
-        // Bound to slot_hex, ephemeral_id, and body.
         assert!(!BlindMailboxClient::verify_pow_nonce(
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             &eph1,
@@ -2194,12 +2066,10 @@ mod tests {
         let secret = b"private-omr-swarm-secret-0123456";
         assert_eq!(publisher.publish(secret, &desc).await.unwrap(), 3);
 
-        // Single substrate alone cannot reconstruct.
         let r_single =
             OmrResolver::new(OmrSplitConfig::default(), vec![Box::new(s_worker.clone())]);
         assert!(r_single.resolve(secret).await.unwrap().is_empty());
 
-        // Any 2 of 3 substrates reconstruct the exact descriptor.
         let r_01 = OmrResolver::new(
             OmrSplitConfig::default(),
             vec![
