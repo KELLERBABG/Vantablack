@@ -346,11 +346,8 @@ mod tests {
         assert_eq!(PolysemicCode::new(4, 2, 3).unwrap().shard_len(), 9);
         assert_eq!(PolysemicCode::new(4, 3, 2).unwrap().shard_len(), 6);
         let code = PolysemicCode::new(5, 3, 2).unwrap();
-        for path in 0..5 {
-            let slots = code.slot_of[path]
-                .iter()
-                .filter(|&&s| s != usize::MAX)
-                .count();
+        for path_slots in code.slot_of.iter().take(5) {
+            let slots = path_slots.iter().filter(|&&s| s != usize::MAX).count();
             assert_eq!(slots, binomial(4, 2));
         }
         assert_eq!(code.shard_len(), 6 * 2);
