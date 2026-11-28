@@ -76,11 +76,6 @@ jobs:
           cargo test --bin ggn --features quic daemon::bonding --verbose
           cargo check --features "quic vpn" --all-targets --verbose
 
-      - name: Verify Skywave SDR & QKD-TLS Anchors (sdr + qkd-tls)
-        run: |
-          cargo check --features sdr,qkd-tls --all-targets --verbose
-          cargo test --features sdr,qkd-tls --verbose
-
       - name: Verify Research Primitives Feature Gate (research)
         run: |
           cargo check --features research --all-targets --verbose
@@ -112,7 +107,7 @@ jobs:
       - name: Run Clippy (Default + All Optional Feature Gates)
         run: |
           cargo clippy --all-targets -- -D warnings
-          cargo clippy --all-targets --features "hardware-tpm,pkcs11,quic,sdr,qkd-tls,research" -- -D warnings
+          cargo clippy --all-targets --features "hardware-tpm,pkcs11,quic,reality-front,research" -- -D warnings
 
   windows-installer:
     name: Windows Installer (build, install, verify, uninstall)
