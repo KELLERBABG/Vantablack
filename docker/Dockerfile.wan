@@ -5,6 +5,7 @@ COPY build.rs Cargo.toml Cargo.lock ./
 COPY abos ./abos
 COPY src ./src
 COPY assets ./assets
+COPY deploy ./deploy
 COPY formal ./formal
 # Containers are headless: skip the default desktop-window feature so the
 # image needs no GTK/WebKit stack and no display.

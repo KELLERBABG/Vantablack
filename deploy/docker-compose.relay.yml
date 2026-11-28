@@ -19,6 +19,7 @@ services:
         COPY abos ./abos
         COPY src ./src
         COPY assets ./assets
+        COPY deploy ./deploy
         COPY formal ./formal
         RUN cargo build --release --bin ggn --no-default-features
 
