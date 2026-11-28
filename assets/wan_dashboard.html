@@ -474,15 +474,39 @@
       z-index: 60;
     }
     .modal-backdrop.open { display: flex; }
+    .tabular { font-variant-numeric: tabular-nums; }
+    .xray-meter { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; margin: 10px 0 8px; }
+    .xray-seg { height: 5px; border-radius: 2px; background: rgba(255,255,255,0.10); }
+    .xray-seg.pass { background: var(--emerald); }
+    .xray-seg.fail { background: var(--rose); }
+    .status-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; white-space: nowrap; flex-shrink: 0; }
+    .status-code.pass { color: var(--emerald); }
+    .status-code.wait { color: var(--ivory-muted); }
+    .status-code.fail { color: var(--rose); }
+    .xray-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.06); }
+    .xray-row:first-child { border-top: 0; padding-top: 2px; }
+    .observer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    @media (max-width: 520px) { .observer-grid { grid-template-columns: 1fr; } }
+    .mode-pills { flex-wrap: nowrap !important; }
+    .mode-pills .mini-pill { white-space: nowrap; padding: 4px 8px; }
+    .quick-chip { border: 1px solid rgba(255,255,255,0.14); background: rgba(18,20,24,0.88); color: var(--ivory); padding: 5px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; cursor: pointer; backdrop-filter: blur(8px); transition: background 120ms ease, border-color 120ms ease; }
+    .quick-chip:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.28); }
+    .info-btn { width: 18px; height: 18px; border-radius: 50%; border: 0; background: transparent; color: rgba(244,241,234,0.48); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; transition: color 120ms ease, background 120ms ease; }
+    .info-btn:hover, .info-btn.active { color: var(--ivory); background: rgba(255,255,255,0.08); }
+    .info-callout { margin-bottom: 10px; padding: 9px 11px; border-radius: 10px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12); font-size: 12px; color: var(--ivory-muted); line-height: 1.45; }
+    button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--ivory); outline-offset: 2px; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
   </style>
 </head>
 <body>
-  <div id="adopt-quick" style="position:fixed;right:14px;bottom:72px;z-index:55;display:flex;gap:6px;flex-wrap:wrap;max-width:270px;justify-content:flex-end;">
-    <button type="button" class="action-pill" onclick="adoptQuick('tun')">TUN</button>
-    <button type="button" class="action-pill" onclick="adoptQuick('dns')">DNS</button>
-    <button type="button" class="action-pill" onclick="adoptQuick('drop')">Drop</button>
-    <button type="button" class="action-pill" onclick="adoptQuick('expose')">Expose</button>
-    <button type="button" class="action-pill" onclick="adoptQuick('party')">Party</button>
+  <div id="adopt-quick" style="position:fixed;left:50%;transform:translateX(-50%);bottom:72px;z-index:30;display:flex;gap:5px;flex-wrap:nowrap;justify-content:center;max-width:calc(100vw - 20px);">
+    <button type="button" class="quick-chip" onclick="adoptQuick('tun')" title="System-wide OS VPN tunnel routing all device traffic">VPN Tunnel</button>
+    <button type="button" class="quick-chip" onclick="adoptQuick('dns')" title="Encrypted local DNS resolver (.vb names + ad-blocking)">Private DNS</button>
+    <button type="button" class="quick-chip" onclick="adoptQuick('drop')" title="Portal — browser-native encrypted peer-to-peer file drop">File Drop</button>
+    <button type="button" class="quick-chip" onclick="adoptQuick('expose')" title="Share a local service port over an authenticated private tunnel">Expose Port</button>
+    <button type="button" class="quick-chip" onclick="adoptQuick('party')" title="Ephemeral encrypted mesh room">Mesh Room</button>
   </div>
   <div class="app-shell" id="tab-mesh" data-multicast="239.255.0.1:2270">
     <!-- Frameless Titlebar -->
@@ -539,6 +563,8 @@
       qrTab: 'phone',          // 'phone' | 'voucher'
       devicesTab: 'list',      // 'list' | 'map'
       settingsTab: 'general',  // 'general' | 'routing' | 'continuum' | 'diagnostics'
+      experimentalOpen: false,
+      infoOpen: {},
       meshFilter: 'all',       // 'all' | 'lan' | 'wan' | 'exit'
       showHopOverlay: false,
       inspectedFp: null,
@@ -945,13 +971,13 @@
                       <div style="display:flex; align-items:center; gap:10px;">
                         <span style="width:8px; height:8px; border-radius:50%; background:${p.connected ? '#F4F1EA' : 'rgba(255,255,255,0.2)'};"></span>
                         <div>
-                          <div style="font-size:12px; font-weight:500;">${escapeHtml(p.name || 'Anonymous Node')}</div>
-                          <div class="mono" style="font-size:10.5px; color:var(--ivory-muted);">${escapeHtml(p.address || 'Unknown')} · ${escapeHtml((p.fingerprint || '').slice(0, 12))}</div>
+                          <div style="font-size:12.5px; font-weight:600;">${escapeHtml(p.name || 'Anonymous Node')}</div>
+                          <div class="mono tabular" style="font-size:11px; color:var(--ivory-muted);">${escapeHtml(p.address || p.endpoint || 'Unknown')} · ${escapeHtml((p.fingerprint || '').slice(0, 12))}</div>
                         </div>
                       </div>
                       <div style="display:flex; align-items:center; gap:6px;">
-                        ${p.scope ? `<span class="tag-pill">${escapeHtml(p.scope)}</span>` : ''}
-                        ${p.latency_ms != null ? `<span class="tag-pill">${p.latency_ms}ms</span>` : ''}
+                        ${(p.scope || p.path) ? `<span class="status-code wait">[${escapeHtml(p.scope || p.path)}]</span>` : ''}
+                        ${(p.latency_ms ?? p.rtt_ms) != null ? `<span class="status-code tabular">${p.latency_ms ?? p.rtt_ms}ms</span>` : ''}
                         <button type="button" class="subtle-pill" style="${isExit ? 'background:#F4F1EA;color:#0C0D0F;' : ''}" data-pin-exit="${escapeHtml(p.fingerprint)}">
                           ${isExit ? 'Home Exit' : 'Use as Exit'}
                         </button>
@@ -1012,52 +1038,24 @@
           <div class="grid-2">
             <button type="button" class="coal-row setting-card" data-setting-tog="adblock_enabled">
               <div>
-                <div class="setting-title">Ad &amp; Tracker Blocking</div>
-                <div class="setting-sub">Blocks ads &amp; trackers immediately (${STATE.status.ads_blocked || 0} blocked)</div>
+                <div class="setting-title">Block Ads &amp; Trackers</div>
+                <div class="setting-sub">Stops ads and tracking scripts before they load (${STATE.status.ads_blocked || 0} blocked)</div>
               </div>
               ${toggleSwitchHtml(st.adblock_enabled !== false)}
             </button>
             <button type="button" class="coal-row setting-card" data-setting-tog="threat_shield_enabled">
               <div>
-                <div class="setting-title">Threat / Malware Shield</div>
-                <div class="setting-sub">Blocks phishing &amp; C2 from signed feeds (${st.threat_shield_blocked || 0} blocked)</div>
+                <div class="setting-title">Malware &amp; Scam Protection</div>
+                <div class="setting-sub">Blocks known phishing, scam, and malware websites (${st.threat_shield_blocked || 0} blocked)</div>
               </div>
               ${toggleSwitchHtml(Boolean(st.threat_shield_enabled))}
             </button>
             <button type="button" class="coal-row setting-card" data-setting-tog="low_latency">
               <div>
                 <div class="setting-title">Low-Latency Mode</div>
-                <div class="setting-sub">1ms mix batching for calls &amp; gaming</div>
+                <div class="setting-sub">Best for calls and gaming</div>
               </div>
               ${toggleSwitchHtml(Boolean(st.low_latency))}
-            </button>
-            <button type="button" class="coal-row setting-card" data-setting-tog="abos_skywave_enabled">
-              <div>
-                <div class="setting-title">Off-Grid Radio Backup</div>
-                <div class="setting-sub">Skywave HF fallback if internet is cut</div>
-              </div>
-              ${toggleSwitchHtml(Boolean(st.abos_skywave_enabled))}
-            </button>
-            <button type="button" class="coal-row setting-card" data-setting-tog="qel_enabled">
-              <div>
-                <div class="setting-title">Quantum Protection (QEL)</div>
-                <div class="setting-sub">${anchors.qel ? ('Anchor: ' + escapeHtml(anchors.qel.state || 'ready')) : 'Post-quantum key mixing'}</div>
-              </div>
-              ${toggleSwitchHtml(Boolean(st.qel_enabled))}
-            </button>
-            <button type="button" class="coal-row setting-card" data-setting-tog="stego_carrier_mode">
-              <div>
-                <div class="setting-title">Stego Carrier</div>
-                <div class="setting-sub">Covert carrier framing</div>
-              </div>
-              ${toggleSwitchHtml(Boolean(st.stego_carrier_mode))}
-            </button>
-            <button type="button" class="coal-row setting-card" data-setting-tog="energy_ledger_enabled">
-              <div>
-                <div class="setting-title">Energy Ledger</div>
-                <div class="setting-sub">Relay credit accounting</div>
-              </div>
-              ${toggleSwitchHtml(Boolean(st.energy_ledger_enabled))}
             </button>
             <button type="button" class="coal-row setting-card" data-act="update-btn">
               <div>
@@ -1066,12 +1064,10 @@
               </div>
               <span style="padding:5px 11px; font-size:11px; font-weight:600; border-radius:999px; background:${hasUpdate ? '#F4F1EA' : 'rgba(255,255,255,0.09)'}; color:${hasUpdate ? '#0C0D0F' : '#F4F1EA'};">${updateBtn}</span>
             </button>
-          </div>
-          <div class="grid-2" style="margin-top:10px;">
             <div class="coal-row">
               <div>
-                <div class="setting-title">Mix Batch Window</div>
-                <div class="setting-sub">Traffic mixing delay</div>
+                <div class="setting-title">Timing Mix Delay</div>
+                <div class="setting-sub">Groups packets into fixed windows to hide browsing timing</div>
               </div>
               <select class="select-pill" id="mix-batch-sel">
                 ${[1, 10, 20, 50].map(ms => `<option value="${ms}" ${Number(st.mix_batch_ms || 20) === ms ? 'selected' : ''}>${ms} ms</option>`).join('')}
@@ -1079,8 +1075,8 @@
             </div>
             <div class="coal-row">
               <div>
-                <div class="setting-title">Jurisdiction Tag</div>
-                <div class="setting-sub">Preferred routing region</div>
+                <div class="setting-title">Preferred Exit Region</div>
+                <div class="setting-sub">Prefers exit relays in this country when available</div>
               </div>
               <select class="select-pill" id="jurisdiction-sel">
                 ${['AUTO','CH','IS','DE','JP','NL','US'].map(j => `<option value="${j}" ${(st.jurisdiction_tag || 'AUTO') === j ? 'selected' : ''}>${j}</option>`).join('')}
@@ -1120,20 +1116,41 @@
               </div>
             `;
           })()}
-          <details class="coal-card" style="margin-top:10px; padding:12px 14px;">
+          <details id="exp-details" class="coal-card" style="margin-top:10px; padding:12px 14px;" ${STATE.experimentalOpen ? 'open' : ''}>
             <summary style="cursor:pointer; display:flex; align-items:center; justify-content:space-between; list-style:none; font-weight:600; font-size:13px;">
-              <span>Experimental</span>
+              <span>Experimental &amp; Advanced</span>
               <span style="display:flex; align-items:center; gap:8px;">
                 <span class="tag-pill">Opt-in</span>
-                <span style="opacity:0.65; font-size:11px;">&#9662;</span>
+                <span style="opacity:0.65; font-size:11px;">${STATE.experimentalOpen ? '&#9652;' : '&#9662;'}</span>
               </span>
             </summary>
             <div style="margin-top:10px;">
               <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; font-size:11px; color:rgba(244,241,234,0.68);">
-                <span>Optional mesh capabilities. Off by default to save battery and data.</span>
+                <span>Optional mesh and power-user capabilities. Off by default to save battery and data.</span>
                 <a href="https://github.com/KELLERBABG/Vantablack/blob/main/docs/EXPERIMENTAL_FEATURES.md" target="_blank" rel="noopener noreferrer" style="color:#F4F1EA; text-decoration:underline; white-space:nowrap;">Docs &#8599;</a>
               </div>
               <div class="grid-2">
+                <button type="button" class="coal-row setting-card" data-setting-tog="stego_carrier_mode">
+                  <div>
+                    <div class="setting-title">Traffic Disguise (Stego)</div>
+                    <div class="setting-sub">Masks packets inside ordinary framing against deep inspection</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.stego_carrier_mode))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="energy_ledger_enabled">
+                  <div>
+                    <div class="setting-title">Relay Credit Accounting</div>
+                    <div class="setting-sub">Tracks mutual repair credits earned helping other peers</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.energy_ledger_enabled))}
+                </button>
+                <button type="button" class="coal-row setting-card" data-setting-tog="abos_skywave_enabled">
+                  <div>
+                    <div class="setting-title">Off-Grid Radio Backup (HF)</div>
+                    <div class="setting-sub">Requires external SDR radio hardware (off in standard builds)</div>
+                  </div>
+                  ${toggleSwitchHtml(Boolean(st.abos_skywave_enabled))}
+                </button>
                 <button type="button" class="coal-row setting-card" data-setting-tog="exp_pow_shield">
                   <div>
                     <div class="setting-title">Flood Shield</div>
@@ -1203,10 +1220,18 @@
           <div style="display:flex; flex-direction:column; gap:10px;">
             <div class="coal-card">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <span class="setting-title">Multi-Port SOCKS5 &amp; PAC Proxy</span>
-                <span class="tag-pill ${listening ? 'ok' : ''}">${listening ? `LISTENING :${basePort}–:${basePort + 3}` : 'OFF'}</span>
+                <div style="display:flex; align-items:center; gap:7px;">
+                  <span class="setting-title">Local App Proxy (SOCKS5 &amp; PAC)</span>
+                  <button type="button" class="info-btn ${STATE.infoOpen.proxy ? 'active' : ''}" data-info-tog="proxy" title="What does Local App Proxy do?" aria-label="Explain Local App Proxy"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2v3.6"/><circle cx="8" cy="4.9" r="0.6" fill="currentColor" stroke="none"/></svg></button>
+                </div>
+                <span class="status-code ${listening ? 'pass' : 'wait'}">${listening ? `[LISTENING :${basePort}–:${basePort + 3}]` : '[OFF]'}</span>
               </div>
-              <div class="kv-line"><span class="kv-k">Primary SOCKS5</span><span class="kv-v">127.0.0.1:${basePort}</span></div>
+              ${STATE.infoOpen.proxy ? `
+                <div class="info-callout">
+                  If you don't want to route your whole computer through Vantablack, point a single browser or app (like Firefox or Telegram) to this local proxy address so only that app's traffic uses Vantablack.
+                </div>
+              ` : ''}
+              <div class="kv-line"><span class="kv-k">Primary SOCKS5</span><span class="kv-v tabular">127.0.0.1:${basePort}</span></div>
               <div class="kv-line"><span class="kv-k">Auto-Config PAC URL</span><span class="kv-v">${escapeHtml(pacUrl)}</span></div>
               <div style="margin-top:8px; display:flex; justify-content:flex-end;">
                 <button type="button" class="subtle-pill" data-act="copy-pac">Copy PAC URL</button>
@@ -1214,7 +1239,15 @@
             </div>
 
             <div class="coal-card">
-              <div class="setting-title" style="margin-bottom:8px;">Split-Tunnel Bypass Rules (${bypass.length})</div>
+              <div style="display:flex; align-items:center; gap:7px; margin-bottom:8px;">
+                <span class="setting-title">Direct Connection Exceptions (${bypass.length})</span>
+                <button type="button" class="info-btn ${STATE.infoOpen.bypass ? 'active' : ''}" data-info-tog="bypass" title="What do Direct Connection Exceptions do?" aria-label="Explain Split-Tunnel Bypass"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.2v3.6"/><circle cx="8" cy="4.9" r="0.6" fill="currentColor" stroke="none"/></svg></button>
+              </div>
+              ${STATE.infoOpen.bypass ? `
+                <div class="info-callout">
+                  Websites, home network addresses (like your printer, router, or NAS), or IP ranges added here connect directly to the internet and skip Vantablack.
+                </div>
+              ` : ''}
               <div class="input-pill-row" style="margin-bottom:10px;">
                 <input id="bypass-inp" class="input-pill" placeholder="Domain or CIDR to bypass (e.g. local.lan, 192.168.0.0/16)" />
                 <button type="button" class="action-pill" data-act="add-bypass">Add Rule</button>
@@ -1235,49 +1268,96 @@
         const xr = STATE.xray || {};
         const btcr = STATE.continuum.btcr || {};
         const racs = STATE.continuum.racs || {};
+        const invs = Array.isArray(xr.invariants) ? xr.invariants : [];
+        const passCount = invs.filter(i => i.state === 'verified' || i.state === 'proven').length;
+        const failCount = invs.filter(i => i.state === 'failed' || i.state === 'broken').length;
+        const humanCheckTitle = (id) => ({
+          pq_hybrid_kem: 'Quantum-Safe Encryption',
+          dns_leak_guard: 'DNS Leak Protection',
+          frame_uniformity: 'Packet Size Masking (576 B)',
+          multi_hop_circuit: '3-Hop Onion Anonymity',
+          asn_diversity: 'Independent Network Providers',
+          racs_cover_tx: 'Decoy Cover Traffic',
+          chronos_pacing: 'Timing Analysis Defense',
+          nonce_echo_hops: 'Multi-Hop Return Integrity',
+          lightcone_bound: 'Physical Distance Proof',
+        }[id] || id);
+        const verdictText = failCount > 0
+          ? `${failCount} protection check(s) failed — inspect details below.`
+          : invs.length
+            ? `${passCount} of ${invs.length} protections active · ${invs.length - passCount} activate automatically in Stealth or Multi-Hop mode.`
+            : 'Checking connection protections...';
         bodyHtml = `
-          <div style="display:flex; flex-direction:column; gap:10px;">
+          <div style="display:flex; flex-direction:column; gap:12px;">
             <div class="coal-card">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                <span class="setting-title">Home Exit &amp; Boomerang Circuit</span>
-                <div style="display:flex; gap:6px;">
-                  ${he.selected ? `<button type="button" class="subtle-pill" data-act="clear-home-exit">Clear Pin</button>` : ''}
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+                <div>
+                  <div class="setting-title">Connection Privacy &amp; Verification (X-Ray)</div>
+                  <div class="setting-sub" style="margin-top:2px;">${escapeHtml(verdictText)}</div>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span class="status-code ${failCount > 0 ? 'fail' : 'pass'} tabular">[${passCount}/${invs.length || 9} ACTIVE]</span>
                   <button type="button" class="subtle-pill" data-act="refresh-v2">Refresh</button>
                 </div>
               </div>
-              <div class="kv-line"><span class="kv-k">Selected Exit</span><span class="kv-v">${escapeHtml(he.selected || 'Adaptive (Auto)')}</span></div>
-              <div class="kv-line"><span class="kv-k">Planned Circuit</span><span class="kv-v">${escapeHtml((he.planned_circuit && (he.planned_circuit.state + (he.planned_circuit.hops ? ' (' + he.planned_circuit.hops + ' hops)' : ''))) || '—')}</span></div>
-              <div class="kv-line"><span class="kv-k">BTCR Balance</span><span class="kv-v">${escapeHtml(btcr.balance != null ? String(btcr.balance) : (btcr.state || '—'))}</span></div>
-              <div class="kv-line"><span class="kv-k">RACS Congestion</span><span class="kv-v">${escapeHtml((racs.cc && racs.cc.cwnd != null) ? ('cwnd ' + racs.cc.cwnd) : (racs.state || '—'))}</span></div>
-            </div>
-
-            <div class="coal-card">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                <span class="setting-title">Adversary Goggles (X-Ray Truth Ledger)</span>
-                <span class="tag-pill">${escapeHtml(xr.regime || 'live')}</span>
-              </div>
-              <div style="font-size:12px; font-weight:500; margin-bottom:6px; color:${(xr.invariants || []).some(i => i.state === 'failed') ? 'var(--amber)' : 'var(--emerald)'};">
-                ${escapeHtml(xr.headline || 'Loading truth ledger...')}
-              </div>
-              <div style="display:flex; flex-direction:column; gap:4px; margin-bottom:8px;">
-                ${(xr.invariants || []).map(i => `
-                  <div class="kv-line">
-                    <span class="kv-k"><strong style="color:${i.state === 'verified' ? 'var(--emerald)' : i.state === 'failed' ? 'var(--rose)' : 'var(--ivory-muted)'};">${escapeHtml(i.state)}</strong> · ${escapeHtml(i.id)}</span>
-                    <span class="kv-v">${escapeHtml(i.detail || '')}</span>
-                  </div>
+              <div class="xray-meter" aria-label="Verification progress">
+                ${(invs.length ? invs : Array(9).fill({state:'unmeasured'})).map(i => `
+                  <div class="xray-seg ${i.state === 'verified' || i.state === 'proven' ? 'pass' : (i.state === 'failed' || i.state === 'broken' ? 'fail' : '')}" title="${escapeHtml((i.id || '') + ': ' + (i.state || 'unmeasured'))}"></div>
                 `).join('')}
               </div>
               ${(xr.observations || []).length ? `
-                <div class="grid-2">
+                <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--ivory-faint); margin:10px 0 6px;">Who sees what right now</div>
+                <div class="observer-grid">
                   ${xr.observations.map(o => `
-                    <div class="coal-card" style="padding:9px 11px;">
-                      <div class="setting-title" style="margin-bottom:4px;">${escapeHtml(o.observer)}</div>
-                      <div style="font-size:10.5px; color:var(--ivory-muted);">Sees: ${escapeHtml((o.sees || []).join(', ') || 'none')}</div>
-                      <div style="font-size:10.5px; color:var(--ivory-faint); margin-top:2px;">Hidden: ${escapeHtml((o.does_not_see || []).join(', ') || 'none')}</div>
+                    <div class="coal-card" style="padding:10px 12px;">
+                      <div class="setting-title" style="font-size:12.5px; margin-bottom:6px;">${escapeHtml(o.observer)}</div>
+                      <div style="font-size:12px; color:var(--ivory-muted); line-height:1.4;"><span class="status-code wait">[VISIBLE]</span> ${escapeHtml((o.sees || []).join(', ') || 'none')}</div>
+                      <div style="font-size:12px; color:var(--emerald); line-height:1.4; margin-top:4px;"><span class="status-code pass">[HIDDEN]</span> ${escapeHtml((o.does_not_see || []).join(', ') || 'none')}</div>
                     </div>
                   `).join('')}
                 </div>
               ` : ''}
+              ${xr.formal ? `
+                <div style="margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.06); display:flex; justify-content:space-between; align-items:center; font-size:11.5px; color:var(--ivory-muted);">
+                  <span>Formal Verification · ProVerif ${escapeHtml(xr.formal.proverif || '2.05')}</span>
+                  <span class="status-code ${xr.formal.all_queries_hold ? 'pass' : 'fail'} tabular">[${xr.formal.models || 0} MODELS ${xr.formal.all_queries_hold ? 'VERIFIED' : 'CHECK'}]</span>
+                </div>
+              ` : ''}
+            </div>
+
+            <div class="coal-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span class="setting-title">Security Checks (${invs.length})</span>
+                <span class="status-code wait">Regime: ${escapeHtml(xr.regime || 'live')}</span>
+              </div>
+              <div>
+                ${invs.map(i => {
+                  const isPass = i.state === 'verified' || i.state === 'proven';
+                  const isFail = i.state === 'failed' || i.state === 'broken';
+                  const tag = isPass ? '[PASS]' : isFail ? '[FAIL]' : '[WAIT]';
+                  const cls = isPass ? 'pass' : isFail ? 'fail' : 'wait';
+                  return `
+                    <div class="xray-row">
+                      <div style="min-width:0;">
+                        <div style="font-size:13px; font-weight:600; color:var(--ivory);">${escapeHtml(humanCheckTitle(i.id))} <span style="font-size:11px; font-weight:400; color:var(--ivory-faint); font-family:ui-monospace,monospace;">(${escapeHtml(i.id)})</span></div>
+                        <div style="font-size:12px; color:var(--ivory-muted); margin-top:2px;">${escapeHtml(i.detail || '')}</div>
+                      </div>
+                      <span class="status-code ${cls}" style="flex-shrink:0;">${tag}</span>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+
+            <div class="coal-card">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span class="setting-title">Exit Gateway &amp; Relay Health</span>
+                ${he.selected ? `<button type="button" class="subtle-pill" data-act="clear-home-exit">Clear Pin</button>` : ''}
+              </div>
+              <div class="kv-line"><span class="kv-k">Exit Gateway</span><span class="kv-v">${escapeHtml(he.selected || 'Auto Mesh (Best available)')}</span></div>
+              <div class="kv-line"><span class="kv-k">Circuit Route</span><span class="kv-v">${escapeHtml((he.planned_circuit && (he.planned_circuit.state + (he.planned_circuit.hops ? ' (' + he.planned_circuit.hops + ' hops)' : ''))) || 'Direct PQ Tunnel')}</span></div>
+              <div class="kv-line"><span class="kv-k">Relay Credits (BTCR)</span><span class="kv-v tabular">${escapeHtml(btcr.balance != null ? String(btcr.balance) : (btcr.state || '—'))}</span></div>
+              <div class="kv-line"><span class="kv-k">Traffic Pacing (RACS)</span><span class="kv-v tabular">${escapeHtml((racs.cc && racs.cc.cwnd != null) ? ('cwnd ' + racs.cc.cwnd) : (racs.state || '—'))}</span></div>
             </div>
           </div>
         `;
@@ -1402,9 +1482,31 @@
               </div>
               <div class="flank-value">${escapeHtml(STATE.mode)}</div>
               <div class="mode-pills">
-                ${['Fast', 'Stealth', 'Multi-Hop'].map(m => `
-                  <button type="button" class="mini-pill ${STATE.mode === m ? 'active' : ''}" data-set-mode="${m}">${m}</button>
+                ${[
+                  ['Fast', 'Fast regime: direct PQ tunnel (X25519 + ML-KEM-768), lowest latency'],
+                  ['Stealth', 'Shielded / Ghost regime: uniform 576 B frames, RACS cover & Chronos timing'],
+                  ['Multi-Hop', 'Vantablack regime: 3-hop onion routing (Guard → Middle → Exit) + full shaping']
+                ].map(([m, tip]) => `
+                  <button type="button" class="mini-pill ${STATE.mode === m ? 'active' : ''}" data-set-mode="${m}" title="${escapeHtml(tip)}">${m}</button>
                 `).join('')}
+              </div>
+              <div class="flank-sub" style="margin-top:8px; font-size:11px; color:var(--ivory-muted);">
+                ${escapeHtml(
+                  STATE.mode === 'Fast'
+                    ? 'Fast regime · Direct PQ tunnel, lowest latency'
+                    : STATE.mode === 'Stealth'
+                      ? 'Shielded / Ghost · 576 B frames + RACS cover'
+                      : 'Vantablack · 3-hop onion + full shaping'
+                )}
+              </div>
+              <div style="margin-top:8px;">
+                <button type="button" class="subtle-pill tabular" data-act="open-xray" style="font-size:11px; padding:4px 10px;" title="Open Privacy &amp; X-Ray Verification">
+                  ${(() => {
+                    const invs = (STATE.xray && Array.isArray(STATE.xray.invariants)) ? STATE.xray.invariants : [];
+                    const pass = invs.filter(i => i.state === 'verified' || i.state === 'proven').length;
+                    return invs.length ? `Privacy Check: ${pass}/${invs.length} active ↗` : 'Privacy Check (X-Ray) ↗';
+                  })()}
+                </button>
               </div>
             </div>
           </div>
@@ -1436,6 +1538,9 @@
         </div>
       `;
 
+      const adoptQuickEl = document.getElementById('adopt-quick');
+      if (adoptQuickEl) adoptQuickEl.style.display = open ? 'none' : 'flex';
+
       bindEvents();
     }
 
@@ -1446,6 +1551,14 @@
         STATE.devicesTab = 'list';
         refreshTopology();
         render();
+      }));
+      document.querySelectorAll('[data-act="open-xray"]').forEach(b => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        STATE.sheet = 'settings';
+        STATE.settingsTab = 'continuum';
+        render();
+        refreshContinuum();
+        refreshXray();
       }));
       document.querySelectorAll('[data-set-mode]').forEach(b => b.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -1520,6 +1633,13 @@
       });
       const jurSel = document.getElementById('jurisdiction-sel');
       if (jurSel) jurSel.addEventListener('change', (e) => saveSettingPatch({ jurisdiction_tag: e.target.value }, `Region set to ${e.target.value}`));
+      const expDet = document.getElementById('exp-details');
+      if (expDet) expDet.addEventListener('toggle', () => { STATE.experimentalOpen = expDet.open; });
+      document.querySelectorAll('[data-info-tog]').forEach(b => b.addEventListener('click', () => {
+        const k = b.dataset.infoTog;
+        STATE.infoOpen[k] = !STATE.infoOpen[k];
+        render();
+      }));
     }
 
     // ── Backend API Actions ──
@@ -1883,6 +2003,18 @@
     }
 
     // ── Live Polling ──
+    function renderIfIdle() {
+      const stage = document.getElementById('stage');
+      const active = document.activeElement;
+      if (stage && active && stage.contains(active) && ['SELECT', 'INPUT', 'TEXTAREA'].includes(active.tagName)) {
+        return;
+      }
+      if (STATE.sheet === 'settings' && (STATE.settingsTab === 'general' || STATE.settingsTab === 'routing')) {
+        return;
+      }
+      render();
+    }
+
     async function refreshStatus() {
       try {
         const res = await fetch('/api/status', { headers: pinHeaders() });
@@ -1911,7 +2043,7 @@
           STATE.prevRecv = recv;
           STATE.prevTs = now;
         }
-        render();
+        renderIfIdle();
       } catch (_) {}
     }
 
@@ -1922,7 +2054,7 @@
         const data = await res.json();
         STATE.topology = data;
         STATE.peers = Array.isArray(data.peers) ? data.peers : [];
-        render();
+        renderIfIdle();
       } catch (_) {}
     }
 
@@ -2021,6 +2153,7 @@
     loadSettings();
     fetchInvite();
     refreshContinuum();
+    refreshXray();
     setTimeout(() => checkUpdateSilent(false), 1800);
     setInterval(refreshStatus, 3500);
     setInterval(refreshTopology, 6500);

@@ -307,7 +307,8 @@ class MainActivity : Activity() {
             setOnClickListener {
                 currentModeIndex = (currentModeIndex + 1) % modes.size
                 txtRttValue.text = modes[currentModeIndex]
-                Toast.makeText(this@MainActivity, "Mode: ${modes[currentModeIndex]}", Toast.LENGTH_SHORT).show()
+                txtRttSub.text = modeDescription(modes[currentModeIndex])
+                Toast.makeText(this@MainActivity, "${modes[currentModeIndex]}: ${modeDescription(modes[currentModeIndex])}", Toast.LENGTH_SHORT).show()
             }
             addView(TextView(context).apply {
                 text = "MODE ↻"
@@ -334,8 +335,8 @@ class MainActivity : Activity() {
             }
             addView(txtRttValue)
             txtRttSub = TextView(context).apply {
-                text = "Direct • — ms"
-                textSize = 11f
+                text = modeDescription(modes[currentModeIndex])
+                textSize = 10f
                 gravity = Gravity.END
                 setTextColor(Color.parseColor("#9E9C98"))
                 layoutParams = LinearLayout.LayoutParams(
@@ -351,10 +352,10 @@ class MainActivity : Activity() {
         heroSection.addView(flanksRow)
         root.addView(heroSection)
 
-        // ── Quick Pairing Pill Dock (+ Scan QR Code & Paste Invite Link) ──
+        // ── Quick Pairing Pill Dock (+ Scan QR, Invite QR & Paste Link) ──
         val dockRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            weightSum = 2f
+            weightSum = 3f
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#0DFFFFFF"))
@@ -368,8 +369,8 @@ class MainActivity : Activity() {
         }
 
         val btnScanQr = Button(this).apply {
-            text = "+ Scan QR Code"
-            textSize = 12f
+            text = "+ Scan QR"
+            textSize = 11f
             isAllCaps = false
             setTypeface(Typeface.DEFAULT_BOLD)
             setTextColor(Color.parseColor("#0C0D0F"))
@@ -384,9 +385,26 @@ class MainActivity : Activity() {
             setOnClickListener { launchQrScanner() }
         }
 
+        val btnInviteQr = Button(this).apply {
+            text = "Invite QR"
+            textSize = 11f
+            isAllCaps = false
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setTextColor(Color.parseColor("#F4F1EA"))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#18FFFFFF"))
+                cornerRadius = dp(999).toFloat()
+            }
+            setPadding(0, dp(10), 0, dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(dp(2), 0, dp(2), 0)
+            }
+            setOnClickListener { showInviteQrDialog() }
+        }
+
         val btnPasteInvite = Button(this).apply {
-            text = "Paste Invite Link"
-            textSize = 12f
+            text = "Paste Link"
+            textSize = 11f
             isAllCaps = false
             setTypeface(Typeface.DEFAULT_BOLD)
             setTextColor(Color.parseColor("#F4F1EA"))
@@ -402,6 +420,7 @@ class MainActivity : Activity() {
         }
 
         dockRow.addView(btnScanQr)
+        dockRow.addView(btnInviteQr)
         dockRow.addView(btnPasteInvite)
         root.addView(dockRow)
 
@@ -726,16 +745,22 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(TextView(context).apply {
-                    text = "Ad & Tracker Blocker"
-                    textSize = 13f
+                    text = "Block Ads & Trackers"
+                    textSize = 16f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(Color.parseColor("#F4F1EA"))
                 })
+                addView(TextView(context).apply {
+                    text = "Stops ads and tracking scripts before they load"
+                    textSize = 12.5f
+                    setTextColor(Color.parseColor("#B0B5BC"))
+                    setPadding(0, dp(3), 0, 0)
+                })
                 txtAdblockStatus = TextView(context).apply {
                     text = if (adblockEnabled) "Active • 0 ads blocked" else "Paused"
-                    textSize = 11f
+                    textSize = 12f
                     setTextColor(Color.parseColor("#9E9C98"))
-                    setPadding(0, dp(2), 0, 0)
+                    setPadding(0, dp(3), 0, 0)
                 }
                 addView(txtAdblockStatus)
             }
@@ -743,14 +768,14 @@ class MainActivity : Activity() {
 
             btnAdblockToggle = TextView(context).apply {
                 text = if (adblockEnabled) "On" else "Off"
-                textSize = 11f
+                textSize = 13f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(if (adblockEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
                 background = GradientDrawable().apply {
                     setColor(if (adblockEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
                     cornerRadius = dp(999).toFloat()
                 }
-                setPadding(dp(14), dp(7), dp(14), dp(7))
+                setPadding(dp(16), dp(9), dp(16), dp(9))
             }
             row.addView(btnAdblockToggle)
             setOnClickListener {
@@ -791,16 +816,22 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(TextView(context).apply {
-                    text = "Threat / Malware Shield"
-                    textSize = 13f
+                    text = "Malware & Scam Protection"
+                    textSize = 16f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(Color.parseColor("#F4F1EA"))
                 })
+                addView(TextView(context).apply {
+                    text = "Blocks known phishing, scam, and malware websites"
+                    textSize = 12.5f
+                    setTextColor(Color.parseColor("#B0B5BC"))
+                    setPadding(0, dp(3), 0, 0)
+                })
                 txtThreatShieldStatus = TextView(context).apply {
                     text = if (threatShieldEnabled) "Active • 0 threats blocked" else "Paused"
-                    textSize = 11f
+                    textSize = 12f
                     setTextColor(Color.parseColor("#9E9C98"))
-                    setPadding(0, dp(2), 0, 0)
+                    setPadding(0, dp(3), 0, 0)
                 }
                 addView(txtThreatShieldStatus)
             }
@@ -808,14 +839,14 @@ class MainActivity : Activity() {
 
             btnThreatShieldToggle = TextView(context).apply {
                 text = if (threatShieldEnabled) "On" else "Off"
-                textSize = 11f
+                textSize = 13f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(if (threatShieldEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
                 background = GradientDrawable().apply {
                     setColor(if (threatShieldEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
                     cornerRadius = dp(999).toFloat()
                 }
-                setPadding(dp(14), dp(7), dp(14), dp(7))
+                setPadding(dp(16), dp(9), dp(16), dp(9))
             }
             row.addView(btnThreatShieldToggle)
             setOnClickListener {
@@ -868,12 +899,10 @@ class MainActivity : Activity() {
 
         val cardRegimeQel = createCoalCard().apply {
             lateinit var pillRegime: TextView
-            lateinit var pillQel: TextView
 
             val rRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, 0, dp(10))
             }
             val rCol = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
@@ -911,51 +940,6 @@ class MainActivity : Activity() {
                 pillRegime.text = activeRegime.replaceFirstChar { it.uppercase() }
             }
             addView(rRow)
-
-            val qRow = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            val qCol = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                addView(TextView(context).apply {
-                    text = "Quantum Protection (QEL)"
-                    textSize = 14f
-                    setTypeface(Typeface.DEFAULT_BOLD)
-                    setTextColor(Color.parseColor("#F4F1EA"))
-                })
-                addView(TextView(context).apply {
-                    text = "Post-quantum key mixing"
-                    textSize = 11f
-                    setTextColor(Color.parseColor("#9AA0A6"))
-                })
-            }
-            pillQel = TextView(context).apply {
-                text = if (qelEnabled) "On" else "Off"
-                textSize = 11f
-                setTypeface(Typeface.DEFAULT_BOLD)
-                setTextColor(if (qelEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
-                background = GradientDrawable().apply {
-                    setColor(if (qelEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
-                    cornerRadius = dp(999).toFloat()
-                }
-                setPadding(dp(14), dp(7), dp(14), dp(7))
-            }
-            qRow.addView(qCol)
-            qRow.addView(pillQel)
-            qRow.setOnClickListener {
-                qelEnabled = !qelEnabled
-                prefs.edit().putBoolean("qel_enabled", qelEnabled).apply()
-                try { GhostCore.setQelEnabled(qelEnabled) } catch (_: Throwable) {}
-                pillQel.text = if (qelEnabled) "On" else "Off"
-                pillQel.setTextColor(if (qelEnabled) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
-                pillQel.background = GradientDrawable().apply {
-                    setColor(if (qelEnabled) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
-                    cornerRadius = dp(999).toFloat()
-                }
-            }
-            addView(qRow)
         }
         root.addView(cardRegimeQel)
 
@@ -975,28 +959,29 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(TextView(context).apply {
                     text = "Split Tunnel (App Bypass)"
-                    textSize = 14f
+                    textSize = 16f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(Color.parseColor("#F4F1EA"))
                 })
                 txtSplitSub = TextView(context).apply {
                     val c = countBypass()
-                    text = if (c == 0) "All apps routed through tunnel" else "$c app(s) bypassed (applies on reconnect)"
-                    textSize = 11f
-                    setTextColor(Color.parseColor("#9AA0A6"))
+                    text = if (c == 0) "All apps routed through tunnel (tap Edit to exclude apps)" else "$c app(s) bypassed (applies on reconnect)"
+                    textSize = 12.5f
+                    setTextColor(Color.parseColor("#B0B5BC"))
+                    setPadding(0, dp(3), 0, 0)
                 }
                 addView(txtSplitSub)
             }
             val btnEdit = TextView(context).apply {
                 text = "Edit"
-                textSize = 11f
+                textSize = 13f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor("#18FFFFFF"))
                     cornerRadius = dp(999).toFloat()
                 }
-                setPadding(dp(12), dp(6), dp(12), dp(6))
+                setPadding(dp(16), dp(9), dp(16), dp(9))
             }
             row.addView(col)
             row.addView(btnEdit)
@@ -1025,15 +1010,89 @@ class MainActivity : Activity() {
         val cardXray = createCoalCard().apply {
             lateinit var txtXrayHeadline: TextView
             lateinit var txtXrayClaim: TextView
-            fun refreshXrayCard() {
+            lateinit var txtXrayDetails: TextView
+            fun refreshXrayCard(showDialog: Boolean = false) {
                 try {
                     val raw = GhostCore.getXrayJson(GhostVpnService.activePtr)
                     val obj = org.json.JSONObject(raw)
-                    txtXrayHeadline.text = obj.optString("headline", "X-Ray ready")
-                    txtXrayClaim.text = obj.optString("claim", "Tap to inspect visibility")
+                    val headline = obj.optString("headline", "X-Ray ready")
+                    val regime = obj.optString("regime", "ghost")
+                    val invs = obj.optJSONArray("invariants")
+                    val obs = obj.optJSONArray("observations")
+                    val formal = obj.optJSONObject("formal")
+
+                    val sb = StringBuilder()
+                    var passCount = 0
+                    val totalCount = invs?.length() ?: 0
+                    val humanTitle = mapOf(
+                        "pq_hybrid_kem" to "Quantum-Safe Encryption",
+                        "dns_leak_guard" to "DNS Leak Protection",
+                        "frame_uniformity" to "Packet Size Masking (576 B)",
+                        "multi_hop_circuit" to "3-Hop Onion Anonymity",
+                        "asn_diversity" to "Independent Network Providers",
+                        "racs_cover_tx" to "Decoy Cover Traffic",
+                        "chronos_pacing" to "Timing Analysis Defense",
+                        "nonce_echo_hops" to "Multi-Hop Return Integrity",
+                        "lightcone_bound" to "Physical Distance Proof"
+                    )
+                    if (invs != null && invs.length() > 0) {
+                        for (i in 0 until invs.length()) {
+                            val item = invs.getJSONObject(i)
+                            val id = item.optString("id", "check")
+                            val state = item.optString("state", "unmeasured")
+                            val detail = item.optString("detail", "")
+                            val tag = when (state.lowercase()) {
+                                "verified", "proven", "ok" -> { passCount++; "[PASS]" }
+                                "broken", "violated", "failed" -> "[FAIL]"
+                                else -> "[WAIT]"
+                            }
+                            sb.append("$tag ${humanTitle[id] ?: id} — $detail\n")
+                        }
+                    }
+                    txtXrayHeadline.text = if (totalCount > 0) "Privacy Check: $passCount/$totalCount active" else headline
+                    txtXrayClaim.text = "Regime: $regime • Tap Inspect for observer views & proofs"
+                    txtXrayDetails.text = sb.toString().trim().ifEmpty { "No checks reported yet" }
+                    txtXrayDetails.visibility = View.VISIBLE
+
+                    if (showDialog) {
+                        val full = StringBuilder()
+                        full.append("Protection: $passCount of $totalCount checks active (Regime: $regime)\n\n")
+                        if (invs != null && invs.length() > 0) {
+                            full.append("── SECURITY CHECKS (${invs.length()}) ──\n")
+                            for (i in 0 until invs.length()) {
+                                val item = invs.getJSONObject(i)
+                                val id = item.optString("id")
+                                val st = item.optString("state")
+                                val tag = if (st == "verified" || st == "proven") "[PASS]" else if (st == "failed") "[FAIL]" else "[WAIT]"
+                                full.append("$tag ${humanTitle[id] ?: id}\n  ${item.optString("detail")}\n")
+                            }
+                            full.append("\n")
+                        }
+                        if (obs != null && obs.length() > 0) {
+                            full.append("── OBSERVER VIEWS ──\n")
+                            for (i in 0 until obs.length()) {
+                                val o = obs.getJSONObject(i)
+                                full.append("• ${o.optString("observer")}\n")
+                                val sees = o.optJSONArray("sees")
+                                val hides = o.optJSONArray("does_not_see")
+                                if (sees != null) full.append("  Sees: ${sees.join(", ").replace("\"", "")}\n")
+                                if (hides != null) full.append("  Hidden: ${hides.join(", ").replace("\"", "")}\n")
+                            }
+                            full.append("\n")
+                        }
+                        if (formal != null) {
+                            full.append("── FORMAL PROOFS ──\nProVerif ${formal.optString("proverif")} • ${formal.optInt("models")} models • holds=${formal.optBoolean("all_queries_hold")}\n")
+                        }
+                        android.app.AlertDialog.Builder(context)
+                            .setTitle("X-Ray Truth Ledger")
+                            .setMessage(full.toString().trim())
+                            .setPositiveButton("Close", null)
+                            .show()
+                    }
                 } catch (_: Throwable) {
                     txtXrayHeadline.text = "X-Ray Privacy Check"
-                    txtXrayClaim.text = "Tap to inspect what ISP / Guard / Website see"
+                    txtXrayClaim.text = "Tap Inspect to see all 9 checks & what ISP / Guard / Website see"
+                    txtXrayDetails.visibility = View.GONE
                 }
             }
             val row = LinearLayout(context).apply {
@@ -1045,33 +1104,42 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 txtXrayHeadline = TextView(context).apply {
                     text = "X-Ray Privacy Check"
-                    textSize = 14f
+                    textSize = 16f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(Color.parseColor("#F4F1EA"))
                 }
                 txtXrayClaim = TextView(context).apply {
-                    text = "Tap to inspect what ISP / Guard / Website see"
-                    textSize = 11f
-                    setTextColor(Color.parseColor("#9AA0A6"))
+                    text = "Shows all 9 cryptographic & observer checks (ISP, Guard, Website)"
+                    textSize = 12.5f
+                    setTextColor(Color.parseColor("#B0B5BC"))
+                    setPadding(0, dp(3), 0, 0)
                 }
                 addView(txtXrayHeadline)
                 addView(txtXrayClaim)
             }
             val btnCheck = TextView(context).apply {
                 text = "Inspect"
-                textSize = 11f
+                textSize = 13f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor("#18FFFFFF"))
                     cornerRadius = dp(999).toFloat()
                 }
-                setPadding(dp(12), dp(6), dp(12), dp(6))
+                setPadding(dp(16), dp(9), dp(16), dp(9))
             }
             row.addView(col)
             row.addView(btnCheck)
-            setOnClickListener { refreshXrayCard() }
             addView(row)
+
+            txtXrayDetails = TextView(context).apply {
+                textSize = 12f
+                setTextColor(Color.parseColor("#9E9C98"))
+                setPadding(0, dp(10), 0, 0)
+                visibility = View.GONE
+            }
+            addView(txtXrayDetails)
+            setOnClickListener { refreshXrayCard(showDialog = true) }
         }
         root.addView(cardXray)
 
@@ -1101,26 +1169,27 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(TextView(context).apply {
                     text = "Experimental"
-                    textSize = 14f
+                    textSize = 16f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(Color.parseColor("#F4F1EA"))
                 })
                 addView(TextView(context).apply {
                     text = "Opt-in mesh capabilities (off by default)"
-                    textSize = 11f
-                    setTextColor(Color.parseColor("#9AA0A6"))
+                    textSize = 12.5f
+                    setTextColor(Color.parseColor("#B0B5BC"))
+                    setPadding(0, dp(3), 0, 0)
                 })
             }
             pillArrow = TextView(context).apply {
                 text = "Opt-in ▾"
-                textSize = 11f
+                textSize = 13f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor("#18FFFFFF"))
                     cornerRadius = dp(999).toFloat()
                 }
-                setPadding(dp(12), dp(6), dp(12), dp(6))
+                setPadding(dp(16), dp(9), dp(16), dp(9))
             }
             header.addView(hCol)
             header.addView(pillArrow)
@@ -1157,26 +1226,27 @@ class MainActivity : Activity() {
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     addView(TextView(context).apply {
                         text = title
-                        textSize = 13f
+                        textSize = 15f
                         setTypeface(Typeface.DEFAULT_BOLD)
                         setTextColor(Color.parseColor("#F4F1EA"))
                     })
                     addView(TextView(context).apply {
                         text = desc
-                        textSize = 11f
-                        setTextColor(Color.parseColor("#9AA0A6"))
+                        textSize = 12.5f
+                        setTextColor(Color.parseColor("#B0B5BC"))
+                        setPadding(0, dp(2), 0, 0)
                     })
                 }
                 pill = TextView(context).apply {
                     text = if (on) "On" else "Off"
-                    textSize = 11f
+                    textSize = 13f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(if (on) Color.parseColor("#0C0D0F") else Color.parseColor("#F4F1EA"))
                     background = GradientDrawable().apply {
                         setColor(if (on) Color.parseColor("#F4F1EA") else Color.parseColor("#18FFFFFF"))
                         cornerRadius = dp(999).toFloat()
                     }
-                    setPadding(dp(12), dp(5), dp(12), dp(5))
+                    setPadding(dp(16), dp(8), dp(16), dp(8))
                 }
                 itemRow.addView(itemCol)
                 itemRow.addView(pill)
@@ -1214,15 +1284,15 @@ class MainActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 addView(TextView(context).apply {
                     text = "App Updates"
-                    textSize = 13f
+                    textSize = 16f
                     setTypeface(Typeface.DEFAULT_BOLD)
                     setTextColor(Color.parseColor("#F4F1EA"))
                 })
                 txtUpdateStatus = TextView(context).apply {
                     text = "Vantablack v$currentVerName is installed"
-                    textSize = 11f
-                    setTextColor(Color.parseColor("#9E9C98"))
-                    setPadding(0, dp(2), 0, 0)
+                    textSize = 12.5f
+                    setTextColor(Color.parseColor("#B0B5BC"))
+                    setPadding(0, dp(3), 0, 0)
                 }
                 addView(txtUpdateStatus)
             }
@@ -1230,14 +1300,14 @@ class MainActivity : Activity() {
 
             btnUpdateAction = TextView(context).apply {
                 text = "Check"
-                textSize = 11f
+                textSize = 13f
                 setTypeface(Typeface.DEFAULT_BOLD)
                 setTextColor(Color.parseColor("#F4F1EA"))
                 background = GradientDrawable().apply {
                     setColor(Color.parseColor("#18FFFFFF"))
                     cornerRadius = dp(999).toFloat()
                 }
-                setPadding(dp(14), dp(7), dp(14), dp(7))
+                setPadding(dp(16), dp(9), dp(16), dp(9))
             }
             row.addView(btnUpdateAction)
             setOnClickListener { triggerImmediateUpdate() }
@@ -1245,7 +1315,81 @@ class MainActivity : Activity() {
         }
         root.addView(cardUpdate)
 
-        setContentView(scroll)
+        // ── 4-Tab Bottom Navigation (Home / Devices / Privacy / Settings) ──
+        val homeViews = listOf<View>(heroSection, dockRow, cardTelemetry)
+        val devicesViews = listOf<View>(cardPeers)
+        val privacyViews = listOf<View>(cardXray)
+        val settingsViews = listOf<View>(
+            cardAdblock, cardThreatShield, cardThreatPullback,
+            cardRegimeQel, cardSplitTunnel, cardExperimental, cardIdentity, cardUpdate
+        )
+        val tabGroups = listOf(homeViews, devicesViews, privacyViews, settingsViews)
+        val tabLabels = listOf("Home", "Devices", "Privacy", "Settings")
+        val tabButtons = mutableListOf<TextView>()
+        var activeTab = 0
+
+        fun selectTab(idx: Int) {
+            activeTab = idx
+            tabGroups.forEachIndexed { i, views ->
+                val vis = if (i == idx) View.VISIBLE else View.GONE
+                views.forEach { v ->
+                    if (v === cardThreatPullback && vis == View.VISIBLE) {
+                        // Preserve pullback conditional visibility
+                    } else {
+                        v.visibility = vis
+                    }
+                }
+            }
+            tabButtons.forEachIndexed { i, btn ->
+                val on = i == idx
+                btn.setTextColor(if (on) Color.parseColor("#0C0D0F") else Color.parseColor("#9E9C98"))
+                btn.background = GradientDrawable().apply {
+                    setColor(if (on) Color.parseColor("#F4F1EA") else Color.TRANSPARENT)
+                    cornerRadius = dp(999).toFloat()
+                }
+            }
+            scroll.scrollTo(0, 0)
+            if (idx == 2) {
+                cardXray.performClick()
+            }
+        }
+
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#0C0D0F"))
+        }
+        scroll.layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        )
+        outer.addView(scroll)
+
+        val bottomBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 4f
+            setBackgroundColor(Color.parseColor("#111317"))
+            setPadding(dp(10), dp(10), dp(10), dp(14))
+        }
+        tabLabels.forEachIndexed { idx, label ->
+            val btn = TextView(this).apply {
+                text = label
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setPadding(dp(8), dp(10), dp(8), dp(10))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(dp(3), 0, dp(3), 0)
+                }
+                setOnClickListener { selectTab(idx) }
+            }
+            tabButtons.add(btn)
+            bottomBar.addView(btn)
+        }
+        outer.addView(bottomBar)
+        selectTab(0)
+
+        setContentView(outer)
         updateStatus()
 
         handler.postDelayed({ checkUpdate(userInitiated = false) }, 1500)
@@ -1739,6 +1883,246 @@ class MainActivity : Activity() {
             updateStatus()
         } else if (requestCode == VPN_REQUEST_CODE) {
             Toast.makeText(this, "VPN permission declined", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun modeDescription(mode: String): String = when (mode) {
+        "Fast" -> "Fast regime · Direct PQ tunnel, lowest latency"
+        "Stealth" -> "Shielded/Ghost · 576B frames + cover shaping"
+        "Multi-Hop" -> "Vantablack · 3-hop onion + full shaping"
+        else -> "Direct PQ tunnel"
+    }
+
+    private fun renderVantablackQrBitmap(uri: String, sizePx: Int): android.graphics.Bitmap {
+        val qr = com.google.zxing.qrcode.encoder.Encoder.encode(
+            uri,
+            com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.H
+        )
+        val matrix = qr.matrix
+        val n = matrix.width
+        val quiet = 4
+        val total = n + quiet * 2
+        val cell = sizePx.toFloat() / total.toFloat()
+
+        val bmp = android.graphics.Bitmap.createBitmap(
+            sizePx,
+            sizePx,
+            android.graphics.Bitmap.Config.ARGB_8888
+        )
+        val canvas = android.graphics.Canvas(bmp)
+        val ivory = Color.parseColor("#EAE6DC")
+        val coal = Color.parseColor("#0C0D0F")
+        val ghostWhite = Color.parseColor("#F4F1EA")
+        val visorNeon = Color.parseColor("#DCFF02")
+
+        // Rounded warm-ivory QR card background
+        val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = ivory
+            style = android.graphics.Paint.Style.FILL
+        }
+        val cornerR = sizePx * 0.08f
+        canvas.drawRoundRect(
+            android.graphics.RectF(0f, 0f, sizePx.toFloat(), sizePx.toFloat()),
+            cornerR,
+            cornerR,
+            bgPaint
+        )
+
+        val mid = n / 2
+        val badgeHalf = if (n >= 45) 4 else if (n >= 29) 3 else 2
+        fun inFinder(r: Int, c: Int): Boolean =
+            (r < 7 && c < 7) || (r < 7 && c >= n - 7) || (r >= n - 7 && c < 7)
+        fun inBadge(r: Int, c: Int): Boolean =
+            r in (mid - badgeHalf)..(mid + badgeHalf) && c in (mid - badgeHalf)..(mid + badgeHalf)
+
+        // Connected Liquid Tracks (merged horizontal pill bars)
+        val darkPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = coal
+            style = android.graphics.Paint.Style.FILL
+        }
+        for (r in 0 until n) {
+            var c = 0
+            while (c < n) {
+                if (matrix.get(c, r).toInt() != 1 || inFinder(r, c) || inBadge(r, c)) {
+                    c++
+                    continue
+                }
+                var end = c
+                while (end + 1 < n &&
+                    matrix.get(end + 1, r).toInt() == 1 &&
+                    !inFinder(r, end + 1) &&
+                    !inBadge(r, end + 1)
+                ) {
+                    end++
+                }
+                val x = (c + quiet + 0.08f) * cell
+                val y = (r + quiet + 0.12f) * cell
+                val w = ((end - c + 1) - 0.16f) * cell
+                val h = 0.76f * cell
+                val rx = 0.38f * cell
+                canvas.drawRoundRect(android.graphics.RectF(x, y, x + w, y + h), rx, rx, darkPaint)
+                c = end + 1
+            }
+        }
+
+        // Circular Vantablack Finder Eyes
+        val ringPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = coal
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 0.95f * cell
+        }
+        fun drawFinderEye(ox: Int, oy: Int) {
+            val cx = (ox + quiet + 3.5f) * cell
+            val cy = (oy + quiet + 3.5f) * cell
+            canvas.drawCircle(cx, cy, 3.05f * cell, ringPaint)
+            canvas.drawCircle(cx, cy, 1.52f * cell, darkPaint)
+        }
+        drawFinderEye(0, 0)
+        drawFinderEye(n - 7, 0)
+        drawFinderEye(0, n - 7)
+
+        // Centered Stealth-Visor Ghost Emblem
+        val badgeModules = badgeHalf * 2 + 1 + 0.3f
+        val bx = (mid - badgeHalf + quiet - 0.15f) * cell
+        val by = (mid - badgeHalf + quiet - 0.15f) * cell
+        val scale = (badgeModules * cell) / 8.7f
+
+        canvas.save()
+        canvas.translate(bx, by)
+        canvas.scale(scale, scale)
+
+        // Badge tile + ivory outline
+        val tileRect = android.graphics.RectF(0f, 0f, 8.7f, 8.7f)
+        canvas.drawRoundRect(tileRect, 2.5f, 2.5f, darkPaint)
+        val tileStroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = ivory
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 0.45f
+        }
+        canvas.drawRoundRect(tileRect, 2.5f, 2.5f, tileStroke)
+
+        // Ghost silhouette path
+        val ghostPath = android.graphics.Path().apply {
+            moveTo(2.1f, 4.3f)
+            cubicTo(2.1f, 1.8f, 6.6f, 1.8f, 6.6f, 4.3f)
+            lineTo(6.7f, 6.6f)
+            cubicTo(6.2f, 6.1f, 5.7f, 6.65f, 5.15f, 6.65f)
+            cubicTo(4.65f, 6.65f, 4.35f, 6.15f, 4.35f, 6.15f)
+            cubicTo(4.35f, 6.15f, 4.05f, 6.65f, 3.55f, 6.65f)
+            cubicTo(3.0f, 6.65f, 2.5f, 6.1f, 2.0f, 6.6f)
+            close()
+        }
+        val ghostPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = ghostWhite
+            style = android.graphics.Paint.Style.FILL
+        }
+        canvas.drawPath(ghostPath, ghostPaint)
+
+        // Visor slot
+        canvas.drawRoundRect(android.graphics.RectF(2.65f, 3.45f, 6.05f, 4.70f), 0.62f, 0.62f, darkPaint)
+
+        // Neon visor bar + eye dot
+        val visorPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = visorNeon
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 0.32f
+            strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+        canvas.drawLine(3.1f, 3.85f, 4.15f, 3.85f, visorPaint)
+        val dotPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = visorNeon
+            style = android.graphics.Paint.Style.FILL
+        }
+        canvas.drawCircle(5.25f, 3.85f, 0.18f, dotPaint)
+        canvas.restore()
+
+        return bmp
+    }
+
+    private fun showInviteQrDialog() {
+        val uri = GhostVpnService.exportInviteUri()
+        if (uri.isNullOrEmpty()) {
+            Toast.makeText(this, "Tap the center button to connect first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val size = dp(248)
+            val bmp = renderVantablackQrBitmap(uri, size)
+            val wrap = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                setPadding(dp(22), dp(22), dp(22), dp(18))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#141518"))
+                    cornerRadius = dp(20).toFloat()
+                    setStroke(dp(1), Color.parseColor("#1FFFFFFF"))
+                }
+            }
+            wrap.addView(TextView(this).apply {
+                text = "Invite via QR Code"
+                textSize = 16f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                setPadding(0, 0, 0, dp(14))
+            })
+            wrap.addView(ImageView(this).apply {
+                setImageBitmap(bmp)
+                layoutParams = LinearLayout.LayoutParams(size, size)
+            })
+            wrap.addView(TextView(this).apply {
+                text = "Scan with another Vantablack phone or PC"
+                textSize = 12.5f
+                setTextColor(Color.parseColor("#99F4F1EA"))
+                setPadding(0, dp(14), 0, dp(16))
+            })
+            val dlg = android.app.AlertDialog.Builder(this)
+                .setView(wrap)
+                .create()
+            dlg.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+
+            val btnRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+            }
+            val btnCopy = TextView(this).apply {
+                text = "Copy Link"
+                textSize = 13f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#F4F1EA"))
+                setPadding(dp(18), dp(10), dp(18), dp(10))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#14FFFFFF"))
+                    cornerRadius = dp(999).toFloat()
+                    setStroke(dp(1), Color.parseColor("#24FFFFFF"))
+                }
+                setOnClickListener {
+                    val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clip.setPrimaryClip(ClipData.newPlainText("Vantablack Invite", uri))
+                    Toast.makeText(this@MainActivity, "Invite link copied", Toast.LENGTH_SHORT).show()
+                }
+            }
+            val btnDone = TextView(this).apply {
+                text = "Done"
+                textSize = 13f
+                setTypeface(Typeface.DEFAULT_BOLD)
+                setTextColor(Color.parseColor("#0C0D0F"))
+                setPadding(dp(22), dp(10), dp(22), dp(10))
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#F4F1EA"))
+                    cornerRadius = dp(999).toFloat()
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(dp(10), 0, 0, 0) }
+                setOnClickListener { dlg.dismiss() }
+            }
+            btnRow.addView(btnCopy)
+            btnRow.addView(btnDone)
+            wrap.addView(btnRow)
+            dlg.show()
+        } catch (e: Throwable) {
+            Toast.makeText(this, "QR error: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 

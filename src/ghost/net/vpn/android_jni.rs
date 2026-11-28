@@ -1325,26 +1325,22 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_scanLan(
     let Some(core) = (unsafe { (ptr as *mut AndroidCore).as_mut() }) else {
         return 0;
     };
-    let has_hub_session = core.hub_addr.is_some() && core.session_key.lock().is_some();
-    let healthy = is_tunnel_healthy(core);
-    if has_hub_session && healthy {
-        return core.known_peers.lock().len().max(1) as jint;
-    }
     let Some(sock) = core.sock.as_ref() else {
         return 0;
     };
-    if let Some(hub) = core.hub_addr {
-        if let Some((key, sh)) = perform_handshake(sock, hub, &core.identity) {
-            core.known_peers.lock().insert(hub, (key, sh));
-            core.state.rotate_epoch();
-            core.state.set_key(key);
-            core.state.note_inbound();
-            core.install_session(key, sh);
-            alog!(
-                "scanLan: re-established session with designated hub {:?}",
-                hub
-            );
-            return core.known_peers.lock().len().max(1) as jint;
+    if core.session_key.lock().is_none() {
+        if let Some(hub) = core.hub_addr {
+            if let Some((key, sh)) = perform_handshake(sock, hub, &core.identity) {
+                core.known_peers.lock().insert(hub, (key, sh));
+                core.state.rotate_epoch();
+                core.state.set_key(key);
+                core.state.note_inbound();
+                core.install_session(key, sh);
+                alog!(
+                    "scanLan: re-established session with designated hub {:?}",
+                    hub
+                );
+            }
         }
     }
     let found = perform_lan_discovery(sock, &core.identity);
@@ -1634,6 +1630,40 @@ pub extern "system" fn Java_dev_globalghost_net_GhostCore_importInvite(
         "err:unsupported invite scheme".to_string()
     };
     env.new_string(res)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_globalghost_net_GhostCore_exportInvite<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    ptr: jlong,
+    endpoint: jni::objects::JString<'local>,
+) -> jni::sys::jstring {
+    let ep_str: String = env
+        .get_string(&endpoint)
+        .map(Into::into)
+        .unwrap_or_default();
+    let out = unsafe { (ptr as *mut AndroidCore).as_ref() }
+        .and_then(|core| {
+            let addr: std::net::SocketAddr = ep_str.trim().parse().ok()?;
+            Some(
+                crate::ghost::net::discovery::PeerDescriptorV2::sign_new(
+                    &core.identity,
+                    &[],
+                    addr,
+                    vec![addr],
+                    addr.port(),
+                    0,
+                    0,
+                    None,
+                )
+                .to_uri(),
+            )
+        })
+        .unwrap_or_default();
+    env.new_string(out)
         .map(|s| s.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }

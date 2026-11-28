@@ -1,5 +1,5 @@
-# Vantablack v3.8.3 — Tier-2 Complete (`energy_currency` & `sharded_compute`)
+# Vantablack v3.8.4 — Desktop & Android UX Overhaul, Unified Vantablack QR & Plain-English X-Ray
 
-Vantablack **v3.8.3** completes all 4 Tier-2 `research` modules in `src/daemon/research_hooks.rs`: `repair_ledger` enforces mutually signed distinct-peer erasure-repair receipts (`GHOST_REPAIR__`) and `compute_offload` wires Lagrange Coded Inference (`LC-Vantablack`) strictly for linear/quadratic layers ($d \le 2$) across distinct worker ASNs (`22` daemon hook tests passing, `0` clippy warnings).
+Vantablack **v3.8.4** brings a major usability and visual polish pass across both Desktop and Android: **Continuum & X-Ray** now explains all 9 security checks in plain language alongside a 3-column observer view and `ProVerif 2.05` proof summary; **Settings** removes jargon and fixes dropdown polling glitches; **Android** introduces a 4-tab navigation layout, phone-to-phone LAN discovery (`MulticastLock` + JNI `exportInvite`), dynamic version syncing from `Cargo.toml`, and a unified **Connected Liquid Tracks + Stealth-Visor Ghost** QR code renderer matching PC.
 
 For full release notes and version-by-version changes, see the [**Detailed Update Logs**](https://vantablack.kellersystems.dev/docs#changelog).

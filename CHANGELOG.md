@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.8.4] — 2026-11-28
+
+- **Desktop & Android UX Overhaul (`assets/wan_dashboard.html`, `android/app/`):**
+  - **Continuum & X-Ray:** Replaced cryptic `"9 checks are unmeasured"` messaging with a structured 9-segment status meter, 3-column `Who sees what right now` observer view, plain-English titles/explanations for all 9 security checks (`[PASS]` / `[WAIT]`), and a `ProVerif 2.05` formal-proof summary on both PC and Android.
+  - **Plain-English Settings & Dropdown Fix:** Simplified `Settings -> General` (`Block Ads & Trackers`, `Malware & Scam Protection`, `Low-Latency Mode — Best for calls and gaming`), moved power-user controls into `Experimental & Advanced`, added crisp `i` info callouts in `Routing & Proxy`, and fixed background-polling dropdown insta-close.
+  - **Android 4-Tab Navigation & Unified Vantablack QR:** Refactored Android `MainActivity` into a 4-tab bottom-nav layout (`Home | Devices | Privacy | Settings`), added `+ Scan QR | Invite QR | Paste Link` peer onboarding, fixed phone-to-phone LAN discovery (`WifiManager.MulticastLock` + `android_jni.rs`), dynamically synced APK `versionName`/`versionCode` from `Cargo.toml`, and unified the Android Invite QR renderer with PC's Connected Liquid Tracks + Stealth-Visor Ghost style (`ErrorCorrectionLevel.H`).
+
+---
+
 ## [3.8.3] — 2026-11-28
 
 - **Tier-2 Complete (`energy_currency` & `sharded_compute` in `src/daemon/research_hooks.rs`):**

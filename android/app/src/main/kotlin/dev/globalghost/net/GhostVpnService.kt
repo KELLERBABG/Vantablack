@@ -632,34 +632,57 @@ class GhostVpnService : VpnService() {
             val p = activePtr
             if (p != 0L) {
                 Thread {
-                    // 1. Run local Wi-Fi LAN discovery
-                    val count = try {
-                        GhostCore.scanLan(p)
-                    } catch (_: Throwable) {
-                        0
-                    }
-
-                    // 2. Sync with Cloudflare Worker bootstrap tracker
-                    try {
-                        val fp = try { GhostCore.getFingerprint(p) } catch (_: Throwable) { "" }
-                        val lanIp = getLocalIpAddress()
-                        val selfEndpoint = if (lanIp.isNotEmpty() && lanIp != "127.0.0.1") "$lanIp:55225" else ""
-                        val peers = fetchBootstrapPeers(null, fp, lanIp)
-                        for (peer in peers) {
-                            if (peer == selfEndpoint) continue
-                            try {
-                                GhostCore.connectPeer(p, peer)
-                            } catch (_: Throwable) {}
+                    val mLock = try {
+                        val wm = instance?.applicationContext?.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                        wm?.createMulticastLock("vantablack_lan_scan")?.apply {
+                            setReferenceCounted(false)
+                            acquire()
                         }
-                        val active = GhostCore.getActiveHub(p)
-                        if (active.isNotEmpty()) currentHubAddr = active
-                    } catch (_: Throwable) {}
+                    } catch (_: Throwable) { null }
+                    try {
+                        // 1. Run local Wi-Fi LAN discovery
+                        val count = try {
+                            GhostCore.scanLan(p)
+                        } catch (_: Throwable) {
+                            0
+                        }
 
-                    val totalPeers = try { getDiscoveredPeers().size.coerceAtLeast(count) } catch (_: Throwable) { count }
-                    onComplete?.invoke(totalPeers)
+                        // 2. Sync with Cloudflare Worker bootstrap tracker
+                        try {
+                            val fp = try { GhostCore.getFingerprint(p) } catch (_: Throwable) { "" }
+                            val lanIp = getLocalIpAddress()
+                            val selfEndpoint = if (lanIp.isNotEmpty() && lanIp != "127.0.0.1") "$lanIp:55225" else ""
+                            val peers = fetchBootstrapPeers(null, fp, lanIp)
+                            for (peer in peers) {
+                                if (peer == selfEndpoint) continue
+                                try {
+                                    GhostCore.connectPeer(p, peer)
+                                } catch (_: Throwable) {}
+                            }
+                            val active = GhostCore.getActiveHub(p)
+                            if (active.isNotEmpty()) currentHubAddr = active
+                        } catch (_: Throwable) {}
+
+                        val totalPeers = try { getDiscoveredPeers().size.coerceAtLeast(count) } catch (_: Throwable) { count }
+                        onComplete?.invoke(totalPeers)
+                    } finally {
+                        try { mLock?.release() } catch (_: Throwable) {}
+                    }
                 }.start()
             } else {
                 onComplete?.invoke(0)
+            }
+        }
+
+        fun exportInviteUri(): String? {
+            val p = activePtr
+            if (p == 0L) return null
+            val lanIp = getLocalIpAddress()
+            val ep = if (lanIp.isNotEmpty()) "$lanIp:55225" else "127.0.0.1:55225"
+            return try {
+                GhostCore.exportInvite(p, ep).takeIf { it.isNotEmpty() }
+            } catch (_: Throwable) {
+                null
             }
         }
 

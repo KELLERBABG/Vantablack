@@ -11,8 +11,12 @@ android {
         applicationId = "dev.globalghost.net"
         minSdk = 26
         targetSdk = 34
-        versionCode = 300
-        versionName = "3.0.0"
+        val cargoVersion = file("../../Cargo.toml").readLines()
+            .firstOrNull { it.trim().startsWith("version = ") }
+            ?.substringAfter("\"")?.substringBefore("\"") ?: "3.8.3"
+        val parts = cargoVersion.split(".").map { it.toIntOrNull() ?: 0 }
+        versionCode = parts.getOrElse(0) { 3 } * 10000 + parts.getOrElse(1) { 8 } * 100 + parts.getOrElse(2) { 3 }
+        versionName = cargoVersion
     }
 
     signingConfigs {

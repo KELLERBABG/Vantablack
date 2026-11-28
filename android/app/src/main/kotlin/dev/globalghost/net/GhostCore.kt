@@ -66,6 +66,9 @@ object GhostCore {
     /** Import a vb-net:// or vb://2. invite/descriptor via Rust PeerDescriptorV2 / BlindRendezvous. */
     external fun importInvite(ptr: Long, invite: String): String
 
+    /** Export a signed vb:// PeerDescriptorV2 invite URI for this device's endpoint. */
+    external fun exportInvite(ptr: Long, endpoint: String): String
+
     /** Configure the BlindRendezvous URL (GHOST_RENDEZVOUS_URL). */
     external fun setRendezvousUrl(ptr: Long, url: String)
 
