@@ -479,7 +479,10 @@ impl TurnClient {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outbound {
-    ToClient { dest: SocketAddr, data: Vec<u8> },
+    ToClient {
+        dest: SocketAddr,
+        data: Vec<u8>,
+    },
     ToPeer {
         from_port: u16,
         dest: SocketAddr,

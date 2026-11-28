@@ -103,7 +103,9 @@ pub enum Action {
         real: bool,
         after_ms: u64,
     },
-    Sleep { ms: u64 },
+    Sleep {
+        ms: u64,
+    },
 }
 
 pub fn slot_is_on(seed: u64, slot: u64) -> bool {

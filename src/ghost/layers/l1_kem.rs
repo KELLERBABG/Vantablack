@@ -96,9 +96,7 @@ pub fn derive_hybrid_master_key_with_suite(
     psk: Option<&[u8; 32]>,
 ) -> [u8; 32] {
     let salt = match psk {
-        Some(key) => {
-            *key
-        }
+        Some(key) => *key,
         None => [0u8; 32],
     };
 

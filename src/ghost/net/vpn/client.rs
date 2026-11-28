@@ -265,9 +265,7 @@ pub mod resilience {
     pub enum Action {
         Nothing,
         SendKeepalive,
-        Rehandshake {
-            attempt: u32,
-        },
+        Rehandshake { attempt: u32 },
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

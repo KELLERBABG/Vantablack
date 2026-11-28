@@ -8,10 +8,10 @@
 
 use rand::RngCore;
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::path::PathBuf;
 #[cfg(feature = "quic")]
 use std::net::IpAddr;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

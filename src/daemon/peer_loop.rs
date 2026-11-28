@@ -1124,10 +1124,8 @@ pub(crate) async fn handle_pkt(
             if let Some(relay) = parse_relay_header(payload) {
                 if relay.remaining_hops > 0 {
                     #[cfg(feature = "research")]
-                    if !super::research_hooks::voucher::admit_transit_onion(
-                        &peer_fp,
-                        payload.len(),
-                    ) {
+                    if !super::research_hooks::voucher::admit_transit_onion(&peer_fp, payload.len())
+                    {
                         return;
                     }
                     if let Some(enforcer) = tft {

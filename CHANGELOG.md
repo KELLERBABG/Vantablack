@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.8.3] — 2026-11-28
+
+- **Tier-2 Complete (`energy_currency` & `sharded_compute` in `src/daemon/research_hooks.rs`):**
+  - **`repair_ledger` (`energy_currency`):** Wired `GHOST_REPAIR__` mutual erasure-repair receipts (`MutualRepairReceipt`) requiring distinct Ed25519 worker and witness signatures (`worker_pk != witness_pk`) with replay protection and `/api/status` counters.
+  - **`compute_offload` (`sharded_compute::lagrange`):** Wired `LagrangeCodedInference` (`GHOST_SHARDED_COMPUTE=1`) enforcing the `d <= 2` scope rule (rejecting non-linear degree > 2 layers client-side) and distinct-ASN worker quorum, completing all 4 Tier-2 modules (`22` `research_hooks` unit tests passing, `0` clippy warnings).
+
+---
+
 ## [3.8.2] — 2026-11-27
 
 - **Codebase Cleanup:** Removed verbose inline `///` and `//` comments across `123` Rust files in `src/` (`7,857` `///` lines and `4,290` `//` lines) while preserving all `//!` module-level headers (file purpose, brief explanation, wire layouts/invariants) and `// SAFETY:` invariants (`cargo clippy --all-targets --features research -- -D warnings` clean, `20` `research_hooks` + `48` `layer_tests` passing).

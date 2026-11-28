@@ -48,9 +48,15 @@ pub enum FallbackPath {
         relay_fp: String,
         relay_addr: SocketAddr,
     },
-    Turn { peer_relayed: SocketAddr },
-    Skywave { nvis_freq_khz: u32 },
-    Masque { peer: SocketAddr },
+    Turn {
+        peer_relayed: SocketAddr,
+    },
+    Skywave {
+        nvis_freq_khz: u32,
+    },
+    Masque {
+        peer: SocketAddr,
+    },
 }
 
 impl FallbackPath {

@@ -28,7 +28,8 @@ use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use vantablack::ghost::net::{
-    braid_identity, dead_drop, entropy_beacon, mesh_archive, metabolic, polysemy, sheaf,
+    braid_identity, dead_drop, energy_currency, entropy_beacon, mesh_archive, metabolic, polysemy,
+    sharded_compute, sheaf,
 };
 use vantablack::ghost::v2::erosion;
 
@@ -70,6 +71,7 @@ pub(crate) fn handle_control(from_fp: &str, payload: &[u8]) -> Option<Vec<Vec<u8
         || beacon_wire::handle_pdu(from_fp, payload)
         || voucher::handle_pdu(from_fp, payload)
         || sheaf_monitor::handle_pdu(from_fp, payload)
+        || repair_ledger::handle_pdu(from_fp, payload)
     {
         return Some(Vec::new());
     }
@@ -148,6 +150,8 @@ pub(crate) fn status_json(active_sessions: usize) -> serde_json::Value {
         "voucher": voucher::stats(),
         "sheaf": sheaf_monitor::status(),
         "metabolic": metabolic_guard::status(),
+        "energy_currency": repair_ledger::status(),
+        "sharded_compute": compute_offload::status(),
     })
 }
 
@@ -180,7 +184,8 @@ pub(crate) mod braid {
     }
 
     fn chains() -> &'static DashMap<String, Mutex<braid_identity::BraidChain>> {
-        static CHAINS: OnceLock<DashMap<String, Mutex<braid_identity::BraidChain>>> = OnceLock::new();
+        static CHAINS: OnceLock<DashMap<String, Mutex<braid_identity::BraidChain>>> =
+            OnceLock::new();
         CHAINS.get_or_init(DashMap::new)
     }
 
@@ -270,9 +275,8 @@ pub(crate) mod braid {
     fn encode_record(record: &Record) -> Vec<u8> {
         let our = record.our_fp.as_bytes();
         let peer = record.peer_fp.as_bytes();
-        let mut out = Vec::with_capacity(
-            13 + our.len() + peer.len() + 73 + braid_identity::TRANSITION_BYTES,
-        );
+        let mut out =
+            Vec::with_capacity(13 + our.len() + peer.len() + 73 + braid_identity::TRANSITION_BYTES);
         out.extend_from_slice(RECORD_MAGIC);
         out.push(RECORD_VERSION);
         out.extend_from_slice(&(our.len() as u16).to_be_bytes());
@@ -305,8 +309,12 @@ pub(crate) mod braid {
         if bytes.len() <= tail {
             return None;
         }
-        let our_fp = std::str::from_utf8(bytes.get(HEADER..our_end)?).ok()?.to_string();
-        let peer_fp = std::str::from_utf8(bytes.get(our_end..peer_end)?).ok()?.to_string();
+        let our_fp = std::str::from_utf8(bytes.get(HEADER..our_end)?)
+            .ok()?
+            .to_string();
+        let peer_fp = std::str::from_utf8(bytes.get(our_end..peer_end)?)
+            .ok()?
+            .to_string();
         if our_fp.is_empty() || peer_fp.is_empty() {
             return None;
         }
@@ -317,9 +325,9 @@ pub(crate) mod braid {
         braid.copy_from_slice(bytes.get(peer_end + 40..peer_end + 72)?);
         let last = match bytes[tail] {
             0 if bytes.len() == tail + 1 => None,
-            1 if bytes.len() == tail + 1 + braid_identity::TRANSITION_BYTES => {
-                Some(braid_identity::Transition::from_bytes(bytes.get(tail + 1..)?)?)
-            }
+            1 if bytes.len() == tail + 1 + braid_identity::TRANSITION_BYTES => Some(
+                braid_identity::Transition::from_bytes(bytes.get(tail + 1..)?)?,
+            ),
             _ => return None,
         };
         Some(Record {
@@ -387,11 +395,10 @@ pub(crate) mod braid {
             if record.our_fp != our_fp {
                 continue;
             }
-            let lock = braid_identity::BraidLock::restore(record.secret, record.braid, record.height);
+            let lock =
+                braid_identity::BraidLock::restore(record.secret, record.braid, record.height);
             if let Some(last) = &record.last {
-                if last.height != record.height
-                    || last.next_pk != lock.identity()
-                    || !last.verify()
+                if last.height != record.height || last.next_pk != lock.identity() || !last.verify()
                 {
                     tracing::error!(
                         peer = %record.peer_fp,
@@ -432,12 +439,7 @@ pub(crate) mod braid {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     }
 
-    fn append_journal(
-        root: &Path,
-        peer_fp: &str,
-        kind: u8,
-        body: &[u8],
-    ) -> std::io::Result<()> {
+    fn append_journal(root: &Path, peer_fp: &str, kind: u8, body: &[u8]) -> std::io::Result<()> {
         if !valid_peer_fp(peer_fp) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -883,7 +885,11 @@ pub(crate) mod beacon_wire {
 
     pub(crate) fn snapshot() -> (u64, u32, usize) {
         let wire = state().lock();
-        (wire.grid.grid_epoch, wire.grid.cycle_count, wire.finalized.len())
+        (
+            wire.grid.grid_epoch,
+            wire.grid.cycle_count,
+            wire.finalized.len(),
+        )
     }
 }
 
@@ -940,7 +946,13 @@ pub(crate) mod vault {
 
     pub(crate) fn epoch_secs() -> u64 {
         static SECS: OnceLock<u64> = OnceLock::new();
-        *SECS.get_or_init(|| window_env("GHOST_EROSION_EPOCH_SECS", DEFAULT_EPOCH_SECS, MIN_EPOCH_SECS))
+        *SECS.get_or_init(|| {
+            window_env(
+                "GHOST_EROSION_EPOCH_SECS",
+                DEFAULT_EPOCH_SECS,
+                MIN_EPOCH_SECS,
+            )
+        })
     }
 
     pub(crate) fn ttl_secs() -> u64 {
@@ -1125,7 +1137,10 @@ pub(crate) mod vault {
             }
         }
         if sent > 0 {
-            tracing::info!(pdus = sent, "vault: placement PDUs delivered to their hosts");
+            tracing::info!(
+                pdus = sent,
+                "vault: placement PDUs delivered to their hosts"
+            );
         }
         sent
     }
@@ -1185,12 +1200,7 @@ pub(crate) mod vault {
         payload
     }
 
-    fn encode_fetch(
-        request_id: &[u8; 8],
-        kind: u8,
-        id: &[u8; 32],
-        indices: &[u8],
-    ) -> Vec<u8> {
+    fn encode_fetch(request_id: &[u8; 8], kind: u8, id: &[u8; 32], indices: &[u8]) -> Vec<u8> {
         let mut payload = frame(OP_FETCH, request_id);
         payload.push(kind);
         payload.extend_from_slice(id);
@@ -1353,7 +1363,10 @@ pub(crate) mod vault {
         } else {
             for (index, piece) in pieces.iter().enumerate() {
                 blobs().deposit(dead_drop::BlindDeadDropBlob::new(
-                    chunks[index], piece, now, ttl_secs(),
+                    chunks[index],
+                    piece,
+                    now,
+                    ttl_secs(),
                 ));
             }
             local_archive = Some(record);
@@ -1510,8 +1523,7 @@ pub(crate) mod vault {
                     id.copy_from_slice(&body[..32]);
                     let index = body[32];
                     let members = body[33] as usize;
-                    let deadline =
-                        u64::from_be_bytes(body[34..42].try_into().expect("8 bytes"));
+                    let deadline = u64::from_be_bytes(body[34..42].try_into().expect("8 bytes"));
                     let mut share = [0u8; 32];
                     share.copy_from_slice(&body[42..74]);
                     if members == 0 || index as usize >= members || deadline == 0 {
@@ -1529,7 +1541,9 @@ pub(crate) mod vault {
                 }
             }
             OP_STORE_SHARD => {
-                if body.len() < 35 || body.len() != 35 + u16::from_be_bytes([body[33], body[34]]) as usize {
+                if body.len() < 35
+                    || body.len() != 35 + u16::from_be_bytes([body[33], body[34]]) as usize
+                {
                     tracing::warn!(peer = %from_fp, "vault: malformed shard placement");
                 } else {
                     let mut id = [0u8; 32];
@@ -1620,8 +1634,7 @@ pub(crate) mod vault {
                         let mut kept = 0usize;
                         for slot in 0..count {
                             let mut commitment = [0u8; 32];
-                            commitment
-                                .copy_from_slice(&body[34 + 32 * slot..66 + 32 * slot]);
+                            commitment.copy_from_slice(&body[34 + 32 * slot..66 + 32 * slot]);
                             if blobs().prove_retention_interest(&commitment, now) {
                                 kept += 1;
                             }
@@ -1647,7 +1660,9 @@ pub(crate) mod vault {
         if expired(&descriptor, now) {
             return Err(OpenError::Expired);
         }
-        let Some(stored_bundle) = stored().get(&descriptor.id).map(|entry| entry.value().clone())
+        let Some(stored_bundle) = stored()
+            .get(&descriptor.id)
+            .map(|entry| entry.value().clone())
         else {
             return Err(OpenError::Corrupt);
         };
@@ -1681,7 +1696,9 @@ pub(crate) mod vault {
         if expired(&descriptor, now) {
             return Err(OpenError::Expired);
         }
-        let Some(stored_bundle) = stored().get(&descriptor.id).map(|entry| entry.value().clone())
+        let Some(stored_bundle) = stored()
+            .get(&descriptor.id)
+            .map(|entry| entry.value().clone())
         else {
             return Err(OpenError::Corrupt);
         };
@@ -1784,12 +1801,14 @@ pub(crate) mod vault {
         let mut share_requests: HashMap<&str, Vec<u8>> = HashMap::new();
         for (index, host) in plan.share_hosts.iter().enumerate() {
             if let Some(host) = host {
-                share_requests.entry(host.as_str()).or_default().push(index as u8);
+                share_requests
+                    .entry(host.as_str())
+                    .or_default()
+                    .push(index as u8);
             }
         }
         for (host, indices) in share_requests {
-            for (index, bytes) in
-                fetch(nc, peers, host, ITEM_SHARE, &descriptor.id, &indices).await
+            for (index, bytes) in fetch(nc, peers, host, ITEM_SHARE, &descriptor.id, &indices).await
             {
                 if bytes.len() == 32 {
                     let mut share = [0u8; 32];
@@ -1804,12 +1823,14 @@ pub(crate) mod vault {
         let mut shard_requests: HashMap<&str, Vec<u8>> = HashMap::new();
         for (index, host) in plan.shard_hosts.iter().enumerate() {
             if let Some(host) = host {
-                shard_requests.entry(host.as_str()).or_default().push(index as u8);
+                shard_requests
+                    .entry(host.as_str())
+                    .or_default()
+                    .push(index as u8);
             }
         }
         for (host, indices) in shard_requests {
-            for (index, bytes) in
-                fetch(nc, peers, host, ITEM_SHARD, &descriptor.id, &indices).await
+            for (index, bytes) in fetch(nc, peers, host, ITEM_SHARD, &descriptor.id, &indices).await
             {
                 if let Some(slot) = pieces.shards.get_mut(index as usize) {
                     *slot = Some(bytes);
@@ -1832,8 +1853,7 @@ pub(crate) mod vault {
             }
         }
         for (host, indices) in chunk_requests {
-            for (index, bytes) in
-                fetch(nc, peers, host, ITEM_CHUNK, &descriptor.id, &indices).await
+            for (index, bytes) in fetch(nc, peers, host, ITEM_CHUNK, &descriptor.id, &indices).await
             {
                 if let Some(slot) = pieces.chunks.get_mut(index as usize) {
                     *slot = Some(bytes);
@@ -2095,7 +2115,10 @@ pub(crate) mod vault {
         if now >= descriptor.die_at {
             return Err(OpenError::Expired);
         }
-        let Some(bundle) = stored().get(&descriptor.id).map(|entry| entry.value().clone()) else {
+        let Some(bundle) = stored()
+            .get(&descriptor.id)
+            .map(|entry| entry.value().clone())
+        else {
             return Err(OpenError::Corrupt);
         };
         let mut pieces = Pieces {
@@ -2142,7 +2165,10 @@ pub(crate) mod vault {
         (
             hosted_shares().len(),
             hosted_shards().len(),
-            hosted_chunks().iter().map(|entry| entry.value().len()).sum(),
+            hosted_chunks()
+                .iter()
+                .map(|entry| entry.value().len())
+                .sum(),
         )
     }
 
@@ -2160,7 +2186,9 @@ pub(crate) mod vault {
 
     #[cfg(test)]
     pub(crate) fn hosted_keep_timestamp(commitment: &DropCommitment) -> Option<u64> {
-        blobs().sweep(commitment).map(|blob| blob.last_kept_timestamp)
+        blobs()
+            .sweep(commitment)
+            .map(|blob| blob.last_kept_timestamp)
     }
 
     #[cfg(test)]
@@ -2315,7 +2343,9 @@ pub(crate) mod voucher {
                     "voucher: relay credited the peer's transit"
                 );
             }
-            Err(reason) => tracing::debug!(peer = %from_fp, reason, "voucher: presentation refused"),
+            Err(reason) => {
+                tracing::debug!(peer = %from_fp, reason, "voucher: presentation refused")
+            }
         }
         true
     }
@@ -2372,7 +2402,10 @@ pub(crate) mod voucher {
     }
 
     #[cfg(test)]
-    pub(crate) fn present_for_test(from_fp: &str, voucher: &BandwidthVoucher) -> Result<u32, &'static str> {
+    pub(crate) fn present_for_test(
+        from_fp: &str,
+        voucher: &BandwidthVoucher,
+    ) -> Result<u32, &'static str> {
         let mut bank = state().lock();
         let granted = bank.relay.redeem_voucher(voucher)?;
         bank.by_peer
@@ -2429,10 +2462,7 @@ pub(crate) mod worlds {
         *ENABLED.get_or_init(|| toggle("GHOST_BOND_WORLDS", false))
     }
 
-    pub(crate) fn encode_probe(
-        n: usize,
-        tag: &[u8; 4],
-    ) -> Option<([u8; 8], u8, u8, Vec<Vec<u8>>)> {
+    pub(crate) fn encode_probe(n: usize, tag: &[u8; 4]) -> Option<([u8; 8], u8, u8, Vec<Vec<u8>>)> {
         if n < 3 {
             return None;
         }
@@ -2452,13 +2482,7 @@ pub(crate) mod worlds {
         Some((id, n as u8, k as u8, shards))
     }
 
-    pub(crate) fn wrap(
-        id: &[u8; 8],
-        path: u8,
-        n: u8,
-        k: u8,
-        shard: &[u8],
-    ) -> Vec<u8> {
+    pub(crate) fn wrap(id: &[u8; 8], path: u8, n: u8, k: u8, shard: &[u8]) -> Vec<u8> {
         let mut datagram = Vec::with_capacity(HEADER + shard.len());
         datagram.extend_from_slice(MAGIC);
         datagram.push(VERSION);
@@ -2470,7 +2494,10 @@ pub(crate) mod worlds {
         datagram
     }
 
-    pub(crate) fn handle_datagram(datagram: &[u8], from: IpAddr) -> Option<(Vec<usize>, [u8; MESSAGE])> {
+    pub(crate) fn handle_datagram(
+        datagram: &[u8],
+        from: IpAddr,
+    ) -> Option<(Vec<usize>, [u8; MESSAGE])> {
         if datagram.len() <= HEADER || &datagram[..4] != MAGIC || datagram[4] != VERSION {
             return None;
         }
@@ -2760,7 +2787,9 @@ pub(crate) mod sheaf_monitor {
     }
 
     #[cfg(test)]
-    pub(crate) fn reset_and_record_for_test(edges: &[(&str, &str, [i64; DIMENSION])]) -> serde_json::Value {
+    pub(crate) fn reset_and_record_for_test(
+        edges: &[(&str, &str, [i64; DIMENSION])],
+    ) -> serde_json::Value {
         let mut st = state().lock();
         *st = SheafState::default();
         for (u, v, d) in edges {
@@ -2900,6 +2929,307 @@ pub(crate) mod metabolic_guard {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════
+// 8. repair_ledger — Tier-2 proof-of-erasure-repair mutual receipts
+// ══════════════════════════════════════════════════════════════════
+
+pub(crate) mod repair_ledger {
+    use super::*;
+    use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+
+    pub(crate) const MAGIC: &[u8; 14] = b"GHOST_REPAIR__";
+    const WITNESS_DOMAIN: &[u8] = b"VB-REPAIR-WITNESS-V1";
+    const BODY_LEN: usize = 32 + 32 + 32 + 8 + 32 + 64 + 32 + 64;
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct MutualRepairReceipt {
+        pub(crate) proof: energy_currency::ErasureRepairProof,
+        pub(crate) witness_pk: [u8; 32],
+        pub(crate) witness_sig: [u8; 64],
+    }
+
+    impl MutualRepairReceipt {
+        #[allow(dead_code)]
+        pub(crate) fn sign_witness(
+            proof: energy_currency::ErasureRepairProof,
+            witness_sk: &SigningKey,
+        ) -> Self {
+            let witness_pk = witness_sk.verifying_key().to_bytes();
+            let msg = witness_message(&proof.proof_id());
+            let witness_sig = witness_sk.sign(&msg).to_bytes();
+            Self {
+                proof,
+                witness_pk,
+                witness_sig,
+            }
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn to_pdu(&self) -> Vec<u8> {
+            let mut out = Vec::with_capacity(MAGIC.len() + BODY_LEN);
+            out.extend_from_slice(MAGIC);
+            out.extend_from_slice(&self.proof.input_shard_hashes[0]);
+            out.extend_from_slice(&self.proof.input_shard_hashes[1]);
+            out.extend_from_slice(&self.proof.repaired_shard_hash);
+            out.extend_from_slice(&self.proof.epoch.to_be_bytes());
+            out.extend_from_slice(&self.proof.worker_pk);
+            out.extend_from_slice(&self.proof.signature);
+            out.extend_from_slice(&self.witness_pk);
+            out.extend_from_slice(&self.witness_sig);
+            out
+        }
+
+        pub(crate) fn from_body(body: &[u8]) -> Option<Self> {
+            if body.len() != BODY_LEN {
+                return None;
+            }
+            let mut h0 = [0u8; 32];
+            let mut h1 = [0u8; 32];
+            let mut rep = [0u8; 32];
+            h0.copy_from_slice(&body[0..32]);
+            h1.copy_from_slice(&body[32..64]);
+            rep.copy_from_slice(&body[64..96]);
+            let epoch = u64::from_be_bytes(body[96..104].try_into().ok()?);
+            let mut worker_pk = [0u8; 32];
+            worker_pk.copy_from_slice(&body[104..136]);
+            let mut signature = [0u8; 64];
+            signature.copy_from_slice(&body[136..200]);
+            let mut witness_pk = [0u8; 32];
+            witness_pk.copy_from_slice(&body[200..232]);
+            let mut witness_sig = [0u8; 64];
+            witness_sig.copy_from_slice(&body[232..296]);
+            Some(Self {
+                proof: energy_currency::ErasureRepairProof {
+                    input_shard_hashes: [h0, h1],
+                    repaired_shard_hash: rep,
+                    epoch,
+                    worker_pk,
+                    signature,
+                },
+                witness_pk,
+                witness_sig,
+            })
+        }
+    }
+
+    fn witness_message(proof_id: &[u8; 32]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(WITNESS_DOMAIN);
+        h.update(proof_id);
+        h.finalize().into()
+    }
+
+    fn verify_witness(receipt: &MutualRepairReceipt) -> bool {
+        if receipt.proof.worker_pk == receipt.witness_pk {
+            return false;
+        }
+        let Ok(vk) = VerifyingKey::from_bytes(&receipt.witness_pk) else {
+            return false;
+        };
+        let Ok(sig) = Signature::from_slice(&receipt.witness_sig) else {
+            return false;
+        };
+        let msg = witness_message(&receipt.proof.proof_id());
+        vk.verify(&msg, &sig).is_ok()
+    }
+
+    struct RepairState {
+        ledger: energy_currency::EnergyCreditLedger,
+        accepted_receipts: u64,
+        rejected_receipts: u64,
+        total_credits_minted: u64,
+    }
+
+    impl Default for RepairState {
+        fn default() -> Self {
+            Self {
+                ledger: energy_currency::EnergyCreditLedger::new(),
+                accepted_receipts: 0,
+                rejected_receipts: 0,
+                total_credits_minted: 0,
+            }
+        }
+    }
+
+    fn state() -> &'static Mutex<RepairState> {
+        static STATE: OnceLock<Mutex<RepairState>> = OnceLock::new();
+        STATE.get_or_init(|| Mutex::new(RepairState::default()))
+    }
+
+    pub(crate) fn enabled() -> bool {
+        toggle("GHOST_ENERGY_CURRENCY", true)
+    }
+
+    pub(crate) fn record_mutual_receipt(
+        receipt: &MutualRepairReceipt,
+    ) -> Result<u64, &'static str> {
+        if !enabled() {
+            return Err("energy currency disabled");
+        }
+        let mut st = state().lock();
+        if !verify_witness(receipt) {
+            st.rejected_receipts += 1;
+            return Err("missing, invalid, or self-signed witness receipt");
+        }
+        match st.ledger.credit_repair(&receipt.proof) {
+            Ok(bal) => {
+                st.accepted_receipts += 1;
+                st.total_credits_minted = st.total_credits_minted.saturating_add(10);
+                Ok(bal)
+            }
+            Err(e) => {
+                st.rejected_receipts += 1;
+                Err(e)
+            }
+        }
+    }
+
+    pub(crate) fn handle_pdu(from_fp: &str, payload: &[u8]) -> bool {
+        if payload.len() < MAGIC.len() || &payload[..MAGIC.len()] != MAGIC {
+            return false;
+        }
+        if !enabled() || braid::peer_revoked(from_fp) {
+            return true;
+        }
+        let Some(receipt) = MutualRepairReceipt::from_body(&payload[MAGIC.len()..]) else {
+            state().lock().rejected_receipts += 1;
+            return true;
+        };
+        if let Err(err) = record_mutual_receipt(&receipt) {
+            tracing::debug!(peer = %from_fp, error = %err, "repair_ledger: rejected receipt");
+        }
+        true
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn spend_for_priority(
+        worker_pk: &[u8; 32],
+        credits: u64,
+    ) -> Result<u8, &'static str> {
+        state().lock().ledger.spend_for_priority(worker_pk, credits)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn balance_of(worker_pk: &[u8; 32]) -> u64 {
+        state().lock().ledger.balance_of(worker_pk)
+    }
+
+    pub(crate) fn status() -> serde_json::Value {
+        let st = state().lock();
+        serde_json::json!({
+            "enabled": enabled(),
+            "accepted_receipts": st.accepted_receipts,
+            "rejected_receipts": st.rejected_receipts,
+            "total_credits_minted": st.total_credits_minted,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_for_test() {
+        *state().lock() = RepairState::default();
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 9. compute_offload — Tier-2 Lagrange Coded Inference (d <= 2)
+// ══════════════════════════════════════════════════════════════════
+
+pub(crate) mod compute_offload {
+    use super::*;
+    use sharded_compute::lagrange::{LagrangeCodedInference, LccOutput, LccTask};
+    use std::collections::HashSet;
+
+    pub(crate) const MAX_OFFLOAD_DEGREE: usize = 2;
+
+    #[derive(Default)]
+    struct ComputeState {
+        offloaded_jobs: u64,
+        completed_jobs: u64,
+        rejected_nonlinear_jobs: u64,
+    }
+
+    fn state() -> &'static Mutex<ComputeState> {
+        static STATE: OnceLock<Mutex<ComputeState>> = OnceLock::new();
+        STATE.get_or_init(|| Mutex::new(ComputeState::default()))
+    }
+
+    pub(crate) fn enabled() -> bool {
+        toggle("GHOST_SHARDED_COMPUTE", true)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn prepare_offload(
+        layer: &[u64],
+        inputs: &[Vec<u64>],
+        masks: usize,
+        worker_asns: &[u32],
+    ) -> Result<Vec<LccTask>, &'static str> {
+        if !enabled() {
+            return Err("sharded_compute disabled");
+        }
+        if layer.is_empty() {
+            return Err("empty layer polynomial");
+        }
+        let layer_degree = layer.len() - 1;
+        if layer_degree > MAX_OFFLOAD_DEGREE {
+            state().lock().rejected_nonlinear_jobs += 1;
+            return Err("scope rule: only linear/quadratic layers (d <= 2) may be offloaded");
+        }
+        let unique_asns: HashSet<u32> = worker_asns.iter().copied().collect();
+        let lcc = LagrangeCodedInference::new(inputs.len(), masks)
+            .map_err(|_| "invalid LCC shape (data_symbols and masks must be >= 1)")?;
+        let min_workers = lcc.required_workers(layer_degree, 0, 0);
+        if unique_asns.len() < min_workers {
+            return Err("insufficient distinct worker ASNs for LCC degree bound");
+        }
+        let tasks = lcc
+            .encode(inputs, worker_asns)
+            .map_err(|_| "LCC encode failed")?;
+        state().lock().offloaded_jobs += 1;
+        Ok(tasks)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn complete_offload(
+        data_symbols: usize,
+        masks: usize,
+        layer_degree: usize,
+        byzantine: usize,
+        outputs: &[Option<LccOutput>],
+    ) -> Result<Vec<Vec<u64>>, &'static str> {
+        if !enabled() {
+            return Err("sharded_compute disabled");
+        }
+        if layer_degree > MAX_OFFLOAD_DEGREE {
+            state().lock().rejected_nonlinear_jobs += 1;
+            return Err("scope rule: layer degree exceeds d <= 2");
+        }
+        let lcc =
+            LagrangeCodedInference::new(data_symbols, masks).map_err(|_| "invalid LCC shape")?;
+        let recovered = lcc
+            .decode(outputs, layer_degree, byzantine)
+            .map_err(|_| "LCC decode failed (too few evaluations or malformed output)")?;
+        state().lock().completed_jobs += 1;
+        Ok(recovered)
+    }
+
+    pub(crate) fn status() -> serde_json::Value {
+        let st = state().lock();
+        serde_json::json!({
+            "enabled": enabled(),
+            "max_offload_degree": MAX_OFFLOAD_DEGREE,
+            "offloaded_jobs": st.offloaded_jobs,
+            "completed_jobs": st.completed_jobs,
+            "rejected_nonlinear_jobs": st.rejected_nonlinear_jobs,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_for_test() {
+        *state().lock() = ComputeState::default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2910,7 +3240,10 @@ mod tests {
         LOCK.lock()
     }
 
-    fn fresh_voucher(epoch: u64, quota: u32) -> vantablack::ghost::net::bandwidth_voucher::BandwidthVoucher {
+    fn fresh_voucher(
+        epoch: u64,
+        quota: u32,
+    ) -> vantablack::ghost::net::bandwidth_voucher::BandwidthVoucher {
         let mut preimage = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut preimage);
         vantablack::ghost::net::bandwidth_voucher::BandwidthVoucher::mint(
@@ -2924,11 +3257,8 @@ mod tests {
     #[test]
     fn a_braid_fork_revokes_the_peer_and_a_replay_is_stale() {
         let mut real = braid_identity::BraidLock::from_seed([0x42u8; 32]);
-        let mut clone = braid_identity::BraidLock::restore(
-            real.secret_state().0,
-            real.braid(),
-            real.height(),
-        );
+        let mut clone =
+            braid_identity::BraidLock::restore(real.secret_state().0, real.braid(), real.height());
         let a = real.advance(b"wifi");
         let b = clone.advance(b"five-g");
         assert_eq!(a.parent_pk, b.parent_pk);
@@ -2942,7 +3272,10 @@ mod tests {
         let mut second = braid::MAGIC.to_vec();
         second.extend_from_slice(&b.to_bytes());
         assert!(braid::handle_pdu(peer, &second));
-        assert!(braid::peer_revoked(peer), "two children of one key revoke it");
+        assert!(
+            braid::peer_revoked(peer),
+            "two children of one key revoke it"
+        );
 
         assert!(braid::handle_pdu(peer, &first));
         assert!(braid::peer_revoked(peer));
@@ -3005,7 +3338,10 @@ mod tests {
 
         let recovered = vault::open_at(&descriptor, now + 1).expect("opens inside the epoch");
         assert_eq!(recovered, payload);
-        assert!(vault::stored_count() >= 1, "the descriptor is still retryable");
+        assert!(
+            vault::stored_count() >= 1,
+            "the descriptor is still retryable"
+        );
 
         let descriptor = vault::deposit_at(peer, b"second bundle", now).expect("second deposit");
         assert_eq!(
@@ -3022,7 +3358,10 @@ mod tests {
         let mut descriptor = vault::deposit_at("vault-tamper", b"payload", now).expect("deposits");
         let last = descriptor.len() - 1;
         descriptor[last] ^= 0xFF; // last commitment byte
-        assert_eq!(vault::open_at(&descriptor, now + 1), Err(vault::OpenError::Corrupt));
+        assert_eq!(
+            vault::open_at(&descriptor, now + 1),
+            Err(vault::OpenError::Corrupt)
+        );
         assert_eq!(
             vault::open_at(b"GHOST_PEX_____ legacy", now),
             Ok(b"GHOST_PEX_____ legacy".to_vec())
@@ -3032,14 +3371,23 @@ mod tests {
     #[test]
     fn relay_transit_is_refused_without_a_voucher_and_charged_with_one() {
         let peer = "voucher-unit-peer";
-        assert!(!voucher::charge_for_test(peer, 1024), "no voucher, no transit");
+        assert!(
+            !voucher::charge_for_test(peer, 1024),
+            "no voucher, no transit"
+        );
 
         let epoch = now_secs() / 3_600;
         let granted = voucher::present_for_test(peer, &fresh_voucher(epoch, 8)).expect("redeems");
         assert_eq!(granted, 8);
         assert!(voucher::charge_for_test(peer, 3_000_000), "one MB charged");
-        assert!(voucher::charge_for_test(peer, 3_000_000), "second MB charged");
-        assert!(!voucher::charge_for_test(peer, 32 * 1_048_576), "overdraw refused");
+        assert!(
+            voucher::charge_for_test(peer, 3_000_000),
+            "second MB charged"
+        );
+        assert!(
+            !voucher::charge_for_test(peer, 32 * 1_048_576),
+            "overdraw refused"
+        );
     }
 
     #[test]
@@ -3147,21 +3495,15 @@ mod tests {
         let mut payload = braid::MAGIC.to_vec();
         payload.extend_from_slice(&their_transition.to_bytes());
         assert!(braid::handle_pdu(peer_fp, &payload));
-        assert_eq!(
-            braid::our_height(peer_fp),
-            None,
-            "a verifier is not a lock"
-        );
+        assert_eq!(braid::our_height(peer_fp), None, "a verifier is not a lock");
         assert!(braid::tip_payload(peer_fp).is_none());
 
         let ours_payload = braid::advance_with(None, "braid-split-self", peer_fp, b"our session")
             .expect("publishes in memory");
         let ours = transition_of(&ours_payload);
         assert_eq!(ours.height, 1);
-        let genesis = braid_identity::BraidLock::from_seed(braid::seed_for(
-            "braid-split-self",
-            peer_fp,
-        ));
+        let genesis =
+            braid_identity::BraidLock::from_seed(braid::seed_for("braid-split-self", peer_fp));
         assert_eq!(ours.parent_pk, genesis.identity());
         assert_ne!(ours.parent_pk, their_transition.next_pk);
         assert_eq!(braid::our_height(peer_fp), Some(1));
@@ -3200,11 +3542,8 @@ mod tests {
         ));
 
         let mut real = braid_identity::BraidLock::from_seed([0x32u8; 32]);
-        let mut clone = braid_identity::BraidLock::restore(
-            real.secret_state().0,
-            real.braid(),
-            real.height(),
-        );
+        let mut clone =
+            braid_identity::BraidLock::restore(real.secret_state().0, real.braid(), real.height());
         let a = real.advance(b"wifi");
         let b = clone.advance(b"five-g");
         let peer_fork = "braid-journal-fork";
@@ -3377,7 +3716,9 @@ mod tests {
             "the chunk is stamped with its deposit time"
         );
 
-        assert!(vault::handle_pdu("keep-host", &vault::keep_for_test(&id, &[commitment])).is_some());
+        assert!(
+            vault::handle_pdu("keep-host", &vault::keep_for_test(&id, &[commitment])).is_some()
+        );
         assert!(
             vault::hosted_keep_timestamp(&commitment) > Some(1_000),
             "the keep-proof moved the retention stamp to now"
@@ -3439,7 +3780,8 @@ mod tests {
             "seven peers can fill two three-share rounds"
         );
         assert_eq!(
-            status_json(2)["entropy_beacon"]["peers_per_round"], 0,
+            status_json(2)["entropy_beacon"]["peers_per_round"],
+            0,
             "two peers cannot fill a round"
         );
         assert!(status["braid"]["tracked_peers"].is_number());
@@ -3450,6 +3792,8 @@ mod tests {
         assert!(status["sheaf"]["vertices"].is_number());
         assert!(status["metabolic"]["domains"].is_number());
         assert!(status["metabolic"]["theta"].is_number());
+        assert!(status["energy_currency"]["accepted_receipts"].is_number());
+        assert_eq!(status["sharded_compute"]["max_offload_degree"], 2);
     }
 
     #[test]
@@ -3476,7 +3820,12 @@ mod tests {
     #[test]
     fn metabolic_collapses_same_prefix_sybils_and_decays_across_half_life() {
         let sybil_pulses: Vec<(IpAddr, u64)> = (1u8..=50)
-            .map(|host| (IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, host)), 1_000))
+            .map(|host| {
+                (
+                    IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, host)),
+                    1_000,
+                )
+            })
             .collect();
         let sybil = metabolic_guard::reset_and_record_for_test(60.0, 1.5, &sybil_pulses, 1_000);
         assert_eq!(sybil["domains"], 1);
@@ -3494,5 +3843,84 @@ mod tests {
         let decayed = metabolic_guard::status_at(1_060);
         assert_eq!(decayed["mass"], 1.0);
         assert_eq!(decayed["authorized"], false);
+    }
+
+    /// Tier 2: energy_currency requires distinct mutually-signed worker+witness
+    /// receipts, rejects self-repair and duplicate proof_id minting, and spends
+    /// earned credits for forwarding priority.
+    #[test]
+    fn repair_ledger_requires_distinct_mutual_signatures_and_rejects_replay() {
+        use ed25519_dalek::SigningKey;
+        repair_ledger::reset_for_test();
+        let worker_sk = SigningKey::from_bytes(&[0x11u8; 32]);
+        let witness_sk = SigningKey::from_bytes(&[0x22u8; 32]);
+        let worker_pk = worker_sk.verifying_key().to_bytes();
+
+        let proof = vantablack::ghost::net::energy_currency::ErasureRepairProof::mint(
+            &worker_sk,
+            [[0xAAu8; 32], [0xBBu8; 32]],
+            [0xCCu8; 32],
+            42,
+        );
+
+        let self_signed =
+            repair_ledger::MutualRepairReceipt::sign_witness(proof.clone(), &worker_sk);
+        assert!(
+            repair_ledger::record_mutual_receipt(&self_signed).is_err(),
+            "self-repair receipt must be rejected"
+        );
+
+        let valid = repair_ledger::MutualRepairReceipt::sign_witness(proof, &witness_sk);
+        let pdu = valid.to_pdu();
+        assert!(repair_ledger::handle_pdu("witness-peer", &pdu));
+        assert_eq!(repair_ledger::balance_of(&worker_pk), 10);
+
+        assert!(repair_ledger::handle_pdu("witness-peer", &pdu));
+        assert_eq!(
+            repair_ledger::balance_of(&worker_pk),
+            10,
+            "duplicate proof_id must not double-mint"
+        );
+        assert_eq!(repair_ledger::spend_for_priority(&worker_pk, 10), Ok(1));
+        assert_eq!(repair_ledger::balance_of(&worker_pk), 0);
+    }
+
+    /// Tier 2: sharded_compute (LC-Vantablack) rejects degree > 2 non-linear
+    /// layers per scope rule and recovers quadratic inference across stragglers.
+    #[test]
+    fn compute_offload_enforces_quadratic_degree_bound_and_recovers_with_stragglers() {
+        use vantablack::ghost::net::sharded_compute::lagrange::apply_layer;
+        compute_offload::reset_for_test();
+
+        let inputs = vec![vec![5u64, 7], vec![11, 13]];
+        let asns = [64512u32, 64513, 64514, 64515, 64516, 64517];
+
+        assert!(
+            compute_offload::prepare_offload(&[1, 1, 1, 1], &inputs, 1, &asns).is_err(),
+            "degree 3 non-linear layer must stay client-side"
+        );
+
+        let quad_layer = [1u64, 2, 3]; // 1 + 2x + 3x^2
+        let tasks = compute_offload::prepare_offload(&quad_layer, &inputs, 1, &asns)
+            .expect("quadratic layer offloads");
+        let mut outputs: Vec<Option<_>> = tasks
+            .iter()
+            .map(|t| Some(apply_layer(&quad_layer, t)))
+            .collect();
+        outputs[2] = None; // drop 1 straggler; 5 remaining satisfy deg 4 + 1 = 5
+
+        let recovered = compute_offload::complete_offload(2, 1, 2, 0, &outputs)
+            .expect("recovers quadratic output");
+        assert_eq!(
+            recovered,
+            vec![
+                vec![1 + 2 * 5 + 3 * 25, 1 + 2 * 7 + 3 * 49],
+                vec![1 + 2 * 11 + 3 * 121, 1 + 2 * 13 + 3 * 169],
+            ]
+        );
+        let st = compute_offload::status();
+        assert_eq!(st["offloaded_jobs"], 1);
+        assert_eq!(st["completed_jobs"], 1);
+        assert_eq!(st["rejected_nonlinear_jobs"], 1);
     }
 }

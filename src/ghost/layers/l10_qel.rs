@@ -797,9 +797,7 @@ pub fn combine_monotone(
 
 enum QelBackend {
     Simulated(SimulatedQel),
-    Misconfigured {
-        reason: String,
-    },
+    Misconfigured { reason: String },
 }
 
 pub struct QuantumAnchorController {

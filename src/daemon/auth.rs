@@ -131,8 +131,10 @@ pub(crate) async fn handle_pq_auth_pdu(
                             send_pq_auth_proof(node, sock, src, fallback, peer_fp).await;
                         }
                         #[cfg(feature = "research")]
-                        super::research_hooks::session_established(node, sock, src, fallback, peer_fp)
-                            .await;
+                        super::research_hooks::session_established(
+                            node, sock, src, fallback, peer_fp,
+                        )
+                        .await;
                     }
                     Err(err) => {
                         tracing::warn!(

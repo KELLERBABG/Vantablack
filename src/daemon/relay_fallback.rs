@@ -516,9 +516,7 @@ pub(crate) async fn send3_via_fallback(
                     false
                 }
             },
-            FallbackPath::Masque { peer } => {
-                super::try_send_masque(peer, &datagram)
-            }
+            FallbackPath::Masque { peer } => super::try_send_masque(peer, &datagram),
             FallbackPath::Skywave { nvis_freq_khz } => {
                 tracing::info!(
                     peer = %target_fp,

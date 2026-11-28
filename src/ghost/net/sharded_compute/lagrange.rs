@@ -30,10 +30,7 @@ pub const FIELD: u64 = 2_147_483_647;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LccError {
     Shape(&'static str),
-    TooFewEvaluations {
-        need: usize,
-        got: usize,
-    },
+    TooFewEvaluations { need: usize, got: usize },
     Undecodable,
     OutOfField(u64),
 }

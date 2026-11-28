@@ -1,5 +1,5 @@
-# Vantablack v3.8.2 — Cleanup of Verbose LOC Comments
+# Vantablack v3.8.3 — Tier-2 Complete (`energy_currency` & `sharded_compute`)
 
-Vantablack **v3.8.2** removes verbose inline `///` and `//` comments across `123` Rust source files in `src/` while keeping all `//!` module-level headers (purpose, brief explanation, wire layouts/invariants) and `// SAFETY:` annotations intact, deferring deep architectural explanations to `Vantablack Brain`.
+Vantablack **v3.8.3** completes all 4 Tier-2 `research` modules in `src/daemon/research_hooks.rs`: `repair_ledger` enforces mutually signed distinct-peer erasure-repair receipts (`GHOST_REPAIR__`) and `compute_offload` wires Lagrange Coded Inference (`LC-Vantablack`) strictly for linear/quadratic layers ($d \le 2$) across distinct worker ASNs (`22` daemon hook tests passing, `0` clippy warnings).
 
 For full release notes and version-by-version changes, see the [**Detailed Update Logs**](https://vantablack.kellersystems.dev/docs#changelog).

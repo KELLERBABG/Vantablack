@@ -1615,10 +1615,7 @@ pub enum DropReason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Forwarded {
-    Deliver {
-        dest: SocketAddr,
-        bytes: Vec<u8>,
-    },
+    Deliver { dest: SocketAddr, bytes: Vec<u8> },
     Dropped(DropReason),
 }
 

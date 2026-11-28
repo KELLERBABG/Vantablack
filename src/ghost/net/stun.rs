@@ -220,10 +220,7 @@ pub enum Attribute {
     XorMappedAddress(SocketAddr),
     Username(Vec<u8>),
     MessageIntegrity([u8; 20]),
-    ErrorCode {
-        code: u16,
-        reason: String,
-    },
+    ErrorCode { code: u16, reason: String },
     Priority(u32),
     UseCandidate,
     IceControlled(u64),
@@ -240,10 +237,7 @@ pub enum Attribute {
     ChannelNumber(u16),
     UnknownAttributes(Vec<u16>),
     DontFragment,
-    Unknown {
-        kind: u16,
-        value: Vec<u8>,
-    },
+    Unknown { kind: u16, value: Vec<u8> },
 }
 
 impl Attribute {

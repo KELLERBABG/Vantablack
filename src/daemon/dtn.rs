@@ -112,9 +112,7 @@ fn queue(store: &mut PeerStore, peer_fp: &str, payload: &[u8]) -> bool {
         let Some(descriptor) = super::research_hooks::vault::deposit(peer_fp, payload) else {
             return false;
         };
-        store
-            .tree
-            .insert(DtnBundle::new(id, sequence, descriptor));
+        store.tree.insert(DtnBundle::new(id, sequence, descriptor));
         return true;
     }
 
@@ -179,18 +177,18 @@ pub(crate) async fn flush_all(nc: &Arc<GhostNode>, peers: &DashMap<String, Socke
             #[cfg(feature = "research")]
             let body =
                 match super::research_hooks::vault::open_mesh(nc, peers, &bundle.payload).await {
-                Ok(plain) => plain,
-                Err(reason) => {
-                    tracing::warn!(
-                        peer = %peer_fp,
-                        bundle = %hex::encode(&bundle.bundle_id[..4]),
-                        ?reason,
-                        "vault: undeliverable bundle dropped from the queue"
-                    );
-                    sent.push(bundle.bundle_id);
-                    continue;
-                }
-            };
+                    Ok(plain) => plain,
+                    Err(reason) => {
+                        tracing::warn!(
+                            peer = %peer_fp,
+                            bundle = %hex::encode(&bundle.bundle_id[..4]),
+                            ?reason,
+                            "vault: undeliverable bundle dropped from the queue"
+                        );
+                        sent.push(bundle.bundle_id);
+                        continue;
+                    }
+                };
             #[cfg(not(feature = "research"))]
             let body = bundle.payload.clone();
 

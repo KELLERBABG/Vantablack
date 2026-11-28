@@ -76,10 +76,7 @@ pub enum FeedError {
     Unsigned,
     BadKey(String),
     BadSignature,
-    Expired {
-        expires: u64,
-        now: u64,
-    },
+    Expired { expires: u64, now: u64 },
     Io(String),
 }
 

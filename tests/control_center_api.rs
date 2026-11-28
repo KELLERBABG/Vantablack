@@ -550,8 +550,7 @@ fn test_anchors_api_surface() {
         "opted-in synthetic carrier is online"
     );
     assert_eq!(
-        sky["synthetic"],
-        true,
+        sky["synthetic"], true,
         "virtual carrier always reports as synthetic"
     );
     assert_eq!(sky["carrier_freq_hz"], 5_350_000);

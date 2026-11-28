@@ -60,7 +60,10 @@ pub enum OpenPlan {
         new_pos: u64,
         cache: Vec<(u64, [u8; 32])>,
     },
-    Cached { counter: u64, key: [u8; 32] },
+    Cached {
+        counter: u64,
+        key: [u8; 32],
+    },
     Refused,
 }
 

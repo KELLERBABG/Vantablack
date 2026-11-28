@@ -18,7 +18,8 @@ use vantablack::ghost::net::{
     polysemy::PolysemicCode,
 };
 use vantablack::ghost::v2::erosion::{
-    bundle_point, combine_partials, open_bundle, seal_bundle, EphemerizerCommittee, PartialEvaluation,
+    bundle_point, combine_partials, open_bundle, seal_bundle, EphemerizerCommittee,
+    PartialEvaluation,
 };
 
 const NOW: u64 = 1_800_000_000;
@@ -28,11 +29,7 @@ const NOW: u64 = 1_800_000_000;
 #[test]
 fn braid_identity_a_clone_forks_and_the_pair_is_a_self_authenticating_revocation() {
     let mut real = BraidLock::from_seed([0x21; 32]);
-    let mut clone = BraidLock::restore(
-        real.secret_state().0,
-        real.braid(),
-        real.height(),
-    );
+    let mut clone = BraidLock::restore(real.secret_state().0, real.braid(), real.height());
 
     let a = real.advance(b"Wi-Fi transcript");
     let b = clone.advance(b"5G transcript");
@@ -91,7 +88,8 @@ fn erosion_a_bundle_is_readable_only_while_two_of_three_shares_exist() {
 #[test]
 fn erosion_a_dishonest_partial_evaluation_is_refused_by_its_dleq() {
     let (committee, _public) =
-        EphemerizerCommittee::from_secret(2, 3, NOW + 10_000, Scalar::from(11u64)).expect("committee");
+        EphemerizerCommittee::from_secret(2, 3, NOW + 10_000, Scalar::from(11u64))
+            .expect("committee");
     let bundle_id = [0x32; 32];
     let blinded = Scalar::from(5u64) * bundle_point(&bundle_id);
     let p0 = committee.evaluate(0, &blinded).expect("member 0");
@@ -101,7 +99,13 @@ fn erosion_a_dishonest_partial_evaluation_is_refused_by_its_dleq() {
         evaluation: p1.evaluation,
         proof: p1.proof.clone(),
     };
-    assert!(combine_partials(committee.commitments(), 2, &blinded, &[impostor, p0.clone()]).is_err());
+    assert!(combine_partials(
+        committee.commitments(),
+        2,
+        &blinded,
+        &[impostor, p0.clone()]
+    )
+    .is_err());
     assert!(combine_partials(committee.commitments(), 2, &blinded, &[p0]).is_err());
 }
 
@@ -128,7 +132,10 @@ fn dead_drop_blind_chunks_sweep_only_by_commitment_and_decay_adaptively() {
 
     // A fresh deposit is swept exactly once.
     vault.deposit(BlindDeadDropBlob::new(commitment, &payload, 2_000, 100));
-    assert_eq!(vault.sweep_and_consume(&commitment).unwrap().access_count, 0);
+    assert_eq!(
+        vault.sweep_and_consume(&commitment).unwrap().access_count,
+        0
+    );
     assert!(vault.sweep_and_consume(&commitment).is_none());
 }
 
@@ -173,11 +180,7 @@ fn polysemy_every_surviving_subset_collapses_its_own_world_and_hides_the_rest() 
     let code = PolysemicCode::new(3, 2, 2).expect("3-path link");
     assert_eq!(code.world_count(), 3);
     assert_eq!(code.shard_len(), 4, "C(n-1,k-1)*r");
-    let worlds = vec![
-        vec![0x11, 0x12],
-        vec![0x21, 0x22],
-        vec![0x31, 0x32],
-    ];
+    let worlds = vec![vec![0x11, 0x12], vec![0x21, 0x22], vec![0x31, 0x32]];
     let shards = code.encode(&worlds).expect("encodes");
     for (index, subset) in code.world_subsets().iter().enumerate() {
         assert_eq!(&code.collapse(&shards, subset).unwrap(), &worlds[index]);
@@ -225,7 +228,9 @@ fn mesh_archive_any_two_shards_reconstruct_and_tampering_fails_the_hash() {
     }
 
     // One shard is not enough; a corrupted pair is refused by the content hash.
-    assert!(archive.reconstruct(&[Some(archive.shards[0].clone()), None, None]).is_err());
+    assert!(archive
+        .reconstruct(&[Some(archive.shards[0].clone()), None, None])
+        .is_err());
     let mut corrupted = archive.clone();
     corrupted.shards[0][0] ^= 0xFF;
     corrupted.shards[1][0] ^= 0xFF;
@@ -251,13 +256,19 @@ fn bandwidth_voucher_a_nullifier_is_single_use_and_credit_is_finite() {
     let nullifier = voucher.compute_nullifier();
 
     assert_eq!(bank.redeem_voucher(&voucher), Ok(10));
-    assert!(bank.redeem_voucher(&voucher).is_err(), "double-spend refused");
+    assert!(
+        bank.redeem_voucher(&voucher).is_err(),
+        "double-spend refused"
+    );
     assert!(bank.consume_bandwidth(&nullifier, 4));
     assert_eq!(bank.remaining_quota(&nullifier), 6);
     assert!(!bank.consume_bandwidth(&nullifier, 7), "overdraw refused");
     assert!(bank.consume_bandwidth(&nullifier, 6));
     assert!(bank.is_exhausted(&nullifier));
-    assert!(bank.redeem_voucher(&voucher).is_err(), "exhausted stays spent");
+    assert!(
+        bank.redeem_voucher(&voucher).is_err(),
+        "exhausted stays spent"
+    );
 
     // Epoch slots are part of the nullifier, and stale vouchers expire.
     let other_epoch = BandwidthVoucher::mint([0x77; 32], slot + 1, 10, [0x99; 32]);
