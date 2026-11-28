@@ -3,6 +3,7 @@ package dev.globalghost.net
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
@@ -43,6 +44,7 @@ class GhostVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        appContext = applicationContext
         startForegroundServiceNotification()
         // Handover: listen ONLY for real underlying physical networks (Wi-Fi, Cellular) - NOT VPN.
         try {
@@ -463,6 +465,7 @@ class GhostVpnService : VpnService() {
     }
 
     companion object {
+        @Volatile private var appContext: Context? = null
         const val ACTION_START = "dev.globalghost.net.START"
         const val ACTION_STOP = "dev.globalghost.net.STOP"
         const val EXTRA_HUB_FP = "hub_fp"
@@ -633,7 +636,7 @@ class GhostVpnService : VpnService() {
             if (p != 0L) {
                 Thread {
                     val mLock = try {
-                        val wm = instance?.applicationContext?.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                        val wm = appContext?.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
                         wm?.createMulticastLock("vantablack_lan_scan")?.apply {
                             setReferenceCounted(false)
                             acquire()
